@@ -124,3 +124,12 @@ def test_label_tables_without_label_column_are_skipped(tmp_path) -> None:
 
 def ensure_before(event: TransactionEvent, cutoff: datetime) -> bool:
     return event.event_timestamp <= cutoff
+
+
+def test_label_free_loader_never_reads_or_stratifies_by_fraud(tmp_path):
+    book = generate_pragmatiq_fixture(tmp_path / "book", n_users=20, events_per_user=6)
+    labels = book / "labels/fraud.parquet"
+    labels.write_bytes(b"invalid parquet must not be read")
+    loaded = load_pragmatiq_dataset(book, max_entities=12, sample_seed=7, load_labels=False)
+    assert len({event.entity_id for event in loaded.events}) == 12
+    assert not loaded.labels and all(not event.labels for event in loaded.events)

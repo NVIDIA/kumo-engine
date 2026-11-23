@@ -192,7 +192,10 @@ def forecast_task(
 
     def side(chosen: list[tuple[Any, Any]]) -> tuple[Any, np.ndarray]:
         batch = collate_batch(
-            [seq for seq, _row in chosen], data.tokenizer, max_tokens=config.data.max_tokens
+            [seq for seq, _row in chosen],
+            data.tokenizer,
+            max_tokens=config.data.max_tokens,
+            amount_key=config.data.amount_field,
         )
         return batch, np.array([float(row.label) for _seq, row in chosen], dtype=np.float32)
 
@@ -236,7 +239,7 @@ its users, too many to tokenize in one call beside a full book in memory."""
 
 
 def _collate_rows(
-    sequences: Sequence[TransactionSequence], tokenizer: Any, *, max_tokens: int
+    sequences: Sequence[TransactionSequence], tokenizer: Any, *, max_tokens: int, amount_key: str
 ) -> Any:
     """`collate_batch` in chunks of `COLLATE_ROWS`, for probe rows only.
 
@@ -246,7 +249,10 @@ def _collate_rows(
     parts = []
     for start in range(0, len(sequences), COLLATE_ROWS):
         part = collate_batch(
-            sequences[start : start + COLLATE_ROWS], tokenizer, max_tokens=max_tokens
+            sequences[start : start + COLLATE_ROWS],
+            tokenizer,
+            max_tokens=max_tokens,
+            amount_key=amount_key,
         )
         if isinstance(part, TransactionBatch):
             part = trim_padding(dataclasses.replace(part, labels=None))
@@ -297,11 +303,16 @@ def _history_side(
     if not rows:
         return None
     max_tokens = config.data.max_tokens
-    history = _collate_rows([r.history for r in rows], data.tokenizer, max_tokens=max_tokens)
-    single = _collate_rows([r.event_only for r in rows], data.tokenizer, max_tokens=max_tokens)
+    amount = config.data.amount_field
+    history = _collate_rows(
+        [r.history for r in rows], data.tokenizer, max_tokens=max_tokens, amount_key=amount
+    )
+    single = _collate_rows(
+        [r.event_only for r in rows], data.tokenizer, max_tokens=max_tokens, amount_key=amount
+    )
     # The arms differ only in what the encoder sees; both get the history's aggregates.
     single.numeric_features = torch.tensor(
-        [raw_feature_vector(r.history) for r in rows], dtype=torch.float32
+        [raw_feature_vector(r.history, amount_key=amount) for r in rows], dtype=torch.float32
     ).reshape(len(rows), -1)
     labels = np.array([r.label for r in rows], dtype=np.float32)
     return history, single, labels, tuple(r.history for r in rows)

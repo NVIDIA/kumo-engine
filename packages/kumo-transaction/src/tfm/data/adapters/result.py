@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from tfm.contracts.schema import EntityProfile, TransactionEvent
+from tfm.contracts.schema import EntityProfile, TransactionEvent, TransferEdge
 from tfm.data.splits.temporal import SplitAssignment
 
 if TYPE_CHECKING:
@@ -34,3 +34,4 @@ class AdapterResult:
     profiles: tuple[EntityProfile, ...] = ()
     labels: Mapping[str, tuple[LabelRow, ...]] = field(default_factory=dict)
     fraud_splice: IdentityTheftSplice | None = None
+    transfers: tuple[TransferEdge, ...] = ()

@@ -5,6 +5,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Protocol
+
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
@@ -12,8 +15,9 @@ from torch import Tensor, nn
 from tfm.attention.eager import EagerAttention
 from tfm.compositions.profile_event_decoder import ProfileEventDecoder
 from tfm.contracts.kvt import KeyValueTimeBatch
-from tfm.contracts.outputs import ModelOutput
+from tfm.contracts.outputs import AlignmentLosses, ModelOutput
 from tfm.contracts.protocols import AttentionSpec
+from tfm.kernels import linear_cross_entropy
 from tfm.layers.kvt_encoders import (
     CalendarEmbedding,
     KVTEventEncoder,
@@ -29,7 +33,6 @@ from tfm.pooling.last_token import LastTokenPool
 from tfm.pooling.registry import Readout, readout_module
 from tfm.position.none import NoPE
 from tfm.position.time_rope import TimeRoPE
-from tfm.training.diagnostics import AlignmentLosses
 
 
 class CausalSummaryDecoder(nn.Module):
@@ -55,8 +58,87 @@ class CausalSummaryDecoder(nn.Module):
         return self.norm(hidden)
 
 
+class ProfileFields(Protocol):
+    """The profile tensors a batch carries, each `[B, P]`."""
+
+    prof_key_ids: Tensor
+    prof_value_ids: Tensor
+    prof_positions: Tensor
+    prof_mask: Tensor
+    prof_time_log: Tensor
+
+
+class ProfileEventStack(Protocol):
+    """The modules `encode_events` and `decode_history` run, each typed by its call:
+    `KVTEventEncoder`, `KVTProfileEncoder`, `CalendarEmbedding` and `CausalSummaryDecoder`
+    are the built-ins."""
+
+    @property
+    def event_encoder(self) -> Callable[[Tensor, Tensor, Tensor], tuple[Tensor, Tensor]]:
+        """`(tokens [B, N, T, D], token_mask, event_mask) -> (summaries [B, N, D], token
+        states [B, N, T, D])`."""
+        ...
+
+    @property
+    def profile_encoder(self) -> Callable[[Tensor, Tensor, Tensor], Tensor]:
+        """`(tokens [B, P, D], mask [B, P], time_log [B, P]) -> [B, D]`."""
+        ...
+
+    @property
+    def calendar(self) -> Callable[[KeyValueTimeBatch], Tensor]:
+        """Named per-event arrays -> [B, N, D]."""
+        ...
+
+    @property
+    def decoder(self) -> Callable[[Tensor, Tensor, Tensor], Tensor]:
+        """`(slots [B, N+1, D], slot mask [B, N+1], time positions [B, N+1]) -> [B, N+1, D]`."""
+        ...
+
+    def embed_tokens(self, key_ids: Tensor, value_ids: Tensor, positions: Tensor, /) -> Tensor: ...
+
+
+def encode_events(model: ProfileEventStack, batch: KeyValueTimeBatch) -> tuple[Tensor, Tensor]:
+    """Return `(event summaries [B, N, D] with the calendar added, token states)`."""
+    tokens = model.embed_tokens(batch.key_ids, batch.value_ids, batch.positions)
+    summaries, token_states = model.event_encoder(tokens, batch.token_mask, batch.event_mask)
+    calendar = model.calendar(batch)
+    summaries = summaries + calendar * batch.event_mask.unsqueeze(-1).to(calendar.dtype)
+    return summaries, token_states
+
+
+def decode_history(
+    model: ProfileEventStack,
+    profile: ProfileFields,
+    summaries: Tensor,
+    event_mask: Tensor,
+    elapsed_log: Tensor,
+    *,
+    context: Tensor | Callable[[], Tensor] | None = None,
+) -> tuple[Tensor, Tensor]:
+    """Return `(decoder states [B, N+1, D], slot mask [B, N+1])` from event summaries
+    `[B, N, D]`, their mask and `elapsed_log` `[B, N]`. A `context` `[B, D]` is one more
+    profile token, mask 1 and time 0; a callable is called after the events are encoded."""
+    tokens = model.embed_tokens(
+        profile.prof_key_ids, profile.prof_value_ids, profile.prof_positions
+    )
+    mask, times = profile.prof_mask, profile.prof_time_log
+    if callable(context):
+        context = context()
+    if context is not None:
+        tokens = torch.cat([tokens, context[:, None]], dim=1)
+        mask = torch.cat([mask, mask.new_ones(mask.shape[0], 1)], dim=1)
+        times = torch.cat([times, times.new_zeros(times.shape[0], 1)], dim=1)
+    z_a = model.profile_encoder(tokens, mask, times)
+    slots = torch.cat([z_a.unsqueeze(1), summaries], dim=1)
+    slot_mask = torch.cat([torch.ones_like(event_mask[:, :1]), event_mask], dim=1)
+    time_positions = torch.cat([torch.zeros_like(elapsed_log[:, :1]), elapsed_log], dim=1)
+    return model.decoder(slots, slot_mask, time_positions), slot_mask
+
+
 class ProfileEventDecoderModel(nn.Module):
     """Experimental Blueprint v2 model. Not part of the core TrxFM export.
+
+    Reads the per-event arrays `event_arrays` (`EventArrayReader`), the calendar's.
 
     Slots are `[profile, event_0, ..., event_{N-1}]`. The embedding is the
     readout over decoder states, by default the state after the last valid
@@ -97,16 +179,15 @@ class ProfileEventDecoderModel(nn.Module):
         self.decoder = CausalSummaryDecoder(
             spec, attn, time_rope=isinstance(self.position_spec, TimeRoPE)
         )
-        self.calendar = CalendarEmbedding(spec.hidden_size)
+        self.calendar = CalendarEmbedding(spec.hidden_size, spec.time_features)
+        self.event_arrays = self.calendar.arrays
         self.pool = readout_module(self.readout_spec)
         self.next_proj = nn.Linear(2 * spec.hidden_size, spec.hidden_size, bias=False)
-        self.next_crit = nn.CrossEntropyLoss(label_smoothing=self.objective_spec.label_smoothing)
         # Auxiliary parameters exist only when enabled: a parameter that never
         # receives gradient stalls DDP.
         self.mlm_proj: nn.Linear | None = None
         if mlm is not None:
             self.mlm_proj = nn.Linear(2 * spec.hidden_size, spec.hidden_size, bias=False)
-            self.mlm_crit = nn.CrossEntropyLoss(label_smoothing=mlm.label_smoothing)
         self.past_proj: nn.Linear | None = None
         self.past_gap: nn.Linear | None = None
         if self.past_spec is not None:
@@ -129,7 +210,7 @@ class ProfileEventDecoderModel(nn.Module):
     def vocab_size(self) -> int:
         return self.spec.vocab_size
 
-    def _tokens(self, key_ids: Tensor, value_ids: Tensor, positions: Tensor) -> Tensor:
+    def embed_tokens(self, key_ids: Tensor, value_ids: Tensor, positions: Tensor) -> Tensor:
         token = self.embed(key_ids) + self.embed(value_ids)
         return token + sinusoidal_position(positions, self.spec.hidden_size, self.spec.max_position)
 
@@ -140,24 +221,23 @@ class ProfileEventDecoderModel(nn.Module):
                 "ProfileEventDecoderModel needs KeyValueTimeBatch.elapsed_log; "
                 "collate with KeyValueTimeTokenizer.collate."
             )
-        tokens = self._tokens(batch.key_ids, batch.value_ids, batch.positions)
-        summaries, token_states = self.event_encoder(tokens, batch.token_mask, batch.event_mask)
-        calendar = self.calendar(batch.hour, batch.dow, batch.dom)
-        summaries = summaries + calendar * batch.event_mask.unsqueeze(-1).to(calendar.dtype)
-        profile_tokens = self._tokens(
-            batch.prof_key_ids, batch.prof_value_ids, batch.prof_positions
+        summaries, token_states = encode_events(self, batch)
+        states, slot_mask = decode_history(
+            self, batch, summaries, batch.event_mask, batch.elapsed_log
         )
-        z_a = self.profile_encoder(profile_tokens, batch.prof_mask, batch.prof_time_log)
-        slots = torch.cat([z_a.unsqueeze(1), summaries], dim=1)
-        slot_mask = torch.cat([torch.ones_like(batch.event_mask[:, :1]), batch.event_mask], dim=1)
-        time_positions = torch.cat(
-            [torch.zeros_like(batch.elapsed_log[:, :1]), batch.elapsed_log], dim=1
-        )
-        states = self.decoder(slots, slot_mask, time_positions)
         return states, slot_mask, token_states
 
     def _logits(self, proj: nn.Linear, query: Tensor, context: Tensor) -> Tensor:
         return proj(torch.cat([query, context], dim=-1)) @ self.embed.weight.t()
+
+    def _vocab_loss(
+        self, projected: Tensor, values: Tensor, *, label_smoothing: float = 0.0
+    ) -> Tensor:
+        """Cross-entropy of the vocabulary logits `projected [T, D] @ embed.weight.T`
+        against `values [T]`, without building the logits."""
+        return linear_cross_entropy(
+            projected, self.embed.weight, values, label_smoothing=label_smoothing
+        )
 
     def next_event_logits(self, states: Tensor, key_ids: Tensor) -> Tensor:
         """Vocabulary logits of one target token per row, from the slot before its
@@ -199,13 +279,25 @@ class ProfileEventDecoderModel(nn.Module):
         target = next_event_targets(batch)
         if target.values.numel() == 0:
             raise ValueError("NextEventFields needs at least one valid event token in the batch.")
-        next_logits = self.next_event_logits(states[target.batch, target.event], target.key_ids)
-        losses = {self.objective_spec.name: self.next_crit(next_logits, target.values)}
+        next_query = torch.cat(
+            [states[target.batch, target.event], self.embed(target.key_ids)], dim=-1
+        )
+        losses = {
+            self.objective_spec.name: self._vocab_loss(
+                self.next_proj(next_query),
+                target.values,
+                label_smoothing=self.objective_spec.label_smoothing,
+            )
+        }
         if self.mlm_spec is not None:
             assert work.mlm_labels is not None and self.mlm_proj is not None
             b, e, t = (work.mlm_labels != self.mlm_spec.ignore_index).nonzero(as_tuple=True)
-            mlm_logits = self._logits(self.mlm_proj, token_states[b, e, t], states[b, e + 1])
-            losses[self.mlm_spec.name] = self.mlm_crit(mlm_logits, work.mlm_labels[b, e, t])
+            mlm_query = torch.cat([token_states[b, e, t], states[b, e + 1]], dim=-1)
+            losses[self.mlm_spec.name] = self._vocab_loss(
+                self.mlm_proj(mlm_query),
+                work.mlm_labels[b, e, t],
+                label_smoothing=self.mlm_spec.label_smoothing,
+            )
         if self.past_spec is not None:
             losses[self.past_spec.name] = self.past_spec.weight * self._past_loss(batch, states)
         if self.contrastive_spec is not None:
@@ -220,7 +312,7 @@ class ProfileEventDecoderModel(nn.Module):
         """Cross-entropy of every earlier event's values within `horizon` lags."""
         assert self.past_spec is not None
         assert self.past_proj is not None and self.past_gap is not None
-        logits: list[Tensor] = []
+        projected: list[Tensor] = []
         values: list[Tensor] = []
         horizon = self.past_spec.horizon
         for lag in range(1, horizon + 1):
@@ -232,16 +324,14 @@ class ProfileEventDecoderModel(nn.Module):
                 [states[target.batch, target.slot], self.past_gap(gap.to(states.dtype))], dim=-1
             )
             context = self.embed(target.key_ids)
-            logits.append(
-                self.past_proj(torch.cat([query, context], dim=-1)) @ self.embed.weight.t()
-            )
+            projected.append(self.past_proj(torch.cat([query, context], dim=-1)))
             values.append(target.values)
-        if not logits:
+        if not projected:
             # A batch of single-event histories has nothing to reconstruct; keep
             # every auxiliary parameter in the graph so DDP stays in step.
             used = self.past_proj.weight.sum() + self.past_gap.weight.sum()
             return used * 0.0
-        return F.cross_entropy(torch.cat(logits), torch.cat(values))
+        return self._vocab_loss(torch.cat(projected), torch.cat(values))
 
     def _contrastive_loss(self, batch: KeyValueTimeBatch) -> Tensor:
         """InfoNCE between two random crops of each history, on the readout."""

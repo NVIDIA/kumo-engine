@@ -111,9 +111,7 @@ def random_crop(
         token_mask=gather_events(batch.token_mask),
         event_mask=kept.to(batch.event_mask.dtype),
         time_log=gather_events(batch.time_log),
-        hour=gather_events(batch.hour),
-        dow=gather_events(batch.dow),
-        dom=gather_events(batch.dom),
+        events={name: gather_events(array) for name, array in batch.events.items()},
         elapsed_log=elapsed,
         mlm_labels=None,
     )

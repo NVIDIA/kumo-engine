@@ -13,6 +13,7 @@ the raw aggregates read the numeric field `amount_key`.
 from __future__ import annotations
 
 import dataclasses
+import math
 from collections.abc import Sequence
 from typing import Any
 
@@ -37,10 +38,16 @@ RAW_FEATURE_NAMES: tuple[str, ...] = (
 
 
 def raw_feature_vector(sequence: TransactionSequence, *, amount_key: str = "amount") -> list[float]:
-    """Leakage-safe aggregates from events already truncated to cutoff."""
+    """Cutoff-bounded aggregates; absent/non-finite amounts contribute zero.
+
+    Every retained event counts in the mean denominator, including missing amounts.
+    """
     if not sequence.events:
         return [0.0] * len(RAW_FEATURE_NAMES)
-    amounts = [float(event.numeric.get(amount_key, 0.0)) for event in sequence.events]
+    amounts = []
+    for event in sequence.events:
+        amount = float(event.numeric.get(amount_key, 0.0))
+        amounts.append(amount if math.isfinite(amount) else 0.0)
     last = sequence.events[-1]
     time_feat = event_time_features(last)
     return [

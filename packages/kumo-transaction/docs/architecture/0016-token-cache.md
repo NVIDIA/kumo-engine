@@ -32,17 +32,37 @@ stay a possible later backend (decision 7).
 
 1. **A cache is the book, tokenized once.** An event's key-value-time tokens
    depend only on its own fields and the fitted vocabulary, so every event is
-   encoded once and any sequence is a slice. The cache directory (format 1)
-   holds:
+   encoded once and any sequence is a slice. The cache directory (format 4)
+   holds at most 256 part files, `parts/00000.bin`, `parts/00001.bin`, …; the
+   build splits its blocks into that many runs of consecutive blocks, by block
+   count alone, and one task encodes each run and appends its blocks to the
+   run's file. Each part file opens with a 32-byte header: magic, format
+   version, part index, and the manifest's `build_id` (a hash of the cache's
+   identity and block size, so identical builds stay byte-identical). The
+   reader checks it when it first maps or opens the file, so a part copied
+   from another cache is refused, not read. A block holds whole users, and its
+   arrays, each 64-byte aligned, are:
    - per event, in `order_events` order within each user: `ts_us` (true
      microseconds), `id_us` (the microseconds in `event_id`), `hour`, `dow`,
-     `dom` (UTC), `amount`, and `by_loader` (the position of the event whose
-     `event_id` index is `i`);
+     `dom` (UTC), `amount` (the numeric field `data.amount_field` names, 0.0
+     where an event has none; a build whose train side never carries it is
+     refused), and `by_loader` (the position of the event whose `event_id`
+     index is `i`);
    - per token: `key_ids`, `value_ids` (uint16), `positions` (uint8), with
-     `token_offsets` per event, already cut to `max_event_tokens`;
-   - `users.parquet` (each user's event range), the users' `profiles.parquet`,
-     `tokenizer.json` (`KeyValueTimeTokenizer.state_dict()`), and
-     `manifest.json`.
+     `token_offsets` per event (starting at 0 in each block), already cut to
+     `max_event_tokens`.
+
+   Beside the parts: `users.parquet` (each user's event range in the whole
+   cache), the users' `profiles.parquet`, `tokenizer.json`
+   (`KeyValueTimeTokenizer.state_dict()`), and `manifest.json`, whose
+   `blocks` list gives each block's events, tokens, users, part and array
+   byte offsets, and whose `arrays` gives each array's dtype. `TokenCache`
+   reads each array as one `ShardedArray`, equal to the blocks concatenated
+   in order. The file count is bounded, not proportional to the book, because
+   a reader keeps every file memory-mapped only while the files fit a quarter
+   of its open-file limit; past that it reopens files with `os.pread`, which can
+   add repeated file opens on network storage. A reader refuses any other format
+   and names the command that rebuilds it.
 2. **The vocabulary is fit on the train side of every cached user, and on
    nothing else.** For each user, the fit sees the events `prepare_data`'s
    train-side sequence holds: `ts < train_end` (`assign_temporal_split`),
@@ -53,7 +73,11 @@ stay a possible later backend (decision 7).
    readings, and the order in which keys and values first appear, which
    decides vocabulary ids and ties between equally frequent values. It then
    calls `fit_statistics`, so the fitted state equals `fit` on the same
-   sequences. Later events are encoded but never counted, and no label file
+   sequences. The builder reaches the tokenizer only through the
+   `ColumnarTokenizer` protocol (`tfm.contracts.tokenizers`), and the book only
+   through the adapter's `ColumnarSource` (`tfm.contracts.sources`): it cuts each
+   block to these train-side events, and `fit_block`, `merge` and `fit_stats`
+   do the counting. Later events are encoded but never counted, and no label file
    is read.
 3. **What changes compared with a run without a cache.** Without a cache, the
    tokenizer is fit on the `max_entities` sample and pretraining reads that
@@ -81,17 +105,35 @@ stay a possible later backend (decision 7).
      are its donor event's.
 5. **A cache states what it was built from.** The manifest records the book
    (path, row count, size, row groups, manifest hash), the population, the fit
-   specification, and the tokenizer settings. A run recomputes these from its
+   specification, the tokenizer's class by import path, and its `settings()`
+   (with the version of its state format). A run recomputes these from its
    config and refuses a cache that differs.
 6. **What a cache cannot reproduce is an error.** `data.token_cache` requires
-   `adapter: pragmatiq`, `tokenizer: key_value_time`, a timestamp split, and
-   `fraud_labels: spliced_identity_theft`. The cache holds no labels, so it
-   cannot carry the book's own fraud labels into pretraining rows. It also
-   refuses a non-UTC `calendar_tz`. Packing
+   an `Adapter` with a columnar source (`pragmatiq` is one; a user adapter is
+   named by import path), a tokenizer that implements `ColumnarTokenizer` (by
+   registered name or import path), and a timestamp split. Native and spliced
+   fraud-label tasks are supported for downstream scoring. Cached pretraining
+   rows contain no task labels; native source labels remain on supervised
+   batches outside the cache. Before the fit pass, the build runs its first block through fit, merge, a state round
+   trip and encode, in the parent process, so a tokenizer or source that cannot
+   build fails there; `key_value_time` refuses a non-UTC `calendar_tz` at that
+   point. A cache built by any `ColumnarTokenizer` is read back into batches
+   through `CachedTokenizer`. Packing
    and `fraud_task.supervised_head` are already refused for key-value-time stacks.
 7. **CPU first.** The builder uses pyarrow and NumPy in worker processes, one
    block of whole users each. A cuDF builder may be added as an optional
    extra if it writes the same format and passes the same contract tests.
+8. **The build is projected on the node that runs it.** How long a build takes,
+   how much memory each worker needs, and whether reading the book once (spilling
+   each decoded block to scratch) would beat decoding it twice all depend on the
+   node and the book. A table of defaults per machine would be wrong on the first
+   node it did not list. `tfm cache-tokens --profile` instead builds one sampled
+   block per worker at once (the largest, the first, the last, and evenly spaced
+   ones) and times each phase. Each pass's time per block is fitted as a fixed
+   cost plus a cost per row, and every planned block, at its own size, is handed
+   in order to the first free worker, as the build's pool does; a short last
+   block therefore neither costs a whole round nor sets the range. It changes no
+   setting; a later build prints its time beside the projection.
 
 ## Consequences
 

@@ -115,3 +115,63 @@ baseline on latency, throughput, and peak memory.
 
 Do not treat synthetic-data metrics as evidence of production fraud
 performance.
+
+## Experimental graph recipe comparisons
+
+The graph recipe family currently uses the CPU-safe logistic comparison, not
+the XGBoost headline protocol. It retains the same raw five-history-aggregate,
+embedding, and combined arms on identical probe rows, plus a separately named
+graph-tabular arm (counts and sums of sampled input-node features). A sequence-only
+binary control trains and selects on exactly the hybrid's history/label batches,
+with identical initial shared-stack parameters, seed, training settings and
+validation rows. FutureSubgraph mode additionally retains the historical
+next-event control trained on the same pretraining windows. Both use the same
+probe rows and history lengths; the historical arm does not isolate the effect
+of graph conditioning from downstream supervision. The hybrid additionally
+probes its exact frozen GNN. Graph and sequence views share sample IDs/cutoffs;
+no cross-dataset comparison or quality claim is implied.
+
+Select a directly supervised GNN using sample-weighted binary validation loss,
+or a FutureSubgraph GNN using valid-entry-weighted self-supervised validation
+MSE. Select the hybrid using sample-weighted binary validation loss, before test
+probes. The historical next-event control weights validation loss by the number
+of target tokens selected by both token and event masks, matching its objective.
+Longer histories contribute their additional targets rather than one target per
+entity. `task_head` reports the selected binary head on held-out test owners
+when the main model is supervised; the logistic probe arms remain separate.
+The task is any available fraud in the truncated history, using existing
+sequence-label semantics. It is not a future-fraud forecast. Checkpoints record
+selection steps, root-owner splits, and the cross-owner graph-context policy.
+
+
+Graph training can share same-cutoff neighborhoods; validation/test and embedding
+extraction stay disjoint. Report the sharing policy because BatchNorm weights
+unique versus repeated nodes differently. The three-arm Engine-shared,
+Engine-disjoint, and historical-custom-disjoint timing comparison isolates
+architecture from graph policy at a fixed-batch level; it does not establish
+pure runtime equivalence or downstream quality. Preparation/transfer are
+reported separately from forward/backward/optimizer timing. No full training
+campaign is justified solely by a small synthetic timing comparison.
+
+
+Hop trimming and the attention kernel are execution conditions, recorded with
+the objective/sharing mode. The historical L4 comparison predates trimming and
+input ReLU removal and cannot be reported as current throughput. Trimmed versus
+untrimmed root parity is checked in evaluation; training BatchNorm populations
+may differ. SDPA/eager output and gradient equivalence is checked separately.
+
+
+Matched binary control metrics use `sequence_supervised_*`, including its trained
+`task_head`. Historical next-event embeddings retain `sequence_only_*` in
+FutureSubgraph mode; in binary mode that legacy prefix is an alias for the
+binary control. Sequence controls consume history-only batches and share the
+Blueprint v2 encoding implementation. Coverage guards reject absent fraud
+sources or owners with no available source labels by cutoff; they preserve the
+existing truncated-history any-available-positive rule.
+
+
+For the five per-sequence logistic raw features, omitted, NaN and infinite
+amounts contribute zero to the mean and maximum. Every retained event still
+counts in the mean denominator. This is the existing missing-amount convention,
+including when finite and missing values share a history; it does not change
+the split, labels or the configured amount field.

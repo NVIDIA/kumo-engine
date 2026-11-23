@@ -8,13 +8,16 @@ from __future__ import annotations
 import os
 import warnings
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from tfm.config import DataConfig, RecipeConfig
 from tfm.contracts.errors import SchemaError, UnsupportedCombinationError
-from tfm.contracts.schema import TransactionEvent, ensure_utc
+from tfm.contracts.registries import Registry
+from tfm.contracts.schema import TransactionEvent, TransferEdge, ensure_utc
+from tfm.contracts.sources import ColumnarSource
 from tfm.data.adapters.paths import ADAPTER_ENV, entity_cap, resolve_data_path, sample_seed
 from tfm.data.adapters.result import AdapterResult
 from tfm.data.labels.windows import side_label_windows
@@ -29,21 +32,62 @@ from tfm.data.tasks.identity_theft import (
 if TYPE_CHECKING:
     from tfm.data.adapters.pragmatiq import PragmatiqDataset
 
-_ADAPTERS: dict[str, Callable[..., AdapterResult]] = {}
+
+@dataclass(frozen=True)
+class Adapter:
+    """A book's loader, and optionally its columnar source.
+
+    `data.adapter` selects one by registered name or by `"package.module:attribute"`.
+    """
+
+    load: Callable[..., AdapterResult]
+    """`(data_config, *, seed, flat_fields, fixture_dir) -> AdapterResult`."""
+    columnar_source: Callable[[DataConfig], ColumnarSource[Any]] | None = None
+    """The book a token cache is built from; must pickle, its class importable."""
+
+
+_ADAPTERS: Registry[Adapter] = Registry("adapter")
 
 
 def register_adapter(
     name: str,
+    *,
+    columnar_source: Callable[[DataConfig], ColumnarSource[Any]] | None = None,
 ) -> Callable[[Callable[..., AdapterResult]], Callable[..., AdapterResult]]:
+    """Register an adapter; `columnar_source` gives the book a token cache is built from."""
+
     def decorator(fn: Callable[..., AdapterResult]) -> Callable[..., AdapterResult]:
-        _ADAPTERS[name] = fn
+        _ADAPTERS.register(name, Adapter(fn, columnar_source))
         return fn
 
     return decorator
 
 
 def advertised_adapters() -> tuple[str, ...]:
-    return tuple(sorted(_ADAPTERS))
+    return _ADAPTERS.names()
+
+
+def _adapter(config: DataConfig) -> Adapter:
+    name = config.adapter.strip()
+    adapter = _ADAPTERS.get(name if ":" in name else name.lower())
+    if not isinstance(adapter, Adapter):
+        raise UnsupportedCombinationError(
+            f"data.adapter {name!r} is a {type(adapter).__name__}; it must name a "
+            "`tfm.data.adapters.Adapter`."
+        )
+    return adapter
+
+
+def columnar_source(config: DataConfig) -> ColumnarSource[Any]:
+    """The configured book as a token cache reads it."""
+    factory = _adapter(config).columnar_source
+    if factory is None:
+        raise UnsupportedCombinationError(
+            f"data.adapter {config.adapter!r} supplies no columnar source, so no token cache "
+            "can be built from it; give its `Adapter` a `columnar_source` returning a "
+            "`tfm.contracts.sources.ColumnarSource`."
+        )
+    return factory(config)
 
 
 @register_adapter("synthetic")
@@ -68,8 +112,23 @@ def load_synthetic_adapter(
         n_entities=config.n_entities,
         events_per_entity=config.events_per_entity,
         label_delay=delay,
+        step_hours=config.event_step_hours,
     )
-    return AdapterResult(events=tuple(events), metadata={"adapter": "synthetic"})
+    owners = sorted({event.entity_id for event in events})
+    successors = dict(zip(owners, owners[1:] + owners[:1], strict=True))
+    transfers = tuple(
+        TransferEdge(
+            event.entity_id,
+            successors[event.entity_id],
+            event.event_timestamp,
+            event.numeric["amount"],
+        )
+        for event in events
+        if event.event_timestamp.day % 7 == 0
+    )
+    return AdapterResult(
+        events=tuple(events), transfers=transfers, metadata={"adapter": "synthetic"}
+    )
 
 
 @register_adapter("tabformer")
@@ -87,7 +146,13 @@ def load_tabformer_registered(
     return load_tabformer_adapter(resolve_data_path(config), config, seed=seed)
 
 
-@register_adapter("pragmatiq")
+def _pragmatiq_columns(config: DataConfig) -> ColumnarSource[Any]:
+    from tfm.data.adapters.pragmatiq_columns import PragmatiqColumns
+
+    return PragmatiqColumns(resolve_data_path(config))
+
+
+@register_adapter("pragmatiq", columnar_source=_pragmatiq_columns)
 def load_pragmatiq_registered(
     config: DataConfig,
     *,
@@ -106,15 +171,16 @@ def load_pragmatiq_registered(
         load_pragmatiq_dataset,
     )
 
-    spliced = config.fraud_labels == "spliced_identity_theft"
+    spliced = config.fraud_labels == "spliced_identity_theft" and config.load_labels
     if config.path or os.environ.get(ADAPTER_ENV["pragmatiq"]):
         root = resolve_data_path(config)
         dataset = load_pragmatiq_dataset(
             root,
             max_entities=entity_cap(config),
             sample_seed=sample_seed(config, seed),
-            attach_fraud_labels=not spliced,
-            stratify_by_fraud=not spliced,
+            attach_fraud_labels=not spliced and config.load_labels,
+            load_labels=config.load_labels,
+            stratify_by_fraud=not spliced and config.stratify_by_fraud and config.load_labels,
         )
         source = "path"
     else:
@@ -135,7 +201,9 @@ def load_pragmatiq_registered(
             events_per_user=max(config.events_per_entity, 6),
             seed=seed,
         )
-        dataset = load_pragmatiq_dataset(root)
+        dataset = load_pragmatiq_dataset(
+            root, attach_fraud_labels=config.load_labels, load_labels=config.load_labels
+        )
         source = "fixture"
     splice = _identity_theft_splice(config, dataset, seed=seed) if spliced else None
     events = events_for_flat_fields(dataset.events) if flat_fields else list(dataset.events)
@@ -163,6 +231,7 @@ def load_pragmatiq_registered(
             "fraud_labels": config.fraud_labels,
         },
         profiles=tuple(dataset.profiles),
+        transfers=dataset.transfers,
         labels={task: rows for task, rows in dataset.labels.items() if task != "fraud"},
         fraud_splice=splice,
     )
@@ -219,12 +288,6 @@ def load_adapter_events(
     12-field tokenizers can read. `fixture_dir` is where an adapter may
     generate a synthetic book when no local root is configured.
     """
-    name = config.data.adapter.strip().lower()
-    if name not in _ADAPTERS:
-        known = ", ".join(advertised_adapters()) or "<none>"
-        raise UnsupportedCombinationError(
-            f"Unknown adapter {name!r}. Registered adapters: {known}."
-        )
-    return _ADAPTERS[name](
+    return _adapter(config.data).load(
         config.data, seed=config.seed, flat_fields=flat_fields, fixture_dir=fixture_dir
     )

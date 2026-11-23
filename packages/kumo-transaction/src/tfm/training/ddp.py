@@ -94,6 +94,12 @@ class DdpTrainer:
         precision: str = "fp32",
         progress: TrainingProgress | None = None,
     ) -> dict[str, float | str]:
+        if not isinstance(batches, Sequence):
+            raise UnsupportedCombinationError(
+                "training.backend: ddp gives each rank every world_size-th batch by index, but "
+                f"received a {type(batches).__name__}, which can only be iterated. Pass a "
+                "sequence of batches, or train with training.backend: eager in one process."
+            )
         if not batches:
             raise UnsupportedCombinationError("training.backend: ddp received no batches.")
         launch_world_size, local_rank = launcher_topology()

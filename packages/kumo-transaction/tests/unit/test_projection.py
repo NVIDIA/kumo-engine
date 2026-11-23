@@ -99,3 +99,32 @@ def test_umap_projects_to_three_dims() -> None:
 def test_umap_refuses_a_batch_too_small_for_a_neighbor_graph() -> None:
     with pytest.raises(UnsupportedCombinationError, match="at least 3 rows"):
         project_2d(_vectors(rows=2), method="umap")
+
+
+def test_three_dimensions_for_an_interactive_view() -> None:
+    vectors = _vectors()
+    projected = project(vectors, dims=3)
+    assert projected.shape == (12, 3)
+    assert projected.dtype == np.float32
+    # PCA's first two components do not depend on how many are kept.
+    np.testing.assert_allclose(projected[:, :2], project_2d(vectors), rtol=1e-5, atol=1e-5)
+
+
+def test_fewer_features_than_dimensions_are_padded() -> None:
+    projected = project(_vectors(dim=2), dims=3)
+    assert projected.shape == (12, 3)
+    assert np.all(projected[:, 2] == 0.0)
+    assert project(np.zeros((0, 5), dtype=np.float32), dims=3).shape == (0, 3)
+
+
+def test_only_two_or_three_dimensions() -> None:
+    with pytest.raises(UnsupportedCombinationError, match="dims"):
+        project(_vectors(), dims=4)
+
+
+def test_umap_in_three_dimensions_requires_the_extra() -> None:
+    if extra_available("umap"):
+        assert project(_vectors(), dims=3, method="umap", seed=0).shape == (12, 3)
+        return
+    with pytest.raises(ExtraUnavailableError, match="umap"):
+        project(_vectors(), dims=3, method="umap")

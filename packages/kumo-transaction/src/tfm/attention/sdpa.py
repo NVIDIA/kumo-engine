@@ -18,8 +18,11 @@ from dataclasses import dataclass
 
 import torch
 from torch import Tensor, nn
+from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from tfm.layers.masks import attention_bias
+
+_SHORT_BACKENDS = [SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]
 
 
 @dataclass(frozen=True)
@@ -59,5 +62,14 @@ class SdpaAttentionKernel(nn.Module):
         dead = ~visible.any(dim=-1, keepdim=True)
         eye = torch.eye(query.size(-2), dtype=torch.bool, device=query.device)
         visible = visible | (dead & eye)
-        out = torch.nn.functional.scaled_dot_product_attention(query, key, value, attn_mask=visible)
+        # Sequences of at most 64 tokens leave cuDNN out of PyTorch's backend choice.
+        if query.size(-2) <= 64:
+            with sdpa_kernel(_SHORT_BACKENDS):
+                out = torch.nn.functional.scaled_dot_product_attention(
+                    query, key, value, attn_mask=visible
+                )
+        else:
+            out = torch.nn.functional.scaled_dot_product_attention(
+                query, key, value, attn_mask=visible
+            )
         return out.masked_fill(dead, 0.0)

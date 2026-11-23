@@ -14,7 +14,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from tfm.config import RecipeConfig
 from tfm.contracts.errors import (
@@ -23,7 +23,7 @@ from tfm.contracts.errors import (
     UnsupportedCombinationError,
 )
 from tfm.contracts.schema import EntityProfile, TransactionEvent, TransactionSequence
-from tfm.contracts.tokenizers import SequenceTokenizer
+from tfm.contracts.tokenizers import SequenceTokenizer, UsesProfiles
 from tfm.data.adapters.registry import load_adapter_events
 from tfm.data.collate import collate_batch
 from tfm.data.labels.windows import LabelWindow, side_label_windows
@@ -34,15 +34,12 @@ from tfm.data.sequence_builders.entity_sequences import (
 from tfm.data.splits.entity import EntitySplit
 from tfm.data.splits.temporal import SplitAssignment, TemporalSplitSpec, assign_temporal_split
 from tfm.data.tasks.identity_theft import IdentityTheftSplice
-from tfm.data.token_cache import CachedKeyValueTimeTokenizer, CacheRows, TokenCache
-from tfm.data.token_cache.flat import FlatRows, FlatTokenCache
+from tfm.data.token_cache.formats import PretrainRows, TokenCacheFormat, cache_format_of
 from tfm.data.validation.schema import validate_events
-from tfm.features.tokenizers import KeyValueTimeConfig, KeyValueTimeTokenizer
-from tfm.features.tokenizers.financial import TransactionFieldTokenizer
-from tfm.features.tokenizers.flat_key_value import FlatKeyValueTokenizer
-from tfm.features.tokenizers.registry import advertised_tokenizers, build_tokenizer
+from tfm.features.tokenizers.registry import (
+    tokenizer_for as tokenizer_for,
+)
 from tfm.runtime.common import parse_duration, parse_timestamp
-from tfm.runtime.token_cache import open_recipe_cache
 from tfm.training.reproducibility import seed_everything
 
 
@@ -103,16 +100,18 @@ class PreparedData:
     profiles: tuple[EntityProfile, ...] = ()
     adapter_metadata: dict[str, Any] = field(default_factory=dict)
     fraud: FraudProbeData | None = None
-    token_cache: TokenCache | FlatTokenCache | None = None
-    pretrain_rows: CacheRows | FlatRows | None = None
-    """With `token_cache`, the pretraining corpus read from disk: every cached user
-    (key-value-time) or the sample's train-split windows (flat fields).
-    `pretrain_sequences` is then empty."""
+    token_cache: Any = None
+    """The opened `data.token_cache`, read through `cache_format`."""
+    cache_format: TokenCacheFormat | None = None
+    pretrain_rows: PretrainRows | None = None
+    """With `token_cache`, the pretraining corpus read from disk (`pretrain_rows` of the
+    format); `pretrain_sequences` is then empty."""
 
 
 @dataclass
 class PretrainingData:
-    """What pretraining needs, read from a flat-field token cache alone.
+    """What pretraining needs, read from a token cache alone (a format that
+    `trains_without_book`).
 
     `prepare_pretraining` builds no event, sequence, or probe: a run that only
     trains reads its windows from disk. Its windows equal `prepare_data`'s
@@ -120,55 +119,11 @@ class PretrainingData:
     """
 
     tokenizer: SequenceTokenizer
-    token_cache: FlatTokenCache
-    pretrain_rows: FlatRows
+    token_cache: Any
+    cache_format: TokenCacheFormat
+    pretrain_rows: PretrainRows
     train_cutoff: datetime
     observation_window: str
-
-
-def tokenizer_for(config: RecipeConfig) -> SequenceTokenizer:
-    """The tokenizer `features.tokenizer` names, sized from `data`."""
-    name = config.features.tokenizer
-    cls = advertised_tokenizers().get(name)
-    categorical = tuple(config.features.categorical_keys)
-    hashed = tuple(config.features.hashed_keys)
-    excluded = tuple(config.features.exclude_keys)
-    for option, value in (("hashed_keys", hashed), ("exclude_keys", excluded)):
-        if value and cls is not KeyValueTimeTokenizer:
-            raise UnsupportedCombinationError(
-                f"features.{option} applies to the key_value_time tokenizer, not {name!r}."
-            )
-    if cls is not None and issubclass(cls, FlatKeyValueTokenizer):
-        # `max_tokens` is the row width here, not an event's; keep the per-event default.
-        return cls(
-            KeyValueTimeConfig(
-                max_events_per_user=config.data.sequence_length, categorical_keys=categorical
-            )
-        )
-    if cls is not None and issubclass(cls, KeyValueTimeTokenizer):
-        return cls(
-            KeyValueTimeConfig(
-                max_events_per_user=config.data.sequence_length,
-                max_event_tokens=config.data.max_tokens,
-                categorical_keys=categorical,
-                hashed_keys=hashed,
-                hash_buckets=config.features.hash_buckets,
-                excluded_keys=excluded,
-            )
-        )
-    if categorical:
-        raise UnsupportedCombinationError(
-            f"features.categorical_keys applies to the key-value-time tokenizers; "
-            f"{name!r} chooses its own fields."
-        )
-    fields = config.features.fields
-    if fields is None:
-        return build_tokenizer(name)
-    if cls is None or not issubclass(cls, TransactionFieldTokenizer):
-        raise UnsupportedCombinationError(
-            f"features.fields applies to transaction_field_tokenizer, not {name!r}."
-        )
-    return build_tokenizer(name, fields=tuple(fields))
 
 
 def _cutoffs(
@@ -244,10 +199,18 @@ def _spliced_fraud_probe(
     return FraudProbeData(
         split=splice.split,
         train_batch=collate_batch(
-            train_rows, tokenizer, max_tokens=max_tokens, label_window=cutoffs.windows["train"]
+            train_rows,
+            tokenizer,
+            max_tokens=max_tokens,
+            label_window=cutoffs.windows["train"],
+            amount_key=config.data.amount_field,
         ),
         eval_batch=collate_batch(
-            eval_rows, tokenizer, max_tokens=max_tokens, label_window=cutoffs.windows["test"]
+            eval_rows,
+            tokenizer,
+            max_tokens=max_tokens,
+            label_window=cutoffs.windows["test"],
+            amount_key=config.data.amount_field,
         ),
         events=tuple(splice.apply(events)),
         manifest=splice.manifest(),
@@ -277,7 +240,8 @@ def prepare_data(
             "carries its own tokenizer. Pass one or the other."
         )
     tokenizer = tokenizer if tokenizer is not None else tokenizer_for(config)
-    cache = None if config.data.token_cache is None else open_recipe_cache(config, tokenizer)
+    cache_format = None if config.data.token_cache is None else cache_format_of(type(tokenizer))
+    cache = None if cache_format is None else cache_format.open(config, tokenizer)
     loaded = load_adapter_events(
         config,
         flat_fields=bool(getattr(tokenizer, "requires_flat_fields", False)),
@@ -293,11 +257,27 @@ def prepare_data(
     splits = loaded.splits if loaded.splits is not None else assign_temporal_split(events, spec)
     precomputed = loaded.splits is not None and config.data.split_protocol == "precomputed"
     cutoffs = _cutoffs(config, splits, spec, precomputed)
-    if isinstance(cache, TokenCache):
-        tokenizer = _cached_tokenizer(cache, events, loaded.fraud_splice)
-    elif getattr(tokenizer, "uses_profiles", False):
-        profiles = {profile.entity_id: profile for profile in loaded.profiles}
-        cast(KeyValueTimeTokenizer, tokenizer).set_profiles(profiles)
+    amount = config.data.amount_field
+    if not any(amount in event.numeric for event in splits.train):
+        raise SchemaError(
+            f"No train-side event has a numeric field {amount!r}, which the raw features "
+            "read as the amount; set data.amount_field to the book's money field."
+        )
+    cached = (
+        None
+        if cache_format is None
+        else cache_format.run_tokenizer(
+            cache,
+            tokenizer,
+            config,
+            users=sorted({e.entity_id for e in events}),
+            aliases=None if loaded.fraud_splice is None else loaded.fraud_splice.copied_from,
+        )
+    )
+    if cached is not None:
+        tokenizer = cached
+    elif isinstance(tokenizer, UsesProfiles):
+        tokenizer.set_profiles({profile.entity_id: profile for profile in loaded.profiles})
 
     window = parse_duration(config.data.observation_window)
 
@@ -312,37 +292,37 @@ def prepare_data(
     train_seq = sequences_at(list(splits.train), cutoffs.train)
     val_seq = sequences_at([*splits.train, *splits.validation], cutoffs.validation)
     test_seq = sequences_at([*splits.train, *splits.validation, *splits.test], cutoffs.test)
-    if not isinstance(cache, TokenCache) and not fitted:
+    if cached is None and not fitted:
         tokenizer.fit(train_seq)
     max_tokens = config.data.max_tokens
     batches = (
         collate_batch(
-            train_seq, tokenizer, max_tokens=max_tokens, label_window=cutoffs.windows["train"]
+            train_seq,
+            tokenizer,
+            max_tokens=max_tokens,
+            label_window=cutoffs.windows["train"],
+            amount_key=amount,
         ),
         collate_batch(
-            val_seq, tokenizer, max_tokens=max_tokens, label_window=cutoffs.windows["validation"]
+            val_seq,
+            tokenizer,
+            max_tokens=max_tokens,
+            label_window=cutoffs.windows["validation"],
+            amount_key=amount,
         ),
         collate_batch(
-            test_seq, tokenizer, max_tokens=max_tokens, label_window=cutoffs.windows["test"]
+            test_seq,
+            tokenizer,
+            max_tokens=max_tokens,
+            label_window=cutoffs.windows["test"],
+            amount_key=amount,
         ),
     )
     window_events = config.data.pretrain_windows.events if config.data.pretrain_windows else None
-    pretrain_rows: CacheRows | FlatRows | None = None
-    if isinstance(cache, FlatTokenCache):
+    pretrain_rows: PretrainRows | None = None
+    if cache_format is not None:
         pretrain_seq = []
-        pretrain_rows = _flat_windows(config, cache, cutoffs.train)
-    elif cache is not None:
-        pretrain_seq = []
-        if window_events is None:
-            pretrain_rows = cache.train_rows(
-                train_end=cutoffs.train, lookback=window, max_events=config.data.sequence_length
-            )
-        else:
-            pretrain_rows = cache.train_windows(
-                train_end=cutoffs.train,
-                lookback=window,
-                window_events=window_events,
-            )
+        pretrain_rows = cache_format.pretrain_rows(cache, config, train_cutoff=cutoffs.train)
     elif window_events is None:
         pretrain_seq = train_seq
     else:
@@ -374,70 +354,33 @@ def prepare_data(
         adapter_metadata=dict(loaded.metadata),
         fraud=fraud,
         token_cache=cache,
+        cache_format=cache_format,
         pretrain_rows=pretrain_rows,
     )
 
 
-def _flat_windows(config: RecipeConfig, cache: FlatTokenCache, cutoff: datetime) -> FlatRows:
-    windows = config.data.pretrain_windows
-    if windows is None:
-        raise UnsupportedCombinationError(
-            "A flat-field token cache serves pretraining windows; set data.pretrain_windows."
-        )
-    cached_cutoff = cache.train_cutoff()
-    if cached_cutoff != cutoff:
-        raise SchemaError(
-            f"Token cache {cache.path} ends at {cached_cutoff.isoformat()}, but this run's "
-            f"train cutoff is {cutoff.isoformat()}. Rebuild it with `tfm cache-tokens`."
-        )
-    return cache.train_windows(
-        cutoff=cutoff,
-        lookback=parse_duration(config.data.observation_window),
-        window_events=windows.events,
-    )
-
-
 def prepare_pretraining(config: RecipeConfig) -> PretrainingData:
-    """The pretraining windows of a flat-field token cache, without loading the book.
-
-    The precomputed protocol's train cutoff is the last train event of the
-    sample, which is the cache's last event; nothing else is read.
-    """
+    """The pretraining rows of a token cache whose format `trains_without_book`, at the
+    cache's own train cutoff; the book is not read."""
     seed_everything(config.seed)
     if config.data.token_cache is None:
         raise UnsupportedCombinationError(
             "prepare_pretraining reads a token cache; set data.token_cache."
         )
     tokenizer = tokenizer_for(config)
-    cache = open_recipe_cache(config, tokenizer)
-    if not isinstance(cache, FlatTokenCache):
+    cache_format = cache_format_of(type(tokenizer))
+    if not cache_format.trains_without_book:
         raise UnsupportedCombinationError(
-            "prepare_pretraining reads a flat-field token cache; a key-value-time cache "
-            "needs prepare_data, which loads profiles and probes."
+            f"prepare_pretraining reads a token cache alone; {type(tokenizer).__qualname__}'s "
+            "cache format needs prepare_data, which loads the book."
         )
-    cutoff = cache.train_cutoff()
+    cache = cache_format.open(config, tokenizer)
+    cutoff = cache_format.train_cutoff(cache)
     return PretrainingData(
         tokenizer=tokenizer,
         token_cache=cache,
-        pretrain_rows=_flat_windows(config, cache, cutoff),
+        cache_format=cache_format,
+        pretrain_rows=cache_format.pretrain_rows(cache, config, train_cutoff=cutoff),
         train_cutoff=cutoff,
         observation_window=config.data.observation_window,
     )
-
-
-def _cached_tokenizer(
-    cache: TokenCache,
-    events: Sequence[TransactionEvent],
-    splice: IdentityTheftSplice | None,
-) -> CachedKeyValueTimeTokenizer:
-    """The cache's tokenizer, with every cached user's profile and the splice's copies."""
-    outside = {e.entity_id for e in events} - set(cache.user_index)
-    if outside:
-        raise SchemaError(
-            f"{len(outside)} sampled users are not in token cache {cache.path} "
-            f"(first: {sorted(outside)[0]!r}); it must hold every probe user."
-        )
-    tokenizer = cache.tokenizer()
-    if splice is not None:
-        tokenizer.add_aliases(splice.copied_from)
-    return tokenizer

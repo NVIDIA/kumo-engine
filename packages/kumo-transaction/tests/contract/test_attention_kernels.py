@@ -78,6 +78,18 @@ def test_sdpa_zeros_fully_masked_rows_like_eager() -> None:
     torch.testing.assert_close(got, want, atol=1e-6, rtol=1e-5)
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+def test_sdpa_keeps_short_sequences_off_cudnn() -> None:
+    query, key, value = (t.cuda().bfloat16() for t in _qkv(batch=64, heads=8, seq=10, dim=32))
+    mask = torch.ones(64, 10, dtype=torch.long, device="cuda")
+    with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CUDA]) as prof:
+        SdpaAttentionKernel()(query, key, value, mask, causal=False)
+        torch.cuda.synchronize()
+    kernels = [e.name for e in prof.events() if e.device_type == torch.autograd.DeviceType.CUDA]
+    assert kernels
+    assert not [k for k in kernels if "cudnn" in k.lower()]
+
+
 def test_registry_resolves_config_names() -> None:
     assert advertised_attention() == ("eager", "sdpa")
     assert build_attention("eager").name == "eager"

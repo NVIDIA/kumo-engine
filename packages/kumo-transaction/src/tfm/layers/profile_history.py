@@ -43,7 +43,10 @@ def _load_renamed_keys(state_dict: dict[str, Any], prefix: str, *_args: Any) -> 
 
 
 class ProfileHistoryModel(nn.Module):
-    """Experimental PRAGMA-style stack. Not part of the core TrxFM export."""
+    """Experimental PRAGMA-style stack. Not part of the core TrxFM export.
+
+    Reads the per-event arrays `event_arrays` (`EventArrayReader`), the calendar's.
+    """
 
     def __init__(
         self,
@@ -67,7 +70,8 @@ class ProfileHistoryModel(nn.Module):
         self.history_blocks = encoder_blocks(
             spec, attn, spec.history_depth, use_rope=True, causal=False
         )
-        self.calendar = CalendarEmbedding(spec.hidden_size)
+        self.calendar = CalendarEmbedding(spec.hidden_size, spec.time_features)
+        self.event_arrays = self.calendar.arrays
         self.history_norm = nn.LayerNorm(spec.hidden_size)
         self.mlm_proj = nn.Linear(3 * spec.hidden_size, spec.hidden_size, bias=False)
         self.objective_loss = TokenEventKeyMLMLoss(
@@ -103,7 +107,7 @@ class ProfileHistoryModel(nn.Module):
             work.event_mask,
             summary=self.embed.weight[EVT],
         )
-        cal = self.calendar(work.hour, work.dow, work.dom)
+        cal = self.calendar(work)
         z_e = z_e + cal * work.event_mask.unsqueeze(-1).to(cal.dtype)
         z_a = self.profile_encoder(
             self._tokens(work.prof_key_ids, work.prof_value_ids, work.prof_positions),

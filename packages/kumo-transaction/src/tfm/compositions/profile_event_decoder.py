@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from tfm.contracts.kvt import CALENDAR, CyclicTime
 from tfm.contracts.tokenizers import LAYOUT_KEY_VALUE_TIME
 
 
@@ -30,6 +31,8 @@ class ProfileEventDecoder:
     max_position: int = 64
     varlen: bool = False
     """Skip all-padding event rows in the event encoder; the padded path is the baseline."""
+    time_features: tuple[CyclicTime, ...] = CALENDAR
+    """The per-event arrays the calendar embedding reads, each as a cycle."""
     support_tier: str = "experimental"
     accepted_layouts: frozenset[str] = field(
         default_factory=lambda: frozenset({LAYOUT_KEY_VALUE_TIME})

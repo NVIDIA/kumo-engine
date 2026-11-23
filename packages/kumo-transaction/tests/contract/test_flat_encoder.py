@@ -3,6 +3,7 @@
 
 """FlatEncoder + MaskedFields + LastEventMeanPool contracts (ADR 0019)."""
 
+import dataclasses
 from pathlib import Path
 
 import pytest
@@ -24,6 +25,8 @@ from tfm.experimental import (
 from tfm.features.tokenizers.financial import TransactionFieldTokenizer
 from tfm.objectives.masked_fields import apply_field_mask, masked_fields_loss
 from tfm.pooling.last_event import last_event_mask
+from tfm.runtime.data import tokenizer_for
+from tfm.runtime.pipeline import build_model
 
 FIELDS = ("AMT", "CHIP", "DOW")
 ABLATION = Path("benchmarks/ablations/flat_encoder_tabformer.yaml")
@@ -217,5 +220,21 @@ def test_config_refuses_surprise_and_other_tokenizers() -> None:
     raw["evaluation"]["surprise"] = False
     raw["features"]["tokenizer"] = "key_value_time"
     raw["features"]["fields"] = None
-    with pytest.raises(ValueError, match="transaction_field_tokenizer"):
+    with pytest.raises(ValueError, match="FieldVocabularyTokenizer"):
         RecipeConfig.model_validate(raw)
+
+
+def test_the_model_masks_by_the_fitted_tokenizers_fields() -> None:
+    """A tokenizer that sets its field layout in `fit` is not rebuilt from the config."""
+    config = load_recipe_config(ABLATION)
+    default = tokenizer_for(config).field_vocabulary()  # type: ignore[attr-defined]
+    fitted = dataclasses.replace(
+        default, field_names=tuple(f"fit_{n}" for n in default.field_names)
+    )
+
+    class Fitted:
+        def field_vocabulary(self) -> FieldVocabulary:
+            return fitted
+
+    model = build_model(config, fitted.vocab_size, tokenizer=Fitted())  # type: ignore[arg-type]
+    assert model.spec.vocabulary is fitted  # type: ignore[union-attr]

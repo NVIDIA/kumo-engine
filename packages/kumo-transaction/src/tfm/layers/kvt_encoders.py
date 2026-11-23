@@ -16,6 +16,8 @@ from typing import Protocol
 import torch
 from torch import Tensor, nn
 
+from tfm.contracts.errors import IncompatibleCompositionError
+from tfm.contracts.kvt import CALENDAR, CyclicTime, KeyValueTimeBatch
 from tfm.contracts.protocols import AttentionSpec
 from tfm.layers.varlen import compress_rows, scatter_rows
 from tfm.position.time_rope import TimeRoPEModule
@@ -54,16 +56,26 @@ def sinusoidal_position(positions: Tensor, dim: int, max_position: int) -> Tenso
 
 
 class CalendarEmbedding(nn.Module):
-    def __init__(self, dim: int) -> None:
-        super().__init__()
-        self.net = nn.Sequential(nn.Linear(6, dim), nn.GELU(), nn.Linear(dim, dim))
+    """Each event's cyclic time arrays (`features`, default `CALENDAR`) as sin/cos
+    features, projected to `[B, N, dim]`."""
 
-    def forward(self, hour: Tensor, dow: Tensor, dom: Tensor) -> Tensor:
-        h = 2.0 * math.pi * hour.float() / 24.0
-        w = 2.0 * math.pi * dow.float() / 7.0
-        d = 2.0 * math.pi * (dom.float() - 1.0) / 31.0
-        feats = torch.stack([h.sin(), h.cos(), w.sin(), w.cos(), d.sin(), d.cos()], dim=-1)
-        return self.net(feats)
+    def __init__(self, dim: int, features: tuple[CyclicTime, ...] = CALENDAR) -> None:
+        super().__init__()
+        if not features:
+            raise IncompatibleCompositionError("CalendarEmbedding needs at least one feature.")
+        self.features = features
+        self.arrays = tuple(f.array for f in features)
+        self.net = nn.Sequential(nn.Linear(2 * len(features), dim), nn.GELU(), nn.Linear(dim, dim))
+
+    def forward(self, batch: KeyValueTimeBatch) -> Tensor:
+        angles = [
+            2.0
+            * math.pi
+            * torch.fmod(batch.event_array(f.array).double() - f.origin, f.period).float()
+            / f.period
+            for f in self.features
+        ]
+        return self.net(torch.stack([t for a in angles for t in (a.sin(), a.cos())], dim=-1))
 
 
 class EncoderBlock(nn.Module):
@@ -102,6 +114,7 @@ class EncoderBlock(nn.Module):
         attention_mask: Tensor,
         *,
         rope_positions: Tensor | None = None,
+        segment_ids: Tensor | None = None,
     ) -> Tensor:
         batch, seq, dim = hidden.shape
         normed = self.norm1(hidden)
@@ -110,7 +123,9 @@ class EncoderBlock(nn.Module):
         query, key, value = qkv[0], qkv[1], qkv[2]
         if self.rope is not None and rope_positions is not None:
             query, key = self.rope(query, key, rope_positions)
-        attn_out = self.attn(query, key, value, attention_mask, causal=self.causal)
+        attn_out = self.attn(
+            query, key, value, attention_mask, causal=self.causal, segment_ids=segment_ids
+        )
         attn_out = attn_out.transpose(1, 2).contiguous().view(batch, seq, dim)
         hidden = hidden + self.drop(self.out(attn_out))
         return hidden + self.ff(self.norm2(hidden))
@@ -169,9 +184,18 @@ class KVTEventEncoder(nn.Module):
         """Share of the event grid skipped by the last varlen forward. 0 when padded."""
 
     def _run(self, hidden: Tensor, mask: Tensor) -> Tensor:
+        """hidden `[R, T, D]`, mask `[R, T]`. Each row attends only within itself; up to
+        64 tokens' worth of rows share one attention sequence with a block-diagonal mask."""
+        rows, n_tok, dim = hidden.shape
+        group = max(1, 64 // n_tok)
+        pad = -rows % group
+        hidden = torch.cat([hidden, hidden.new_zeros(pad, n_tok, dim)]).view(-1, group * n_tok, dim)
+        mask = torch.cat([mask, mask.new_zeros(pad, n_tok)]).view(-1, group * n_tok)
+        segments = torch.arange(group * n_tok, device=hidden.device) // n_tok
+        segments = segments.expand(hidden.shape[0], -1)
         for block in self.blocks:
-            hidden = block(hidden, mask)
-        return self.norm(hidden)
+            hidden = block(hidden, mask, segment_ids=segments)
+        return self.norm(hidden).view(-1, n_tok, dim)[:rows]
 
     def forward(
         self,

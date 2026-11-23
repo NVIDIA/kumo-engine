@@ -98,6 +98,8 @@ nav:
       - recipes/blueprint_v1/README.md
       - recipes/pragma_like/README.md
       - recipes/blueprint_v2/README.md
+      - recipes/gnn_encoder/README.md
+      - recipes/gnn_sequence/README.md
       - benchmarks/ablations/building_blocks/README.md
       - docs/reference/datasets.md
       - docs/reference/config-schema.md
@@ -105,11 +107,14 @@ nav:
       - docs/reference/hardware-and-runtimes.md
       - docs/migration/v1-to-v2.md
       - docs/migration/2.0.0a1-to-2.0.0a2.md
+      - docs/migration/2.0.0a2-to-2.0.0a3.md
+      - docs/migration/2.0.0a3-to-2.0.0a4.md
       - docs/reference/glossary.md
   - API reference:
       - api/index.md
       - api/tfm.md
       - api/experimental.md
+      - api/graph.md
       - api/config.md
       - api/contracts.md
       - api/runtime.md

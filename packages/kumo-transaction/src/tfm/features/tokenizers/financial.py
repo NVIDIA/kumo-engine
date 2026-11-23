@@ -17,6 +17,7 @@ import json
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import TYPE_CHECKING, ClassVar, Self
 
 import torch
 
@@ -25,6 +26,9 @@ from tfm.contracts.errors import UnsupportedCombinationError
 from tfm.contracts.schema import TransactionEvent, TransactionSequence, ensure_utc
 from tfm.contracts.tokenizers import LAYOUT_FLAT_FIELDS, EncodedFlatSequence, FieldVocabulary
 from tfm.features.tokenizers.registry import register_tokenizer
+
+if TYPE_CHECKING:
+    from tfm.config import DataConfig, FeaturesConfig
 
 SPECIAL_TOKENS = ("<pad>", "<bos>", "<eos>", "<sep>", "<unk>")
 FIELD_ORDER = (
@@ -279,6 +283,19 @@ class TransactionFieldTokenizer:
     requires_flat_fields = True
     """Reads the 12 transaction fields; adapters drop or alias other sources."""
     uses_profiles = False
+    feature_keys: ClassVar[tuple[str, ...]] = ("fields",)
+    """The `features` keys `from_config` reads (`ConfiguredTokenizer`)."""
+    token_cache_format: ClassVar[str] = "flat_fields"
+
+    @classmethod
+    def from_config(cls, features: FeaturesConfig, data: DataConfig) -> Self:
+        del data
+        return cls() if features.fields is None else cls(fields=tuple(features.fields))
+
+    @classmethod
+    def event_width(cls, features: FeaturesConfig) -> int:
+        """One token per field and one boundary token, `BOS` or `SEP` (`FixedWidthTokenizer`)."""
+        return len(features.fields or FIELD_ORDER) + 1
 
     def __post_init__(self) -> None:
         self.fields = tuple(self.fields)

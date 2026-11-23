@@ -17,7 +17,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
-class _Strict(BaseModel):
+class StrictConfig(BaseModel):
     """Forbid unknown keys, and explain removed ones."""
 
     model_config = ConfigDict(extra="forbid")
@@ -35,13 +35,13 @@ class _Strict(BaseModel):
         return data
 
 
-class TemporalSplitConfig(_Strict):
+class TemporalSplitConfig(StrictConfig):
     train_end: str
     validation_end: str
     label_delay: str = "7d"
 
 
-class IdentityTheftConfig(_Strict):
+class IdentityTheftConfig(StrictConfig):
     """The spliced identity-theft task on a pragmatiq book (ADR 0015)."""
 
     victim_fraction: float = 0.2
@@ -58,7 +58,7 @@ class IdentityTheftConfig(_Strict):
     """Card transactions a victim needs before the theft day."""
 
 
-class PretrainWindowsConfig(_Strict):
+class PretrainWindowsConfig(StrictConfig):
     """Tile each entity's history into pretraining windows instead of one sequence.
 
     Evaluation always pools one embedding per entity; this only widens the
@@ -81,7 +81,7 @@ class PretrainWindowsConfig(_Strict):
 _PRETRAIN_WINDOWS = "Use data.pretrain_windows: {events, max_tokens}."
 
 
-class DataConfig(_Strict):
+class DataConfig(StrictConfig):
     removed_keys: ClassVar[dict[str, str]] = {
         "pretrain_window_events": _PRETRAIN_WINDOWS,
         "pretrain_max_tokens": _PRETRAIN_WINDOWS,
@@ -98,8 +98,18 @@ class DataConfig(_Strict):
         ),
     }
 
+    load_labels: bool = True
+    stratify_by_fraud: bool = True
+    event_step_hours: int = Field(default=12, ge=1)
+    training_graphs: Literal["shared", "disjoint"] = "shared"
+    pretrain_end: str = "2024-03-01T00:00:00Z"
+    observed_through: str = "2024-04-01T00:00:00Z"
+    probe_cutoff: str = "2024-03-10T00:00:00Z"
+    horizon_days: int = Field(default=7, ge=1)
+    label_delay_days: int = Field(default=0, ge=0)
     adapter: str = "synthetic"
-    """A registered adapter: `synthetic`, `tabformer`, or `pragmatiq`."""
+    """A registered adapter (`synthetic`, `tabformer`, `pragmatiq`), or an
+    `Adapter`'s import path, `"package.module:attribute"`."""
     path: str | None = None
     """Local book root. `pragmatiq` with no path and no `TFM_PRAGMATIQ_ROOT`
     generates a small synthetic fixture in the run directory."""
@@ -108,6 +118,10 @@ class DataConfig(_Strict):
     """Most recent events kept per sequence."""
     max_tokens: int = 256
     """Row width: tokens per sequence (flat layouts) or per event (key_value_time)."""
+    amount_field: str = Field(default="amount", min_length=1)
+    """The numeric field read as each event's amount: the mean and maximum in the raw
+    features (`raw_feature_vector`) and a token cache's `amount`. A run or cache build
+    whose train side has no event carrying it as a number is refused."""
     n_entities: int = 32
     """Entities the `synthetic` adapter and the pragmatiq fixture generate."""
     events_per_entity: int = 16
@@ -129,7 +143,7 @@ class DataConfig(_Strict):
     """
     identity_theft: IdentityTheftConfig = Field(default_factory=IdentityTheftConfig)
     token_cache: str | None = None
-    """Directory of a token cache (`tfm cache-tokens`, ADR 0016).
+    """Directory of a token cache (`tfm cache-tokens`).
 
     Key-value-time (pragmatiq): the vocabulary is the cache's, fit on the train
     side of every user it holds, and pretraining reads all of those users from
@@ -139,6 +153,13 @@ class DataConfig(_Strict):
     train split of the `max_entities` sample, and pretraining windows are read
     from it. `train` then builds no event objects at all; probes still do.
     """
+    token_cache_on_device: bool = True
+    """Hold a token cache on the GPU and build batches there; false keeps it on the
+    host. Ignored on CPU. Every `batch_builder` receives the resulting placement."""
+    batch_builder: str = "token_cache"
+    """What turns a token cache's rows into training batches: a registered name
+    (`tfm.data.token_cache.builders.register_batch_builder`) or `"package.module:attribute"`
+    of a `BatchBuilder`. Experimental until the packed batch."""
 
     @model_validator(mode="after")
     def _splice_needs_pragmatiq(self) -> DataConfig:
@@ -155,7 +176,7 @@ _TOKENIZER_CHOOSES_FIELDS = (
 )
 
 
-class FeaturesConfig(_Strict):
+class FeaturesConfig(StrictConfig):
     removed_keys: ClassVar[dict[str, str]] = {
         "categorical_fields": _TOKENIZER_CHOOSES_FIELDS,
         "numeric_fields": _TOKENIZER_CHOOSES_FIELDS,
@@ -163,7 +184,12 @@ class FeaturesConfig(_Strict):
     }
 
     tokenizer: str = "transaction_field_tokenizer"
-    """A registered tokenizer name. Its layout must be one the granularity accepts."""
+    """A registered tokenizer name, or a class's import path, `"package.module:Class"`.
+    Its layout must be one the granularity accepts."""
+    tokenizer_options: dict[str, Any] | None = None
+    """Keyword arguments the tokenizer class is constructed with. Unset for the
+    built-ins, which read `fields`, `categorical_keys`, `hashed_keys`,
+    `hash_buckets` and `exclude_keys` instead."""
     fields: list[str] | None = None
     """`transaction_field_tokenizer` only: the fields each event emits, in order.
     Unset keeps all 12. Drop identity fields such as `CUST`, which repeats the
@@ -182,7 +208,7 @@ class FeaturesConfig(_Strict):
     TabFormer's `user`, which repeats one value in every event of a history."""
 
 
-class DecoderConfig(_Strict):
+class DecoderConfig(StrictConfig):
     removed_keys: ClassVar[dict[str, str]] = {
         "vocab_size": (
             "The vocabulary size comes from the fitted tokenizer and is recorded in "
@@ -200,8 +226,28 @@ class DecoderConfig(_Strict):
     """Feed-forward width. Defaults to `4 * hidden_size` when unset."""
 
 
-class GranularityConfig(_Strict):
-    type: Literal["flat", "flat_encoder", "profile_history", "profile_event_decoder"] = "flat"
+class CyclicPeriodConfig(StrictConfig):
+    period: float = Field(gt=0)
+    origin: float = 0.0
+    """The value at angle 0, e.g. 1 for a day of month that starts at 1."""
+
+
+def _calendar() -> dict[str, float | CyclicPeriodConfig]:
+    return {"hour": 24.0, "dow": 7.0, "dom": CyclicPeriodConfig(period=31.0, origin=1.0)}
+
+
+class GranularityConfig(StrictConfig):
+    type: str = "flat"
+    hidden_size: int = Field(default=32, ge=2)
+    depth: int = Field(default=2, ge=1)
+    fanout: int = Field(default=10, ge=1)
+    target_depth: int = Field(default=2, ge=1)
+    trim: bool = True
+    encoder_type: str = "gnn_encoder"
+    history_model: str | None = None
+    """Registered/importable context-aware history factory; None uses the shared stack."""
+    task_head: str | None = None
+    """Registered/importable binary head factory; None uses a linear logit."""
     """`flat_encoder` is the experimental bidirectional encoder on flat rows (ADR 0019)."""
     decoder: DecoderConfig = Field(default_factory=DecoderConfig)
     """Width and heads for every stack; `depth` is the flat decoder's, the flat
@@ -212,21 +258,51 @@ class GranularityConfig(_Strict):
     """`profile_history` only: bidirectional history-encoder depth."""
     varlen: bool = False
     """Hierarchical stacks only: run the event encoder padding-free."""
+    time_features: dict[str, float | CyclicPeriodConfig] = Field(default_factory=_calendar)
+    """Hierarchical stacks only: per-event arrays the calendar embedding reads, as
+    `{array: period}` or `{array: {period, origin}}`; the cache must hold each one. Key
+    order does not matter: `hour`, `dow` and `dom` come first, then the others by name."""
+
+    @field_validator("time_features")
+    @classmethod
+    def _time_features_cycle(
+        cls, value: dict[str, float | CyclicPeriodConfig]
+    ) -> dict[str, float | CyclicPeriodConfig]:
+        if not value:
+            raise ValueError("time_features needs at least one array.")
+        flat = [k for k, v in value.items() if not isinstance(v, CyclicPeriodConfig) and not v > 0]
+        if flat:
+            raise ValueError(f"time_features {flat} need a positive period.")
+        return value
 
     @model_validator(mode="after")
     def _keys_apply_to_type(self) -> GranularityConfig:
+        hierarchy = {"profile_depth", "event_depth", "history_depth", "varlen", "time_features"}
+        graph = {
+            "hidden_size",
+            "depth",
+            "fanout",
+            "target_depth",
+            "trim",
+            "encoder_type",
+            "history_model",
+            "task_head",
+        }
         applies = {
             "flat": set(),
             "flat_encoder": set(),
-            "profile_history": {"profile_depth", "event_depth", "history_depth", "varlen"},
-            "profile_event_decoder": {"profile_depth", "event_depth", "varlen"},
-        }[self.type]
-        hierarchical = {"profile_depth", "event_depth", "history_depth", "varlen"}
+            "profile_history": hierarchy,
+            "profile_event_decoder": hierarchy - {"history_depth"},
+            "gnn_encoder": graph | (hierarchy - {"history_depth"}),
+            "gnn_sequence": graph | (hierarchy - {"history_depth"}),
+        }.get(self.type, hierarchy | graph)
+        hierarchical = hierarchy | graph
         # A key left at its default is not a choice, so a dumped config reloads.
         changed = {
             key
             for key in hierarchical & self.model_fields_set
-            if getattr(self, key) != type(self).model_fields[key].default
+            if getattr(self, key)
+            != type(self).model_fields[key].get_default(call_default_factory=True)
         }
         stray = sorted(changed - applies)
         if stray:
@@ -234,7 +310,7 @@ class GranularityConfig(_Strict):
         return self
 
 
-class CompositionConfig(_Strict):
+class CompositionConfig(StrictConfig):
     """One choice per building-block slot (ADR 0014). The runtime builds exactly this."""
 
     granularity: GranularityConfig = Field(default_factory=GranularityConfig)
@@ -242,14 +318,19 @@ class CompositionConfig(_Strict):
     """`rope` declares the rotary positions the HuggingFace Llama backbone applies."""
     attention: str = "eager"
     objective: Literal[
-        "next_event", "next_event_fields", "token_event_key_mlm", "masked_fields"
+        "next_event",
+        "next_event_fields",
+        "token_event_key_mlm",
+        "masked_fields",
+        "binary",
+        "future_subgraph",
     ] = "next_event"
     """The primary pretraining objective. `objective.auxiliary` adds more."""
-    readout: Literal["last_token", "usr_token", "mean", "last_event_mean"] = "last_token"
+    readout: str = "last_token"
     heads: dict[str, Literal["binary"]] = Field(default_factory=lambda: {"fraud": "binary"})
 
 
-class HuggingFaceConfig(_Strict):
+class HuggingFaceConfig(StrictConfig):
     """Llama-family backbone settings not covered by the neutral `DecoderConfig`.
 
     Each field defaults to `None` and is then derived from `DecoderConfig`, so a
@@ -265,7 +346,7 @@ class HuggingFaceConfig(_Strict):
     tie_word_embeddings: bool = False
 
 
-class ModelConfig(_Strict):
+class ModelConfig(StrictConfig):
     removed_keys: ClassVar[dict[str, str]] = {
         "architecture": "Use model.composition.granularity.type.",
         "causal": (
@@ -283,7 +364,7 @@ class ModelConfig(_Strict):
     huggingface: HuggingFaceConfig = Field(default_factory=HuggingFaceConfig)
 
 
-class MlmConfig(_Strict):
+class MlmConfig(StrictConfig):
     """Masking rates and smoothing for `token_event_key_mlm`.
 
     Defaults are the PRAGMA paper's: 15% token, 10% whole-event, 10% key-level
@@ -297,7 +378,7 @@ class MlmConfig(_Strict):
     label_smoothing: float = 0.1
 
 
-class MaskedFieldsConfig(_Strict):
+class MaskedFieldsConfig(StrictConfig):
     """Masking rates for `masked_fields` (ADR 0019): BERT's 15% per token, plus
     10% whole events. Chosen tokens become `<mask>`, a random same-field value,
     or stay, in BERT's 80 / 10 / 10 split."""
@@ -308,7 +389,7 @@ class MaskedFieldsConfig(_Strict):
     p_random_token: float = Field(default=0.1, ge=0, le=1)
 
 
-class PastReconstructionConfig(_Strict):
+class PastReconstructionConfig(StrictConfig):
     """`past_reconstruction` auxiliary: rebuild earlier events from the current state."""
 
     horizon: int = 3
@@ -316,7 +397,7 @@ class PastReconstructionConfig(_Strict):
     weight: float = 1.0
 
 
-class ContrastiveConfig(_Strict):
+class ContrastiveConfig(StrictConfig):
     """`subsequence_contrastive` auxiliary: two crops of one history embed close together."""
 
     crop_fraction: float = 0.7
@@ -330,7 +411,7 @@ AuxiliaryObjective = Literal[
 ]
 
 
-class ObjectiveConfig(_Strict):
+class ObjectiveConfig(StrictConfig):
     removed_keys: ClassVar[dict[str, str]] = {
         "name": "Use model.composition.objective for the primary objective.",
     }
@@ -345,7 +426,7 @@ class ObjectiveConfig(_Strict):
     contrastive: ContrastiveConfig = Field(default_factory=ContrastiveConfig)
 
 
-class MuonConfig(_Strict):
+class MuonConfig(StrictConfig):
     """`optimizer.name: muon` only."""
 
     learning_rate: float = Field(default=0.02, gt=0)
@@ -359,7 +440,7 @@ class MuonConfig(_Strict):
 _MUON = "Use training.optimizer.muon: {learning_rate, momentum, adjust_lr}."
 
 
-class OptimizerConfig(_Strict):
+class OptimizerConfig(StrictConfig):
     """Optimizer and learning-rate schedule. Defaults are constant-rate AdamW."""
 
     removed_keys: ClassVar[dict[str, str]] = {
@@ -390,7 +471,9 @@ class OptimizerConfig(_Strict):
     """
 
 
-class TrainingConfig(_Strict):
+class TrainingConfig(StrictConfig):
+    objective: Literal["binary", "future_subgraph"] = "binary"
+    """Graph encoder stage objective; sequence objectives stay in model.composition."""
     removed_keys: ClassVar[dict[str, str]] = {
         "packing_seq_length": "Packed rows are model.composition.granularity.decoder.max_seq_len "
         "tokens; delete the key.",
@@ -433,7 +516,7 @@ class TrainingConfig(_Strict):
         return value
 
 
-class FineTuneConfig(_Strict):
+class FineTuneConfig(StrictConfig):
     """Optional fine-tuning arm, reported alongside the frozen probe.
 
     Off by default: the frozen-embedding probe is the reference baseline, and a
@@ -470,7 +553,7 @@ class FineTuneConfig(_Strict):
     patience: int = Field(default=3, ge=1)
 
 
-class SupervisedHeadConfig(_Strict):
+class SupervisedHeadConfig(StrictConfig):
     """`flat` only. Add a SupervisedHead objective so the Binary head trains end to end.
 
     Off by default: the frozen-embedding probe is the reference baseline.
@@ -485,7 +568,7 @@ class SupervisedHeadConfig(_Strict):
 _SUPERVISED_HEAD = "Use fraud_task.supervised_head: {enabled, loss_weight, probe_only}."
 
 
-class FraudTaskConfig(_Strict):
+class FraudTaskConfig(StrictConfig):
     removed_keys: ClassVar[dict[str, str]] = {
         "lora": "Use fraud_task.finetune with `method: lora` (and `enabled: true`).",
         "train_head": _SUPERVISED_HEAD,
@@ -511,7 +594,7 @@ class FraudTaskConfig(_Strict):
         return self
 
 
-class TabularBaselinesConfig(_Strict):
+class TabularBaselinesConfig(StrictConfig):
     """Hand-engineered tabular baselines beside every probe (no encoder involved).
 
     Each row's features are aggregates of the same truncated history the
@@ -570,7 +653,7 @@ class TabularBaselinesConfig(_Strict):
         return self.xgboost_trials > 0 or self.xgboost_params is not None
 
 
-class HistoryWindowConfig(_Strict):
+class HistoryWindowConfig(StrictConfig):
     """Also score one row per labelled fraud event, with that event's own history."""
 
     enabled: bool = False
@@ -587,7 +670,7 @@ _HISTORY_WINDOW = (
 )
 
 
-class EvaluationConfig(_Strict):
+class EvaluationConfig(StrictConfig):
     removed_keys: ClassVar[dict[str, str]] = {
         "metrics": "Every probe reports the full metric set; delete the key.",
         "report_format": "Runs always write metrics.json and metrics.md; delete the key.",
@@ -621,14 +704,97 @@ class EvaluationConfig(_Strict):
         return self
 
 
-class RuntimeConfig(_Strict):
+class RuntimeConfig(StrictConfig):
+    stage: Literal["pretrain", "downstream", "full"] = "full"
+    encoder_checkpoint: str | None = None
+    """Plain encoder state_dict for a downstream-only graph run."""
     device: str = Field(
         default="cpu",
         description="cpu, cuda, cuda:N, or auto (CUDA when available).",
     )
 
 
-class RecipeConfig(_Strict):
+class RecipeConfig(StrictConfig):
+    recipe_family: str = "sequence"
+    """Registered recipe runner or import path, all using this configuration schema."""
+    sequence_training: TrainingConfig = Field(
+        default_factory=lambda: TrainingConfig(max_steps=6, batch_size=8, learning_rate=0.001)
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _graph_defaults(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        import copy
+
+        def mapping(item: Any) -> dict[str, Any]:
+            if isinstance(item, StrictConfig):
+                return item.model_dump(mode="python")
+            return item if isinstance(item, dict) else {}
+
+        model = mapping(value.get("model"))
+        composition = mapping(model.get("composition"))
+        gran = mapping(composition.get("granularity"))
+        if value.get("recipe_family") != "graph" and gran.get("type") not in {
+            "gnn_encoder",
+            "gnn_sequence",
+        }:
+            # Let Pydantic validate typed sections directly, preserving plugin
+            # values held in Any-typed tokenizer options.
+            return value
+
+        def plain(item: Any) -> Any:
+            if isinstance(item, StrictConfig):
+                # Defaults materialized by typed sections are not explicit user
+                # choices; graph defaults must match equivalent YAML inputs.
+                return item.model_dump(mode="python", exclude_unset=True)
+            if isinstance(item, dict):
+                return {key: plain(nested) for key, nested in item.items()}
+            return item
+
+        result = plain(copy.deepcopy(value))
+        result.setdefault("recipe_family", "graph")
+        data = result.setdefault("data", {})
+        data.setdefault("sample_seed", result.get("seed", 42))
+        pretrain_only = (
+            result.get("runtime", {}).get("stage") == "pretrain"
+            and result.get("training", {}).get("objective") == "future_subgraph"
+        )
+        data.setdefault("load_labels", not pretrain_only)
+        data.setdefault("stratify_by_fraud", False)
+        features = result.setdefault("features", {})
+        features.setdefault("tokenizer", "key_value_time")
+        if features["tokenizer"] == "key_value_time" and features.get("tokenizer_options") is None:
+            features.setdefault("exclude_keys", ["user", "card", "zip"])
+        for key, default in {
+            "n_entities": 48,
+            "events_per_entity": 100,
+            "max_tokens": 16,
+            "event_step_hours": 24,
+        }.items():
+            data.setdefault(key, default)
+        data.setdefault(
+            "temporal_split",
+            {
+                "train_end": data.get("pretrain_end", "2024-03-01T00:00:00Z"),
+                "validation_end": data.get("probe_cutoff", "2024-03-10T00:00:00Z"),
+            },
+        )
+        composition = result.setdefault("model", {}).setdefault("composition", {})
+        composition.setdefault("objective", "binary")
+        composition.setdefault("attention", "sdpa")
+        composition.setdefault("position", "time_rope")
+        gran = composition.setdefault("granularity", {})
+        gran.setdefault("type", "gnn_encoder")
+        decoder = gran.setdefault("decoder", {})
+        for key, default in {"hidden_size": 32, "num_heads": 4, "depth": 1, "dropout": 0.0}.items():
+            decoder.setdefault(key, default)
+        training = result.setdefault("training", {})
+        for key, default in {"max_steps": 6, "batch_size": 8, "learning_rate": 0.003}.items():
+            training.setdefault(key, default)
+        return result
+
     seed: int = 42
     data: DataConfig
     features: FeaturesConfig = Field(default_factory=FeaturesConfig)
@@ -641,7 +807,18 @@ class RecipeConfig(_Strict):
 
     @model_validator(mode="after")
     def _cross_section_rules(self) -> RecipeConfig:
+        if self.recipe_family == "graph":
+            return self._graph_rules()
         kind = self.model.composition.granularity.type
+        if self.recipe_family == "sequence" and kind not in {
+            "flat",
+            "flat_encoder",
+            "profile_history",
+            "profile_event_decoder",
+        }:
+            raise ValueError(
+                f"Unknown sequence architecture {kind!r}; select the graph family for a registered graph architecture"
+            )
         problems: list[str] = []
         if kind != "flat" and self.model.backbone != "eager":
             problems.append(
@@ -667,11 +844,11 @@ class RecipeConfig(_Strict):
             )
         if kind != "flat" and self.training.packing:
             problems.append("training.packing packs flat token streams only")
-        if kind == "flat_encoder" and self.features.tokenizer != "transaction_field_tokenizer":
+        if kind == "flat_encoder" and not _declares_field_vocabulary(self.features.tokenizer):
             problems.append(
                 "granularity.type flat_encoder masks field tokens by their field's id range, "
-                "which transaction_field_tokenizer declares; features.tokenizer is "
-                f"{self.features.tokenizer!r}"
+                "which a FieldVocabularyTokenizer declares; features.tokenizer "
+                f"{self.features.tokenizer!r} does not"
             )
         if kind == "flat_encoder" and self.evaluation.surprise:
             problems.append(
@@ -693,77 +870,108 @@ class RecipeConfig(_Strict):
             raise ValueError("; ".join(problems) + ".")
         return self
 
+    def _graph_rules(self) -> RecipeConfig:
+        from tfm.api.graph import graph_architecture
+        from tfm.pooling.registry import build_readout
+        from tfm.pooling.usr_token import UsrTokenPool
+
+        if self.data.token_cache is not None:
+            raise ValueError("Graph recipes do not support data.token_cache; omit it")
+        if self.model.composition.position not in {"nope", "time_rope"}:
+            raise ValueError("Graph history position must be nope or time_rope")
+        gran = self.model.composition.granularity
+        layout = graph_architecture(gran.type).layout
+        if layout == "graph_history" and graph_architecture(gran.encoder_type).layout != "graph":
+            raise ValueError("Graph-history encoder_type must select a graph architecture")
+        requires_labels = self.runtime.stage != "pretrain" or self.training.objective == "binary"
+        if self.data.load_labels != requires_labels:
+            raise ValueError("data.load_labels must match the selected stage's task supervision")
+        if self.data.stratify_by_fraud:
+            raise ValueError("Graph owner sampling must be independent of fraud labels")
+        for stage in (self.training, self.sequence_training):
+            if (
+                stage.backend != "eager"
+                or stage.packing
+                or stage.max_steps < 1
+                or stage.batch_size < 1
+            ):
+                raise ValueError(
+                    "Graph stages support eager unpacked training with positive steps/batch size"
+                )
+        import os
+
+        from tfm.data.adapters.paths import ADAPTER_ENV, entity_cap
+
+        adapter = self.data.adapter
+        generated = adapter == "synthetic" or (
+            adapter == "pragmatiq" and not (self.data.path or os.environ.get(ADAPTER_ENV[adapter]))
+        )
+        owners = self.data.n_entities if generated else entity_cap(self.data)
+        if (generated or adapter in {"pragmatiq", "tabformer"}) and owners < 12:
+            raise ValueError("Graph recipes require at least 12 selected owners")
+        if layout == "graph_history" and self.model.composition.objective != "binary":
+            raise ValueError(
+                "gnn_sequence requires binary; cutoff-level graph context cannot train within-history next-event objectives"
+            )
+        if layout == "graph" and self.model.composition.objective != self.training.objective:
+            raise ValueError("Graph-only composition objective must equal training.objective")
+        if isinstance(build_readout(self.model.composition.readout), UsrTokenPool):
+            raise ValueError(
+                "Graph causal history cannot use UsrTokenPool; select a causal readout"
+            )
+        if self.evaluation.surprise:
+            raise ValueError("Graph cutoff context cannot provide prefix-safe surprise")
+        if gran.decoder.ffn_size is not None:
+            raise ValueError(
+                "Graph sequence blocks use fixed 4*hidden feed-forward width; omit ffn_size"
+            )
+        if gran.decoder.hidden_size < 1 or gran.decoder.num_heads < 1:
+            raise ValueError("Sequence hidden_size and num_heads must be positive")
+        if (
+            gran.decoder.hidden_size % gran.decoder.num_heads
+            or (gran.decoder.hidden_size // gran.decoder.num_heads) % 2
+        ):
+            raise ValueError("Sequence width needs an even integral attention head dimension")
+        if self.runtime.stage == "downstream" and not self.runtime.encoder_checkpoint:
+            raise ValueError("downstream stage requires runtime.encoder_checkpoint")
+        return self
+
     def model_dump_resolved(self) -> dict[str, Any]:
         return self.model_dump(mode="json")
 
 
+def _tokenizer_class(name: str) -> type:
+    from tfm.features.tokenizers.registry import tokenizer_class
+
+    return tokenizer_class(name)
+
+
+def _declares_field_vocabulary(tokenizer: str) -> bool:
+    from tfm.contracts.tokenizers import FieldVocabularyTokenizer
+
+    return isinstance(_tokenizer_class(tokenizer), FieldVocabularyTokenizer)
+
+
 def _token_cache_problems(config: RecipeConfig) -> list[str]:
-    """What a token cache cannot reproduce (ADR 0016).
+    """What the tokenizer's token cache format cannot serve."""
+    from tfm.data.token_cache.formats import cache_format_of
 
-    A key-value-time cache reads a pragmatiq book; a flat-field cache reads
-    TabFormer's precomputed train split.
-    """
-    if config.features.tokenizer == "transaction_field_tokenizer":
-        return _flat_token_cache_problems(config)
-    data = config.data
-    problems: list[str] = []
-    if data.adapter != "pragmatiq":
-        problems.append(
-            f"data.token_cache reads a pragmatiq book; data.adapter is {data.adapter!r}"
-        )
-    if config.features.tokenizer != "key_value_time":
-        problems.append(
-            "data.token_cache holds key_value_time or transaction_field_tokenizer tokens; "
-            f"features.tokenizer is {config.features.tokenizer!r}"
-        )
-    if data.split_protocol != "timestamp":
-        problems.append("data.token_cache fits on a timestamp split; split_protocol is precomputed")
-    if data.fraud_labels != "spliced_identity_theft":
-        problems.append(
-            "data.token_cache holds no labels, so its pretraining rows cannot carry the book's "
-            "own fraud labels; use data.fraud_labels spliced_identity_theft"
-        )
-    return problems
-
-
-def _flat_token_cache_problems(config: RecipeConfig) -> list[str]:
-    data = config.data
-    problems: list[str] = []
-    if data.adapter != "tabformer":
-        problems.append(
-            "a transaction_field_tokenizer token cache reads TabFormer; "
-            f"data.adapter is {data.adapter!r}"
-        )
-    if data.split_protocol != "precomputed":
-        problems.append(
-            "a transaction_field_tokenizer token cache holds TabFormer's precomputed train "
-            f"split; split_protocol is {data.split_protocol!r}"
-        )
-    if data.pretrain_windows is None:
-        problems.append(
-            "a transaction_field_tokenizer token cache serves pretraining windows; "
-            "set data.pretrain_windows"
-        )
-    if config.training.packing:
-        problems.append("a token cache serves padded windows; training.packing must be false")
-    return problems
-
-
-_FLAT_FIELD_TOKENIZERS = ("transaction_field_tokenizer", "rapids_field_tokenizer")
+    return cache_format_of(_tokenizer_class(config.features.tokenizer)).config_problems(config)
 
 
 def _flat_pretrain_row_problems(config: RecipeConfig) -> list[str]:
     """Pretraining windows that row or model context would cut silently"""
+    from tfm.features.tokenizers.registry import FixedWidthTokenizer
+
     data = config.data
     windows = data.pretrain_windows
     if windows is None:
         return []
     problems: list[str] = []
     row_tokens = windows.max_tokens or data.max_tokens
-    if config.features.tokenizer in _FLAT_FIELD_TOKENIZERS:
-        from tfm.features.tokenizers.financial import FIELD_ORDER
-
-        per_event = len(config.features.fields or FIELD_ORDER) + 1
+    tokenizer = _tokenizer_class(config.features.tokenizer)
+    if isinstance(tokenizer, FixedWidthTokenizer):
+        per_event = tokenizer.event_width(config.features)
         window_tokens = per_event * windows.events + 1
         if window_tokens > row_tokens:
             problems.append(

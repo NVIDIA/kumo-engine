@@ -2,7 +2,8 @@
 
 Kumo Transaction brings the transaction foundation model reference kit into
 Kumo Engine. This snapshot retains the standalone `tfm` Python distribution,
-imports, and CLI; it does not add an Engine runtime integration.
+imports, and CLI. Graph recipes use the optional Kumo Engine backend described
+in the upstream documentation.
 
 Run the commands below from this directory:
 
@@ -23,8 +24,8 @@ architecture; it is not a production authorization, fraud-decisioning, or
 model-serving system.
 
 The question every recipe answers is the same: does adding a TFM embedding to
-raw features beat XGBoost on raw features alone? The kit ships three reference
-architectures that answer it, listed in [recipes/README.md](recipes/README.md):
+raw features beat XGBoost on raw features alone? The original three sequence tracks that answer it are listed in
+[recipes/README.md](recipes/README.md):
 
 - **`blueprint_v1`**: NVIDIA's TFM Blueprint on public TabFormer card data,
   with flat field tokens and a causal decoder.
@@ -32,6 +33,10 @@ architectures that answer it, listed in [recipes/README.md](recipes/README.md):
 - **`blueprint_v2`**: PRAGMA's encoders under a causal history decoder.
 
 `pragma_like` and `blueprint_v2` run on the same pragmatiq rows and tasks, so the two can be compared directly.
+
+Experimental graph-only and graph-conditioned sequence examples add
+future-subgraph pretraining; their commands and assumptions live in the
+[recipe inventory](recipes/README.md).
 
 ## Start
 

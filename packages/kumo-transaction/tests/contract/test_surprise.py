@@ -60,10 +60,15 @@ def test_columns_are_named_per_window_and_key(
     batch = data.batches[2]
     table = extract_surprise(model, batch, data.tokenizer, device=CPU)
 
-    n_keys = len(data.tokenizer.key_vocab)  # type: ignore[attr-defined]
+    key_vocab = data.tokenizer.pairs.key_vocab  # type: ignore[attr-defined]
+    n_keys = len(key_vocab)
     assert table.vectors.shape == (batch.batch_size, len(SURPRISE_WINDOWS) * (n_keys + 1))
     assert len(table.names) == table.vectors.shape[1]
-    assert table.names[n_keys] == f"last{SURPRISE_WINDOWS[0]}/all"
+    window = SURPRISE_WINDOWS[0]
+    assert table.names[: n_keys + 1] == (
+        *(f"last{window}/{key}" for key in sorted(key_vocab, key=key_vocab.get)),
+        f"last{window}/all",
+    )
     assert np.isfinite(table.vectors).all() and (table.vectors >= 0).all()
     assert table.entity_ids == tuple(batch.entity_ids)
 
@@ -109,11 +114,43 @@ def test_per_key_ce_averages_every_target_token_of_its_key(
         states, _mask, _tokens = model.encode(batch)  # type: ignore[attr-defined]
         target = next_event_targets(batch)  # type: ignore[arg-type]
         ce = next_event_token_ce(model, states, target)  # type: ignore[arg-type]
-    key_vocab = data.tokenizer.key_vocab  # type: ignore[attr-defined]
+    key_vocab = data.tokenizer.pairs.key_vocab  # type: ignore[attr-defined]
     amount = target.key_ids == key_vocab["amount"]
     assert by_key["amount"] == pytest.approx(float(ce[amount].mean()), rel=1e-4)
     present = {int(k) for k in target.key_ids.unique()}
     assert set(by_key) == {name for name, key_id in key_vocab.items() if key_id in present}
+
+
+class _FieldLabels:
+    """Any layout's tokenizer, seen by surprise only through its field names."""
+
+    def __init__(self, names: dict[int, str]) -> None:
+        self.names = names
+
+    def field_names(self) -> dict[int, str]:
+        return self.names
+
+
+def test_any_tokenizer_that_names_its_fields_gets_surprise(
+    prepared: tuple[PreparedData, torch.nn.Module],
+) -> None:
+    data, model = prepared
+    batch = data.batches[2]
+    labels = sorted(data.tokenizer.field_names())  # type: ignore[attr-defined]
+    other = _FieldLabels({label: f"field{i}" for i, label in enumerate(labels)})
+    table = extract_surprise(model, batch, other, device=CPU)
+    want = extract_surprise(model, batch, data.tokenizer, device=CPU)
+    np.testing.assert_array_equal(table.vectors, want.vectors)
+    renamed = [f"field{i}" for i in range(len(labels))]
+    assert table.names == tuple(
+        f"last{w}/{name}" for w in SURPRISE_WINDOWS for name in (*renamed, "all")
+    )
+    with pytest.raises(IncompatibleCompositionError, match="FieldNamedTokenizer"):
+        extract_surprise(model, batch, object(), device=CPU)
+    twice = _FieldLabels(dict.fromkeys(labels, "amount"))
+    for score in (extract_surprise, next_event_ce_by_key):
+        with pytest.raises(IncompatibleCompositionError, match="its own name"):
+            score(model, batch, twice, device=CPU)
 
 
 def test_refuses_a_model_without_a_next_event_head(
@@ -122,3 +159,12 @@ def test_refuses_a_model_without_a_next_event_head(
     data, _model = prepared
     with pytest.raises(IncompatibleCompositionError, match="profile_event_decoder"):
         extract_surprise(torch.nn.Linear(2, 2), data.batches[2], data.tokenizer, device=CPU)
+
+
+def test_all_is_reserved_for_aggregate_surprise(prepared):
+    data, model = prepared
+    names = data.tokenizer.field_names()
+    names[next(iter(names))] = "all"
+    for score in (extract_surprise, next_event_ce_by_key):
+        with pytest.raises(IncompatibleCompositionError, match="reserves 'all'"):
+            score(model, data.batches[2], _FieldLabels(names), device=CPU)

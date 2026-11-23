@@ -13,7 +13,7 @@ downloaded by CI, and no dataset file is committed
 
 | | Generated fixtures | IBM TabFormer | pragmatiq book | PersonaLedger |
 |---|---|---|---|---|
-| role | tests, smoke runs, CPU notebooks, the v2 lab's smoke mode | Blueprint v1 reproduction; newcomer teaching series | Blueprint v2: every v2 task on the same users; the v2 lab notebooks | planned external benchmark (not implemented) |
+| role | tests, smoke runs, CPU notebooks, the v2 lab's smoke mode, generated systems cost controls | Blueprint v1 reproduction; newcomer teaching series | Blueprint v2: every v2 task on the same users; the v2 lab notebooks | planned external benchmark (not implemented) |
 | what it is | seeded events from `tfm.data.synthetic` | public synthetic card transactions from IBM | a synthetic bank, generated locally by pragmatiq 1.1.0 | LLM-generated card ledgers from Capital One Research |
 | entities | configurable, small | 2,000 users, about 24.4M transactions | 100,000 users, 128.5M events (`synth_100k_gen2_m31_seed0`) | about 23,000 users, 30M transactions |
 | channels | card transactions | card transactions | card and account transactions, app sessions, trading, communications, transfers, profile | card transactions and payments |
@@ -160,3 +160,31 @@ Before an adapter lands:
   ties.
 - **Licence:** the data is CC BY 4.0, which requires attribution in any
   record or notebook that uses it.
+
+## Experimental graph recipe views
+
+`gnn_encoder` and `gnn_sequence` default to generated transaction/transfer
+fixtures, retaining the generated-fixture role above. They can read a local
+pragmatiq book as a separate configured run, retaining that book's role. They
+add no dataset or external download. An induced graph contains only selected
+owners, their event rows, and transfers whose endpoints both belong to that
+population. User roots have a constant bias; static profile attributes are not
+consumed in the initial graph recipes.
+
+FutureSubgraph is a self-supervised future-activity target, independent of
+fraud labels. Its windows close by the configured pretraining boundary with
+explicit source coverage and label delay. The downstream task is the existing
+any-available-positive fraud sequence label on a later, truncated history.
+Pretraining uses unspliced observations, and these recipes do not apply the
+identity-theft splice. Root-owner probe splits allow cutoff-bounded transfer
+context across owners and must not be described as isolated graph components.
+
+
+Graph recipe binary arms require a nonempty pragmatiq fraud label source and
+available source coverage for each sampled owner by the task cutoff. Missing,
+empty, unmatched or unavailable label sources are rejected before training.
+The numeric sequence-label rule remains any available positive in the truncated
+history; known all-negatives and app-only retained histories remain valid. Owner
+sampling stays independent of labels. This requirement belongs to the binary
+recipe arms; generic unlabeled graph sampling and FutureSubgraph helpers do not
+require fraud labels.

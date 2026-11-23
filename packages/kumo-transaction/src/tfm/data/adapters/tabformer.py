@@ -276,7 +276,8 @@ def _load_tabformer_csv(
 ) -> tuple[list[TransactionEvent], list[object]]:
     import pandas as pd
 
-    unique = pd.read_csv(csv_path, usecols=["User"])["User"].drop_duplicates().tolist()
+    # pandas' own annotations cannot solve `usecols`' type variable for a list.
+    unique = pd.read_csv(csv_path, usecols=["User"])["User"].drop_duplicates().tolist()  # type: ignore[call-overload]
     users = _sample_ids(unique, cap=cap, seed=seed)
     selected = set(users)
     chunks: list[Any] = []

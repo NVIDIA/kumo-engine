@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import subprocess
 import sys
 import time
 from datetime import UTC, datetime
@@ -35,6 +36,46 @@ from tfm.training.device import device_environment
 
 def repo_root() -> Path:
     return Path(__file__).resolve().parents[3]
+
+
+def source_provenance() -> dict[str, str | bool | None]:
+    """Source-checkout identity independent of cwd; unknown in installed/no-Git builds."""
+    unknown: dict[str, str | bool | None] = {"source_revision": None, "source_dirty": None}
+    root = repo_root()
+    if not (root / "pyproject.toml").is_file() or not (root / "src/tfm").is_dir():
+        return unknown
+    # These commands only inspect local source. Inherited repository/config
+    # overrides must not redirect any command into another checkout or index.
+    git_env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    try:
+        checkout = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--show-toplevel"],
+            env=git_env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if checkout.returncode or Path(checkout.stdout.strip()).resolve() != root:
+            return unknown
+        revision = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            env=git_env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        dirty = subprocess.run(
+            ["git", "-C", str(root), "status", "--porcelain", "--untracked-files=all"],
+            env=git_env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return unknown
+    if revision.returncode or dirty.returncode:
+        return unknown
+    return {"source_revision": revision.stdout.strip(), "source_dirty": bool(dirty.stdout.strip())}
 
 
 def recipe_dir(recipe: str) -> Path:

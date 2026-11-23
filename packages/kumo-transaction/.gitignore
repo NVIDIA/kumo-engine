@@ -57,6 +57,7 @@ data/embeddings/
 *.jsonl
 *.npy
 *.npz
+*.tgz
 
 # Model weights (v2 stores manifests only; checkpoints stay off the default tree)
 *.bin

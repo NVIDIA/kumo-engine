@@ -27,8 +27,8 @@ flowchart LR
 | Data | `tfm.runtime.data.prepare_data` | Adapter, `data`, `features` | `PreparedData`: events, splits, `Cutoffs` with label windows, fitted tokenizer, train / validation / test batches |
 | Model | `tfm.runtime.pipeline.build_model` | `model`, `objective`, `fraud_task` | A `TrxFM` (flat) or an experimental hierarchical model, after `validate_composition` |
 | Setup artifacts | `setup_run` | | `resolved_config.yaml`, `data_validation_report.json`, `split_manifest.json`, `tokenizer_manifest.json`, `environment.json` |
-| Train | `run_train` | `training` | `model.pt`, `checkpoint_manifest.json` (with the composition), `packing_manifest.json` |
-| Infer | `run_infer` | | `embeddings.npz`, `embeddings_manifest.json` |
+| Train | `run_train` | `training` | `model.pt`, `checkpoint_manifest.json` (with the composition), `packing_manifest.json`, `train_log.json` |
+| Infer | `run_infer` | | `embeddings.npz` (per side: vectors, labels, and customer, row, and event ids, row for row), `embeddings_manifest.json` |
 | Evaluate | `run_evaluate` → `evaluate_run` | `fraud_task`, `evaluation` | `probe_manifest.json`, `finetune_manifest.json`, `metrics.json`, `metrics.md` |
 | Report | `run_report` | | `model_card.md` |
 

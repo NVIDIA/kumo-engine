@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
+import numpy as np
 import pytest
 from tests.conftest import make_event
 
@@ -14,6 +16,7 @@ from tfm.data.synthetic.generator import generate_synthetic_events
 from tfm.data.transforms.ordering import order_events
 from tfm.data.validation.schema import validate_event
 from tfm.features.tokenizers.financial import TransactionFieldTokenizer
+from tfm.features.tokenizers.vocabulary import PercentileBinner
 from tfm.layers.masks import causal_mask
 
 
@@ -23,11 +26,20 @@ def test_validate_event_rejects_missing_entity() -> None:
         validate_event(make_event("", "e1", ts))
 
 
-def test_validate_event_rejects_label_like_input() -> None:
+@pytest.mark.parametrize(
+    ("kind", "fields"),
+    [
+        ("Numeric", {"numeric": {"amount": 1.0, "is_fraud": 1.0}}),
+        ("Categorical", {"categorical": {"FRAUD ": "yes"}}),
+        ("Text", {"text": {" Label ": "chargeback filed"}}),
+    ],
+)
+def test_validate_event_rejects_label_like_input(kind: str, fields: dict[str, Any]) -> None:
     ts = datetime(2024, 1, 1, tzinfo=UTC)
     event = make_event("ent", "e1", ts)
-    object.__setattr__(event, "numeric", {"amount": 1.0, "is_fraud": 1.0})
-    with pytest.raises(SchemaError):
+    for name, value in fields.items():
+        object.__setattr__(event, name, value)
+    with pytest.raises(SchemaError, match=f"{kind} field .* looks like a label"):
         validate_event(event)
 
 
@@ -223,3 +235,21 @@ def test_removed_pretrain_keys_explain_themselves(key: str) -> None:
                 },
             }
         )
+
+
+@pytest.mark.parametrize("seed", range(40))
+def test_percentile_edges_from_counts_match_repeated_readings(seed: int) -> None:
+    rng = np.random.default_rng(seed)
+    n = int(rng.integers(1, 400))
+    pool = [
+        rng.lognormal(3, 2, n),
+        rng.integers(-5, 6, n).astype(float),
+        np.round(rng.normal(0, 50, n), 2),
+    ]
+    values = pool[seed % 3]
+    values[rng.random(n) < 0.05] = rng.choice([0.0, -0.0, np.nan, np.inf, -np.inf])
+    counts = rng.integers(1, 1_000, n)
+    buckets = int(rng.integers(2, 40))
+    want = PercentileBinner(buckets).fit(np.repeat(values, counts)).edges
+    got = PercentileBinner(buckets).fit(values, counts).edges
+    assert want.tobytes() == got.tobytes()

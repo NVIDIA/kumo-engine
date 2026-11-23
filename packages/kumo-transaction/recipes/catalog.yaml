@@ -45,3 +45,28 @@ recipes:
       PRAGMA-style profile and event encoders feeding a causal history decoder,
       trained on next-event fields plus within-event MLM, scored on several
       tasks of the same users (ADR 0012).
+
+  - id: gnn_encoder
+    title: Graph-only encoder with binary supervision or future-subgraph pretraining
+    tier: experimental
+    data: synthetic
+    configs:
+      smoke: CPU, generated relational transaction fixture
+      default: larger generated relational fixture, eager training
+      pretrain: FutureSubgraph graph stage, larger generated fixture
+      pretrain_smoke: FutureSubgraph graph stage, CPU synthetic smoke
+      pretrain_only_smoke: graph stage only, label-free FutureSubgraph, plain encoder export
+      downstream_smoke: binary downstream using outputs/gnn_encoder/pretrain_only/encoder.pt
+    notes: supervised/full, label-free pretrain, or encoder-reusing downstream; eager only.
+  - id: gnn_sequence
+    title: Frozen GNN profile conditioning with Blueprint v2
+    tier: experimental
+    data: synthetic
+    configs:
+      smoke: CPU, generated relational transaction fixture
+      default: larger generated relational fixture, eager training
+      pretrain: FutureSubgraph graph stage, larger generated fixture
+      pretrain_smoke: FutureSubgraph graph stage, CPU synthetic smoke
+      pretrain_only_smoke: graph stage only, label-free FutureSubgraph, plain encoder export
+      downstream_smoke: binary downstream using outputs/gnn_encoder/pretrain_only/encoder.pt
+    notes: supervised/full, label-free pretrain, or encoder-reusing downstream; eager only.

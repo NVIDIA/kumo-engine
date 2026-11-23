@@ -335,6 +335,8 @@ class Fsdp2NextEventTrainer:
                     if rank == 0 and step % 100 == 0:
                         log.info("step %d/%d  loss %.4f  lr %.3e", step, max_steps, mean, rate)
 
+        if progress is not None:
+            progress.finish()
         first_loss = _mean_across_ranks(
             losses[0] if losses else float("nan"), world_size=world_size, device=device
         )

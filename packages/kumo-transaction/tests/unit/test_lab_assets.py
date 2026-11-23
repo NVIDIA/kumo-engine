@@ -21,6 +21,7 @@ from tfm.contracts.errors import (
     IncompatibleCompositionError,
     InsufficientLabelSupportError,
     SchemaError,
+    UnsupportedCombinationError,
 )
 from tfm.data.synthetic.lab_book import lab_book_records
 from tfm.evaluation.surprise import extract_surprise
@@ -148,6 +149,19 @@ def test_a_local_checkpoint_restores_its_weights_and_tokenizer(
     (bundle / "checkpoint_manifest.json").write_text(json.dumps({"vocab_size": 3}))
     with pytest.raises(IncompatibleCompositionError, match="not saved together"):
         load_lab_model(local, reloaded)
+
+
+def test_a_checkpoint_tokenizer_without_saved_state_is_refused(
+    smoke,  # noqa: ANN001
+    tmp_path: Path,
+) -> None:
+    assets, _ = smoke
+    (tmp_path / "tokenizer.json").write_text("{}")
+    features = assets.config.features.model_copy(update={"tokenizer": "event_fields"})
+    config = assets.config.model_copy(update={"features": features})
+    local = dataclasses.replace(assets, checkpoint_dir=tmp_path, config=config)
+    with pytest.raises(UnsupportedCombinationError, match="does not load saved state"):
+        prepare_lab_data(local)
 
 
 @pytest.mark.skipif(not extra_available("xgboost"), reason="needs the baselines extra")

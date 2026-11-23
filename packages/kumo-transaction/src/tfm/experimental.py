@@ -15,14 +15,17 @@ from tfm.adaptation.fusion import JointFusionHead, PeriodicEmbedding
 from tfm.api.validation import validate_composition
 from tfm.attention.eager import EagerAttention
 from tfm.compositions.flat_encoder import FlatEncoder
+from tfm.compositions.gnn import GNNEncoder, GNNSequence
 from tfm.compositions.profile_event_decoder import ProfileEventDecoder
 from tfm.compositions.profile_history import ProfileHistory
 from tfm.contracts.protocols import AttentionSpec
 from tfm.layers.flat_encoder import FlatEncoderModel, FlatEncoderReadout
+from tfm.layers.gnn import GNNEncoderModel, GNNSequenceModel, GraphEncoder
 from tfm.layers.gru import GRUBackbone
 from tfm.layers.profile_event_decoder import ProfileEventDecoderModel
 from tfm.layers.profile_history import ProfileHistoryModel
 from tfm.objectives.contrastive import SubsequenceContrastive
+from tfm.objectives.future_subgraph import FutureSubgraph
 from tfm.objectives.masked_fields import MaskedFields
 from tfm.objectives.mlm import TokenEventKeyMLM
 from tfm.objectives.next_event_fields import NextEventFields
@@ -38,6 +41,12 @@ from tfm.position.time_rope import TimeRoPE
 from tfm.training.lora import LoRA
 
 __all__ = [
+    "GNNEncoder",
+    "GNNSequence",
+    "GraphEncoder",
+    "GNNEncoderModel",
+    "GNNSequenceModel",
+    "FutureSubgraph",
     "FlatEncoder",
     "FlatEncoderModel",
     "GRUBackbone",

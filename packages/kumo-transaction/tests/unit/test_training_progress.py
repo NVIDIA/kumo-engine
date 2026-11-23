@@ -5,9 +5,14 @@
 
 from __future__ import annotations
 
+import types
+import warnings
+from collections.abc import Iterator
+
 import pytest
 import torch
 
+import tfm.training.progress as progress_module
 from tfm import Decoder, Flat, TrxFM
 from tfm.config import TrainingConfig
 from tfm.contracts.batch import TransactionBatch
@@ -31,6 +36,26 @@ def test_prints_every_log_every_steps_and_the_last_step() -> None:
     assert [line.split(" | ")[0] for line in lines[1:]] == ["step 2/5", "step 4/5", "step 5/5"]
     assert "epoch 2.50" in lines[-1]
     assert "grad norm 1.000" in lines[-1]
+
+
+def test_the_token_rate_includes_the_readback_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The readback waits for the GPU; the interval must end after it."""
+    clock = [0.0]
+    monkeypatch.setattr(
+        progress_module, "time", types.SimpleNamespace(perf_counter=lambda: clock[0])
+    )
+    lines: list[str] = []
+    progress = TrainingProgress(log_every=1, write=lines.append, rank=0)
+    progress.start(max_steps=1, batches_per_epoch=1)
+    finish = progress.finish
+
+    def waits() -> None:
+        clock[0] += 1.0
+        finish()
+
+    monkeypatch.setattr(progress, "finish", waits)
+    progress.step(1, loss=1.0, lr=1e-3, grad_norm=1.0, tokens=2000.0)
+    assert "| 2k tok/s |" in lines[-1]
 
 
 def test_records_every_step_without_printing_when_log_every_is_none() -> None:
@@ -102,7 +127,44 @@ def test_real_tokens_counts_unpadded_positions() -> None:
     assert real_tokens(batch) == 5.0
 
 
-def test_train_model_feeds_every_step_to_progress() -> None:
+def test_tensor_values_are_read_back_when_a_line_is_due() -> None:
+    lines: list[str] = []
+    progress = TrainingProgress(log_every=2, write=lines.append, rank=0)
+    progress.start(max_steps=2, batches_per_epoch=1)
+
+    progress.step(1, loss=torch.tensor(0.5), lr=1e-3, grad_norm=torch.tensor(2.0), tokens=8.0)
+    assert isinstance(progress.curve[0]["loss"], torch.Tensor)
+    progress.step(2, loss=torch.tensor(0.25), lr=1e-3, grad_norm=torch.tensor(1.0), tokens=8.0)
+
+    assert [row["loss"] for row in progress.curve] == [0.5, 0.25]
+    assert "loss 0.2500" in lines[-1]
+    assert "grad norm 1.000" in lines[-1]
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+def test_tensor_values_on_different_devices_are_read_back() -> None:
+    progress = TrainingProgress(log_every=None, rank=0)
+    progress.start(max_steps=1, batches_per_epoch=1)
+    loss = torch.tensor(0.5, device="cuda")
+    progress.step(1, loss=loss, lr=1e-3, grad_norm=torch.tensor(2.0), tokens=8.0)
+    progress.finish()
+    assert (progress.curve[0]["loss"], progress.curve[0]["grad_norm"]) == (0.5, 2.0)
+
+
+def test_silent_progress_reads_tensor_values_back_every_100_steps() -> None:
+    progress = TrainingProgress(log_every=None, rank=0)
+    progress.start(max_steps=250, batches_per_epoch=1)
+
+    for step in range(1, 151):
+        progress.step(step, loss=torch.tensor(1.0), lr=1e-3, grad_norm=1.0, tokens=1.0)
+
+    assert all(isinstance(row["loss"], float) for row in progress.curve[:100])
+    assert all(isinstance(row["loss"], torch.Tensor) for row in progress.curve[100:])
+    progress.finish()
+    assert all(isinstance(row["loss"], float) for row in progress.curve)
+
+
+def _flat_model_and_batch(device: torch.device) -> tuple[TrxFM, TransactionBatch]:
     torch.manual_seed(0)
     model = TrxFM(
         granularity=Flat(Decoder(depth=1, hidden_size=16, num_heads=2, vocab_size=16, dropout=0.0))
@@ -112,6 +174,42 @@ def test_train_model_feeds_every_step_to_progress() -> None:
         attention_mask=torch.tensor([[1, 1, 1, 0], [1, 1, 0, 0]], dtype=torch.long),
         labels=torch.tensor([[2, 3, -100, -100], [5, -100, -100, -100]], dtype=torch.long),
     )
+    return model, batch.to(device)
+
+
+def _trainer_syncs(steps: int) -> int:
+    """Synchronizing calls made from the trainer or progress code during a CUDA run."""
+    model, batch = _flat_model_and_batch(torch.device("cuda"))
+    progress = TrainingProgress(log_every=None, rank=0)
+    torch.cuda.synchronize()
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        torch.cuda.set_sync_debug_mode("warn")
+        try:
+            train_model(
+                model,
+                [batch],
+                max_steps=steps,
+                learning_rate=1e-3,
+                seed=0,
+                device=torch.device("cuda"),
+                progress=progress,
+            )
+        finally:
+            torch.cuda.set_sync_debug_mode(0)
+    return sum(
+        "synchroniz" in str(w.message) and w.filename.endswith(("trainer.py", "progress.py"))
+        for w in caught
+    )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+def test_train_model_adds_no_host_sync_per_step() -> None:
+    assert _trainer_syncs(steps=2) == _trainer_syncs(steps=6)
+
+
+def test_train_model_feeds_every_step_to_progress() -> None:
+    model, batch = _flat_model_and_batch(torch.device("cpu"))
     lines: list[str] = []
     progress = TrainingProgress(log_every=2, write=lines.append, rank=0)
 
@@ -130,3 +228,34 @@ def test_train_model_feeds_every_step_to_progress() -> None:
     assert all(row["tokens"] == 5.0 for row in progress.curve)
     assert progress.curve[-1]["loss"] == pytest.approx(stats["final_loss"])
     assert len(lines) == 3
+
+
+class _Stream:
+    """A loader that can only be iterated, yielding `batch` twice per pass."""
+
+    def __init__(self, batch: TransactionBatch) -> None:
+        self.batch = batch
+
+    def __len__(self) -> int:
+        return 2
+
+    def __iter__(self) -> Iterator[TransactionBatch]:
+        return iter([self.batch, self.batch])
+
+
+def test_train_model_reads_progress_back_from_an_iterable_loader() -> None:
+    model, batch = _flat_model_and_batch(torch.device("cpu"))
+    progress = TrainingProgress(log_every=None, rank=0)
+
+    train_model(
+        model,
+        _Stream(batch),
+        max_steps=3,
+        learning_rate=1e-3,
+        seed=0,
+        device=torch.device("cpu"),
+        progress=progress,
+    )
+
+    assert [row["step"] for row in progress.curve] == [1.0, 2.0, 3.0]
+    assert all(isinstance(row[key], float) for row in progress.curve for key in row)

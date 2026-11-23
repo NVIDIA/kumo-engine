@@ -25,6 +25,12 @@ datasets are never combined
 | [`blueprint_v2_hybrid_lab_v1_flat_splice_seeds`](blueprint_v2_hybrid_lab_v1_flat_splice_seeds.md) | pragmatiq | v1's flat decoder on v2's rows, against the hybrid, on spliced identity theft |
 | [`pragmatiq_fraud_separability`](pragmatiq_fraud_separability.md) | pragmatiq | Why fraud is spliced: one transaction identifies the book's own fraud labels (ADR 0015) |
 
+## Systems checks
+
+| Record | Dataset | What it shows |
+|---|---|---|
+| [`graph_backends_l4_cost`](graph_backends_l4_cost.md) | Seeded generated relational fixture | Short six-hop L4 cost comparison: identical-state Engine shared/disjoint, and the historical custom GNN on the same disjoint inputs; no full-pipeline or quality claim |
+
 ## Archive
 
 Superseded records, kept because later records and ADRs cite them. Each says
@@ -58,3 +64,19 @@ names are:
 
 The full list, including config keys, is in the
 [migration guide](../../docs/migration/2.0.0a1-to-2.0.0a2.md).
+
+
+## Graph benchmark raw artifacts
+
+Graph execution/construction JSON files are imported compact manifests with
+summaries, conditions, hashes, and byte counts. The upstream raw runs and
+embedding coordinates are held outside this public repository and have not
+been mirrored here. Private artifact URLs are omitted during import; the
+recorded hashes, measurements, and other provenance remain unchanged.
+The unverified resident-baseline comparison remains excluded from the reports.
+
+If you already have the original payloads, verify their hashes before using
+`scripts/compact_graph_benchmarks.py` to regenerate the manifests. This import
+does not provide public raw downloads or independently reproduce these results.
+See [resource measurements](graph_resource_supplement_l4.md) for the distinction
+between historical latency and later memory measurements.

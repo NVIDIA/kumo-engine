@@ -64,6 +64,8 @@ Decides how events are arranged, and what reads them.
 | `Flat(Decoder(...))` | `tfm.compositions.flat`, `tfm.layers.decoder` | Flat stream | Causal transformer (eager), HuggingFace Llama (`model.backbone: huggingface`), a GRU (`gru`), or any backbone added with `tfm.api.register_backbone` |
 | `ProfileHistory` | `tfm.compositions.profile_history` | Hierarchy: profile and event encoders, then a bidirectional history encoder | Transformer; the encoders are `tfm.layers.kvt_encoders`, shared with `ProfileEventDecoder` |
 | `ProfileEventDecoder` | `tfm.compositions.profile_event_decoder` | Hierarchy: profile and event encoders, then a causal history decoder | Transformer |
+| `GNNEncoder` | `tfm.compositions.gnn` | Shared training / disjoint prediction relational graph | Direct Kumo Engine `HeteroGNN` (sum/mean/max, BatchNorm, ReLU) |
+| `GNNSequence` | `tfm.compositions.gnn` | Frozen GNN profile field + Blueprint v2 sequence stack | Shared GNN, profile/event encoders, causal summary decoder |
 | `EagerAttention`, `SdpaAttention` | `tfm.attention` | Attention kernel, selected by `model.composition.attention` | |
 | `granularity.varlen` | `tfm.layers.varlen` | Skips all-padding event rows in the event encoder | |
 
@@ -79,6 +81,7 @@ its horizon, cutoff, required outputs, and leakage checks in its docstring.
 | `TokenEventKeyMLM` | `tfm.objectives.mlm` | Masked tokens, whole events, or keys | `ProfileHistory` (primary), `ProfileEventDecoder` (auxiliary) |
 | `PastReconstruction` | `tfm.objectives.past_reconstruction` | Values of earlier events, given the time gap (Featurespace NPPR) | `ProfileEventDecoder` (auxiliary) |
 | `SubsequenceContrastive` | `tfm.objectives.contrastive` | Two crops of one history embed close together (CoLES) | `ProfileEventDecoder` (auxiliary) |
+| `FutureSubgraph` | `tfm.objectives.future_subgraph` | Masked regression to future-window relational aggregates; label-only membership at window end | `GNNEncoder`; pretrains the graph stage of `GNNSequence` |
 | `SupervisedHead` | `tfm.objectives.supervised` | Sequence-level task label, trained jointly with pretraining | `Flat` |
 
 ### 4. Readout and adaptation
@@ -111,20 +114,28 @@ change how a model trains, not what it computes (ADR 0011). Code is in
 
 ## Reference architectures
 
-Each recipe is one choice per slot. The three share slots 0 and 4, so their
-records answer the same question on comparable rows.
+Each recipe is one choice per slot. Compare architectures only on the same
+data, cutoffs, scored rows, and probe splits. The graph recipes use their own
+explicit graph data family and currently report CPU-safe logistic probes.
 
 | Recipe | Event representation | Sequence architecture | Objective | Readout |
 |---|---|---|---|---|
 | `blueprint_v1` | `flat_fields` tokens | `Flat`, HuggingFace Llama backbone | `NextEvent` | `LastTokenPool` |
 | `pragma_like` | `key_value_time` tokens | `ProfileHistory` | `TokenEventKeyMLM` | `UsrTokenPool` |
 | `blueprint_v2` | `key_value_time` tokens | `ProfileEventDecoder` | `NextEventFields` plus MLM | `LastTokenPool` |
+| `gnn_encoder` | Allowlisted numeric node features | `GNNEncoder` | Binary supervision or `FutureSubgraph` | Root embedding |
+| `gnn_sequence` | Numeric graph features + `key_value_time` history tokens | `GNNSequence` | Graph-stage binary or `FutureSubgraph`, then cutoff-level binary supervision | Last valid history slot |
 
 Patterns not implemented, and not stubbed as API: a Transformer–Mamba hybrid,
 and fused varlen attention (FlashAttention `cu_seqlens`). Row-level varlen
 (`granularity.varlen`) and LoRA (`fraud_task.finetune`) are options on the
 stacks above, not new structures; the padded path and the frozen probe stay
 their baselines.
+
+Graph and future-target clocks, alignment and mutation rules are in the
+[data contract](data-contract.md).
+Cutoff-level graph conditioning is not prefix-safe for next-event training; the
+initial hybrid refuses next-event objectives and surprise.
 
 ## Rules that connect slots
 

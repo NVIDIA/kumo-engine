@@ -1,0 +1,145 @@
+{
+  "started_at": "2026-11-18T22:49:09.097083+00:00",
+  "finished_at": "2026-11-18T22:49:16.283246+00:00",
+  "precision": "fp32",
+  "settings": {
+    "seed": 0,
+    "entities": 64,
+    "events_per_entity": 12,
+    "transfers_per_entity": 4,
+    "batch_size": 32,
+    "width": 512,
+    "depth": 6,
+    "fanout": 10,
+    "warmup": 2,
+    "steps": 5,
+    "device": "cuda"
+  },
+  "engine": {
+    "distribution": "kumo-engine",
+    "version": "1.0.1",
+    "module": "kumo_core.modeling.gnn.hetero",
+    "gnn_source_sha256": "423e6d99df82fc0d1b70df28514093f7389f36af9e33a087c9dd6c61de28f7a1"
+  },
+  "source_revision": "479ee85b4c932c5b5e1293f94b01fbac3b1573e7",
+  "source_dirty": false,
+  "python": "3.14.6",
+  "torch": "2.13.0+cu130",
+  "torch_geometric": "2.8.1",
+  "torch_scatter_installed": false,
+  "cuda_runtime": "13.0",
+  "gpu": "NVIDIA L4",
+  "tf32": false,
+  "sampling_ms": {
+    "shared": 279.57151597365737,
+    "disjoint": 450.72445599362254
+  },
+  "arms": [
+    {
+      "arm": "engine_shared",
+      "status": "ok",
+      "sharing": "shared",
+      "nodes": 960,
+      "edges": 2304,
+      "samples": 32,
+      "parameters": 23642625,
+      "model_and_batch_to_device_ms": 155.12304566800594,
+      "step_ms_median": 35.4353366419673,
+      "step_ms": [
+        36.15564201027155,
+        35.40091682225466,
+        35.856954753398895,
+        35.4353366419673,
+        35.07675975561142
+      ],
+      "losses": [
+        20.99871826171875,
+        11.834352493286133,
+        1.2449522018432617,
+        0.6627848148345947,
+        0.35914477705955505
+      ],
+      "peak_allocated_mib": 447.78173828125,
+      "peak_reserved_mib": 512.0,
+      "initial_state_sha256": "216a46b69d52800004ae1533d9d27c8e6afe32db563730b0361ff19383bbf5a3",
+      "throughput": {
+        "value": 903.053365157008,
+        "unit": "roots/s",
+        "statistic": "actual roots divided by historical median measured step seconds",
+        "scope": "forward+MSE+backward+clipping+AdamW; batch/model transfer, construction and sampling excluded",
+        "provenance": "derived from unchanged historical latency; not a new timing measurement"
+      }
+    },
+    {
+      "arm": "engine_disjoint",
+      "status": "ok",
+      "sharing": "disjoint",
+      "nodes": 22449,
+      "edges": 54780,
+      "samples": 32,
+      "parameters": 23642625,
+      "model_and_batch_to_device_ms": 61.08371028676629,
+      "step_ms_median": 122.79827520251274,
+      "step_ms": [
+        122.79827520251274,
+        123.26549412682652,
+        122.54689494147897,
+        122.26495984941721,
+        123.02410416305065
+      ],
+      "losses": [
+        12.458581924438477,
+        9.010440826416016,
+        0.9758548140525818,
+        0.7114335298538208,
+        0.574134111404419
+      ],
+      "peak_allocated_mib": 1946.08837890625,
+      "peak_reserved_mib": 2188.0,
+      "initial_state_sha256": "216a46b69d52800004ae1533d9d27c8e6afe32db563730b0361ff19383bbf5a3",
+      "throughput": {
+        "value": 260.5899793562019,
+        "unit": "roots/s",
+        "statistic": "actual roots divided by historical median measured step seconds",
+        "scope": "forward+MSE+backward+clipping+AdamW; batch/model transfer, construction and sampling excluded",
+        "provenance": "derived from unchanged historical latency; not a new timing measurement"
+      }
+    },
+    {
+      "arm": "legacy_disjoint",
+      "status": "ok",
+      "sharing": "disjoint",
+      "nodes": 22449,
+      "edges": 54780,
+      "samples": 32,
+      "parameters": 14187009,
+      "model_and_batch_to_device_ms": 53.547175135463476,
+      "step_ms_median": 108.18848200142384,
+      "step_ms": [
+        107.69114270806313,
+        108.46490785479546,
+        108.47048787400126,
+        108.18848200142384,
+        107.0414986461401
+      ],
+      "losses": [
+        5.923796653747559,
+        1.8208305835723877,
+        0.9248092174530029,
+        2.803999662399292,
+        1.4931461811065674
+      ],
+      "peak_allocated_mib": 2361.26416015625,
+      "peak_reserved_mib": 2612.0,
+      "initial_state_sha256": "c1f6fcb65f621a78249b83e85c045a538566e993011316941e44662122868c68",
+      "throughput": {
+        "value": 295.780099766802,
+        "unit": "roots/s",
+        "statistic": "actual roots divided by historical median measured step seconds",
+        "scope": "forward+MSE+backward+clipping+AdamW; batch/model transfer, construction and sampling excluded",
+        "provenance": "derived from unchanged historical latency; not a new timing measurement"
+      }
+    }
+  ],
+  "scope": "Generated fixed-batch model forward/backward/AdamW timing; sampling and transfer reported separately. No hop trimming, native loader, full-pipeline timing, or quality comparison. Sharing also changes BatchNorm weighting/context."
+}

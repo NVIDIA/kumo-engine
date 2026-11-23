@@ -86,10 +86,29 @@ precision@k. `evaluation.inference_batch_size` and `evaluation.inference_precisi
 CUDA when `torch.cuda.is_available()` is true, otherwise CPU. Requesting
 `cuda` without a GPU is an error.
 
-`data.adapter` is `synthetic` (default), `tabformer`, or `pragmatiq`. External
+`data.adapter` is `synthetic` (default), `tabformer`, `pragmatiq`, another
+registered adapter, or an adapter's import path, `"package.module:attribute"`. External
 books use `data.path` or `TFM_TABFORMER_ROOT` / `TFM_PRAGMATIQ_ROOT`.
 `data.max_entities` (default `n_entities`) caps sampled users. `data.split_protocol`
 is `timestamp` or `precomputed` (TabFormer v1 parquet partitions).
+`data.amount_field` (default `amount`) is the numeric field the raw features and
+a token cache read as each event's amount; a run whose train side has no event
+carrying it as a number is refused by the token path. Graph recipes use the
+same source field for event features, future amount targets and raw probes;
+missing values retain the graph's masked-target/presence-flag semantics.
+Managed graph encoder manifests bind the source field identity.
+
+Graph recipes default `model.composition.position` to `time_rope` and also
+accept `nope`, consistently for the hybrid and sequence controls. Pretrain-only
+graph stages do not fit or persist a sequence tokenizer. Graph recipes currently
+reject `data.token_cache` during config validation.
+
+`data.token_cache_on_device` (default `true`) holds a token cache on the GPU and builds
+training batches there; `false` keeps it on the host, and a CPU run ignores it.
+`data.batch_builder` (default `token_cache`, experimental) selects what turns a token
+cache's rows into training batches: a name registered with
+`tfm.data.token_cache.builders.register_batch_builder`, or the
+`"package.module:attribute"` path of a `tfm.data.token_cache.builders.BatchBuilder`.
 
 `model.backbone` is `eager` (default), `huggingface`, or `gru` (an
 experimental recurrent baseline); it applies to `flat` only. `training.backend` is a
@@ -144,6 +163,16 @@ FlashAttention on CUDA). An unrecognized name is an error.
 runs the event encoder padding-free by dropping all-padding event rows and
 trimming the token width, which is worthwhile when histories are heavy-tailed.
 Results match the padded path to floating-point tolerance.
+
+`model.composition.granularity.time_features` applies to `profile_history` and
+`profile_event_decoder`. It names the per-event arrays the calendar embedding reads,
+each as a cycle: `{array: period}`, or `{array: {period, origin}}` when the array does
+not start at 0. Each becomes the sine and cosine of 2π (value − origin) / period. The
+default is `{hour: 24, dow: 7, dom: {period: 31, origin: 1}}`. Key order does not
+matter: the embedding reads `hour`, `dow` and `dom` first, then the others by name, so a
+config whose keys are sorted on save loads the same weights. A run refuses a token cache
+that does not hold every array named, before the first step. Training batches from a
+token cache carry, and on the GPU hold, only these arrays.
 
 `objective.mlm` applies to the `token_event_key_mlm` objective only:
 `p_token`, `p_event`, `p_key`, `p_unk`, and `label_smoothing`. The defaults are
@@ -209,3 +238,68 @@ appear as `<arm>_<task>`, where the arm is `lora`, `full`, or
 `<method>_joint_fusion`, alongside (never in place of) the frozen-embedding
 probe. `finetune_manifest.json` records the adapted modules and the trainable
 parameter fraction.
+
+## Experimental graph recipe family
+
+Every recipe loads through `tfm.config.RecipeConfig`. `recipe_family` selects
+an open runner registry: `sequence` (default), `graph`, a user-registered name,
+or an importable `package.module:function`. The CLI parses YAML once and
+passes that config to the runner. See the committed
+[`gnn_encoder` config](../../recipes/gnn_encoder/config.smoke.yaml) and
+[`gnn_sequence` config](../../recipes/gnn_sequence/config.smoke.yaml).
+
+`model.composition.granularity.type` selects a registered graph architecture or
+an importable `GraphArchitecture`. Built-ins are `gnn_encoder` and
+`gnn_sequence`. `hidden_size`, `depth`, `fanout`, `target_depth` and `trim`
+configure the graph. `decoder`, `profile_depth`, `event_depth`, `varlen` and
+`time_features` configure the sequence stack and its controls, exactly as in
+Blueprint v2. `time_features` reads named `batch.events` arrays.
+
+`history_model` and `task_head` optionally select registered/importable factories;
+`model.composition.readout` selects a built-in or user readout spec.
+`encoder_type` selects the graph-stage architecture for a graph-history model.
+The default uses the direct Kumo Engine implementation, no substitute.
+`GraphBuildContext` is the same public schema/encoder context passed to a
+user model factory and to built-ins.
+
+The graph-only composition objective matches `training.objective` (`binary`
+or `future_subgraph`) except in downstream-only mode, which is binary. A
+hybrid composition is always cutoff-level `binary`: a graph at history end
+cannot safely condition prefix-level next-event objectives. Surprise is refused.
+`training` configures the encoder stage; `sequence_training` configures the
+hybrid and sequence controls. Their optimizer, precision and logging settings
+are shared with other recipes. Eager unpacked, single-process execution is the
+current supported graph backend. `attention: sdpa` is the graph default;
+`eager` is the correctness control.
+
+`data.adapter` uses the common adapter registry/import-path resolver. Adapters
+can return timestamped `transfers` alongside transaction events. Graph inputs
+remain allowlisted numeric features with cutoff-bounded availability.
+`data.sequence_length` limits retained history and `max_tokens` limits tokens
+per event. Source `observed_through` is an explicit coverage watermark, not
+the last event timestamp. `pretrain_end`, `horizon_days` and `label_delay_days`
+apply to future-target construction. `probe_cutoff` applies to supervised arms.
+`training_graphs` selects `shared` or `disjoint`; validation and extraction stay
+disjoint. Graph sampling is never stratified by fraud labels.
+
+`runtime.stage` is `full`, `pretrain` or `downstream`.
+`runtime.encoder_checkpoint` is required for downstream-only training.
+Pretrain-only FutureSubgraph defaults `data.load_labels` to false; other graph
+stages require it true. Explicit choices inconsistent with the selected stage
+are rejected. The graph defaults set `stratify_by_fraud: false` and refuse
+label-dependent sampling. The [migration guide](../migration/2.0.0a3-to-2.0.0a4.md)
+lists stage artifacts and plain encoder reuse.
+
+Checkpoint identity covers configuration (apart from device), data, declared
+module types, schema, preprocessing, sampling and stage. Embedded metadata is
+validated before weights are installed; JSON sidecars are derived from it.
+Plain encoder manifests bind their bytes and input contract separately.
+Source provenance may be unknown when Git metadata is unavailable.
+
+
+Graph recipe defaults apply identically to YAML mappings and typed Python model
+sections. An omitted position selects `time_rope`; an explicit `nope` is retained.
+The event schema is validated before graph feature/target construction in every
+stage. The configured amount field must have at least one finite value in
+training-owner history by a graph-training cutoff; held-out owners or future target values do not establish
+that presence. Missing amounts on individual events remain supported.

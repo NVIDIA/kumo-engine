@@ -24,23 +24,32 @@ whole events; the oldest events are dropped.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from typing import TYPE_CHECKING, ClassVar, Self
 
 import torch
 
 from tfm.contracts.batch import TransactionBatch
-from tfm.contracts.schema import TransactionSequence, ensure_utc
+from tfm.contracts.schema import EntityProfile, TransactionSequence, ensure_utc
 from tfm.contracts.tokenizers import LAYOUT_FLAT_KEY_VALUE, EncodedFlatSequence
 from tfm.features.tokenizers.key_value_time import (
+    KeyValueTimeConfig,
+    key_value_time_manifest,
+    time_encode,
+)
+from tfm.features.tokenizers.registry import register_tokenizer
+from tfm.features.tokenizers.vocabulary import (
     EVT,
     PAD,
     UNK,
     USR,
-    KeyValueTimeTokenizer,
+    KeyValuePairs,
+    ValueVocabulary,
     event_fields,
-    time_encode,
 )
-from tfm.features.tokenizers.registry import register_tokenizer
+
+if TYPE_CHECKING:
+    from tfm.config import DataConfig, FeaturesConfig
 
 DT_BUCKET_WIDTH = 8.0
 N_DT_BUCKETS = 17
@@ -48,34 +57,69 @@ N_DT_BUCKETS = 17
 
 
 @register_tokenizer("flat_key_value")
-class FlatKeyValueTokenizer(KeyValueTimeTokenizer):
-    """Key-value-time vocabulary emitted as one `[EVT]`-separated token stream."""
+class FlatKeyValueTokenizer:
+    """A `ValueVocabulary` emitted as one `[EVT]`-separated token stream: one value token
+    per field, and a `KEY_` token before text bytes and before an `[UNK]` value."""
 
     name: str = "flat_key_value"
     layout: str = LAYOUT_FLAT_KEY_VALUE
     support_tier: str = "experimental"
+    requires_flat_fields = False
+    uses_profiles = True
 
-    def fit(self, sequences: Sequence[TransactionSequence]) -> FlatKeyValueTokenizer:
-        super().fit(sequences)
-        for dow in range(7):
-            self._add_token(f"DOW_{dow}")
-        for hour in range(24):
-            self._add_token(f"HOUR_{hour}")
-        self._add_token("DT_NA")
-        for bucket in range(N_DT_BUCKETS):
-            self._add_token(f"DT_{bucket}")
-        return self
+    def __init__(
+        self,
+        config: KeyValueTimeConfig | None = None,
+        profiles: Mapping[str, EntityProfile] | None = None,
+    ) -> None:
+        self.config = config or KeyValueTimeConfig()
+        self._profiles: dict[str, EntityProfile] = dict(profiles or {})
+        self.vocabulary = ValueVocabulary(self.config.vocabulary())
+        self.pairs = KeyValuePairs(self.vocabulary)
+
+    feature_keys: ClassVar[tuple[str, ...]] = ("categorical_keys",)
+    """The `features` keys `from_config` reads (`ConfiguredTokenizer`)."""
+
+    @classmethod
+    def from_config(cls, features: FeaturesConfig, data: DataConfig) -> Self:
+        """`data.max_tokens` is the row width here, not an event's, so the per-event cap
+        keeps its default."""
+        return cls(
+            KeyValueTimeConfig(
+                max_events_per_user=data.sequence_length,
+                categorical_keys=tuple(features.categorical_keys),
+            )
+        )
+
+    def set_profiles(self, profiles: Mapping[str, EntityProfile] | None) -> None:
+        self._profiles = dict(profiles or {})
+
+    @property
+    def vocab_size(self) -> int:
+        return self.vocabulary.size
 
     @property
     def pad_id(self) -> int:
         return PAD
 
+    def fit(self, sequences: Sequence[TransactionSequence]) -> FlatKeyValueTokenizer:
+        vocabulary = self.vocabulary
+        self.pairs.fit(vocabulary.collect(sequences, self._profiles))
+        for dow in range(7):
+            vocabulary.add_token(f"DOW_{dow}")
+        for hour in range(24):
+            vocabulary.add_token(f"HOUR_{hour}")
+        vocabulary.add_token("DT_NA")
+        for bucket in range(N_DT_BUCKETS):
+            vocabulary.add_token(f"DT_{bucket}")
+        return self
+
     def _field_tokens(self, key: str, value: str) -> list[int]:
         keys: list[int] = []
         values: list[int] = []
         positions: list[int] = []
-        self._encode_field(key, value, keys, values, positions)
-        kind = self.field_kind.get(key)
+        self.pairs.encode_field(key, value, keys, values, positions)
+        kind = self.vocabulary.field_kind.get(key)
         if kind == "text":
             return [keys[0], *values] if keys else []
         if values and values[0] == UNK:
@@ -84,7 +128,7 @@ class FlatKeyValueTokenizer(KeyValueTimeTokenizer):
 
     def _segments(self, sequence: TransactionSequence) -> tuple[list[int], list[list[int]]]:
         """The `[USR]` + profile prefix, and one token list per event."""
-        if not self._fitted:
+        if not self.vocabulary.fitted:
             raise RuntimeError(
                 "FlatKeyValueTokenizer is not fitted; call fit() on train sequences."
             )
@@ -105,16 +149,16 @@ class FlatKeyValueTokenizer(KeyValueTimeTokenizer):
         for event in events:
             ts = ensure_utc(event.event_timestamp)
             if previous is None:
-                gap = self.token_to_id["DT_NA"]
+                gap = self.vocabulary.token_to_id["DT_NA"]
             else:
                 delta = max((ts - previous).total_seconds(), 0.0)
                 bucket = min(int(time_encode(delta) // DT_BUCKET_WIDTH), N_DT_BUCKETS - 1)
-                gap = self.token_to_id[f"DT_{bucket}"]
+                gap = self.vocabulary.token_to_id[f"DT_{bucket}"]
             previous = ts
             tokens = [
                 EVT,
-                self.token_to_id[f"DOW_{ts.weekday()}"],
-                self.token_to_id[f"HOUR_{ts.hour}"],
+                self.vocabulary.token_to_id[f"DOW_{ts.weekday()}"],
+                self.vocabulary.token_to_id[f"HOUR_{ts.hour}"],
                 gap,
             ]
             fields = event_fields(event)
@@ -128,7 +172,7 @@ class FlatKeyValueTokenizer(KeyValueTimeTokenizer):
             segments.append(tokens)
         return prefix, segments
 
-    def encode(self, sequence: TransactionSequence) -> EncodedFlatSequence:  # type: ignore[override]
+    def encode(self, sequence: TransactionSequence) -> EncodedFlatSequence:
         prefix, segments = self._segments(sequence)
         ids = list(prefix)
         for tokens in segments:
@@ -156,7 +200,7 @@ class FlatKeyValueTokenizer(KeyValueTimeTokenizer):
             ids.extend(tokens)
         return ids
 
-    def collate(  # type: ignore[override]
+    def collate(
         self,
         sequences: Sequence[TransactionSequence],
         *,
@@ -180,9 +224,9 @@ class FlatKeyValueTokenizer(KeyValueTimeTokenizer):
 
     def manifest(self) -> dict[str, object]:
         return {
-            **super().manifest(),
-            "tokenizer": self.name,
-            "layout": self.layout,
+            **key_value_time_manifest(
+                self.name, self.layout, self.support_tier, self.config, self.pairs
+            ),
             "time_tokens": ["DOW", "HOUR", "DT"],
             "dt_bucket_width": DT_BUCKET_WIDTH,
             "n_dt_buckets": N_DT_BUCKETS,

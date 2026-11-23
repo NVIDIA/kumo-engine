@@ -1,10 +1,20 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+from pathlib import Path
+
+import pytest
+
 from tfm.config import DataConfig, RecipeConfig, TemporalSplitConfig
-from tfm.contracts.errors import SchemaError
+from tfm.contracts.errors import SchemaError, UnsupportedCombinationError
 from tfm.data.adapters.paths import resolve_data_path
-from tfm.data.adapters.registry import advertised_adapters, load_adapter_events
+from tfm.data.adapters.registry import (
+    advertised_adapters,
+    columnar_source,
+    load_adapter_events,
+    load_synthetic_adapter,
+    register_adapter,
+)
 from tfm.data.adapters.tabformer import write_tabformer_fixture
 from tfm.data.splits.temporal import assign_temporal_split
 from tfm.features.tokenizers import build_tokenizer
@@ -224,3 +234,48 @@ def test_present_merchant_state_is_preserved() -> None:
 
     tokenizer = build_tokenizer("transaction_field_tokenizer")
     assert "STATE_CA" in tokenizer.event_tokens(event)
+
+
+def test_an_adapter_without_a_columnar_source_cannot_feed_a_token_cache(tmp_path: Path) -> None:
+    split = TemporalSplitConfig(
+        train_end="2016-01-01T00:00:00Z", validation_end="2018-01-01T00:00:00Z"
+    )
+
+    def source(adapter: str) -> object:
+        return columnar_source(
+            DataConfig(adapter=adapter, path=str(tmp_path), temporal_split=split)
+        )
+
+    assert str(source("pragmatiq")) == str(tmp_path)
+    with pytest.raises(UnsupportedCombinationError, match=r"`Adapter` a `columnar_source`"):
+        source("tabformer")
+
+
+@pytest.mark.parametrize(
+    ("adapter", "error"),
+    [
+        ("tests.fixtures.user_adapter:BOOK", None),
+        ("tests.fixtures.user_adapter:columns", "must name a `tfm.data.adapters.Adapter`"),
+        ("tests.fixtures.no_such_module:BOOK", "Cannot import adapter"),
+        ("tests.fixtures.user_adapter:NOPE", "Cannot import adapter"),
+    ],
+)
+def test_an_adapter_is_selected_by_import_path(
+    tmp_path: Path, adapter: str, error: str | None
+) -> None:
+    split = TemporalSplitConfig(
+        train_end="2016-01-01T00:00:00Z", validation_end="2018-01-01T00:00:00Z"
+    )
+    config = DataConfig(adapter=adapter, path=str(tmp_path), temporal_split=split)
+    if error is not None:
+        with pytest.raises(UnsupportedCombinationError, match=error):
+            columnar_source(config)
+        return
+    assert str(columnar_source(config)) == str(tmp_path)
+    recipe = RecipeConfig.model_validate({"data": config.model_dump(mode="json")})
+    assert load_adapter_events(recipe).events
+
+
+def test_a_taken_adapter_name_is_refused() -> None:
+    with pytest.raises(UnsupportedCombinationError, match="'pragmatiq' is already registered"):
+        register_adapter("pragmatiq")(load_synthetic_adapter)

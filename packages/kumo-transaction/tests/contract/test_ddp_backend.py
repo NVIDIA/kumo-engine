@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 import socket
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -32,6 +33,7 @@ from torch import nn
 from tfm import Decoder, Flat, TrxFM
 from tfm.config import OptimizerConfig, RecipeConfig
 from tfm.contracts.batch import TransactionBatch
+from tfm.contracts.errors import UnsupportedCombinationError
 from tfm.contracts.schema import TransactionEvent, TransactionSequence
 from tfm.experimental import ProfileEventDecoder, compose_blueprint_v2
 from tfm.extras.capability import extra_available
@@ -330,3 +332,25 @@ def test_ddp_replicates_rather_than_shards() -> None:
     assert not capabilities.requires_cuda
     assert "key_value_time" in capabilities.batch_layouts
     assert "eager" in capabilities.backbones
+
+
+class _Stream:
+    """A sized loader that can only be iterated."""
+
+    def __len__(self) -> int:
+        return 1
+
+    def __iter__(self) -> Iterator[TransactionBatch]:
+        return iter([])
+
+
+def test_ddp_refuses_a_loader_it_cannot_index() -> None:
+    with pytest.raises(UnsupportedCombinationError, match="_Stream, which can only be iterated"):
+        DdpTrainer().fit(
+            nn.Linear(1, 1),
+            _Stream(),  # type: ignore[arg-type]
+            max_steps=1,
+            learning_rate=1e-3,
+            seed=0,
+            device=torch.device("cpu"),
+        )

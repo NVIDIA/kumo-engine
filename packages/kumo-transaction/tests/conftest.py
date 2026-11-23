@@ -1,7 +1,12 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import os
 from datetime import UTC, datetime, timedelta, timezone
+
+# Set before any test creates a CUDA/cuBLAS context; graph parity enables the
+# deterministic algorithms only for its own scope.
+os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
 
 import pytest
 
@@ -56,3 +61,17 @@ def make_event(
         },
         labels=labels,
     )
+
+
+@pytest.fixture
+def deterministic_graph_execution():
+    """Deterministic scatter/cuBLAS parity with the caller's settings restored."""
+    import torch
+
+    enabled = torch.are_deterministic_algorithms_enabled()
+    warn_only = torch.is_deterministic_algorithms_warn_only_enabled()
+    torch.use_deterministic_algorithms(True)
+    try:
+        yield
+    finally:
+        torch.use_deterministic_algorithms(enabled, warn_only=warn_only)

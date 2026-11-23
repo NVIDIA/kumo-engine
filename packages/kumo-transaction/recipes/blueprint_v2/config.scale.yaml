@@ -39,8 +39,7 @@ data:
   max_entities: 50000
   events_per_entity: 256
   # Pretrain on every 256-event train-side window of the sampled users. A
-  # token cache would read all 100k users, but it holds no labels, so it needs
-  # the spliced fraud task and this config keeps the book's own labels.
+  # token cache would read all 100k users; this config samples instead.
   pretrain_windows:
     events: 256
   temporal_split:

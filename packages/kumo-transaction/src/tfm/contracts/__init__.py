@@ -12,7 +12,7 @@ from tfm.contracts.errors import (
     UnsupportedCombinationError,
 )
 from tfm.contracts.kvt import EncodedKVTRecord, KeyValueTimeBatch
-from tfm.contracts.outputs import ModelOutput
+from tfm.contracts.outputs import AlignmentLosses, ModelOutput
 from tfm.contracts.schema import (
     EntityProfile,
     EventLabel,
@@ -30,6 +30,7 @@ from tfm.contracts.tokenizers import (
 )
 
 __all__ = [
+    "AlignmentLosses",
     "EncodedFlatSequence",
     "EntityProfile",
     "EncodedKVTRecord",

@@ -1,8 +1,16 @@
 # Source synchronization
 
 This directory imports the tracked source tree identified in [UPSTREAM.json](UPSTREAM.json).
-The branch name `transaction_foundation_2_2` identifies this sync; the imported
-Python distribution's version remains `2.0.0a2`.
+The branch name `transaction_foundation_2_4` identifies this sync; the imported
+Python distribution's version remains `2.0.0a4`.
+
+This sync advances the source from `8a67f98d5a7cfb4c1feeee06c0ce6383f5520671`
+to `6331312c3e85d6ce1fc868c99b1ffffc03bc50c5` and depends on
+[PR #507](https://github.com/NVIDIA/kumo-engine/pull/507) merging into Engine
+`main` first. Keep the child PR draft until that merge. After the parent merges,
+rebase only this sync's commit(s) onto current `main` (especially after a squash
+merge), verify the diff contains only the incremental sync, and rerun checks
+before marking the child ready. Do not merge the child into the parent branch.
 
 ## Local adaptations
 
@@ -15,7 +23,12 @@ Python distribution's version remains `2.0.0a2`.
 
 - `docs/_site/api/*.md`: use public source links for concept pages so the
   API pages resolve in both the source tree and the rendered site.
-- `benchmarks/results/README.md`: repair the stale config-migration link.
+- `benchmarks/results/README.md`: repair the stale config-migration link and
+  explain that raw graph artifacts are unavailable from this public snapshot.
+- `benchmarks/results/graph_*.json`: replace private raw/resource artifact URLs
+  with JSON `null`. Preserve measurements, source revisions, hashes, and sizes.
+  These are import-time adaptations to the pinned generated manifests; rerun
+  the same URL-only substitution after regenerating them upstream.
 - `scripts/gen_doc_pages.py`: include the sync guide and provenance inventory
   in the generated documentation site.
 
@@ -45,4 +58,4 @@ they do not configure Kumo Engine CI, ownership, releases, or contributions.
 5. Open a PR against Engine `main` recording the old and new source commits,
    local adaptations, validation results, and any skipped checks.
 
-A source sync does not publish a release or establish Engine API integration.
+A source sync does not publish a release or change the upstream support tier.

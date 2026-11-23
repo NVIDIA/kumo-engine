@@ -12,7 +12,6 @@ and `smoke` runs `config.smoke.yaml`.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 import yaml
 
@@ -77,55 +76,28 @@ def run_command(
     directory. `reuse_checkpoint` skips training when `run_dir/model.pt`
     exists, so a trained run can be re-evaluated.
     """
-    from tfm.runtime import pipeline
-    from tfm.runtime.common import is_primary_process, stage
+    from tfm.config import load_recipe_config
+    from tfm.runtime.pipeline import default_config_path
+    from tfm.runtime.registry import recipe_runner
 
     if command not in COMMANDS:
         raise ValueError(f"Unknown recipe command {command!r}; use one of {list(COMMANDS)}.")
-    if command == "smoke":
-        out = pipeline.run_smoke(run_dir=run_dir, config_path=config_path, device=device)
-        missing = [name for name in REQUIRED_ARTIFACTS if not (out / name).exists()]
-        if missing:
-            raise SystemExit(f"missing artifacts: {missing}")
-        print(f"smoke ok: {out}")
-        return out
-
-    # `train` needs only the pretraining corpus: with a flat-field token cache it
-    # is read from disk and no rank loads the book's events.
-    artifacts = pipeline.setup_run(
-        config_path=config_path,
+    source = config_path if config_path is not None else default_config_path()
+    config = load_recipe_config(source)
+    result = recipe_runner(config.recipe_family)(
+        command,
+        config=config,
+        config_path=source,
         run_dir=run_dir,
         device=device,
-        pretraining_only=command == "train",
+        reuse_checkpoint=reuse_checkpoint,
     )
-    reuse = reuse_checkpoint and command != "train" and (artifacts.run_dir / "model.pt").exists()
-    if reuse:
-        stage(f"train: reusing {artifacts.run_dir / 'model.pt'}")
-        stats: dict[str, Any] = {"final_loss": float("nan")}
-    else:
-        stats = pipeline.run_train(artifacts)
-    if not is_primary_process():
-        # Data-parallel ranks exist to train. Rank 0 alone infers, evaluates,
-        # and reports, so artifacts are written once.
-        return artifacts.run_dir
-    if command == "train":
-        stage(f"done: wrote {artifacts.run_dir} final_loss={float(stats['final_loss']):.4f}")
-        return artifacts.run_dir
-
-    tables = pipeline.run_infer(artifacts)
-    if command == "infer":
-        print(f"wrote embeddings under {artifacts.run_dir}")
-        print({split: table.vectors.shape for split, table in tables.items()})
-        return artifacts.run_dir
-
-    metrics = pipeline.run_evaluate(artifacts, tables)
-    if command == "evaluate":
-        print(metrics)
-        return artifacts.run_dir
-
-    pipeline.run_report(artifacts, metrics)
-    stage(f"done: wrote {artifacts.run_dir / 'model_card.md'}")
-    return artifacts.run_dir
+    if command == "smoke":
+        missing = [name for name in REQUIRED_ARTIFACTS if not (result / name).exists()]
+        if missing:
+            raise SystemExit(f"missing artifacts: {missing}")
+        print(f"smoke ok: {result}")
+    return result
 
 
 __all__ = ["COMMANDS", "REQUIRED_ARTIFACTS", "catalog_recipes", "resolve_config", "run_command"]

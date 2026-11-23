@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tfm"
-version = "2.0.0a2"
+version = "2.0.0a4"
 description = "Transaction Foundation Model v2 reference-architecture kit"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -17,7 +17,7 @@ dependencies = [
     "pydantic>=2.7",
     "pyyaml>=6.0",
     "scikit-learn>=1.5",
-    "torch>=2.4",
+    "torch>=2.9",
 ]
 
 [project.optional-dependencies]
@@ -33,10 +33,18 @@ xgboost = ["xgboost>=2.0"]
 # Optuna hyperparameter search, the task-specific reference a lift is measured against.
 baselines = ["xgboost>=2.0", "optuna>=4.0"]
 huggingface = ["transformers>=4.44"]
+# Graph encoders import the actual HeteroGNN shipped by this optional distribution.
+kumo = ["kumo-engine>=1.0.1"]
+pragmatiq = ["pragmatiq==1.1.0"]
 # UMAP matches the Blueprint's notebook-04 view; PCA is the no-extra default.
 umap = ["umap-learn>=0.5"]
 # nbmake is the pytest plugin `make test-notebooks` and CI use to execute every notebook.
-notebooks = ["ipykernel>=6.29", "jupyter>=1.0", "matplotlib>=3.8", "nbmake>=1.5"]
+notebooks = [
+    "ipykernel>=6.29",
+    "jupyter>=1.0",
+    "matplotlib>=3.8",
+    "nbmake>=1.5",
+]
 # The documentation site (`make docs`): MkDocs with the Material theme,
 # mkdocstrings for API pages generated from docstrings, mkdocs-gen-files to lay
 # out the repository's Markdown at its repo paths, and mkdocs-jupyter to render
@@ -61,6 +69,9 @@ Repository = "https://github.com/NVIDIA/kumo-engine/tree/main/packages/kumo-tran
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.uv]
+required-version = "==0.13.8"
 
 [tool.ruff]
 target-version = "py312"

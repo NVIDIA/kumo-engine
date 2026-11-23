@@ -10,9 +10,11 @@ from dataclasses import dataclass
 import torch
 from torch import Tensor
 
+from tfm.contracts.training import TrainableBatch
+
 
 @dataclass
-class TransactionBatch:
+class TransactionBatch(TrainableBatch):
     """Tensors and metadata consumed by model code.
 
     `input_ids` and `attention_mask` are required. Padding positions must be 0
