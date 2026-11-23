@@ -33,6 +33,7 @@ from typing import Iterator, Optional
 from kumo_core.chunked_fs import set_spool_dir
 
 import kumo.settings
+from kumo._managed_paths import _SnapshotPaths
 
 # Tests pin the root by patching this.
 _root: Optional[Path] = None
@@ -86,7 +87,7 @@ def snapshot_scratch_dir(graph_key: str) -> Path:
     itself is published under `indexes/<index_build_id>`. A graph/version
     reference in this directory preserves reuse of the completed build.
     """
-    return get_scratch_dir() / "snapshots" / graph_key
+    return _SnapshotPaths.for_root(get_scratch_dir()).graph_dir(graph_key)
 
 
 def train_table_scratch_dir(run_id: str) -> Path:

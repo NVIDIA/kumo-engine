@@ -525,3 +525,25 @@ def test_invalid_cached_time_metadata_does_not_hide_a_healthy_prefix_match(
     healthy_path = _completed_legacy(store, healthy)
     assert store.resolve_version_prefix(handle.graph_key, 'ver') == str(healthy_path)
     assert store.list_ready() == [healthy]
+
+
+def test_custom_snapshot_root_is_preserved_with_managed_publication(tmp_path):
+    store = LocalSnapshotStore(DiskgraphLocalConfig(
+        str(tmp_path / 'old-snapshot-location'), managed_root=str(tmp_path / 'managed')))
+    handle = DiskgraphSnapshotHandle('graph', 'version')
+    source = _completed_legacy(store, handle)
+    assert source == tmp_path / 'old-snapshot-location/graph/version'
+    metadata = source / 'index_metadata.json'
+    metadata.write_text(json.dumps({'index_build_id': 'build'}))
+    # This case checks path policy; native manifest sizes must match the new ID.
+    manifest = json.loads((source / '_MANIFEST.json').read_text())
+    for entry in manifest['files']:
+        entry['size_bytes'] = (source / entry['rel_path']).stat().st_size
+    (source / '_MANIFEST.json').write_text(json.dumps(manifest))
+    published = store.publish(handle, DiskgraphIngestResult.for_index(source))
+    assert published.index_path == str(tmp_path / 'managed/indexes/build')
+    reference = tmp_path / 'old-snapshot-location/graph/version.index.json'
+    assert json.loads(reference.read_text()) == {'index_build_id': 'build'}
+    assert store.path(handle) == published.index_path
+    assert store.list_ready() == [handle]
+    assert not (tmp_path / 'managed/snapshots').exists()
