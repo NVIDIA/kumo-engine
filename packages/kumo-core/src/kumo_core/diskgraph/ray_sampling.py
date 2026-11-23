@@ -83,7 +83,6 @@ class BatchContext(Protocol):
 
 
 logger = logging.getLogger(__name__)
-RAY_VERSION = "2.59.0"
 
 
 class SamplingUnavailableError(RuntimeError):
@@ -91,32 +90,24 @@ class SamplingUnavailableError(RuntimeError):
 
 
 def _ray() -> ModuleType:
-    import ray
-
-    if ray.__version__ != RAY_VERSION:
-        raise SamplingContractError(f"Ray {RAY_VERSION} is required on every process")
+    """Import optional Ray without changing its version or runtime lifecycle."""
+    try:
+        import ray
+    except ModuleNotFoundError as error:
+        if error.name != "ray":
+            raise
+        raise ModuleNotFoundError(
+            "Remote sampling requires Ray; install kumo-core[ray].", name="ray"
+        ) from error
     return ray
 
 
-@dataclass(frozen=True)
-class RayConnection:
-    """Serializable cluster connection for a process-local Ray client."""
-
-    address: str
-    namespace: str
-
-    def connect(self) -> None:
-        """Attach this process to the configured cluster if needed.
-
-        Raises:
-            SamplingContractError: If the Ray version or namespace differs.
-            ConnectionError: If the cluster is unavailable.
-        """
-        ray = _ray()
-        if not ray.is_initialized():
-            ray.init(address=self.address, namespace=self.namespace)
-        if ray.get_runtime_context().namespace != self.namespace:
-            raise SamplingContractError("client attached to a different Ray namespace")
+def _initialized_ray() -> ModuleType:
+    """Require the caller to initialize Ray before using remote sampling."""
+    ray = _ray()
+    if not ray.is_initialized():
+        raise RuntimeError("Initialize Ray before using remote sampling")
+    return ray
 
 
 @dataclass(frozen=True)
@@ -159,11 +150,9 @@ class ReplicaConfig:
 
 @dataclass(frozen=True)
 class RayBackendConfig:
-    """Serializable backend descriptor; actor handles attach after Ray connects."""
+    """Sampler handles and settings for a caller-initialized Ray runtime."""
 
-    connection: RayConnection
-    # Delay deserializing actor handles until the receiving process connects.
-    replicas: bytes | tuple[SamplerActor, ...]
+    replicas: tuple[SamplerActor, ...]
     artifacts: ArtifactIdentity
     engine_seed: int
     num_threads: int
@@ -179,14 +168,8 @@ class RayBackendConfig:
             or self.request_timeout <= 0
         ):
             raise SamplingContractError("invalid Ray backend identity or limits")
-        if not isinstance(self.replicas, bytes):
-            if not isinstance(self.replicas, tuple) or not self.replicas:
-                raise SamplingContractError(
-                    "sampling replicas must be a nonempty tuple"
-                )
-            object.__setattr__(
-                self, "replicas", _ray().cloudpickle.dumps(self.replicas)
-            )
+        if not isinstance(self.replicas, tuple) or not self.replicas:
+            raise SamplingContractError("sampling replicas must be a nonempty tuple")
 
 
 class _SamplerPool:
@@ -198,17 +181,9 @@ class _SamplerPool:
     """
 
     def __init__(self, config: RayBackendConfig) -> None:
-        config.connection.connect()
-        self.ray = _ray()
+        self.ray = _initialized_ray()
         self.config = config
-        encoded = config.replicas
-        self.replicas = (
-            cast(tuple[SamplerActor, ...], self.ray.cloudpickle.loads(encoded))
-            if isinstance(encoded, bytes)
-            else encoded
-        )
-        if not self.replicas:
-            raise SamplingContractError("at least one sampling replica is required")
+        self.replicas = config.replicas
         self.available = deque(range(len(self.replicas)))
         self.pending: dict[ObjectRef[HeteroBatchPayload], int] = {}
         self.lock = Lock()
@@ -405,7 +380,8 @@ def start_sampling_replicas(
 
     Raises:
         SamplingContractError: If replica identities/resources disagree.
-        RuntimeError: If any actor fails readiness; created actors are terminated.
+        RuntimeError: If Ray is uninitialized or actor readiness fails.
+            Created actors are terminated after a readiness failure.
     """
     if not configs or len(configs) != len(placements):
         raise SamplingContractError("one explicit placement is required per replica")
@@ -422,7 +398,7 @@ def start_sampling_replicas(
         raise SamplingContractError(
             "replicas must have identical artifacts and RNG pools"
         )
-    ray = _ray()
+    ray = _initialized_ray()
     actors: list[SamplerActor] = []
     with ExitStack() as cleanup:
         actor_class = ray.remote(_SamplerReplica)
@@ -449,8 +425,13 @@ def stop_sampling_replicas(replicas: tuple[SamplerActor, ...]) -> None:
 
     Args:
         replicas: All sampler handles belonging to the job.
+
+    Raises:
+        RuntimeError: If Ray is not initialized and replicas need to be stopped.
     """
-    ray = _ray()
+    if not replicas:
+        return
+    ray = _initialized_ray()
     for actor in replicas:
         ray.kill(actor, no_restart=True)
 

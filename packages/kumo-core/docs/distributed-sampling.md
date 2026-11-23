@@ -1,7 +1,11 @@
 # Ray sampling and encoding backend
 
-The optional `kumo-core[ray]` extra pins Ray 2.59.0. All participants need the
-DiskGraph-owned `SamplingPlan`, `SamplingOptions`, and `RuntimeBatch` APIs from
+The optional `kumo-core[ray]` extra installs Ray without an exact version pin.
+Ray 2.59.0 is the tested version; the backend does not enforce a version string.
+The launcher owns compatible Ray installations across the cluster and must call
+`ray.init(...)` in each trainer process before creating or consuming sampler
+actors. Core sampling never initializes, reconnects, or shuts down Ray.
+All participants need the DiskGraph-owned `SamplingPlan`, `SamplingOptions`, and `RuntimeBatch` APIs from
 #454 (stacked on #449 and #445), plus the native stateless sampling operation.
 
 Every remote actor samples and encodes a batch. The trainer receives frozen dataclass
@@ -45,8 +49,12 @@ semantics. Sharding, epoch, shuffle, selection, and weighted scheduling stay on
 the trainer and are reset in actor-side options. Options are shallow frozen:
 callers must not mutate their projection/selection containers during iteration.
 
-Create `RayBackendConfig` from the replica handles, artifact identities, and a
-`RayConnection`, then construct `RayRuntimeIndex(manifest_path, config)`.
+Create `RayBackendConfig` from the replica handles and artifact identities, then
+construct `RayRuntimeIndex(manifest_path, config)`. The configuration stores actor
+handles directly; it carries no address, namespace, or manually pickled handles.
+The caller must initialize Ray before transferring actor handles to another
+trainer process. Starting actors, consuming batches, and stopping owned actors
+fail clearly when Ray is uninitialized instead of triggering implicit startup.
 `iter(options)` returns a synchronous `HeteroData` iterator and sample/bucket
 count. The trainer associates each response with its pending Ray request; the
 response does not echo request metadata. It reconstructs tensors using
@@ -109,7 +117,7 @@ available on the trainer. Remote explanation capture is rejected explicitly.
 This integration changes the core DataModule, not the public SDK initialization
 or cluster provisioning API.
 
-After the launcher places immutable artifacts and attaches Ray, wiring is:
+After the launcher places immutable artifacts and calls `ray.init(...)`, wiring is:
 
 ```python
 encoder = datamodule.remote_batch_encoder()
@@ -127,7 +135,6 @@ configs = [
 actors = start_sampling_replicas(configs, placements)
 try:
     datamodule.sampling_backend = RayBackendConfig(
-        connection=connection,
         replicas=actors,
         artifacts=artifacts,
         engine_seed=datamodule.base_seed,

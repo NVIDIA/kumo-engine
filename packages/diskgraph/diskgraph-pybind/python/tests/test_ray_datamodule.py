@@ -33,7 +33,6 @@ from kumo_core.diskgraph.lightning_data import (
 from kumo_core.diskgraph.ray_sampling import (
     ArtifactIdentity,
     RayBackendConfig,
-    RayConnection,
     RayRuntimeIndex,
     ReplicaConfig,
     SamplerActor,
@@ -130,7 +129,6 @@ def remote_module(
         )
         actors = start_sampling_replicas([config, config], [placement, placement])
         module.sampling_backend = RayBackendConfig(
-            RayConnection("auto", "remote-datamodule"),
             actors,
             artifacts,
             42,

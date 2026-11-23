@@ -32,13 +32,12 @@ from kumo_core.diskgraph.batch_contract import (
 )
 from kumo_core.diskgraph.hetero_wire import unpack_python_hetero
 from kumo_core.diskgraph.ray_sampling import (
-    RAY_VERSION,
     RayBackendConfig,
-    RayConnection,
     RayRuntimeIndex,
     ReplicaConfig,
     SamplerActor,
     SamplingUnavailableError,
+    _ray,
     _SamplerPool,
     _SamplerReplica,
     start_sampling_replicas,
@@ -229,10 +228,83 @@ def test_actor_startup_cleanup_and_explicit_placement() -> None:
     assert options["num_cpus"] == 2
 
 
+def test_ray_import_does_not_require_a_version_or_initialized_runtime() -> None:
+    """Dependency discovery leaves runtime compatibility and setup to the caller."""
+    module = ModuleType("ray")
+    initialize = MagicMock()
+    module.__dict__.update({"__version__": "another-version", "init": initialize})
+    with patch.dict("sys.modules", {"ray": module}):
+        assert _ray() is module
+    initialize.assert_not_called()
+
+
+def test_missing_ray_reports_the_optional_extra() -> None:
+    """Explain how to install the backend without making Ray a local dependency."""
+    with (
+        patch.dict("sys.modules", {"ray": None}),
+        pytest.raises(ModuleNotFoundError, match=r"kumo-core\[ray\]") as caught,
+    ):
+        _ray()
+    assert caught.value.name == "ray"
+
+
+def test_ray_import_preserves_missing_transitive_dependency() -> None:
+    """Do not disguise a broken Ray installation as a missing Ray package."""
+    error = ModuleNotFoundError("missing Ray dependency", name="other_dependency")
+    with (
+        patch("builtins.__import__", side_effect=error),
+        pytest.raises(ModuleNotFoundError) as caught,
+    ):
+        _ray()
+    assert caught.value is error
+
+
+@pytest.mark.parametrize("operation", ["client", "start", "stop"])
+def test_sampling_requires_caller_initialized_ray(operation: str) -> None:
+    """Never let Ray actor/client operations implicitly create a local cluster."""
+    ray = MagicMock()
+    ray.is_initialized.return_value = False
+    actor = cast(SamplerActor, MagicMock())
+    with (
+        patch("kumo_core.diskgraph.ray_sampling._ray", return_value=ray),
+        pytest.raises(RuntimeError, match="Initialize Ray"),
+    ):
+        if operation == "client":
+            _SamplerPool(RayBackendConfig((actor,), _ARTIFACTS, 42, 2))
+        elif operation == "start":
+            start_sampling_replicas([_config()], ["node-affinity"])
+        else:
+            stop_sampling_replicas((actor,))
+    ray.init.assert_not_called()
+    ray.remote.assert_not_called()
+    ray.kill.assert_not_called()
+
+
+def test_empty_replica_cleanup_does_not_load_ray() -> None:
+    """Allow launcher cleanup when no sampler actors were created."""
+    with patch("kumo_core.diskgraph.ray_sampling._ray") as load:
+        stop_sampling_replicas(())
+    load.assert_not_called()
+
+
+def test_backend_config_retains_actor_handles_directly() -> None:
+    """Keep handles without importing Ray or serializing them inside configuration."""
+    actors = (cast(SamplerActor, MagicMock()),)
+    with patch("kumo_core.diskgraph.ray_sampling._ray") as load:
+        config = RayBackendConfig(actors, _ARTIFACTS, 42, 2)
+    assert config.replicas is actors
+    load.assert_not_called()
+
+
+def test_backend_config_rejects_legacy_encoded_handles() -> None:
+    """Reject an opaque descriptor that would require deferred reconnection."""
+    with pytest.raises(SamplingContractError, match="nonempty tuple"):
+        RayBackendConfig(cast(tuple[SamplerActor, ...], b"actors"), _ARTIFACTS, 42, 2)
+
+
 @pytest.fixture(scope="module")
 def ray_cluster() -> Iterator[ModuleType]:
     ray = pytest.importorskip("ray")
-    assert ray.__version__ == RAY_VERSION
     ray.init(
         num_cpus=2,
         include_dashboard=False,
@@ -244,10 +316,10 @@ def ray_cluster() -> Iterator[ModuleType]:
     ray.shutdown()
 
 
-def test_backend_descriptor_delays_actor_handle_deserialization(
+def test_backend_descriptor_uses_caller_initialized_process(
     ray_cluster: ModuleType,
 ) -> None:
-    """A new process must connect before deserializing a backend actor handle."""
+    """The launcher connects each trainer process before passing actor handles."""
     import subprocess
     import sys
 
@@ -255,20 +327,20 @@ def test_backend_descriptor_delays_actor_handle_deserialization(
     ray.cloudpickle.register_pickle_by_value(sys.modules[__name__])
     replicas = [ray.remote(_EncodedReplica).remote()]
     config = RayBackendConfig(
-        RayConnection("auto", "sampling-tests"),
         tuple(replicas),
         _ARTIFACTS,
         42,
         2,
     )
-    assert isinstance(config.replicas, bytes)
+    assert config.replicas[0] is replicas[0]
     child = """
 import ray
 from kumo_core.diskgraph.ray_sampling import RayRuntimeIndex
 import sys
 assert not ray.is_initialized()
+ray.init(address="auto", namespace="sampling-tests")
 config, request = ray.cloudpickle.loads(sys.stdin.buffer.read())
-assert not ray.is_initialized()
+assert ray.is_initialized()
 client = RayRuntimeIndex('metadata-only.json', config)
 batch = client._sample(request)
 assert batch["nodes"].n_id.tolist() == [9, 14]
@@ -453,7 +525,6 @@ def _backend(
     replicas: tuple[SamplerActor, ...], request_timeout: float = 300.0
 ) -> RayBackendConfig:
     return RayBackendConfig(
-        RayConnection("auto", "sampling-tests"),
         replicas,
         _ARTIFACTS,
         42,
@@ -515,14 +586,10 @@ def test_real_actor_death_retries_on_survivor(ray_cluster: ModuleType) -> None:
 def test_direct_call_has_no_control_rpcs() -> None:
     """Successful delivery issues only sample and result retrieval calls."""
     ray = MagicMock()
-    ray.get_runtime_context.return_value.namespace = "unused"
     actor = MagicMock()
     ref = actor.sample.remote.return_value
-    ray.cloudpickle.loads.return_value = (actor,)
     ray.get.return_value = _payload(_request())
-    config = RayBackendConfig(
-        RayConnection("unused", "unused"), b"actors", _ARTIFACTS, 42, 2
-    )
+    config = RayBackendConfig((actor,), _ARTIFACTS, 42, 2)
     with patch("kumo_core.diskgraph.ray_sampling._ray", return_value=ray):
         pool = _SamplerPool(config)
         unpack_python_hetero(

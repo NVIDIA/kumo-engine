@@ -73,7 +73,6 @@ def remote_index(
         )
         try:
             config = backend.RayBackendConfig(
-                backend.RayConnection("auto", "native-sampling-tests"),
                 actors,
                 artifacts,
                 42,

@@ -3515,7 +3515,7 @@ requires-dist = [
     { name = "pytest-cov", marker = "extra == 'test'", specifier = ">=5" },
     { name = "pytorch-frame", specifier = "==0.3.0" },
     { name = "pytorch-lightning", specifier = "==2.6.6" },
-    { name = "ray", marker = "extra == 'ray'", specifier = "==2.59.0" },
+    { name = "ray", marker = "extra == 'ray'" },
     { name = "scikit-learn", specifier = ">=1.6.1" },
     { name = "sqlglot", specifier = "==30.17.*" },
     { name = "tabulate", specifier = "==0.8.10" },

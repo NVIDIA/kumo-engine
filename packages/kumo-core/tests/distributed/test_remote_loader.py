@@ -26,7 +26,7 @@ from kumo_core.diskgraph.lightning_data import (
     RemoteDataLoader,
     _ShuffleStreamState,
 )
-from kumo_core.diskgraph.ray_sampling import RayBackendConfig, RayConnection
+from kumo_core.diskgraph.ray_sampling import RayBackendConfig, SamplerActor
 from torch_frame import TensorFrame
 from torch_geometric.data import HeteroData
 
@@ -93,10 +93,7 @@ class _Transport:
             for _ in range(3)
         )
         transport = SimpleNamespace(
-            __version__="2.59.0",
             is_initialized=lambda: True,
-            get_runtime_context=lambda: SimpleNamespace(namespace="loader-test"),
-            cloudpickle=SimpleNamespace(loads=lambda _encoded: self.actors),
             get=self.get,
             wait=self.wait,
             cancel=lambda ref, **_options: self.cancelled.append(ref),
@@ -104,8 +101,7 @@ class _Transport:
         )
         monkeypatch.setattr(ray_sampling, "_ray", lambda: transport)
         self.config = RayBackendConfig(
-            RayConnection("unused", "loader-test"),
-            b"actors",
+            cast(tuple[SamplerActor, ...], self.actors),
             ArtifactIdentity("snapshot", "task", "mapping"),
             42,
             1,
