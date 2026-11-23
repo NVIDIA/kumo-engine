@@ -6,6 +6,7 @@
 import argparse
 import hashlib
 import json
+import signal
 import subprocess
 import sys
 import traceback
@@ -136,6 +137,28 @@ def commands(args, platform, accelerator, root, source):
     return [command]
 
 
+def execute(command, log):
+    """Give an interrupted launcher time to stop and clean up its cloud work."""
+    process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT,
+                               start_new_session=True)
+    try:
+        return process.wait()
+    except BaseException:
+        try:
+            process.send_signal(signal.SIGINT)
+        except ProcessLookupError:
+            pass
+        try:
+            process.wait(timeout=900)
+        except subprocess.TimeoutExpired:
+            pass
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+        raise
+
+
 def run(args):
     platforms = PLATFORMS if args.platform == 'all' else (args.platform,)
     accelerators = ACCELERATORS if args.accelerator == 'all' else (args.accelerator,)
@@ -167,7 +190,7 @@ def run(args):
                     with (case / 'private.log').open('x') as log:
                         # Snowflake's launcher preserves explicit UI gaps in its exit status.
                         for index, command in enumerate(plan):
-                            code = subprocess.call(command, stdout=log, stderr=subprocess.STDOUT)
+                            code = execute(command, log)
                             if code and not (platform == 'snowflake' and index == 2):
                                 raise RuntimeError('Platform command failed; inspect private.log')
                     result = verify(platform, accelerator, case / 'execution')
@@ -203,6 +226,11 @@ def main():
     parser.add_argument('--gpu-cluster-id')
     parser.add_argument('--output-dir', type=Path, required=True)
     args = parser.parse_args()
+
+    def interrupted(signum, frame):
+        raise KeyboardInterrupt('Platform runner interrupted')
+
+    signal.signal(signal.SIGTERM, interrupted)
     result = run(args)
     print(json.dumps(result, indent=2))
     return result['status'] not in ('passed', 'planned')

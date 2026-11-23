@@ -93,7 +93,7 @@ def test_missing_gpu_cluster_fails_before_any_case_is_submitted(tmp_path):
 
 def test_interrupted_matrix_never_reports_unrun_cases_as_passed(tmp_path, monkeypatch):
     monkeypatch.setattr(runner.subprocess, 'check_output', lambda *a, **k: 'a' * 40)
-    monkeypatch.setattr(runner.subprocess, 'call', lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt()))
+    monkeypatch.setattr(runner, 'execute', lambda *a: (_ for _ in ()).throw(KeyboardInterrupt()))
     args = SimpleNamespace(platform='all', accelerator='all', execute=True,
                            verify_existing=False, wheel=tmp_path / 'engine.whl',
                            candidate=tmp_path / 'candidate.json',
@@ -208,3 +208,19 @@ def test_reusable_matrix_receives_only_declared_platform_credentials():
     assert set(declared) == keys
     assert forwarded == {key: '${{ secrets.' + key + ' }}' for key in keys}
     assert workflow['jobs']['lifecycle']['environment'] == '${{ matrix.environment }}'
+
+
+def test_interrupt_forwards_signal_and_waits_for_launcher_cleanup(monkeypatch):
+    from unittest.mock import Mock
+
+    process = Mock()
+    process.wait.side_effect = [KeyboardInterrupt(), 130]
+    process.poll.return_value = 130
+    start = Mock(return_value=process)
+    monkeypatch.setattr(runner.subprocess, 'Popen', start)
+    with pytest.raises(KeyboardInterrupt):
+        runner.execute(['launcher'], None)
+    assert start.call_args.kwargs['start_new_session']
+    process.send_signal.assert_called_once_with(runner.signal.SIGINT)
+    assert process.wait.call_args.kwargs == {'timeout': 900}
+    process.kill.assert_not_called()

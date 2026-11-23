@@ -184,6 +184,10 @@ jobs:
               command.append('--engine-checks-only')
           raise SystemExit(subprocess.call(command))
           PY
+      - name: Recover owned SageMaker attempt resources
+        if: always()
+        timeout-minutes: 12
+        run: python packages/kumo-engine/test/sagemaker_notebook/cleanup.py --output-dir "$RUNNER_TEMP/sagemaker-notebook"
       - name: Prepare public aggregate results
         if: always()
         env:

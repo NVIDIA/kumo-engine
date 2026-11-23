@@ -215,6 +215,13 @@ jobs:
           if [[ -f "$attempt/resources.json" ]]; then
             python packages/kumo-engine/test/databricks_notebook/cleanup.py --output-dir "$attempt"
           fi
+      - name: Recover owned SageMaker attempt resources
+        if: always() && matrix.platform == 'sagemaker'
+        timeout-minutes: 12
+        env:
+          ACCELERATOR: ${{ matrix.accelerator }}
+        run: |
+          python packages/kumo-engine/test/sagemaker_notebook/cleanup.py --output-dir "$RUNNER_TEMP/byom-result/sagemaker-$ACCELERATOR/execution"
       - name: Recover owned Snowflake notebook submissions
         if: always() && matrix.platform == 'snowflake'
         timeout-minutes: 5

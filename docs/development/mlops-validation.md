@@ -147,10 +147,8 @@ and compares complete predictions from both the custom loader and the promoted
 registry model. It uses the small in-memory engine; it does not test DiskGraph
 execution or model quality.
 
-Install a compatible `kumo-pytorch` wheel alongside the candidate Engine wheel
-and MLflow, following its [installation guide](../../packages/experimental/kumo-pytorch/docs/installation.md).
-Unlike the Engine candidate, the additional wheel is not checksum-qualified by
-the harness; record its build identity separately when qualifying a release.
+Install the candidate Engine wheel with its `pytorch` and `mlflow` extras.
+The Engine wheel bundles `kumo.pytorch`. See the [installation instructions](../../packages/experimental/kumo-pytorch/README.md#install).
 Then run:
 
 ```sh

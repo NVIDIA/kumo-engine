@@ -154,8 +154,17 @@ attempt Pipeline, model registration, S3 job/output/model prefixes, and MLflow
 artifact prefix, and soft-deletes its MLflow experiment metadata. Shared inputs
 remain cached. Cleanup refuses preexisting attempt resources, foreign tags,
 and active Pipelines, records failures, and fails an otherwise passing run.
-If a runner is cancelled before cleanup, its attempt-specific resources may
-remain; the idle shutdown bounds unattended Studio app lifetime.
+On interruption, the shared runner gives the launcher time to stop the pipeline
+and clean up. Actions also runs a recovery step using the attempt's local
+`resources.json`. To retry cleanup from a retained attempt directory, run:
+
+```sh
+python packages/kumo-engine/test/sagemaker_notebook/cleanup.py --output-dir /path/to/attempt
+```
+
+Recovery requires the dedicated SageMaker test credentials and verifies
+attempt ownership before stopping jobs or removing resources. The idle
+shutdown bounds unattended Studio app lifetime.
 
 ## Test resources and authentication
 

@@ -944,7 +944,16 @@ def run(args):
             report['platform_helpers_sha256'] = digest(
                 Path(__file__).with_name('wheel_mlops_platform.py'))
         profile = platform_backend(root)
-        custom = workload(args)
+        try:
+            custom = workload(args)
+        except Exception as error:
+            report['phases'] = {}
+            prerequisite = isinstance(error, (ImportError, PermissionError, PrerequisiteError))
+            blocked = prerequisite or (
+                profile is not None and platform_helpers().denied_access(
+                    error, provider_only=True, provider=profile.config['platform']))
+            report['status'] = 'blocked' if blocked else 'failed'
+            raise
         phases = phase_names(custom, profile)
         report['phases'] = {
             name: dict(status='blocked', reason='Prerequisite has not passed')

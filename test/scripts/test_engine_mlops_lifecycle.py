@@ -511,3 +511,19 @@ def test_customer_worker_records_the_loaded_phase_list(tmp_path, monkeypatch):
     assert runner.phase(args) == 0
     receipt = runner.read(tmp_path / 'train.json')
     assert receipt['workload']['phases'] == ['train', 'recover']
+
+
+@pytest.mark.parametrize(('source', 'status', 'error'), [
+    ('PHASES = (', 'failed', 'SyntaxError'),
+    ('PHASES = []', 'failed', 'AssertionError'),
+    ('import a_test_dependency_that_does_not_exist', 'blocked', 'ModuleNotFoundError'),
+])
+def test_invalid_customer_workload_has_no_default_phases(tmp_path, source, status, error):
+    path = tmp_path / 'customer.py'
+    path.write_text(source)
+    args = SimpleNamespace(output_dir=tmp_path / 'attempt', workload=path)
+    assert runner.run(args) == 1
+    report = runner.read(args.output_dir / 'summary.json')
+    assert report['status'] == status
+    assert report['phases'] == {}
+    assert error in report['error']

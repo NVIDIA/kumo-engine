@@ -1975,8 +1975,8 @@ def test_engine_only_verification_does_not_import_browser_tools(modules, monkeyp
     assert not (tmp_path / 'notebook.html').exists()
 
 
-@pytest.mark.parametrize('changed_phases', [False, True])
-def test_custom_kernel_loop_forwards_workload_and_removes_producer_scratch(tmp_path, changed_phases):
+@pytest.mark.parametrize('fault', [None, 'changed-phases', 'worker-error'])
+def test_custom_kernel_loop_forwards_workload_and_removes_producer_scratch(tmp_path, fault):
     import ast
     tree = ast.parse((HERE / 'kernel.py').read_text())
     selected = next(node for node in ast.walk(tree) if isinstance(node, ast.Assign)
@@ -1995,21 +1995,25 @@ def test_custom_kernel_loop_forwards_workload_and_removes_producer_scratch(tmp_p
         if name == 'reload':
             assert not (lifecycle / 'scratch-train').exists()
         (lifecycle / ('scratch-' + name)).mkdir()
-        (lifecycle / (name + '.json')).write_text(json.dumps(dict(
-            status='passed', workload=dict(phases=['train', 'reload', 'audit']
-                                           if changed_phases else ['train', 'reload']))))
+        phases = ['train', 'reload', 'audit'] if fault == 'changed-phases' else ['train', 'reload']
+        receipt = dict(status='passed', workload=dict(phases=phases))
+        if fault == 'worker-error':
+            receipt = dict(status='failed', error='Original worker traceback')
+        (lifecycle / (name + '.json')).write_text(json.dumps(receipt))
         calls.append(name)
-        return 0
+        return int(fault == 'worker-error')
     report = dict(phases={})
     scope = dict(sys=sys, json=json, shutil=shutil, custom=dict(file='customer.py', phases=['train', 'reload']),
                  config=dict(candidate=dict(expected_version='1')), payload=payload, lifecycle=lifecycle,
                  evidence=evidence, root=tmp_path, report=report, wheel=tmp_path / 'candidate.whl',
                  budget=SimpleNamespace(remaining=lambda root, cap: cap), helpers=SimpleNamespace(execute=worker))
     exec(compile(ast.Module(body=[selected, loop], type_ignores=[]), '<custom-kernel-loop>', 'exec'), scope)
-    if changed_phases:
+    if fault:
         assert calls == ['platform-prerequisite']
-        assert report['phases']['platform-prerequisite']['status'] == 'failed'
-        assert 'Runtime workload phases' in report['phases']['platform-prerequisite']['error']
+        receipt = report['phases']['platform-prerequisite']
+        assert receipt['status'] == 'failed'
+        expected = 'Original worker traceback' if fault == 'worker-error' else 'Runtime workload phases'
+        assert expected in receipt['error']
         return
     assert calls == ['platform-prerequisite', 'train', 'reload']
     assert set(report['phases']) == set(calls)
@@ -2060,3 +2064,40 @@ def test_gpu_job_uses_a_pinned_gpu_image_and_uploads_its_installer_helper(module
     helper = modules.run.SOURCES['wheel_mlops_workload.py']
     assert helper == HERE.parent / 'wheel_mlops_workload.py'
     assert helper.is_file()
+
+
+def test_recovery_stops_running_job_for_terminal_owned_pipeline(modules, tmp_path, monkeypatch):
+    from botocore.exceptions import ClientError
+
+    spec = dict(modules.config.configuration('gpu'), attempt='123456abcdef',
+                pipeline_name='kumo-test-notebook-123456abcdef',
+                source_commit='a' * 40, scenario='graph')
+    arn = f'arn:aws:sagemaker:{spec["region"]}:{spec["account"]}'
+    pipeline = f'{arn}:pipeline/{spec["pipeline_name"]}'
+    job = f'{arn}:training-job/{spec["pipeline_name"]}-job'
+    missing = ClientError({'Error': {'Code': 'ResourceNotFound'}}, 'DescribePipeline')
+    client = Mock()
+    client.s3.list_objects_v2.return_value = {}
+    client.sm.describe_pipeline.side_effect = [
+        missing, dict(PipelineArn=pipeline, RoleArn=spec['pipeline_role']),
+        dict(PipelineArn=pipeline, RoleArn=spec['pipeline_role'])]
+    client.sm.list_tags.return_value = dict(Tags=[
+        dict(Key='KumoTestSuite', Value='sagemaker-platform'),
+        dict(Key='KumoTestAttempt', Value=spec['attempt']),
+        dict(Key='KumoTestSource', Value=spec['source_commit'])])
+    client.sm.list_pipeline_executions.return_value = dict(PipelineExecutionSummaries=[
+        dict(PipelineExecutionStatus='Stopped', PipelineExecutionArn=pipeline + '/execution/test')])
+    client.sm.list_pipeline_execution_steps.return_value = dict(PipelineExecutionSteps=[
+        dict(Metadata=dict(TrainingJob=dict(Arn=job)))])
+    client.sm.describe_training_job.side_effect = [
+        dict(TrainingJobStatus=status, TrainingJobArn=job, RoleArn=spec['execution_role'])
+        for status in ('InProgress', 'Stopped')]
+    modules.evidence.save(tmp_path / 'scenario.json', spec)
+    # The interrupted runner acquired ownership but never reached __exit__.
+    modules.cleanup.AttemptResources(client, spec, tmp_path).__enter__()
+    monkeypatch.setattr(modules.cleanup.time, 'sleep', lambda _: None)
+    modules.cleanup.recover(tmp_path, client)
+    modules.cleanup.recover(tmp_path, client)
+    client.sm.stop_training_job.assert_called_once_with(TrainingJobName=spec['pipeline_name'] + '-job')
+    client.sm.delete_pipeline.assert_called_once_with(PipelineName=spec['pipeline_name'])
+    assert json.loads((tmp_path / 'cleanup.json').read_text())['status'] == 'passed'
