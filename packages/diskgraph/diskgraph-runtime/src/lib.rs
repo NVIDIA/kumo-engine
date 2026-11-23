@@ -1256,17 +1256,66 @@ pub struct RuntimeIndex {
     namespace: String,
 }
 impl RuntimeIndex {
-    /// Open the graph and training-table extension; propagate typed index errors.
+    /// Open the graph and a seed extension by index-local reference.
+    /// The shared reader rejects the parent itself and aliases of it. Inside
+    /// the parent, extensions must be train_tables/<id> or pred_tables/<id>;
+    /// External paths are reserved for managed internal callers.
     pub fn new(
         parent_root: String,
         tt_id: String,
         rnd_seed: Option<u64>,
         num_threads: Option<usize>,
     ) -> Result<Self> {
+        if std::path::Path::new(&tt_id).is_absolute() {
+            return Err(RuntimeError::config(
+                "absolute extension paths require the managed internal API",
+            ));
+        }
+        Self::new_impl(parent_root, tt_id, rnd_seed, num_threads)
+    }
+
+    #[doc(hidden)]
+    pub fn _new_with_extension_path(
+        parent_root: String,
+        extension_path: String,
+        rnd_seed: Option<u64>,
+        num_threads: Option<usize>,
+    ) -> Result<Self> {
+        if !std::path::Path::new(&extension_path).is_absolute() {
+            return Err(RuntimeError::config("extension path must be absolute"));
+        }
+        Self::new_impl(parent_root, extension_path, rnd_seed, num_threads)
+    }
+
+    fn new_impl(
+        parent_root: String,
+        tt_id: String,
+        rnd_seed: Option<u64>,
+        num_threads: Option<usize>,
+    ) -> Result<Self> {
         let parent_path = std::path::Path::new(&parent_root);
-        let reader = diskgraph_index::graph::GraphIndexReader::open_with_tt(parent_path, &tt_id)
-            .map_err(|e| RuntimeError::system(e.to_string()))?;
-        let namespace = tt_id.rsplit('/').next().unwrap_or(&tt_id).to_string();
+        let extension = std::path::Path::new(&tt_id);
+        let namespace = extension
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| RuntimeError::config("invalid extension path"))?
+            .to_string();
+        let reader = if extension.is_absolute() {
+            diskgraph_index::graph::GraphIndexReader::_open_with_extension_subdir(
+                parent_path,
+                &tt_id,
+                &namespace,
+            )
+        } else {
+            diskgraph_index::graph::GraphIndexReader::open_with_tt(parent_path, &tt_id)
+        }
+        .map_err(|e| {
+            if e.is::<diskgraph_index::graph::InvalidExtensionPath>() {
+                RuntimeError::config(e.to_string())
+            } else {
+                RuntimeError::system(e.to_string())
+            }
+        })?;
         let reader = Arc::new(reader);
         let engine = Arc::new(
             DiskGraphEngine::from_reader(reader.clone(), rnd_seed, num_threads)

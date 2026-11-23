@@ -622,7 +622,8 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
                 run.data.tags, run.data.params, run.data.metrics,
                 model_metrics(record), record.description,
                 [*self._card, *_card.charts(run.data.metrics)],
-                *self._fit_link(), blocks=blocks)
+                *self._fit_link(), blocks=blocks,
+                report=self._report_link(run, record))
 
             def render(kept: Sequence[Summary], files: Sequence[str]) -> str:
                 return '\n'.join([replace(card, summaries=kept).text(files),
@@ -638,6 +639,22 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
         except Exception as error:
             logger.warning('Could not write the description of MLflow run '
                            '%s: %s', self._parent, format_error(error))
+
+    def _report_link(self, run: Any, record: RunRecord) -> Optional[str]:
+        r"""The card's pointer to the fit's training report.
+
+        The Description sanitizes HTML (no scripts, styles or frames), so the
+        link opens the report in the Artifacts tab, which runs it.
+        """
+        if (record.tags.get('kumo.kind') != 'fit'
+                or _card.REPORT_FILE not in self._artifacts):
+            return None
+        if self.platform == 'databricks':
+            return _card.report_line(None)
+        # Without workflowType, MLflow 3 opens the link in its GenAI views.
+        return _card.report_line(
+            f'#/experiments/{run.info.experiment_id}/runs/{run.info.run_id}/'
+            f'artifacts/{_card.REPORT_FILE}?workflowType=machine_learning')
 
     def _editable(self, run: Any, first: bool) -> Optional[Tuple[str, str]]:
         tags = run.data.tags
@@ -864,7 +881,7 @@ class MlflowTracking(SingleRunHooks, TrackingBase):
             else:
                 with tempfile.TemporaryDirectory() as tmp:
                     path = Path(tmp) / posixpath.basename(name)
-                    path.write_text(text)
+                    path.write_text(text, encoding='utf-8')
                     repository.log_artifact(str(path),
                                             posixpath.dirname(name) or None)
 

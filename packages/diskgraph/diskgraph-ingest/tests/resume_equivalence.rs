@@ -3,9 +3,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Integration tests proving that resuming from any phase produces a
-//! byte-identical final index compared to running the same ingest end-to-end
-//! without resume. This is the core correctness invariant the resume code
-//! must satisfy.
+//! equivalent final index compared to running the same ingest end-to-end
+//! without resume. Physical build IDs intentionally differ between ingests.
 //!
 //! Strategy: for each phase boundary P, run two ingests against the same
 //! synthetic dataset:
@@ -21,9 +20,9 @@
 //! Drop, and SIGKILL skips destructors). The in-process resume then runs
 //! `ingest_with_stats_from_source` with the appropriate `resume_from_phase`.
 //!
-//! Final outputs are compared byte-for-byte for files that should be
-//! deterministic (`index_metadata.json`, `nodes/<t>/shard-N/{offsets.bin,
-//! edges.bin,build_stats.json}`).
+//! Final outputs are compared byte-for-byte for deterministic files
+//! (`nodes/<t>/shard-N/{offsets.bin,edges.bin,build_stats.json}`). Metadata
+//! is compared after replacing only its per-ingest build ID.
 
 use anyhow::{anyhow, bail, Context, Result};
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray, TimestampSecondArray};
@@ -205,10 +204,9 @@ fn ingest_binary() -> &'static str {
 }
 
 /// Run the ingest binary against `config_path`, watching for the
-/// `_phase_complete_<stop_after>` marker. The instant it appears, SIGKILL
-/// the child so on-disk state freezes there: `_tmp/` is preserved (no
-/// `cleanup_temp`), the predecessor + stop_after markers are present, and
-/// no successor phase has begun. Returns once the child is reaped.
+/// `_phase_complete_<stop_after>` marker. Once observed, SIGKILL the child so
+/// `_tmp/` survives and the predecessor markers are present. The worker may
+/// have started successor phases before the kill lands. Returns once reaped.
 fn run_partial(
     config_path: &Path,
     output_root: &Path,
@@ -324,17 +322,34 @@ fn kill_and_wait(child: &mut Child) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Byte-identical comparison
+// Comparison excluding intentionally unique build IDs
 // ---------------------------------------------------------------------------
 
 /// Files we expect to be byte-identical between baseline and split runs.
 const COMPARE_BASENAMES: &[&str] = &["offsets.bin", "edges.bin", "build_stats.json"];
 
-fn assert_indexes_byte_identical(baseline: &Path, split: &Path) -> Result<()> {
-    // index_metadata.json — the user-visible final manifest.
+fn normalized_index_metadata(path: &Path) -> Result<String> {
+    let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
+    let metadata: serde_json::Value = serde_json::from_slice(&bytes)?;
+    let id = metadata["index_build_id"]
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| anyhow!("{} has no index_build_id", path.display()))?;
+    let quoted_id = serde_json::to_string(id)?;
+    let text = std::str::from_utf8(&bytes)?;
+    if text.matches(&quoted_id).count() != 1 {
+        bail!("{} does not contain exactly one build ID", path.display());
+    }
+    Ok(text.replacen(&quoted_id, "\"<index_build_id>\"", 1))
+}
+
+fn assert_indexes_equivalent(baseline: &Path, split: &Path) -> Result<()> {
+    // The user-visible metadata differs only in its per-ingest build ID.
     let a = baseline.join("index_metadata.json");
     let b = split.join("index_metadata.json");
-    compare_files_byte_for_byte(&a, &b)?;
+    if normalized_index_metadata(&a)? != normalized_index_metadata(&b)? {
+        bail!("index metadata differs apart from the per-ingest build ID");
+    }
 
     // For every node table directory present under nodes/ in baseline,
     // walk shards and compare offsets/edges/build_stats. Edge-table-only
@@ -571,7 +586,7 @@ fn run_phase_boundary_test(stop_after: IngestPhase) -> Result<()> {
     if !split_root.join("index_metadata.json").exists() {
         bail!("split missing index_metadata.json");
     }
-    if let Err(e) = assert_indexes_byte_identical(&baseline_root, &split_root) {
+    if let Err(e) = assert_indexes_equivalent(&baseline_root, &split_root) {
         // Leak the tempdir so the user can inspect it.
         let leaked = tmp.keep();
         return Err(anyhow!(
@@ -589,8 +604,8 @@ fn run_phase_boundary_test(stop_after: IngestPhase) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 /// Sanity check: two fresh runs against the same fixture must produce
-/// byte-identical output, otherwise the equivalence assertion below cannot
-/// distinguish "resume bug" from "intrinsic non-determinism".
+/// equivalent output except for their unique build IDs. Otherwise, the
+/// assertion below cannot distinguish resume bugs from nondeterminism.
 #[test]
 fn fresh_vs_fresh_is_deterministic() -> Result<()> {
     let tmp = tempdir()?;
@@ -615,7 +630,7 @@ fn fresh_vs_fresh_is_deterministic() -> Result<()> {
             },
         )?;
     }
-    if let Err(e) = assert_indexes_byte_identical(&a_root, &b_root) {
+    if let Err(e) = assert_indexes_equivalent(&a_root, &b_root) {
         let leaked = tmp.keep();
         return Err(anyhow!(
             "fresh ingest is not deterministic: {e}\n  a: {}\n  b: {}",
@@ -633,7 +648,7 @@ fn fresh_vs_fresh_is_deterministic() -> Result<()> {
 /// to construct, so this case is not testable with our partial-then-resume
 /// pattern. Instead, we assert the documented equivalence directly: a
 /// fresh run and a `resume_from_phase=Some(Encode)` run on a clean output
-/// dir must produce a byte-identical final index.
+/// dir must produce an equivalent final index, except for its build ID.
 #[test]
 fn resume_from_encode_matches_fresh() -> Result<()> {
     let tmp = tempdir()?;
@@ -672,7 +687,7 @@ fn resume_from_encode_matches_fresh() -> Result<()> {
             ..Default::default()
         },
     )?;
-    assert_indexes_byte_identical(&baseline_root, &split_root)?;
+    assert_indexes_equivalent(&baseline_root, &split_root)?;
     Ok(())
 }
 
@@ -757,8 +772,79 @@ fn resume_wipes_stale_pk_map_outputs() -> Result<()> {
             "wipe failed: pk_hash-00000.bin still contains canary after resume from pk_map"
         );
     }
-    // And final output must match baseline byte-for-byte.
-    assert_indexes_byte_identical(&baseline_root, &split_root)?;
+    // Final output must match the baseline except for its build ID.
+    assert_indexes_equivalent(&baseline_root, &split_root)?;
+    Ok(())
+}
+
+#[test]
+fn shard_resize_restarts_version_2_encode_state_without_a_supplied_id() -> Result<()> {
+    let tmp = tempdir()?;
+    let config_path = write_synthetic_graph(&tmp.path().join("input"), "restart_v2")?;
+    let mut config: serde_json::Value = serde_json::from_slice(&fs::read(&config_path)?)?;
+    let encoded_config = serde_json::to_vec(&config)?;
+    config["num_shards"] = 4.into();
+    fs::write(&config_path, serde_json::to_vec(&config)?)?;
+    let options = |resume_from_phase| IngestOptions {
+        resume_from_phase,
+        source_loader_threads: Some(1),
+        source_encoder_threads: Some(1),
+        pk_map_threads: Some(1),
+        edges_map_threads: Some(1),
+        index_threads: Some(1),
+        ..Default::default()
+    };
+    let baseline_root = tmp.path().join("baseline");
+    let (baseline, _) = ingest_with_stats(
+        &config_path,
+        baseline_root.to_str().unwrap(),
+        Dest::Local,
+        options(None),
+    )?;
+    for supplied_id in [Some("build-a"), None] {
+        let directory_name = if supplied_id.is_some() {
+            "supplied"
+        } else {
+            "automatic"
+        };
+        let output = tmp.path().join(directory_name);
+        fs::create_dir_all(output.join("_tmp"))?;
+        let marker = marker_path(&output, IngestPhase::Encode);
+        fs::write(&marker, &encoded_config)?;
+        let state_path = output.join("_tmp/encode_state.json");
+        let state = serde_json::to_vec(&serde_json::json!({
+            "version": 2,
+            "source": serde_json::from_slice::<serde_json::Value>(&encoded_config)?,
+        }))?;
+        fs::write(&state_path, &state)?;
+        let sentinel = output.join("sentinel");
+        fs::write(&sentinel, b"old partial output")?;
+        let result = ingest_with_stats(
+            &config_path,
+            output.to_str().unwrap(),
+            Dest::Local,
+            IngestOptions {
+                index_build_id: supplied_id.map(str::to_owned),
+                ..options(Some(IngestPhase::PkMap))
+            },
+        );
+        if supplied_id.is_some() {
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("unsupported Encode state version"));
+            assert_eq!(fs::read(&marker)?, encoded_config);
+            assert_eq!(fs::read(&state_path)?, state);
+            assert_eq!(fs::read(&sentinel)?, b"old partial output");
+        } else {
+            let (metadata, _) = result?;
+            assert!(metadata.index_build_id.is_some());
+            assert_ne!(metadata.index_build_id, baseline.index_build_id);
+            assert_eq!(metadata.node_types[0].shards.len(), 4);
+            assert!(!sentinel.exists());
+            assert_indexes_equivalent(&baseline_root, &output)?;
+        }
+    }
     Ok(())
 }
 
@@ -795,12 +881,52 @@ fn resume_keeps_recorded_shards_unless_too_few() -> Result<()> {
         let split_root = tmp.path().join(format!("split-{resumed_with}"));
         set_shards(2)?;
         run_partial(&config_path, &split_root, IngestPhase::Encode)?;
+        // The worker can reach finalization before the test observes Encode's
+        // marker. Keep the saved Encode state, but model an interrupted build
+        // by removing any publication files before testing the restart.
+        for name in ["index_metadata.json", "_SUCCESS"] {
+            let path = split_root.join(name);
+            if path.exists() {
+                fs::remove_file(path)?;
+            }
+        }
+        let state: serde_json::Value =
+            serde_json::from_slice(&fs::read(split_root.join("_tmp/encode_state.json"))?)?;
+        let encoded_id = state["index_build_id"]
+            .as_str()
+            .ok_or_else(|| anyhow!("partial Encode state lacks index_build_id"))?
+            .to_owned();
         set_shards(resumed_with)?;
-        ingest(&split_root, Some(IngestPhase::PkMap))?;
+        if resumed_with == 4 {
+            let error = ingest_with_stats(
+                &config_path,
+                split_root.to_str().unwrap(),
+                Dest::Local,
+                IngestOptions {
+                    index_build_id: Some("different-build".into()),
+                    ..options(Some(IngestPhase::PkMap))
+                },
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("index_build_id already has output"));
+            assert!(marker_path(&split_root, IngestPhase::Encode).exists());
+            ingest_with_stats(
+                &config_path,
+                split_root.to_str().unwrap(),
+                Dest::Local,
+                IngestOptions {
+                    index_build_id: Some(encoded_id.clone()),
+                    ..options(Some(IngestPhase::PkMap))
+                },
+            )?;
+        } else {
+            ingest(&split_root, Some(IngestPhase::PkMap))?;
+        }
         let metadata: serde_json::Value =
             serde_json::from_slice(&fs::read(split_root.join("index_metadata.json"))?)?;
+        assert_eq!(metadata["index_build_id"].as_str(), Some(encoded_id.as_str()));
         let shards = metadata["node_types"][0]["shards"].as_array().map(Vec::len);
         assert_eq!(shards, Some(expected_shards));
     }
-    assert_indexes_byte_identical(&baseline_root, &tmp.path().join("split-1"))
+    assert_indexes_equivalent(&baseline_root, &tmp.path().join("split-1"))
 }

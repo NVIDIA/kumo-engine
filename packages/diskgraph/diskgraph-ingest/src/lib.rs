@@ -665,6 +665,53 @@ fn encoded_num_shards(root: &Path) -> Result<Option<usize>> {
         .map(|n| n as usize))
 }
 
+fn encoded_index_build_id(root: &Path) -> Result<Option<String>> {
+    let path = root.join(ENCODE_STATE_PATH);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let state: serde_json::Value = serde_json::from_slice(&fs::read(&path)?)?;
+    let version = state["version"].as_u64();
+    ensure!(
+        version == Some(ENCODE_STATE_VERSION as u64),
+        "unsupported Encode state version {:?} at {}; restart as a fresh ingest",
+        version,
+        path.display()
+    );
+    let id = state["index_build_id"]
+        .as_str()
+        .ok_or_else(|| {
+            anyhow!(
+                "Encode state has no index_build_id at {}; restart as a fresh ingest",
+                path.display()
+            )
+        })?;
+    validate_index_build_id(id)?;
+    Ok(Some(id.to_owned()))
+}
+
+fn recorded_index_build_id(root: &Path) -> Result<Option<String>> {
+    let metadata_path = root.join("index_metadata.json");
+    let metadata_id = match fs::read(&metadata_path) {
+        Ok(bytes) => serde_json::from_slice::<DatasetMetadata>(&bytes)
+            .with_context(|| format!("decode index metadata: {}", metadata_path.display()))?
+            .index_build_id,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("read index metadata: {}", metadata_path.display()))
+        }
+    };
+    let encoded_id = encoded_index_build_id(root)?;
+    if let (Some(metadata_id), Some(encoded_id)) = (&metadata_id, &encoded_id) {
+        ensure!(
+            metadata_id == encoded_id,
+            "resumed index_build_id metadata/state mismatch"
+        );
+    }
+    Ok(metadata_id.or(encoded_id))
+}
+
 /// An Encode marker written before the clock was always recorded omits it, which
 /// reads as seconds.
 fn encode_marker_matches(marker: &[u8], payload: &[u8]) -> bool {
@@ -814,6 +861,9 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
         raise_open_file_limit();
     }
     validate_profile_dir(options.profile_dir.as_deref())?;
+    if let Some(id) = options.index_build_id.as_deref() {
+        validate_index_build_id(id)?;
+    }
     // Validate the exact graph-feature statistics contract at the common
     // public-ingest boundary, before source normalization or output writes.
     validate_exact_category_count_options(&options)?;
@@ -935,13 +985,56 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
     if !matches!(&*target, OutputTarget::Local { .. }) {
         return Err(anyhow!("index build requires local output"));
     }
+    let resume_from_phase = options.resume_from_phase.filter(|_| !restart);
+    let recorded_id = if let OutputTarget::Local { root, .. } = &*target {
+        ensure!(
+            resume_from_phase != Some(IngestPhase::Encode)
+                || (!root.join(crate::success_marker::SUCCESS_MARKER_FILENAME).exists()
+                    && !root.join("index_metadata.json").exists()),
+            "cannot resume Encode over a completed index at {}; choose a new ID and output path for a fresh ingest",
+            root.display()
+        );
+        let recorded_id = if resume_from_phase.is_some() {
+            recorded_index_build_id(root)?
+        } else {
+            None
+        };
+        if let (Some(id), Some(previous)) =
+            (options.index_build_id.as_deref(), recorded_id.as_deref())
+        {
+            ensure!(
+                id == previous,
+                "resumed index_build_id does not match existing index"
+            );
+        }
+        let matching_partial_restart = options.index_build_id.is_some()
+            && restart
+            && !root.join(crate::success_marker::SUCCESS_MARKER_FILENAME).exists()
+            && !root.join("index_metadata.json").exists()
+            && options.index_build_id.as_deref() == encoded_index_build_id(root)?.as_deref();
+        ensure!(
+            options.index_build_id.is_none()
+                || resume_from_phase.is_some()
+                || !root.exists()
+                || matching_partial_restart,
+            "index_build_id already has output at {}; choose a new ID or resume the existing build",
+            root.display()
+        );
+        recorded_id
+    } else {
+        unreachable!("validated above: ingest requires local output")
+    };
+    let index_build_id = options
+        .index_build_id
+        .clone()
+        .or(recorded_id)
+        .unwrap_or_else(diskgraph_core::metadata::new_index_build_id);
     // Invalidation belongs at the reusable ingest boundary, not only in the
     // CLI supervisor: pybind and direct Rust callers can also retry/resume.
     // Complete this synchronously before `prepare`, a fresh local wipe, phase
     // cleanup, or any upload can mutate objects below a published marker.
     target.invalidate_publication()?;
     target.prepare()?;
-    let resume_from_phase = options.resume_from_phase.filter(|_| !restart);
     if let OutputTarget::Local { root, .. } = &*target {
         // Log disk space before ingest as a pre-flight warning
         log_disk_space(root);
@@ -1000,7 +1093,14 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
     // can reach the manifest/mirror after `ctx` has consumed its own
     // clone. Cloning an `Arc` is cheap (refcount bump).
     let target_for_finalize = std::sync::Arc::clone(&target);
-    let mut ctx = IngestContext::new(source, target, options, output, stage_sidecars)?;
+    let mut ctx = IngestContext::new(
+        source,
+        target,
+        options,
+        output,
+        stage_sidecars,
+        index_build_id,
+    )?;
     let profile_dir = ctx.profile_dir.clone();
     if let Some(profile_dir) = &profile_dir {
         fs::create_dir_all(profile_dir)?;
@@ -1516,6 +1616,126 @@ mod tests_resume_phase {
     }
 
     #[test]
+    fn invalid_index_build_id_does_not_remove_existing_output() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("index");
+        fs::create_dir(&output).unwrap();
+        fs::write(output.join("sentinel"), b"keep").unwrap();
+        let source: GraphConfig =
+            serde_json::from_str(r#"{"dataset_name": "test", "tables": []}"#).unwrap();
+        for bad_id in [" ", ".", "..", "nested/build", "nested\\build", "D:build"] {
+            let error = ingest_with_stats_from_source(
+                source.clone(),
+                None,
+                output.to_str().unwrap(),
+                Dest::Local,
+                IngestOptions {
+                    index_build_id: Some(bad_id.into()),
+                    ..IngestOptions::default()
+                },
+                None,
+                None,
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("index_build_id"), "{bad_id}: {error}");
+            assert_eq!(fs::read(output.join("sentinel")).unwrap(), b"keep");
+        }
+    }
+
+    #[test]
+    fn reused_index_build_id_does_not_replace_existing_output() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("index");
+        fs::create_dir(&output).unwrap();
+        fs::write(output.join("index_metadata.json"), br#"{"index_build_id":"build-a"}"#)
+            .unwrap();
+        fs::write(output.join("_SUCCESS"), b"published").unwrap();
+        let mut table = tests_repopulate_helpers::node_table("nodes", Some("id"));
+        table.source = crate::graph_config::DataSource::Parquet {
+            paths: vec![directory.path().join("source.parquet").to_string_lossy().into_owned()],
+        };
+        let source = GraphConfig {
+            timestamp_unit: Default::default(),
+            dataset_name: "test".to_owned(),
+            tables: vec![table],
+            rowpack: None,
+            num_shards: None,
+            edge_format: None,
+            coercion_mode: Default::default(),
+        };
+        let error = ingest_with_stats_from_source(
+            source,
+            None,
+            output.to_str().unwrap(),
+            Dest::Local,
+            IngestOptions {
+                index_build_id: Some("build-a".into()),
+                ..IngestOptions::default()
+            },
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("index_build_id already has output"));
+        assert_eq!(fs::read(output.join("_SUCCESS")).unwrap(), b"published");
+        assert_eq!(
+            fs::read(output.join("index_metadata.json")).unwrap(),
+            br#"{"index_build_id":"build-a"}"#
+        );
+    }
+
+    #[test]
+    fn encode_resume_rejects_completed_output_before_mutation() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut table = tests_repopulate_helpers::node_table("nodes", Some("id"));
+        table.source = crate::graph_config::DataSource::Parquet {
+            paths: vec![directory.path().join("new-source.parquet").to_string_lossy().into_owned()],
+        };
+        let source = GraphConfig {
+            timestamp_unit: Default::default(),
+            dataset_name: "test".to_owned(),
+            tables: vec![table],
+            rowpack: None,
+            num_shards: None,
+            edge_format: None,
+            coercion_mode: Default::default(),
+        };
+        for publication_file in ["index_metadata.json", "_SUCCESS"] {
+            for supplied_id in [None, Some("build-a")] {
+                let directory_name = if supplied_id.is_some() {
+                    "supplied"
+                } else {
+                    "automatic"
+                };
+                let output = directory.path().join(publication_file).join(directory_name);
+                fs::create_dir_all(&output).unwrap();
+                fs::write(output.join(publication_file), b"published").unwrap();
+                fs::write(output.join("sentinel"), b"keep").unwrap();
+                let error = ingest_with_stats_from_source(
+                    source.clone(),
+                    None,
+                    output.to_str().unwrap(),
+                    Dest::Local,
+                    IngestOptions {
+                        index_build_id: supplied_id.map(str::to_owned),
+                        resume_from_phase: Some(IngestPhase::Encode),
+                        ..IngestOptions::default()
+                    },
+                    None,
+                    None,
+                )
+                .unwrap_err();
+                assert!(error
+                    .to_string()
+                    .contains("cannot resume Encode over a completed index"));
+                assert_eq!(fs::read(output.join(publication_file)).unwrap(), b"published");
+                assert_eq!(fs::read(output.join("sentinel")).unwrap(), b"keep");
+                assert!(!output.join("_tmp").exists());
+            }
+        }
+    }
+
+    #[test]
     fn ingest_phase_ordering() {
         assert!(IngestPhase::Encode < IngestPhase::PkMap);
         assert!(IngestPhase::PkMap < IngestPhase::EdgesMap);
@@ -2006,6 +2226,8 @@ mod tests_repopulate_helpers {
             row_subsample: false,
             text_sample_stats: HashMap::new(),
             parent_index_path: None,
+            index_build_id: "test-build".into(),
+            parent_index_build_id: None,
             resolve_columns: Vec::new(),
             cutoff_col_stats: None,
         }
@@ -2017,6 +2239,59 @@ mod tests_repopulate_helpers {
             mirror: None,
             manifest: Arc::new(crate::snapshot_mirror::ManifestAccumulator::new()),
         })
+    }
+
+    #[test]
+    fn resume_rejects_a_different_encoded_parent_build() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        fs::create_dir(root.join("_tmp")).unwrap();
+        let source = graph_config(Vec::new());
+        let mut encoded = make_ctx(source.clone(), local_target(root), 1);
+        encoded.parent_index_build_id = Some("build-a".into());
+        encoded.persist_encode_state().unwrap();
+
+        let mut resumed = make_ctx(source.clone(), local_target(root), 1);
+        resumed.index_build_id = "other-build".into();
+        let error = resumed.restore_encode_state().unwrap_err();
+        assert!(error.to_string().contains("resumed index_build_id"));
+
+        resumed.index_build_id = "test-build".into();
+        resumed.parent_index_build_id = Some("build-b".into());
+        let error = resumed.restore_encode_state().unwrap_err();
+        assert!(error.to_string().contains("resumed parent_index_build_id"));
+
+        resumed.parent_index_build_id = Some("build-a".into());
+        resumed.restore_encode_state().unwrap();
+    }
+
+    #[test]
+    fn resume_rejects_corrupt_index_metadata() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join("index_metadata.json"), b"not json").unwrap();
+        let error = recorded_index_build_id(directory.path()).unwrap_err();
+        assert!(error.to_string().contains("decode index metadata"));
+    }
+
+    #[test]
+    fn resume_rejects_version_2_encode_state_without_build_identity() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        fs::create_dir(root.join("_tmp")).unwrap();
+        let source = graph_config(Vec::new());
+        let encoded = make_ctx(source.clone(), local_target(root), 1);
+        encoded.persist_encode_state().unwrap();
+        let path = root.join(ENCODE_STATE_PATH);
+        let mut state: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        state["version"] = 2.into();
+        state.as_object_mut().unwrap().remove("index_build_id");
+        state.as_object_mut().unwrap().remove("parent_index_build_id");
+        fs::write(&path, serde_json::to_vec(&state).unwrap()).unwrap();
+
+        let mut resumed = make_ctx(source, local_target(root), 1);
+        let error = resumed.restore_encode_state().unwrap_err();
+        assert!(error.to_string().contains("unsupported Encode state version 2"));
+        assert!(error.to_string().contains("restart as a fresh ingest"));
     }
 
     // -- A. repopulate_node_stats_from_meta --------------------------------
@@ -2823,6 +3098,8 @@ struct IngestContext {
     /// reference columns to node-ids (see `resolve_columns`). `None` for an
     /// ordinary base-graph ingest.
     parent_index_path: Option<PathBuf>,
+    index_build_id: String,
+    parent_index_build_id: Option<String>,
     /// FK-free LP resolution columns (see [`crate::config::ResolveColumnSpec`]).
     /// When non-empty the encode phase resolves the listed columns' PK
     /// reference value(s) to graph node-ids and writes them as rowpack columns
@@ -2831,7 +3108,7 @@ struct IngestContext {
     cutoff_col_stats: Option<crate::cutoff_col_stats::CutoffColStatsRequest>,
 }
 
-const ENCODE_STATE_VERSION: u32 = 2;
+const ENCODE_STATE_VERSION: u32 = 3;
 const ENCODE_STATE_PATH: &str = "_tmp/encode_state.json";
 const RESUME_STATS_STATE_VERSION: u32 = 1;
 const PK_MAP_STATE_PATH: &str = "_tmp/pk_map_state.json";
@@ -2858,6 +3135,10 @@ struct EncodeWeightCounts {
 struct EncodeState {
     version: u32,
     source: GraphConfig,
+    #[serde(default)]
+    index_build_id: Option<String>,
+    #[serde(default)]
+    parent_index_build_id: Option<String>,
     binary_label_counts: Vec<EncodeLabelCounts>,
     sample_weight_counts: Vec<EncodeWeightCounts>,
     dropped_rows_counts: HashMap<String, u64>,
@@ -7177,7 +7458,14 @@ impl IngestContext {
         options: IngestOptions,
         output: &str,
         stage_sidecars: HashMap<String, StageSidecarColumns>,
+        index_build_id: String,
     ) -> Result<Self> {
+        let parent_index_build_id = options
+            .parent_index_path
+            .as_deref()
+            .map(Self::read_parent_index_metadata_at)
+            .transpose()?
+            .and_then(|metadata| metadata.index_build_id);
         let index_mem_budget_bytes = options
             .index_mem_budget_bytes
             .or_else(default_index_mem_budget_bytes);
@@ -7429,6 +7717,8 @@ impl IngestContext {
             row_subsample: options.row_subsample,
             text_sample_stats: HashMap::new(),
             parent_index_path: options.parent_index_path,
+            index_build_id,
+            parent_index_build_id,
             resolve_columns: options.resolve_columns,
             cutoff_col_stats: options.cutoff_col_stats,
         })
@@ -8081,6 +8371,8 @@ impl IngestContext {
         let state = EncodeState {
             version: ENCODE_STATE_VERSION,
             source: self.source.clone(),
+            index_build_id: Some(self.index_build_id.clone()),
+            parent_index_build_id: self.parent_index_build_id.clone(),
             pk_sampled_max_key_len: self.pk_sampled_max_key_len.clone(),
             binary_label_counts: self
                 .binary_label_counts
@@ -8134,11 +8426,19 @@ impl IngestContext {
             .with_context(|| format!("decode completed Encode state: {}", path.display()))?;
         if state.version != ENCODE_STATE_VERSION {
             return Err(anyhow!(
-                "unsupported Encode state version {} at {}",
+                "unsupported Encode state version {} at {}; restart as a fresh ingest",
                 state.version,
                 path.display()
             ));
         }
+        ensure!(
+            state.index_build_id.as_deref() == Some(self.index_build_id.as_str()),
+            "resumed index_build_id does not match the build used by Encode"
+        );
+        ensure!(
+            state.parent_index_build_id == self.parent_index_build_id,
+            "resumed parent_index_build_id does not match the parent used by Encode"
+        );
         self.source = state.source;
         self.binary_label_counts = state
             .binary_label_counts
@@ -11967,6 +12267,21 @@ impl IngestContext {
         Ok(removed_bytes)
     }
 
+    fn read_parent_index_metadata_at(parent: &Path) -> Result<DatasetMetadata> {
+        let path = parent.join("index_metadata.json");
+        let bytes = fs::read(&path)
+            .with_context(|| format!("read parent metadata {}", path.display()))?;
+        serde_json::from_slice(&bytes)
+            .with_context(|| format!("parse parent metadata {}", path.display()))
+    }
+
+    fn read_parent_index_metadata(&self) -> Result<Option<DatasetMetadata>> {
+        self.parent_index_path
+            .as_deref()
+            .map(Self::read_parent_index_metadata_at)
+            .transpose()
+    }
+
     fn build_index(&mut self, metadata: DatasetMetadata) -> Result<()> {
         let root = require_local_output(&self.target)?.to_path_buf();
         // Coordinated layout fix (write side): if this is a sub-index ingest
@@ -11976,26 +12291,8 @@ impl IngestContext {
         // metadata stays clean — externals only live in the in-memory build
         // scope. See `GraphIndexBuilder::with_external_node_types`.
         let external_node_types = self
-            .parent_index_path
-            .as_ref()
-            .map(|p| -> Result<Vec<_>> {
-                let parent_meta_path = p.join("index_metadata.json");
-                let bytes = fs::read(&parent_meta_path).with_context(|| {
-                    format!(
-                        "coordinated layout fix: read parent metadata {}",
-                        parent_meta_path.display()
-                    )
-                })?;
-                let parent_meta: DatasetMetadata =
-                    serde_json::from_slice(&bytes).with_context(|| {
-                        format!(
-                            "coordinated layout fix: parse parent metadata {}",
-                            parent_meta_path.display()
-                        )
-                    })?;
-                Ok(parent_meta.node_types)
-            })
-            .transpose()?
+            .read_parent_index_metadata()?
+            .map(|metadata| metadata.node_types)
             .unwrap_or_default();
         let builder = GraphIndexBuilder::from_metadata(
             metadata,
@@ -12201,9 +12498,18 @@ impl IngestContext {
             });
         }
 
+        let current_parent_index_build_id = self
+            .read_parent_index_metadata()?
+            .and_then(|metadata| metadata.index_build_id);
+        ensure!(
+            current_parent_index_build_id == self.parent_index_build_id,
+            "parent_index_build_id changed during ingest"
+        );
         let index_metadata = DatasetMetadata {
             timestamp_unit: self.source.timestamp_unit,
             dataset_name: self.source.dataset_name.clone(),
+            index_build_id: Some(self.index_build_id.clone()),
+            parent_index_build_id: self.parent_index_build_id.clone(),
             node_types,
             edge_relations,
         };
@@ -12995,6 +13301,19 @@ fn validate_profile_dir(profile_dir: Option<&Path>) -> Result<()> {
     ensure!(
         !cfg!(windows) || profile_dir.is_none(),
         "CPU profiling is not supported on Windows"
+    );
+    Ok(())
+}
+
+fn validate_index_build_id(id: &str) -> Result<()> {
+    ensure!(!id.trim().is_empty(), "index_build_id must not be empty");
+    ensure!(
+        id != "."
+            && id != ".."
+            && !id.contains('/')
+            && !id.contains('\\')
+            && !id.contains(':'),
+        "index_build_id must be a single path component"
     );
     Ok(())
 }
