@@ -1104,6 +1104,7 @@ class Trainer:
             name. Defaults to the installed ones (``kumo-engine[text]``).
         accelerator: Lightning device selection: ``auto`` (default), ``cpu``,
             ``gpu``, or ``mps``. Applies to training and prediction.
+            On native Windows, ``auto`` selects CPU.
     """
     def __init__(
         self,
@@ -1115,6 +1116,8 @@ class Trainer:
         if accelerator not in ('cpu', 'gpu', 'mps', 'auto'):
             raise ValueError(
                 "accelerator must be one of 'cpu', 'gpu', 'mps', or 'auto'")
+        if accelerator == 'auto' and platform.system() == 'Windows':
+            accelerator = 'cpu'
         # Lightning maps 'gpu' to MPS on a Mac, and MPS kernels abort the
         # process before macOS 15.
         release = platform.mac_ver()[0]
@@ -1898,6 +1901,7 @@ class Trainer:
         with, registered in ``embedding_models`` under any name or installed.
         ``accelerator`` selects the device for this instance, defaulting to
         ``auto`` independently of the device used to train the model.
+        On native Windows, ``auto`` selects CPU.
         """
         return cls._load_bundle(Path(bundle_path), embedding_models,
                                 accelerator=accelerator)
@@ -1923,6 +1927,7 @@ class Trainer:
         Hashes detect corruption, not publisher authentication. Load only models
         from trusted publishers; checkpoint deserialization happens at predict.
         ``accelerator`` selects the device for this instance (default: ``auto``).
+        On native Windows, ``auto`` selects CPU.
         A `kumo.MLOps` ``model_registry`` reads ``path`` under its artifact
         root (``models/<id>``) and ``location`` in its tracker's registry.
         """
