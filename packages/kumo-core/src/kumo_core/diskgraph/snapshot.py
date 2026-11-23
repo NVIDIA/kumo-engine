@@ -164,7 +164,8 @@ class LocalSnapshotStore:
                 return None
             self._verify_path(str(path))
         except (DiskgraphCorruptionError, DiskgraphSnapshotError,
-                FileNotFoundError, ValueError, KeyError):
+                FileNotFoundError, IsADirectoryError, NotADirectoryError,
+                ValueError, KeyError):
             return None
         return DiskgraphIngestResult.for_index(path)
 
@@ -281,10 +282,12 @@ class LocalSnapshotStore:
     def _ready_paths(
             self, graph_key: str, version_prefix: str = "",
     ) -> Iterator[tuple[DiskgraphSnapshotHandle, str]]:
+        from diskgraph import DiskgraphCorruptionError
+
         graph_dir = os.path.join(self.config.data_root, graph_key)
         try:
             versions = sorted(os.listdir(graph_dir))
-        except OSError:
+        except (FileNotFoundError, NotADirectoryError):
             return
         for version in versions:
             snapshot_dir = os.path.join(graph_dir, version)
@@ -301,8 +304,11 @@ class LocalSnapshotStore:
             try:
                 if is_reference:
                     snapshot_dir = self.path(handle)
+                self._verify_path(snapshot_dir)
                 result = check_diskgraph_output(snapshot_dir)
-            except (DiskgraphSnapshotError, OSError, ValueError, KeyError):
+            except (DiskgraphCorruptionError, DiskgraphSnapshotError,
+                    FileNotFoundError, IsADirectoryError, NotADirectoryError,
+                    ValueError, KeyError):
                 logger.warning("Skipping invalid snapshot at %s", snapshot_dir)
                 continue
             if result is not None:
@@ -313,7 +319,7 @@ class LocalSnapshotStore:
         seen: set[DiskgraphSnapshotHandle] = set()
         try:
             graph_keys = sorted(os.listdir(self.config.data_root))
-        except OSError:
+        except (FileNotFoundError, NotADirectoryError):
             return ready
         for graph_key in graph_keys:
             for handle, _ in self._ready_paths(graph_key):
@@ -344,9 +350,21 @@ class LocalSnapshotStore:
 
     @staticmethod
     def _verify_path(path: str) -> DiskgraphIngestResult:
-        from diskgraph import read_success_marker, verify_snapshot_integrity
+        from diskgraph import (
+            DiskgraphCorruptionError,
+            read_success_marker,
+            verify_snapshot_integrity,
+        )
 
-        verify_snapshot_integrity(path)
+        try:
+            verify_snapshot_integrity(path)
+        except DiskgraphCorruptionError as error:
+            # The native binding also wraps CorruptionError::Io in this class.
+            # Its exact variant prefix distinguishes I/O failures from damage;
+            # permission/resource errors must not trigger a rebuild or restore.
+            if str(error).startswith("io error verifying "):
+                raise OSError(str(error)) from error
+            raise
         marker = read_success_marker(path)
         if marker is None:
             raise DiskgraphSnapshotError(

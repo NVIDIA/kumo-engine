@@ -50,6 +50,7 @@ remote/durable cache, e.g. a Snowflake stage) -- out of scope for now.
 
 import json
 import logging
+import shutil
 import threading
 import time
 import warnings
@@ -317,15 +318,23 @@ def _lock(graph_key: str) -> Any:
 
 def _loaded(store: Any, handle: Any) -> Optional[Any]:
     from diskgraph import DiskgraphCorruptionError, read_success_marker
-    from kumo_core.diskgraph.snapshot import rebased
+    from kumo_core.diskgraph.snapshot import (
+        DiskgraphSnapshotError,
+        check_diskgraph_output,
+        rebased,
+    )
 
-    path = store.path(handle)
-    if read_success_marker(path) is None:
-        return None
+    path = store.staging_path(handle)
     try:
+        path = store.path(handle)
+        if read_success_marker(path) is None:
+            return None
         store.verify(handle)
+        if check_diskgraph_output(path) is None:
+            return None
         return rebased(store, handle)
-    except (DiskgraphCorruptionError, ValueError) as error:
+    except (DiskgraphCorruptionError, DiskgraphSnapshotError, FileNotFoundError,
+            IsADirectoryError, NotADirectoryError, ValueError, KeyError) as error:
         warnings.warn(f"Reloading the damaged graph index at {path}: {error}",
                       UserWarning, stacklevel=3)
         return None
@@ -882,8 +891,6 @@ class Graph:
         from kumo_core.diskgraph.snapshot import (
             DiskgraphIngestResult,
             DiskgraphSnapshotHandle,
-            check_diskgraph_output,
-            rebased,
         )
         from kumo_core.diskgraph.stores import diskgraph_index_size_bytes
         from kumo_core.sources.layout import staging_dir
@@ -968,13 +975,16 @@ class Graph:
             data_version = fingerprint(*version_parts)
             handle = DiskgraphSnapshotHandle(graph_key=graph_key,
                                              graph_data_version=data_version)
-            output_dir = Path(store.path(handle))
-
-            existing = check_diskgraph_output(str(output_dir))
+            existing = _loaded(store, handle)
             if existing is not None:
-                result = rebased(store, handle)
+                result = existing
             else:
                 output_dir = Path(store.staging_path(handle))
+                # Only this graph-owned staging path can be rebuilt. A damaged
+                # published build remains untouched while ingest allocates a
+                # new physical identity. The graph lock excludes other writers.
+                if output_dir.exists():
+                    shutil.rmtree(output_dir)
                 output_dir.mkdir(parents=True, exist_ok=True)
                 # The Rust ingest binary only writes the index's
                 # `_MANIFEST.json` (read later by, e.g., kumo_core.diskgraph.

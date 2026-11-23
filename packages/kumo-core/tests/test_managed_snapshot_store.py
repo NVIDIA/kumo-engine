@@ -20,6 +20,15 @@ from kumo_core.diskgraph.snapshot import (
 )
 
 
+def _manifest(path):
+    (path / '_MANIFEST.json').write_text(json.dumps({
+        'schema_version': 1,
+        'files': [{'rel_path': child.name, 'size_bytes': child.stat().st_size}
+                  for child in path.iterdir()
+                  if child.is_file() and child.name not in ('_SUCCESS', '_MANIFEST.json')],
+    }))
+
+
 @pytest.fixture
 def staged(tmp_path):
     store = LocalSnapshotStore(DiskgraphLocalConfig(
@@ -33,6 +42,7 @@ def staged(tmp_path):
     (path / 'col_stats.json').write_text('{}')
     (path / 'ingest_stats.json').write_text('{}')
     (path / 'kumo_col_stats').mkdir()
+    _manifest(path)
     return store, handle, result, path
 
 
@@ -173,6 +183,7 @@ def test_listing_includes_managed_and_idless_legacy_snapshots(staged, tmp_path):
     (path / 'ingest_stats.json').write_text('{}')
     (path / 'kumo_col_stats').mkdir()
     (path / '_SUCCESS').write_text(DiskgraphIngestResult.for_index(path).to_json())
+    _manifest(path)
     assert set(store.list_ready()) == {handle, legacy}
     assert store.path(legacy) == str(path)
     store._reference(handle).write_text('{invalid')
