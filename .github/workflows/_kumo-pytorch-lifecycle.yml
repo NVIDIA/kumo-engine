@@ -1,0 +1,92 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: PyTorch model lifecycle
+on:  # yamllint disable-line rule:truthy
+  workflow_call:
+    inputs:
+      tier:
+        description: Model tier whose saved runs will be checked.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: ${{ inputs.tier == 't2a' && 'H&M Small' || 'H&M Medium' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ inputs.tier == 't2a' && 30 || 45 }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: packages/experimental/kumo-pytorch
+    env:
+      TIER: ${{ inputs.tier }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/kumo-pytorch-setup
+        with:
+          diskgraph-wheel-artifact: diskgraph-wheel
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: kumo-pytorch-${{ inputs.tier }}-${{ github.run_attempt }}-*-seed*
+          path: ${{ runner.temp }}/e2e-runs
+      - name: Place the runs where the checks read them
+        run: |
+          prefix="kumo-pytorch-$TIER-$GITHUB_RUN_ATTEMPT-"
+          mkdir -p "$RUNNER_TEMP/e2e/$TIER"
+          for run in "$RUNNER_TEMP/e2e-runs/$prefix"*; do
+            name=${run##*/}
+            mv "$run" "$RUNNER_TEMP/e2e/$TIER/${name#"$prefix"}"
+          done
+      - name: Check the runs
+        env:
+          KUMO_PYTORCH_DIAGNOSTICS: ${{ runner.temp }}/pytorch-${{ github.run_id }}-${{ github.run_attempt }}
+          KUMO_PYTORCH_E2E_REUSE_ONLY: '1'
+        run: |
+          python -m tests.e2e.ci_command "$KUMO_PYTORCH_DIAGNOSTICS/pytest.log" \
+            python -m pytest --junitxml="$KUMO_PYTORCH_DIAGNOSTICS/junit.xml" -q "--$TIER" --e2e-dir "$RUNNER_TEMP/e2e" --durations=0 \
+            tests/e2e/test_lifecycle.py
+      - name: Summarize metrics and run times
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/e2e/$TIER/metrics.json" ]; then
+            {
+              echo "### ${TIER^} metrics"
+              echo '```json'
+              cat "$RUNNER_TEMP/e2e/$TIER/metrics.json"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: ./.github/actions/kumo-pytorch-results
+        if: always() && inputs.tier == 't2a'
+        with: {name: kumo-pytorch-t2a-checks}
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: failure() && inputs.tier == 't2a'
+        with:
+          name: kumo-pytorch-t2a-predictions-and-metrics-${{ github.run_attempt }}
+          retention-days: 14
+          path: |
+            ${{ runner.temp }}/e2e/t2a/metrics.json
+            ${{ runner.temp }}/e2e/t2a/*/*.json
+            ${{ runner.temp }}/e2e/t2a/*/*.parquet
+            ${{ runner.temp }}/e2e/t2a/*/*-predictions/*
+            !${{ runner.temp }}/e2e/t2a/**/index/**
+      - uses: ./.github/actions/kumo-pytorch-results
+        if: always() && inputs.tier == 't2b'
+        with:
+          name: kumo-pytorch-t2b-predictions-and-metrics
+          retention-days: 14
+          path: |
+            ${{ runner.temp }}/e2e/t2b/metrics.json
+            ${{ runner.temp }}/e2e/t2b/*/*.json
+            ${{ runner.temp }}/e2e/t2b/*/*.parquet
+            ${{ runner.temp }}/e2e/t2b/*/*-predictions/*
+            !${{ runner.temp }}/e2e/t2b/hm-m/**
+            !${{ runner.temp }}/e2e/t2b/sampled/**
+            !${{ runner.temp }}/e2e/t2b/**/index/**

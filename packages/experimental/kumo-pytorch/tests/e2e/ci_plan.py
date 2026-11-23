@@ -13,6 +13,7 @@ from collections import Counter
 from datetime import datetime
 from itertools import product
 from pathlib import Path
+from time import time
 from xml.etree import ElementTree
 
 from tests.e2e.binding_plan import BINDINGS, NIGHTLY_TRAINING, selections
@@ -76,7 +77,7 @@ def make_plan(event_name, event, *, ref, **identity):
         torch_backend="cu130" if mode in ("cuda", "aml", "l01-cuda", "binding-train") else "cpu",
         binding=binding,
         training_bindings=training,
-        seed_start=None,
+        seed_start=int(time()) // 86400 * 12 if suite else None,
         suite=suite,
     )
     plan["jobs"] = planned_jobs(plan)
@@ -84,9 +85,10 @@ def make_plan(event_name, event, *, ref, **identity):
     return plan
 
 
-def training_job(binding):
+def training_job(binding, plan):
     dataset = {"S": "Synthetic", "M": "MBD", "L": "AML"}[binding[0]]
-    return f"GPU training / {dataset} {binding}"
+    caller = "Training" if plan["suite"] else "GPU training"
+    return f"{caller} / {dataset} {binding}"
 
 
 def planned_jobs(plan):
@@ -96,7 +98,7 @@ def planned_jobs(plan):
         "Build / diskgraph-wheel": True,
     }
     if plan["training_bindings"]:
-        expected.update({training_job(b): True for b in plan["training_bindings"]})
+        expected.update({training_job(b, plan): True for b in plan["training_bindings"]})
     else:
         expected["GPU training"] = False
     if not plan["suite"]:
@@ -114,15 +116,12 @@ def planned_jobs(plan):
     expected["Package tests"] = True
     for child in ("DiskGraph tests", "Run notebooks", "Install from wheel"):
         expected[f"Distribution / {child}"] = True
-    for tier, caller in ((T2A, "H&M Small"), (T2B, "H&M Medium and conformance")):
-        children = ["Select model runs", "Verify lifecycle results"]
-        children.extend(
-            f"Train and evaluate {row['flow']} (seed {row['seed']})"
-            for row in matrix(tier)["include"]
-        )
-        if tier == T2B:
-            children.extend(f"Engine conformance (shard {i})" for i in range(len(CONFORMANCE)))
-        expected.update({f"{caller} / {child}": True for child in children})
+    for tier, dataset in ((T2A, "H&M Small"), (T2B, "H&M Medium")):
+        expected[f"Lifecycle / {dataset}"] = True
+        for row in matrix(tier)["include"]:
+            expected[f"Training / {dataset} · {row['flow']} (seed {row['seed']})"] = True
+    for i in range(len(CONFORMANCE)):
+        expected[f"Package tests / Engine conformance (shard {i})"] = True
     return expected
 
 
@@ -133,10 +132,7 @@ def account_jobs(plan, raw):
         name = job["name"]
         if name in {"Publish results", "kumo-pytorch-gate"}:
             continue  # These are evaluated at the gate and in the completed scheduled run.
-        if (
-            name in {"Distribution / diskgraph-wheel", "H&M Small / diskgraph-wheel"}
-            and job["conclusion"] == "skipped"
-        ):
+        if name == "Distribution / diskgraph-wheel" and job["conclusion"] == "skipped":
             continue  # The coordinating workflow supplies this wheel.
         if name in jobs or (job["head_sha"], job["run_attempt"], job["run_id"]) != (
             plan["source_revision"],
@@ -425,7 +421,7 @@ def results(plan, jobs, artifacts, directory):
         try:
             intervals = []
             for binding in plan["training_bindings"]:
-                job = workers[training_job(binding)]
+                job = workers[training_job(binding, plan)]
                 intervals.append(
                     (
                         datetime.fromisoformat(job["started_at"]),
@@ -661,6 +657,9 @@ def main():
         if output := os.getenv("GITHUB_OUTPUT"):
             with open(output, "a") as handle:
                 print(f"training_bindings={json.dumps(data['training_bindings'])}", file=handle)
+                if data["suite"]:
+                    for tier in (T2A, T2B):
+                        print(f"{tier.name}={json.dumps(matrix(tier))}", file=handle)
                 names = sorted(evidence_names(data))
                 pattern = "{" + ",".join(names) + "}" if len(names) > 1 else "".join(names)
                 print(f"evidence_pattern={pattern}", file=handle)

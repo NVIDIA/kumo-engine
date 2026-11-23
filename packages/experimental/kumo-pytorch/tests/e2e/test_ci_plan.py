@@ -42,13 +42,15 @@ def jobs(p):
     ]
 
 
-def test_pr_and_nightly_require_identical_package_jobs_and_evidence():
+def test_pr_and_nightly_require_identical_package_jobs_and_evidence(monkeypatch):
+    monkeypatch.setattr(ci, "time", lambda: 86400 * 100 + 42)
     pr = plan()
     nightly = plan("schedule")
     replay = plan("workflow_dispatch", inputs={})
     for field in ("jobs", "selections", "training_bindings", "seed_start", "torch_backend"):
         assert pr[field] == nightly[field] == replay[field]
     assert ci.evidence_names(pr) == ci.evidence_names(nightly)
+    assert nightly["seed_start"] == 1200
     assert all(pr["jobs"].values())
     assert not {"cuda", "binding-full", "aml-benchmark", "streaming-25b"} & pr["jobs"].keys()
     assert ci.account_jobs(pr, jobs(pr))[1] == []
@@ -58,11 +60,15 @@ def test_pr_and_nightly_require_identical_package_jobs_and_evidence():
     for mode in ("correctness", "training", "lifecycle"):
         assert {r["binding"] for r in rows if r["mode"] == mode} == set(ci.BINDINGS)
     assert [r["binding"] for r in rows if r["scope"] == "full_source"] == pr["training_bindings"]
-    assert all(
-        pr["jobs"][f"H&M Medium and conformance / Engine conformance (shard {i})"] for i in range(3)
-    )
-    for caller in ("H&M Small", "H&M Medium and conformance"):
-        assert pr["jobs"][f"{caller} / Train and evaluate gnn (seed 0)"]
+    assert all(pr["jobs"][f"Package tests / Engine conformance (shard {i})"] for i in range(3))
+    training = [name for name in pr["jobs"] if name.startswith("Training / ")]
+    assert len(training) == 15
+    assert "Training / AML L01" in training
+    for dataset, seeds in (("H&M Small", 3), ("H&M Medium", 2)):
+        assert pr["jobs"][f"Lifecycle / {dataset}"]
+        for flow, count in (("gnn", seeds), ("pragma", 2)):
+            for i in range(count):
+                assert f"Training / {dataset} · {flow} (seed {i})" in training
     fork = dict(PR, head={"sha": "head", "repo": {"full_name": "fork/project"}})
     with pytest.raises(ValueError, match="private datasets and a same-repository PR"):
         plan(pull_request=fork)
@@ -244,7 +250,7 @@ def test_scheduled_verification_distinguishes_firing_and_failing(tmp_path):
     p = plan("schedule")
     raw = jobs(p)
     raw[0]["conclusion"] = "failure"
-    next(j for j in raw if j["name"] == "GPU training / Synthetic S02")["completed_at"] = (
+    next(j for j in raw if j["name"] == "Training / Synthetic S02")["completed_at"] = (
         "2026-11-01T01:30:00Z"
     )
     report = ci.results(p, raw, [], tmp_path)

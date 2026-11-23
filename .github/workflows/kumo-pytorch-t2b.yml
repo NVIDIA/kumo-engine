@@ -2,15 +2,14 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-name: kumo-pytorch nightly end-to-end
-
-# Manually run the same Medium suite used by the package PR and nightly jobs.
+name: PyTorch Medium model suite
 on:  # yamllint disable-line rule:truthy
   workflow_dispatch:
     inputs:
       seed_start:
         description: First extra conformance seed batch (default derived from the date)
         required: false
+        type: string
 
 permissions:
   contents: read
@@ -20,9 +19,8 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  diskgraph-wheel:
-    uses: ./.github/workflows/_diskgraph-wheel.yml
-
-  lifecycle:
-    needs: diskgraph-wheel
-    uses: ./.github/workflows/_kumo-pytorch-t2b.yml
+  suite:
+    uses: ./.github/workflows/kumo-pytorch-t2a.yml
+    with:
+      tier: t2b
+      seed_start: ${{ inputs.seed_start }}

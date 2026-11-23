@@ -33,6 +33,8 @@ jobs:
       plan: ${{ steps.select.outputs.plan }}
       training_bindings: ${{ steps.select.outputs.training_bindings }}
       evidence_pattern: ${{ steps.select.outputs.evidence_pattern }}
+      small_models: ${{ steps.select.outputs.t2a }}
+      medium_models: ${{ steps.select.outputs.t2b }}
     steps:
       - &checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
@@ -97,19 +99,39 @@ jobs:
     uses: ./.github/workflows/kumo-pytorch-diskgraph.yml
     with: {prebuilt-wheel: true}
 
-  hm-small:
-    name: H&M Small
+  conformance:
+    name: Package tests
     needs: [plan, diskgraph-wheel]
-    uses: ./.github/workflows/kumo-pytorch-t2a.yml
-    with: {prebuilt-wheel: true}
+    uses: ./.github/workflows/_kumo-pytorch-conformance.yml
+    with:
+      seed_start: ${{ format('{0}', fromJSON(needs.plan.outputs.plan).seed_start) }}
 
-  hm-lifecycle:
-    name: H&M Medium and conformance
+  train-small:
+    name: Training
     needs: [plan, diskgraph-wheel]
-    uses: ./.github/workflows/_kumo-pytorch-t2b.yml
+    uses: ./.github/workflows/_kumo-pytorch-train-model.yml
+    with: {tier: t2a, matrix: '${{ needs.plan.outputs.small_models }}'}
+
+  train-medium:
+    name: Training
+    needs: [plan, diskgraph-wheel]
+    uses: ./.github/workflows/_kumo-pytorch-train-model.yml
+    with: {tier: t2b, matrix: '${{ needs.plan.outputs.medium_models }}'}
+
+  lifecycle-small:
+    name: Lifecycle
+    needs: train-small
+    uses: ./.github/workflows/_kumo-pytorch-lifecycle.yml
+    with: {tier: t2a}
+
+  lifecycle-medium:
+    name: Lifecycle
+    needs: train-medium
+    uses: ./.github/workflows/_kumo-pytorch-lifecycle.yml
+    with: {tier: t2b}
 
   binding-train:
-    name: GPU training
+    name: Training
     if: github.repository == 'NVIDIA/kumo-engine' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     needs: [plan, diskgraph-wheel]
     permissions: {contents: read, id-token: write}
@@ -121,7 +143,7 @@ jobs:
     outputs:
       gate_outcome: ${{ steps.validate.outcome }}
     if: always()
-    needs: [plan, diskgraph-wheel, cpu, distribution, hm-small, hm-lifecycle, binding-train]
+    needs: [plan, diskgraph-wheel, cpu, distribution, conformance, lifecycle-small, lifecycle-medium, binding-train]
     runs-on: ubuntu-24.04
     permissions: {contents: read, actions: read}
     steps:
