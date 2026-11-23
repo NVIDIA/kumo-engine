@@ -3531,7 +3531,7 @@ provides-extras = ["test"]
 name = "kumo-engine"
 source = { editable = "packages/kumo-engine" }
 dependencies = [
-    { name = "faiss-cpu", marker = "sys_platform == 'darwin'" },
+    { name = "faiss-cpu", marker = "sys_platform == 'darwin' or sys_platform == 'win32'" },
     { name = "faiss-gpu", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "filelock" },
     { name = "kumo-api" },
@@ -3602,7 +3602,7 @@ requires-dist = [
     { name = "botocore", marker = "extra == 'test'", specifier = ">=1.34,<2" },
     { name = "databricks-sdk", marker = "extra == 'databricks'", specifier = ">=0.68" },
     { name = "diskgraph", marker = "extra == 'test'", editable = "packages/diskgraph" },
-    { name = "faiss-cpu", marker = "sys_platform == 'darwin'", specifier = "==1.14.3" },
+    { name = "faiss-cpu", marker = "sys_platform == 'darwin' or sys_platform == 'win32'", specifier = "==1.14.3" },
     { name = "faiss-cpu", marker = "(platform_machine != 'x86_64' and extra == 'cpu') or (sys_platform != 'linux' and extra == 'cpu')", specifier = "==1.14.3" },
     { name = "faiss-gpu", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = "==1.14.3" },
     { name = "filelock", specifier = ">=3.29.5" },
