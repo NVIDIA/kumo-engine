@@ -57,7 +57,10 @@ def snapshot(index):
     return SimpleNamespace(index_path=index, id="graph@version", graph_config={})
 
 
-def test_snapshot_factory_uses_stored_identity_and_one_root(indexed, tmp_path, monkeypatch):
+@pytest.mark.parametrize("random_seed", [0, 7, None, 2**64 - 1])
+def test_snapshot_factory_uses_stored_identity_and_one_root(
+    indexed, tmp_path, monkeypatch, random_seed
+):
     import kumo.settings
 
     index, _, _, spec, _ = indexed
@@ -76,18 +79,25 @@ def test_snapshot_factory_uses_stored_identity_and_one_root(indexed, tmp_path, m
 
     monkeypatch.setattr(kumo.settings, "scratch_dir", configured_root)
     monkeypatch.setattr(diskgraph, "new_index_build_id", forbidden)
-    engine = Engine.from_snapshot(snapshot(index), num_threads=2)
+    engine = Engine.from_snapshot(snapshot(index), num_threads=2, random_seed=random_seed)
     assert isinstance(engine, Engine)
     assert engine.index == index
     assert engine.index_build_id == index.name
     assert engine.schema == spec.schema
     assert engine.num_threads == 2
-    assert engine.random_seed == 0
+    assert engine.random_seed == random_seed
     assert engine.num_shards == 1
     assert engine.encoder_cutoffs == ()
     assert engine._paths.task_dir("task") == tmp_path / "tasks" / index.name / "task"
     assert engine._paths.cache_dir == tmp_path / "cache" / index.name
     assert roots == [tmp_path]
+
+
+@pytest.mark.parametrize("seed", [-1, 2**64, True, 1.5])
+def test_snapshot_sampling_seed_must_be_a_native_u64(indexed, seed):
+    index, *_ = indexed
+    with pytest.raises(ValueError, match="random_seed"):
+        api.DiskGraphEngine.from_snapshot(snapshot(index), random_seed=seed)
 
 
 def test_external_cache_refuses_redirected_cutoff(tmp_path):
@@ -451,6 +461,116 @@ def test_native_clock_precision_preserves_cutoff(indexed, tmp_path, unit, clock)
             assert set(events.features["at"].cast(pa.int64()).to_pylist()) == {1001, 1002}
 
 
+@pytest.mark.parametrize("producer", ["pytorch", "native"])
+def test_snapshot_resolves_mixed_source_timestamp_units_to_stored_clock(tmp_path, producer):
+    tables = {
+        "users": pa.table({"id": [-2, 7], "signup": pa.array([1, 2], pa.timestamp("s"))}),
+        "events": pa.table(
+            {
+                "id": ["a", "b", "future"],
+                "user": [-2, 7, -2],
+                "at": pa.array([1001, 2002, 3003], pa.timestamp("ms")),
+            }
+        ),
+    }
+    sources = tmp_path / "sources"
+    sources.mkdir()
+    for name, table in tables.items():
+        pq.write_table(table, sources / f"{name}.parquet")
+    schema = api.DataSchema(
+        tuple(
+            api.TableSpec(
+                name,
+                "id",
+                {
+                    field.name: (
+                        api.DType("timestamp", unit=field.type.unit, timezone="UTC")
+                        if pa.types.is_timestamp(field.type)
+                        else api.DType.from_arrow(field.type)
+                    )
+                    for field in table.schema
+                },
+                time_column="at" if name == "events" else api.NON_TEMPORAL,
+            )
+            for name, table in tables.items()
+        ),
+        (api.RelationSpec("orders", "users", "id", "events", "user"),),
+    )
+    spec = contract(schema)
+    engine = api.DiskGraphEngine(num_threads=1)
+    dataset = api.Dataset({name: api.Parquet(str(sources / f"{name}.parquet")) for name in tables})
+    with api.prepare(spec, dataset, engine):
+        pass
+    index = engine.index
+    if producer == "native":
+        config = (index / "diskgraph_config.json").read_text()
+        index = tmp_path / "indexes" / diskgraph.new_index_build_id()
+        diskgraph.ingest(
+            config,
+            str(index),
+            index_build_id=index.name,
+            col_stats=False,
+            success_marker_content="{}",
+        )
+    # Both physical declarations are timezone-free; the contract keeps their
+    # source units while the index stores all timestamps in its millisecond clock.
+    assert tables["users"].schema.field("signup").type == pa.timestamp("s")
+    assert tables["events"].schema.field("at").type == pa.timestamp("ms")
+    shutil.rmtree(sources)
+    anchor_path = tmp_path / "anchors.parquet"
+    pq.write_table(
+        pa.table(
+            {
+                "user": [-2, 7],
+                "at": pa.array([2500, 2500], pa.timestamp("ms")),
+            }
+        ),
+        anchor_path,
+    )
+    before = inventory(index)
+    reopened = api.DiskGraphEngine.from_snapshot(snapshot(index), num_threads=1)
+    with api.prepare(contract=spec, engine=reopened) as plan:
+        resolved = {table.name: table for table in plan.contract.schema.tables}
+        expected = api.DType("timestamp", unit="ms", timezone="UTC")
+        assert resolved["users"].columns["signup"] == expected
+        assert resolved["events"].columns["at"] == expected
+        anchors = api.AnchorTable(api.Parquet(str(anchor_path)), "user", "at")
+        with plan.materialize(anchors) as task:
+            graph = next(task.batches(output_format="columnar")).inputs["graph"]
+            assert graph.nodes["users"].features["signup"].type == expected.to_arrow()
+            assert set(graph.nodes["users"].features["signup"].cast(pa.int64()).to_pylist()) == {
+                1000,
+                2000,
+            }
+            assert set(graph.nodes["events"].features["at"].cast(pa.int64()).to_pylist()) == {
+                1001,
+                2002,
+            }
+    assert inventory(index) == before
+
+
+@pytest.mark.parametrize(
+    "table,column,dtype",
+    [
+        ("events", "at", api.DType("date32")),
+        ("users", "name", api.DType("timestamp", unit="ms", timezone="UTC")),
+        ("users", "id", api.DType("int32")),
+    ],
+)
+def test_snapshot_timestamp_compatibility_keeps_other_type_checks(indexed, table, column, dtype):
+    index, _, _, spec, _ = indexed
+    schema = replace(
+        spec.schema,
+        tables=tuple(
+            replace(t, columns={**t.columns, column: dtype}) if t.name == table else t
+            for t in spec.schema.tables
+        ),
+    )
+    engine = api.DiskGraphEngine.from_snapshot(snapshot(index))
+    with pytest.raises(api.ValidationError, match="index stored type differs"):
+        api.prepare(contract=replace(spec, schema=schema), engine=engine)
+
+
 def test_concurrent_consumers_keep_task_cleanup_separate(indexed, tmp_path):
     index, _, _, spec, anchors = indexed
     before = inventory(index)
@@ -649,7 +769,8 @@ def test_engine_keeps_managed_root_after_reconfigure(indexed, tmp_path, from_sna
     index, _, dataset, spec, anchors = indexed
     engine = (
         api.DiskGraphEngine.from_snapshot(snapshot(index), num_threads=1)
-        if from_snapshot else api.DiskGraphEngine(num_threads=1)
+        if from_snapshot
+        else api.DiskGraphEngine(num_threads=1)
     )
     base = engine.index
     new_root = tmp_path / "new-root"

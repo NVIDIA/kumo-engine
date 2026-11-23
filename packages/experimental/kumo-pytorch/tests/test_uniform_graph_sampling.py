@@ -136,11 +136,21 @@ def test_native_strategy_semantics(graph_data, tmp_path, clock, strategy):
 
 
 @pytest.mark.parametrize("names", [("graph",), ("graph", "other")])
+@pytest.mark.parametrize("from_snapshot", [False, True])
 def test_seed_replays_direct_native_and_named_neighborhoods(
-    graph_data, tmp_path, monkeypatch, names
+    graph_data, tmp_path, monkeypatch, names, from_snapshot
 ):
+    from types import SimpleNamespace
+
     import diskgraph
 
+    schema, dataset, anchors, requests = graph_data
+    spec = contract(schema, "uniform", names=names)
+    engine = api.DiskGraphEngine(num_threads=1)
+    if from_snapshot:
+        with api.prepare(spec, dataset, engine):
+            pass
+        snapshot = SimpleNamespace(index_path=engine.index, id="uniform-sampling")
     sampler_engine, runtime_index = diskgraph.SamplerEngine, diskgraph.RuntimeIndex
     sampler_seeds, runtime_seeds = [], []
 
@@ -154,26 +164,28 @@ def test_seed_replays_direct_native_and_named_neighborhoods(
 
     monkeypatch.setattr(diskgraph, "SamplerEngine", sampler)
     monkeypatch.setattr(diskgraph, "RuntimeIndex", runtime)
-    schema, dataset, anchors, requests = graph_data
-    spec = contract(schema, "uniform", names=names)
     answers = []
-    engine = api.DiskGraphEngine(num_threads=1)
     for seed in (7, 7, 19):
-        engine.random_seed = seed
-        with api.prepare(spec, dataset, engine) as plan, plan.materialize(anchors) as task:
-            expected = selections(task, requests, batch_size=1)
-            for output_format in ("inspectable", "model"):
-                assert expected == selections(
-                    task,
-                    output_format=output_format,
-                    batch_size=2,
-                    seed=91,
-                    epoch=3,
-                    shuffle=True,
-                )
-            if len(names) == 1:
-                assert expected == selections(task, output_format="columnar", batch_size=2)
-            answers.append(expected)
+        if from_snapshot:
+            engine = api.DiskGraphEngine.from_snapshot(snapshot, num_threads=1, random_seed=seed)
+        else:
+            engine.random_seed = seed
+        options = {} if from_snapshot else {"dataset": dataset}
+        with api.prepare(contract=spec, engine=engine, **options) as plan:
+            with plan.materialize(anchors) as task:
+                expected = selections(task, requests, batch_size=1)
+                for output_format in ("inspectable", "model"):
+                    assert expected == selections(
+                        task,
+                        output_format=output_format,
+                        batch_size=2,
+                        seed=91,
+                        epoch=3,
+                        shuffle=True,
+                    )
+                if len(names) == 1:
+                    assert expected == selections(task, output_format="columnar", batch_size=2)
+                answers.append(expected)
         assert sampler_seeds and all(value == seed for value in sampler_seeds)
         assert runtime_seeds == [seed]
         sampler_seeds.clear()
@@ -228,9 +240,7 @@ def test_uniform_empty_neighborhood(graph_data, tmp_path):
     schema, dataset, _anchors, _requests = graph_data
     requests = (api.SampleRequest("empty", 2, 50),)
     with (
-        api.prepare(
-            contract(schema, "uniform"), dataset, api.DiskGraphEngine()
-        ) as plan,
+        api.prepare(contract(schema, "uniform"), dataset, api.DiskGraphEngine()) as plan,
         plan.materialize(requests) as task,
     ):
         assert selections(task, requests) == {("graph", "empty"): frozenset()}

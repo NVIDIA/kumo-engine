@@ -69,7 +69,12 @@ class IndexBinding:
                 if name not in actual.columns:
                     raise ValueError(f"index has no column {table.name}.{name}")
                 expected = actual.columns[name]
-                if dtype is not None and dtype != expected:
+                # Ingest normalizes timestamp precision/timezone to the index clock.
+                if (
+                    dtype is not None
+                    and dtype != expected
+                    and not (dtype.name == expected.name == "timestamp")
+                ):
                     raise ValueError(
                         f"index stored type differs for {table.name}.{name}: {expected}"
                     )

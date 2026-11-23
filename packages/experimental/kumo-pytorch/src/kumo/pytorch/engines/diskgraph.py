@@ -284,12 +284,16 @@ class DiskGraphEngine:
         )
 
     @classmethod
-    def from_snapshot(cls, snapshot: Any, *, num_threads: int | None = None) -> DiskGraphEngine:
+    def from_snapshot(
+        cls, snapshot: Any, *, num_threads: int | None = None, random_seed: int | None = 0
+    ) -> DiskGraphEngine:
         """Attach to an existing same-root Kumo snapshot by physical build identity.
 
         The original base stays in place. Tasks and caches use sibling managed paths
         under kumo.settings.scratch_dir(); no public work/output directories are needed.
         Cross-root imports and snapshots without a build ID are refused.
+        ``random_seed`` controls native uniform-neighbor sampling, as on the
+        dataset constructor: zero by default, or ``None`` for fresh randomness.
         """
         base = Path(snapshot.index_path).resolve()
         root = managed_root()
@@ -300,7 +304,10 @@ class DiskGraphEngine:
         binding = open_index(base, snapshot_id=snapshot.id)
         result = cls.__new__(cls)
         result._initialize(
-            managed_paths(binding.identity, root=root), num_threads=num_threads, binding=binding
+            managed_paths(binding.identity, root=root),
+            num_threads=num_threads,
+            random_seed=random_seed,
+            binding=binding,
         )
         verify_managed_roots(result._paths, base)
         return result
@@ -495,6 +502,7 @@ class DiskGraphEngine:
                 num_threads=self.num_threads,
                 paths=self._paths,
                 identity=self._binding.identity,
+                random_seed=self.random_seed,
             )
         if dataset is None:
             raise ValueError("dataset is required for source ingestion")

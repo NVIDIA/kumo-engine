@@ -353,6 +353,7 @@ DiskGraphEngine.from_snapshot(
     snapshot: Any,
     *,
     num_threads: int | None = None,
+    random_seed: int | None = 0,
 ) -> DiskGraphEngine
 ```
 
@@ -361,6 +362,8 @@ Attach to an existing same-root Kumo snapshot by physical build identity.
 The original base stays in place. Tasks and caches use sibling managed paths
 under kumo.settings.scratch_dir(); no public work/output directories are needed.
 Cross-root imports and snapshots without a build ID are refused.
+`random_seed` controls native uniform-neighbor sampling, as on the
+dataset constructor: zero by default, or `None` for fresh randomness.
 
 #### `DiskGraphEngine.schema`
 
