@@ -377,3 +377,59 @@ def test_keyless_serving_reduction_retains_local_floating_rounding():
     # Binary64: (1e16 - 1e16) + 1 = 1; (1 - 1e16) + 1e16 = 0.
     assert offline.inputs["values"]["sum"]["values"].tolist() == [1.0]
     assert served.inputs["values"]["sum"]["values"].tolist() == [0.0]
+
+
+@pytest.mark.parametrize("strategy", ["recent", "uniform"])
+@pytest.mark.usefixtures("native_anchor_delivery")
+def test_native_keyless_ties_and_graph_endpoints(tmp_path, strategy):
+    from tests.helpers import parquet_anchors
+
+    case = _graph_case()
+    neighborhood = r.NeighborhoodSpec(
+        (r.GraphLayer((r.GraphSample("activity", 2, strategy=strategy),)),)
+    )
+    event = replace(case.contract.sample.events["history"], order="descending", limit=1)
+    sample = replace(
+        case.contract.sample,
+        neighborhoods={"activity": neighborhood},
+        events={"history": event},
+        targets={},
+    )
+    inputs = {name: case.contract.batch.inputs[name] for name in ("history", "graph")}
+    case = replace(case, contract=replace(case.contract, sample=sample, batch=r.BatchSpec(inputs)))
+    case = replace(
+        case,
+        tables={
+            **case.tables,
+            "events": [
+                {"owner": 2, "at": 9, "amount": 42},
+                *[{"owner": 1, "at": 9, "amount": i} for i in range(12)],
+                {"owner": 1, "at": 8, "amount": 98},
+                {"owner": 1, "at": 10, "amount": 100},
+            ],
+        },
+    )
+    anchors = parquet_anchors(
+        tmp_path / "anchors.parquet", {"owner": [1], "at": [9]}, "owner", "at"
+    )
+    with (
+        bound_case(case, "diskgraph") as (dataset, engine),
+        r.prepare(case.contract, dataset, engine) as plan,
+        plan.materialize(anchors) as task,
+    ):
+        batch = next(task.batches(batch_size=1, output_format="model"))
+    history = batch.inputs["history"]
+    assert history["offsets"].tolist() == [0, 1]
+    assert history["amount"]["valid"].tolist() == [True]
+    assert history["amount"]["values"].item() in range(12)
+    graph = batch.inputs["graph"]
+    nodes = graph["nodes"]["events"]
+    assert len(set(nodes["ids"].tolist())) == 2
+    assert nodes["features"]["amount"]["valid"].tolist() == [True, True]
+    amounts = nodes["features"]["amount"]["values"].tolist()
+    eligible = set(range(12)) if strategy == "recent" else {*range(12), 98, 100}
+    assert len(set(amounts)) == 2 and set(amounts) <= eligible
+    assert graph["nodes"]["users"]["ids"].tolist() == [1]
+    edge = graph["edges"]["activity"]
+    assert (edge["source_type"], edge["destination_type"]) == ("users", "events")
+    assert sorted(edge["index"].t().tolist()) == [[0, 0], [0, 1]]

@@ -16,14 +16,10 @@ import torch
 
 from kumo.pytorch import api
 from kumo.pytorch.engines.diskgraph import DiskGraphSource
+from tests.helpers import parquet_anchors
 
 
-@pytest.mark.parametrize("precision", [38, 76])
-@pytest.mark.parametrize(
-    "encoding,output_format",
-    [("raw", "inspectable"), ("zscore", "inspectable"), ("zscore", "model")],
-)
-def test_decimal_events_and_graphs(tmp_path, precision, encoding, output_format):
+def _decimal_data(tmp_path, precision, encoding):
     pytest.importorskip("diskgraph")
     money = api.DType(f"decimal{128 if precision == 38 else 256}", precision=precision, scale=10)
     integer = api.DType("int64")
@@ -92,7 +88,49 @@ def test_decimal_events_and_graphs(tmp_path, precision, encoding, output_format)
         path = tmp_path / f"{name}.parquet"
         pq.write_table(table, path)
         bindings[name] = api.Parquet(str(path))
-    request = api.SampleRequest("one", 1, start + timedelta(days=1), split="train")
+    return contract, bindings, tables, money, amounts, start + timedelta(days=1)
+
+
+@pytest.mark.usefixtures("native_anchor_delivery")
+@pytest.mark.parametrize("precision", [38, 76])
+def test_native_decimal_projection_with_parquet_anchors(tmp_path, precision):
+    contract, bindings, _, _, _, cutoff = _decimal_data(tmp_path, precision, "zscore")
+    anchors = parquet_anchors(
+        tmp_path / "anchors.parquet",
+        {"account": [1], "cutoff": [cutoff]},
+        "account",
+        "cutoff",
+    )
+    with (
+        api.prepare(
+            contract,
+            api.Dataset(bindings),
+            api.DiskGraphEngine(index=tmp_path / "index", num_threads=1),
+        ) as plan,
+        plan.materialize(anchors) as task,
+    ):
+        batch = next(task.batches(batch_size=1, output_format="model"))
+    event = batch.inputs["history"]["amount"]
+    nodes = batch.inputs["graph"]["nodes"]["events"]
+    order = nodes["ids"].argsort()
+    field = nodes["features"]["amount"]
+    assert nodes["ids"][order].tolist() == [1, 2, 3, 4]
+    assert field["valid"][order].tolist() == event["valid"][0].tolist() == [True, True, False, True]
+    expected = [-(0.5**0.5), -(0.5**0.5), 2**0.5]
+    for values in (field["values"][order], event["values"][0]):
+        assert values[event["valid"][0]].tolist() == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("precision", [38, 76])
+@pytest.mark.parametrize(
+    "encoding,output_format",
+    [("raw", "inspectable"), ("zscore", "inspectable"), ("zscore", "model")],
+)
+def test_decimal_events_and_graphs(tmp_path, precision, encoding, output_format):
+    contract, bindings, tables, money, amounts, cutoff = _decimal_data(
+        tmp_path, precision, encoding
+    )
+    request = api.SampleRequest("one", 1, cutoff, split="train")
     outputs = []
     for engine in (
         api.InMemoryEngine(),

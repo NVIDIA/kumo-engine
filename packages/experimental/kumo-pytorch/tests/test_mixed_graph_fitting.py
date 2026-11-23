@@ -187,3 +187,29 @@ def test_mixed_fitting_keeps_columnar_values_and_matches_records(
                     assert_equal(batch.inputs, expected_batch.inputs)
                     assert_equal(batch.targets, expected_batch.targets)
                     assert_equal(batch.metadata, expected_batch.metadata)
+
+
+@pytest.mark.usefixtures("native_anchor_delivery")
+@pytest.mark.parametrize("delta", [-1, 0, 1])
+def test_input_and_target_fitting_at_the_chunk_boundary(history_data, tmp_path, delta):
+    from statistics import mean, pstdev
+
+    from tests.helpers import parquet_anchors
+
+    schema, dataset, _, index, _ = history_data
+    contract = _contract(schema, False, "computed")
+    contract = replace(
+        contract, batch=replace(contract.batch, inputs={"counts": contract.batch.inputs["counts"]})
+    )
+    size = assembly._FIT_CHUNK + delta
+    # At t=3 this user has four past orders and 180 of future spend; at t=5, six and 70.
+    cutoffs = [3] * (size - 1) + [5]
+    anchors = parquet_anchors(
+        tmp_path / "anchors.parquet", {"user": [1] * size, "at": cutoffs}, "user", "at"
+    )
+    with api.prepare(contract, dataset, api.DiskGraphEngine(index=index, num_threads=1)) as plan:
+        with plan.materialize(anchors) as task:
+            count = task.output("counts").field(name="count").encoder
+            future = task.target("target").field(name="value").encoder
+    for encoder, values in ((count, [4] * (size - 1) + [6]), (future, [180] * (size - 1) + [70])):
+        assert (encoder.mean, encoder.scale) == pytest.approx((mean(values), pstdev(values)))

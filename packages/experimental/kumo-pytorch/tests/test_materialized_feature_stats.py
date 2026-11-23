@@ -14,10 +14,11 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
+from conformance.assertions import bound_tables
 from kumo.pytorch import api
 from kumo.pytorch.aggregate_materialization import MaterializedValues
 from kumo.pytorch.column_stats import ColumnStats, TableColumnEncoder, fit_from_stats
-from tests.test_anchor_tables import ANCHORS, DATASET, EVENTS, _contract, _table
+from tests.test_anchor_tables import ANCHORS, DATASET, EVENTS, USERS, _contract, _table
 from tests.test_model_history_limits import history_data as history_data
 
 diskgraph = pytest.importorskip("diskgraph")
@@ -178,6 +179,74 @@ def test_selection_is_train_membership_not_a_global_cutoff(tmp_path):
         assert stats["count"] == 2 and stats["mean"] == 6.5
         with pytest.raises(ValueError, match="different fit split"):
             plan.materialize(values.anchors, fit_split="valid")
+
+
+@pytest.mark.usefixtures("native_anchor_delivery")
+@pytest.mark.parametrize("source_rows", [64, 1024, 16384])
+@pytest.mark.parametrize("fit_count", [8, 64, 512])
+def test_native_aggregate_stats_across_source_and_fit_sizes(tmp_path, source_rows, fit_count):
+    spec = aggregate_contract()
+    raw = _contract()  # Its raw entity input already exposes score and the inclusive event count.
+    fields = {**spec.sample.entity_values, "seen": raw.sample.entity_values["seen"]}
+    spec = replace(
+        spec,
+        sample=replace(spec.sample, entity_values=fields),
+        batch=replace(spec.batch, inputs={**spec.batch.inputs, "raw": raw.batch.inputs["entity"]}),
+    )
+    per_user = source_rows // 8
+    tables = {
+        "users": USERS[:8],
+        "events": [
+            dict(event_id=user * per_user + at, user_id=user, occurred_at=at, amount=user * at)
+            for user in range(1, 9)
+            for at in range(per_user, 0, -1)
+        ],
+    }
+    contexts = [(i % 8 + 1, 1 + i * 17 % (per_user - 1), "train") for i in range(fit_count)]
+    contexts[-1] = contexts[0]  # Both sample IDs at the same root and cutoff contribute.
+    contexts.extend([(8, per_user, "valid"), (3, per_user, "test"), (7, 0, "test")])
+    rows = [
+        dict(sid=i, user_id=user, at=at, split=split)
+        for i, (user, at, split) in enumerate(contexts)
+    ]
+    path = tmp_path / "anchors.parquet"
+    pq.write_table(pa.Table.from_pylist(rows), path, row_group_size=17)
+    anchors = _table(source=api.Parquet(str(path)))
+
+    # At the inclusive cutoff t, each user has exactly t events worth user * (1 + ... + t).
+    sums = [user * at * (at + 1) / 2 for user, at, _ in contexts]
+    train = sums[:fit_count]
+    mean = sum(train) / fit_count
+    scale = sqrt(sum((value - mean) ** 2 for value in train) / fit_count)
+    with bound_tables(spec, tables, "diskgraph") as (dataset, engine):
+        with api.prepare(spec, dataset, engine) as plan:
+            values = plan._materialize_values(anchors, tmp_path / "values", stats_split="train")
+            stats = values.column_statistics("score")
+            assert stats["count"] == fit_count
+            assert stats["mean"] == pytest.approx(mean)
+            with plan.materialize(values.anchors, fit_split="train") as task:
+                fitted = task.output("entity").field(name="score").encoder
+                assert fitted.mean == pytest.approx(mean)
+                assert fitted.scale == pytest.approx(scale)
+                vocabulary = dict(task.output("tokens").field(name="score").encoder.entries)
+                assert set(vocabulary) == set(train)
+                for split in ("train", "valid", "test"):
+                    delivered = []
+                    for batch in task.batches(split=split, batch_size=31, output_format="model"):
+                        ids = batch.metadata["sample_ids"]
+                        delivered.extend(ids)
+                        scores = [sums[i] for i in ids]
+                        raw = batch.inputs["raw"]
+                        assert raw["seen"]["values"].tolist() == [rows[i]["at"] for i in ids]
+                        assert raw["score"]["values"].tolist() == scores
+                        assert raw["seen"]["valid"].all() and raw["score"]["valid"].all()
+                        assert batch.inputs["entity"]["score"]["values"].tolist() == pytest.approx(
+                            [(score - mean) / scale for score in scores], rel=2e-6, abs=2e-6
+                        )
+                        assert batch.inputs["tokens"]["score"]["values"].tolist() == [
+                            vocabulary.get(score, 1) for score in scores
+                        ]
+                    assert delivered == [row["sid"] for row in rows if row["split"] == split]
 
 
 def test_missing_split_publishes_nothing(tmp_path):

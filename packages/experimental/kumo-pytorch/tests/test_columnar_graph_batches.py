@@ -182,21 +182,31 @@ def test_columnar_resume_and_closed_task_buffers(graph_task, deduplicate_edges):
     assert [b.inputs["graph"].nodes["events"].features.to_pylist() for b in actual] == snapshots
 
 
-@pytest.mark.parametrize("deduplicate_edges", [False, True])
+@pytest.mark.parametrize(
+    "depth,deduplicate_edges",
+    [pytest.param(2, False, id="False"), pytest.param(2, True, id="True"), (1, False), (3, True)],
+)
 @pytest.mark.parametrize("pk_left", [True, False])
 @pytest.mark.parametrize("directions", [("forward",), ("reverse",), ("forward", "reverse")])
+@pytest.mark.usefixtures("native_anchor_delivery")
 def test_columnar_self_relations_follow_declared_endpoints(
-    tmp_path, pk_left, directions, deduplicate_edges
+    tmp_path, pk_left, directions, deduplicate_edges, depth
 ):
     import pyarrow.parquet as pq
 
     from conformance.assertions import bound_tables
 
     rows = [
-        {"id": 1, "parent_id": None, "at": 1},
+        {"id": 1, "parent_id": None if depth == 2 else 3, "at": 1},
         {"id": 2, "parent_id": 1, "at": 10},
         {"id": 3, "parent_id": 2, "at": 20},
+        {"id": 4, "parent_id": 4, "at": 1},
+        {"id": 5, "parent_id": 99, "at": 1},
+        {"id": 6, "parent_id": None, "at": 1},
+        {"id": 7, "parent_id": 2, "at": 101},
     ]
+    if depth == 2:
+        rows = rows[:3]
     left_key, right_key = ("id", "parent_id") if pk_left else ("parent_id", "id")
     contract = api.DataLoaderSpec(
         api.DataSchema(
@@ -225,7 +235,7 @@ def test_columnar_self_relations_follow_declared_endpoints(
                                 for d in directions
                             )
                         )
-                        for _ in range(2)
+                        for _ in range(depth)
                     )
                 )
             },
@@ -241,8 +251,11 @@ def test_columnar_self_relations_follow_declared_endpoints(
         ),
     )
     anchors = tmp_path / "anchors.parquet"
+    roots, cutoffs = (
+        ([2, 2], [100, 5]) if depth == 2 else ([2, 2, 2, 4, 5, 6], [100, 5, 20, 100, 100, 100])
+    )
     pq.write_table(
-        pa.table({"id": [2, 2], "cutoff": pa.array([100, 5], type=pa.timestamp("s", tz="UTC"))}),
+        pa.table({"id": roots, "cutoff": pa.array(cutoffs, type=pa.timestamp("s", tz="UTC"))}),
         anchors,
     )
     with (
@@ -250,11 +263,11 @@ def test_columnar_self_relations_follow_declared_endpoints(
         api.prepare(contract, dataset, engine) as plan,
         plan.materialize(api.AnchorTable(api.Parquet(str(anchors)), "id", "cutoff")) as task,
     ):
-        old = next(iter(task.batches(batch_size=2)))
-        raw = next(task.batches(batch_size=2, output_format="columnar")).inputs["graph"]
+        old = next(iter(task.batches(batch_size=len(roots))))
+        raw = next(task.batches(batch_size=len(roots), output_format="columnar")).inputs["graph"]
         graph = next(
             task.batches(
-                batch_size=2, output_format="columnar", deduplicate_edges=deduplicate_edges
+                batch_size=len(roots), output_format="columnar", deduplicate_edges=deduplicate_edges
             )
         ).inputs["graph"]
         if deduplicate_edges:
@@ -268,6 +281,28 @@ def test_columnar_self_relations_follow_declared_endpoints(
     for a, b in pairs:
         assert by_id[node.ids[a].as_py()][left_key] == by_id[node.ids[b].as_py()][right_key]
         assert node.owners[a].as_py() == node.owners[b].as_py()
+    relation = {
+        (a["id"], b["id"])
+        for a in rows
+        for b in rows
+        if a[left_key] is not None and a[left_key] == b[right_key]
+    }
+    ids, owners = node.ids.to_pylist(), node.owners.to_pylist()
+    for owner, (root, cutoff) in enumerate(zip(roots, cutoffs, strict=True)):
+        nodes, edges, frontier = {root}, set(), {root}
+        for _ in range(depth):
+            following = set()
+            for left, right in relation:
+                for direction in directions:
+                    src, dst = (left, right) if direction == "forward" else (right, left)
+                    if src in frontier and by_id[dst]["at"] <= cutoff:
+                        following.add(dst)
+                        edges.add((left, right))
+            nodes.update(following)
+            frontier = following
+        actual = [key for key, group in zip(ids, owners, strict=True) if group == owner]
+        assert len(actual) == len(nodes) and set(actual) == nodes
+        assert {(ids[a], ids[b]) for a, b in pairs if owners[a] == owner} == edges
 
 
 @pytest.mark.parametrize("unsupported", ["encoding", "tokens"])

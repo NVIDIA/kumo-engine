@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 import torch
 
+from conformance.assertions import bound_tables
 from kumo.pytorch import api
 from kumo.pytorch.contract.batch.tokens import MAX_SPECIAL_ID
 from kumo.pytorch.spec import _encode
@@ -42,13 +43,13 @@ GAPPED_LABELS: dict[str, str] = {
 GAPPED: dict[str, int] = {"pad": 0, "unknown": 1, "missing": 2, "mask": 10}
 
 
-def _contract(space: api.IdSpace) -> api.DataLoaderSpec:
+def _contract(space: api.IdSpace, *, id_dtype: str = "int64") -> api.DataLoaderSpec:
     schema = api.DataSchema(
         (
             api.TableSpec(
                 "users",
                 "id",
-                {"id": api.DType("int64"), "country": api.DType("string")},
+                {"id": api.DType(id_dtype), "country": api.DType("string")},
                 time_column=api.NON_TEMPORAL,
             ),
         ),
@@ -217,9 +218,9 @@ def test_save_load_and_inference_keep_the_explicit_ids(tmp_path: Path) -> None:
     assert torch.equal(emitted[1], trained.inputs["emitted"]["value_ids"][0])
 
 
-def test_masked_values_use_the_explicit_mask_id() -> None:
-    contract = _contract(_blueprint())
-    contract = api.DataLoaderSpec(
+def _masked_contract(id_dtype="int64"):
+    contract = _contract(_blueprint(), id_dtype=id_dtype)
+    return api.DataLoaderSpec(
         contract.schema,
         contract.sample,
         api.BatchSpec(
@@ -236,6 +237,27 @@ def test_masked_values_use_the_explicit_mask_id() -> None:
             field_names=contract.batch.field_names,
         ),
     )
-    batch = _batch(contract)
+
+
+def test_masked_values_use_the_explicit_mask_id() -> None:
+    batch = _batch(_masked_contract())
     ids = batch.inputs["emitted"]["value_ids"]
     assert (ids[:2] == BLUEPRINT["mask"]).all()
+
+
+@pytest.mark.usefixtures("native_anchor_delivery")
+@pytest.mark.parametrize("identity", [2**63 - 1, 2**63, 2**64 - 1])
+def test_native_mask_preserves_unsigned_identity_and_label(identity):
+    contract = _masked_contract("uint64")
+    ids = [identity, 2, 3]
+    rows = [dict(row, id=key) for row, key in zip(ROWS, ids, strict=True)]
+    with bound_tables(contract, {"users": rows}, "diskgraph") as (dataset, engine):
+        anchors = api.AnchorTable(dataset.tables["users"], "id")
+        with api.prepare(contract, dataset, engine) as plan, plan.materialize(anchors) as task:
+            batch = next(task.batches(batch_size=3, output_format="model"))
+    assert batch.metadata["sample_ids"] == (0, 1, 2)
+    assert batch.inputs["emitted"]["value_ids"][:2].tolist() == [[BLUEPRINT["mask"]]] * 2
+    target = batch.targets["masked"]
+    assert target["valid"][:2].all() and target["corruption"][:2].all()
+    # The six reserved roles and the field name precede the DE and US vocabulary entries.
+    assert target["values"][:2].tolist() == [[8], [7]]

@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -512,3 +513,97 @@ def test_a_model_trained_on_model_format_batches_takes_served_batches(tmp_path: 
         assert _layout(served.inputs) == _layout(model_format[request.sample_id].inputs)
         with torch.no_grad():
             assert served_model(served).shape == (1,)
+
+
+@pytest.fixture(params=["bounded_window", "event_limit"])
+def native_serving_case(tmp_path, request, native_anchor_delivery):
+    from conformance.assertions import bound_tables
+    from tests.helpers import parquet_anchors
+
+    name = request.param
+    contract, tables, requests = CASES[name]()
+    by_id = {r.sample_id: r for r in requests}
+    anchors = parquet_anchors(
+        tmp_path / "anchors.parquet",
+        {
+            "sample": list(by_id),
+            "entity": [r.entity_id for r in requests],
+            "at": [r.as_of_time for r in requests],
+        },
+        "entity",
+        "at",
+        sample_id="sample",
+    )
+    with (
+        bound_tables(contract, tables, "diskgraph") as (dataset, engine),
+        api.prepare(contract, dataset, engine) as plan,
+    ):
+        with plan.materialize(anchors) as task:
+            artifact = task.to_artifact()
+        with plan.materialize(anchors, fitted=artifact.fitted_state, inference=True) as task:
+            batches = list(native_anchor_delivery(task, batch_size=1, seed=SEED))
+    assert sorted(batch.metadata["sample_ids"][0] for batch in batches) == sorted(by_id)
+    return name, artifact, tables, by_id, batches
+
+
+def test_serving_fetch_covers_native_parquet_anchors(native_serving_case):
+    name, artifact, tables, by_id, batches = native_serving_case
+    spec = ServingRowsSpec.from_contract(artifact.contract)
+    for batch in batches:
+        (sample,) = batch.metadata["sample_ids"]
+        rows = fetch(spec, artifact.contract.schema, tables, by_id[sample])
+        if name == "bounded_window":
+            assert batch.inputs["entity"]["recent_count"]["values"].item() == len(rows["events"])
+        else:
+            merged = batch.inputs["merged"]
+            valid = merged["id"]["valid"]
+            delivered = zip(
+                merged["component"]["values"][valid].tolist(),
+                merged["id"]["values"][valid].tolist(),
+                strict=True,
+            )
+            assert sorted(delivered) == sorted(
+                [(0, r["order_id"]) for r in rows["orders"]]
+                + [(1, r["click_id"]) for r in rows["clicks"]]
+            )
+
+
+def test_serving_assembly_matches_native_parquet_anchors(native_serving_case, monkeypatch):
+    _, artifact, tables, by_id, expected = native_serving_case
+
+    def fallback(*args, **kwargs):
+        pytest.fail("ServingAssembler.assemble tried to open InMemorySource")
+
+    # assemble() binds its source directly, bypassing the engine's open() guard.
+    monkeypatch.setattr(serving, "InMemorySource", fallback, raising=False)
+
+    spec = ServingRowsSpec.from_contract(artifact.contract)
+    calls = []
+    for batch in expected:
+        (sample,) = batch.metadata["sample_ids"]
+        request = by_id[sample]
+        calls.append((fetch(spec, artifact.contract.schema, tables, request), request))
+
+    def outputs():
+        server = api.ServingAssembler(artifact)
+        for rows, request in calls:
+            batches = iter(server.assemble(rows, [request], seed=SEED))
+            yield next(batches)  # Empty delivery for a requested anchor must fail.
+            yield from batches
+
+    results = outputs()
+    try:
+        first = next(results)
+    except (ValueError, NotImplementedError) as exc:
+        refusal = re.compile(
+            r"(?:native|diskgraph) serving(?: assembly)? (?:is )?"
+            r"(?:unsupported|not supported|not implemented)[.!]?",
+            re.IGNORECASE,
+        )
+        messages = (
+            [i.message for i in exc.issues] if isinstance(exc, api.ValidationError) else [str(exc)]
+        )
+        if not messages or not all(refusal.fullmatch(message) for message in messages):
+            raise
+        return
+    assert_same_batches([first, *results], expected)

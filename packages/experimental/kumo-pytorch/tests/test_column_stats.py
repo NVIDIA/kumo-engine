@@ -16,10 +16,12 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from conformance.assertions import bound_tables
 from kumo.pytorch import api
 from kumo.pytorch.column_stats import table_column_encoders
 from kumo.pytorch.engine import GraphRoot
 from tests.test_diskgraph_backend import _fixture_rows, _requests, _schema, _write_parquet
+from tests.test_field_outputs import _stored_field_contract
 
 pytest.importorskip("diskgraph")
 
@@ -483,3 +485,86 @@ def test_buckets_cut_values_near_the_float_limits():
         with plan.materialize([api.SampleRequest("item-0", 0, 0)]) as task:
             cuts = _state(task.fitted_state, '"v"')["boundaries"]
     assert len(cuts) == 3 and all(np.isfinite(cuts)) and cuts == sorted(cuts)
+
+
+@pytest.mark.usefixtures("native_anchor_delivery")
+@pytest.mark.parametrize(
+    "values,expected",
+    [
+        ([0.0, 2.0**-499], [-1.0, 1.0]),
+        ([0.0, 2.0**-599], [-1.0, 1.0]),
+        ([2.0**600, 2.0**600], [0.0, 0.0]),
+    ],
+)
+def test_native_zscore_preserves_representable_results(values, expected):
+    import torch
+
+    contract = _stored_field_contract(
+        {"v": api.DType("float64")}, {"v": api.ZScore(dtype="float64")}
+    )
+    rows = [{"id": i, "v": v} for i, v in enumerate(values)]
+    with (
+        bound_tables(contract, {"items": rows}, "diskgraph") as (dataset, engine),
+        api.prepare(contract, dataset, engine) as plan,
+        plan.materialize(api.AnchorTable(dataset.tables["items"], "id", sample_id="id")) as task,
+    ):
+        field = next(task.batches(batch_size=2, output_format="model")).inputs["entity"]["v"]
+    assert field["values"].dtype == torch.float64
+    assert field["valid"].tolist() == [True, True]
+    assert field["values"].tolist() == expected
+
+
+@pytest.mark.usefixtures("native_anchor_delivery")
+def test_frozen_encodings_keep_empty_statistics_and_sparse_members_on_reload(tmp_path):
+    timestamp = api.DType("timestamp", unit="s", timezone="UTC")
+    columns = {
+        "v": api.DType("float64"),
+        "split": api.DType("string"),
+        "at": timestamp,
+        "empty": api.DType("float64"),
+        "left": api.DType("string"),
+        "right": api.DType("string"),
+        "wide": api.DType("int64"),
+    }
+    fields = {
+        "v": api.ZScore(dtype="float64"),
+        "empty": api.ZScore(dtype="float64"),
+        "left": api.UseEncoding("shared"),
+        "right": api.UseEncoding("shared"),
+        "wide": api.Vocabulary(values=((2**53 + 1, 2**53 + 3), (2**53 + 2, 2**53 + 4))),
+    }
+    shared = api.Vocabulary(
+        values=(("", 7), ("NULL", 11), ("é", 13), ("e\u0301", 17)), missing_id=99, unknown_id=100
+    )
+    contract = _stored_field_contract(columns, fields, time="at", shared={"shared": shared})
+    rows = [
+        dict(id=0, at=0, v=7.0, empty=None, left="", right="NULL", wide=2**53 + 1),
+        dict(id=1, at=0, v=7.0, empty=None, left="é", right="e\u0301", wide=2**53 + 2),
+        dict(id=2, at=200, v=99.0, empty=3.0, left=None, right="unseen", wide=2**53 + 1),
+    ]
+    rows = [dict(row, split="valid" if row["id"] == 2 else "train") for row in rows]
+    with (
+        bound_tables(contract, {"items": rows}, "diskgraph", parts=2) as (dataset, engine),
+        api.prepare(contract, dataset, engine) as plan,
+    ):
+        anchors = api.AnchorTable(
+            dataset.tables["items"], "id", "at", sample_id="id", split="split"
+        )
+        with plan.materialize(anchors, fit_split="train") as task:
+            train = next(task.batches(batch_size=2, split="train", output_format="model")).inputs[
+                "entity"
+            ]
+            assert train["v"]["values"].tolist() == [0.0, 0.0]
+            assert train["empty"]["valid"].tolist() == [False, False]
+            assert train["left"]["values"].tolist() == [7, 13]
+            assert train["right"]["values"].tolist() == [11, 17]
+            assert train["wide"]["values"].tolist() == [2**53 + 3, 2**53 + 4]
+            task.to_artifact().save(tmp_path / "artifact")
+        fitted = api.Artifact.load(tmp_path / "artifact").fitted_state
+        with plan.materialize(anchors, fitted=fitted, inference=True) as restored:
+            batch = next(restored.batches(batch_size=2, split="valid", output_format="model"))
+            held = batch.inputs["entity"]
+            assert held["v"]["values"].item() == 92.0 and held["empty"]["values"].item() == 3.0
+            assert held["left"]["values"].item() == 99 and not held["left"]["valid"].item()
+            assert held["right"]["values"].item() == 100 and held["right"]["valid"].item()
+            assert not batch.targets and restored.fitted_state == fitted

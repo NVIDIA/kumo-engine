@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import pytest
 
+from conformance.assertions import bound_tables
+from kumo.pytorch import api
 from kumo.pytorch.api import (
     NON_TEMPORAL,
     BatchSpec,
@@ -30,10 +32,10 @@ from kumo.pytorch.api import (
 )
 from kumo.pytorch.contract.batch import Encode, Fields
 from kumo.pytorch.contract.dtypes import DType
-from tests.helpers import Plans
+from tests.helpers import Plans, parquet_anchors
 
 
-def _contract() -> tuple[DataLoaderSpec, dict[str, list[dict[str, object]]]]:
+def _contract(unit: str = "s") -> tuple[DataLoaderSpec, dict[str, list[dict[str, object]]]]:
     schema = DataSchema(
         (
             TableSpec("users", "user_id", {"user_id": DType("int64")}, time_column=NON_TEMPORAL),
@@ -43,7 +45,7 @@ def _contract() -> tuple[DataLoaderSpec, dict[str, list[dict[str, object]]]]:
                 {
                     "event_id": DType("int64"),
                     "user_id": DType("int64"),
-                    "at": DType("timestamp", unit="s", timezone="UTC"),
+                    "at": DType("timestamp", unit=unit, timezone="UTC"),
                 },
                 time_column="at",
             ),
@@ -101,6 +103,24 @@ def test_time_delta_is_anchor_minus_event_time_in_the_requested_unit() -> None:
     assert history["age_seconds"]["values"].tolist() == [[60.0, 10.0]]
     assert history["age_hours"]["values"][0].tolist() == pytest.approx([60 / 3600, 10 / 3600])
     assert history["age_days"]["values"][0].tolist() == pytest.approx([60 / 86400, 10 / 86400])
+
+
+@pytest.mark.parametrize("unit,ticks_per_second", [("us", 10**6), ("ns", 10**9)])
+@pytest.mark.parametrize("days", [104, 105])
+@pytest.mark.usefixtures("native_anchor_delivery")
+def test_native_event_age_across_long_histories(tmp_path, unit, ticks_per_second, days):
+    contract, tables = _contract(unit)
+    cutoff = 20_000_000
+    elapsed = days * 86_400
+    tables["events"] = [{"event_id": 1, "user_id": 1, "at": (cutoff - elapsed) * ticks_per_second}]
+    anchors = parquet_anchors(tmp_path / "anchors.parquet", {"id": [1], "at": [cutoff]}, "id", "at")
+    with bound_tables(contract, tables, "diskgraph") as (dataset, engine):
+        with api.prepare(contract, dataset, engine) as plan:
+            with plan.materialize(anchors) as task:
+                batch = next(task.batches(batch_size=1, output_format="model"))
+                age = batch.inputs["history"]["age_seconds"]
+    assert age["valid"].tolist() == [[True]]
+    assert age["values"].tolist() == [[elapsed]]
 
 
 def test_time_delta_rejects_an_unknown_unit() -> None:

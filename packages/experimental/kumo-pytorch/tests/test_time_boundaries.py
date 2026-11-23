@@ -11,6 +11,7 @@ import pytest
 from conformance.assertions import bound_tables
 from conformance.cases import GUARANTEES, load_case
 from kumo.pytorch import api
+from tests.helpers import parquet_anchors
 
 
 @pytest.mark.parametrize(
@@ -135,3 +136,28 @@ def test_time_boundaries_across_outputs(engine_name, output_format, bounded, clo
                             == (expected_future[sample_id])
                         )
     assert delivered == list(case.expected)
+
+
+@pytest.mark.usefixtures("native_anchor_delivery")
+def test_first_and_last_tied_targets_keep_fields_from_one_source_row(tmp_path):
+    from conformance.generate import contract_for, schema_for
+    from conformance.outputs import decode_batches
+
+    pytest.importorskip("diskgraph")
+    contract = contract_for(schema_for("depth1_forward"), ("user_events",), distinct=False)
+    pairs = {10: ((1, 15.0), (2, 25.0)), 12: ((3, 35.0), (4, 45.0))}
+    events = [
+        dict(event_id=key, user_id=1, at=at, amount=value, category="x")
+        for at, rows in pairs.items()
+        for key, value in rows
+    ]
+    tables = {"users": [{"user_id": 1}], "events": events}
+    anchors = parquet_anchors(tmp_path / "anchors.parquet", {"id": [1], "at": [9]}, "id", "at")
+    with (
+        bound_tables(contract, tables, "diskgraph") as (dataset, engine),
+        api.prepare(contract, dataset, engine) as plan,
+        plan.materialize(anchors) as task,
+    ):
+        ((_, result),) = decode_batches(task.batches(batch_size=1, output_format="model"))
+    for target, at in (("first_next", 10), ("last_next", 12)):
+        assert (result[f"target:{target}.event_id"], result[f"target:{target}.amount"]) in pairs[at]

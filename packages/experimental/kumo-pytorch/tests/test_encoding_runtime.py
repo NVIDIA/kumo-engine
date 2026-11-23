@@ -99,3 +99,46 @@ def test_diskgraph_rebuilds_runtime_lookups_from_portable_fitted_state(monkeypat
             assert_same_batches(list(task.batches(batch_size=2, output_format="model")), expected)
             assert task.fitted_state.to_dict() == written
         assert len(builds) == 2
+
+
+@pytest.mark.usefixtures("native_anchor_delivery")
+@pytest.mark.parametrize("cardinality", [16, 256, 4096])
+@pytest.mark.parametrize("shared", [False, True], ids=["separate", "shared"])
+def test_fitted_vocabularies_at_scale_preserve_rank_and_validity(cardinality, shared):
+    from collections import Counter
+
+    from conformance.assertions import bound_tables
+    from kumo.pytorch import api
+    from tests.test_field_outputs import _assert_stored_fields, _stored_field_contract
+
+    names = [f"c{i:05}" for i in range(3 * cardinality // 2)]
+    rows = [
+        dict(id=i, at=0, split="train", left=names[i], right=names[i + cardinality // 2])
+        for i in range(cardinality)
+    ]
+    for i, value in enumerate(("held-out", None), cardinality):
+        rows.append(dict(id=i, at=200, split="test", left=value, right=value))
+    columns = {n: DType("string") for n in ("left", "right", "split")}
+    columns["at"] = DType("timestamp", unit="s", timezone="UTC")
+    encoder = api.UseEncoding("category") if shared else Vocabulary()
+    fields = dict.fromkeys(("left", "right"), encoder)
+    contract = _stored_field_contract(
+        columns, fields, time="at", shared={"category": Vocabulary()} if shared else {}
+    )
+    with (
+        bound_tables(contract, {"items": rows}, "diskgraph") as (dataset, engine),
+        api.prepare(contract, dataset, engine) as plan,
+        plan.materialize(
+            api.AnchorTable(dataset.tables["items"], "id", "at", sample_id="id", split="split"),
+            fit_split="train",
+            encoder_cutoff=0,
+        ) as task,
+    ):
+        entries = {}
+        for name in fields:
+            keys = fields if shared else (name,)
+            counts = Counter(row[k] for row in rows[:cardinality] for k in keys)
+            ordered = sorted(counts, key=lambda v: (-counts[v], v))
+            entries[name] = {v: i for i, v in enumerate(ordered, start=2)}
+            assert dict(task.output("entity").field(name=name).encoder.entries) == entries[name]
+        _assert_stored_fields(task, rows, fields, entries, batch_size=128)

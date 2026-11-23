@@ -12,6 +12,7 @@ import pyarrow as pa
 import pytest
 import torch
 
+from kumo.pytorch.api import AnchorTable, EntitySource, Separate, prepare
 from kumo.pytorch.assembly import fit_plan
 from kumo.pytorch.contract.batch import (
     Batching,
@@ -701,3 +702,134 @@ def test_full_and_input_only_reuse_keep_independent_target_resources_separate(ta
                 task.output("entity").field(name="id").encoder.entries
                 == saved._input_state.prepared_inputs["entity"].state["id"].encoder.entries
             )
+
+
+def _stored_field_contract(columns, encoders, *, time=NON_TEMPORAL, shared=None):
+    table = TableSpec("items", "id", {"id": DType("int64"), **columns}, time_column=time)
+    sample = SampleSpec(EntitySpec("items"), entity_values={n: Field(n) for n in encoders})
+    fields = Fields(tuple(Encode(n, encoder) for n, encoder in encoders.items()))
+    return DataLoaderSpec(
+        DataSchema((table,)),
+        sample,
+        BatchSpec({"entity": Input(EntitySource(), fields, Separate())}, encodings=shared or {}),
+    )
+
+
+def _assert_stored_fields(task, rows, names, vocabularies, *, batch_size):
+    from conformance.outputs import decode_batches
+
+    delivered = []
+    for batch in task.batches(batch_size=batch_size, output_format="model"):
+        assert set(batch.inputs) == {"entity"}
+        for name in vocabularies:
+            field = batch.inputs["entity"][name]
+            assert (field["values"][~field["valid"]] == 0).all()
+        delivered.extend(decode_batches([batch]))
+    for (sample_id, values), row in zip(delivered, rows, strict=True):
+        expected = {name: row[name] for name in names}
+        for name, entries in vocabularies.items():
+            if row[name] is not None:
+                expected[name] = entries.get(row[name], 1)
+        assert (sample_id, values) == (str(row["id"]), expected)
+
+
+@pytest.mark.usefixtures("native_anchor_delivery")
+@pytest.mark.parametrize("width", [32, 128, 512])
+@pytest.mark.parametrize("sparse", [False, True], ids=["dense", "null-heavy-projection"])
+def test_model_batch_projects_physical_columns_and_preserves_nulls(width, sparse):
+    from conformance.assertions import bound_tables
+
+    names = [f"field_{i}" for i in range(width)]
+    types = {n: DType(("int64", "float64", "string")[i % 3]) for i, n in enumerate(names)}
+    rows = [{"id": i} for i in range(8)]
+    for i, row in enumerate(rows):
+        for j, name in enumerate(names):
+            number = i * 1000 + j
+            value = (number, number + 0.25, ("a", "b", "unseen")[i % 3])[j % 3]
+            row[name] = None if sparse and (j == 0 or (i + j) % 4 != 0) else value
+    selected = names[::7] if sparse else names
+    vocabulary = Vocabulary(values=(("a", 2), ("b", 3)))
+    maps = {n: dict(vocabulary.values) for n in selected if types[n].name == "string"}
+    contract = _stored_field_contract(
+        types, {n: vocabulary if n in maps else Raw() for n in selected}
+    )
+    with (
+        bound_tables(contract, {"items": rows}, "diskgraph") as (dataset, engine),
+        prepare(contract, dataset, engine) as plan,
+        plan.materialize(AnchorTable(dataset.tables["items"], "id", sample_id="id")) as task,
+    ):
+        _assert_stored_fields(task, rows, selected, maps, batch_size=3)
+
+
+@pytest.mark.usefixtures("native_anchor_delivery")
+@pytest.mark.parametrize("width", [8, 32, 128])
+def test_wide_derived_outputs_keep_their_own_encodings(tmp_path, width):
+    from bisect import bisect_right
+
+    from conformance.assertions import bound_tables
+    from conformance.generate import contract_for, schema_for
+    from kumo.pytorch import api
+    from tests.helpers import parquet_anchors
+
+    # The first cutoff sees 10; the second sees 10 and 30. Both exclude the future 999.
+    rows = [
+        dict(event_id=i, user_id=1, at=t, amount=v, category=str(v))
+        for i, (t, v) in enumerate([(10, 10), (40, 30), (900, 999)])
+    ]
+    tables = {"users": [{"user_id": 1}], "events": rows}
+    schema = schema_for("depth1_forward")
+    reductions = contract_for(
+        schema, ("user_events",), distinct=False, group_by=True
+    ).sample.entity_values
+    answers = {
+        "count": (1, 2),
+        "sum": (10, 40),
+        "min": (10, 10),
+        "max": (10, 30),
+        "mean": (10, 20),
+        "var_population": (0, 100),
+        "std_population": (0, 10),
+        "recency": (10, 60),
+        "count_distinct": (1, 2),
+        "grouped_count": (1, 2),
+    }
+    values = {name: reductions[name] for name in answers if name != "grouped_count"}
+    values["grouped_count"] = replace(
+        reductions["group_total_sum"], column="rows", dtype=DType("int64")
+    )
+    fields, expected = [], {}
+    bounds = (10.0, 30.0, 50.0)
+    for i in range(width):
+        name, offset = f"feature_{i}", f"offset_{i}"
+        op = tuple(answers)[i % len(answers)]
+        values[offset] = api.Constant(float(i), DType("float64"))
+        values[name] = api.Derived("add", (op, offset))
+        raw = [v + i for v in answers[op]]
+        if i % 3 == 0:
+            encoder, answer = Raw(), raw
+        elif i % 3 == 1:
+            encoder = ZScore(dtype="float64")
+            answer = pytest.approx([0, 0] if raw[0] == raw[1] else [-1, 1], rel=1e-12, abs=1e-12)
+        else:
+            encoder, answer = Buckets(boundaries=bounds), [1 + bisect_right(bounds, v) for v in raw]
+        fields.append(Encode(name, encoder))
+        expected[name] = answer
+    contract = DataLoaderSpec(
+        schema,
+        SampleSpec(EntitySpec("users"), entity_values=values),
+        BatchSpec({"entity": Input(EntitySource(), Fields(tuple(fields)), Separate())}),
+    )
+    anchors = parquet_anchors(
+        tmp_path / "anchors.parquet", {"user": [1, 1], "cutoff": [20, 100]}, "user", "cutoff"
+    )
+    with (
+        bound_tables(contract, tables, "diskgraph") as (dataset, engine),
+        prepare(contract, dataset, engine) as plan,
+        plan.materialize(anchors) as task,
+    ):
+        (batch,) = task.batches(batch_size=2, output_format="model")
+    assert set(batch.inputs["entity"]) == set(expected)
+    for name, answer in expected.items():
+        output = batch.inputs["entity"][name]
+        assert output["valid"].tolist() == [True, True]
+        assert output["values"].tolist() == answer
