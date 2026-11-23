@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import errno
 import fnmatch
 import logging
 import os
@@ -20,8 +21,29 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_DATA_VERSION = -1.0
 
+DESCRIPTOR_LIMIT_ERRNOS = frozenset((errno.EMFILE, errno.ENFILE))
+
 P = ParamSpec("P")
 R = TypeVar("R")
+
+
+def descriptor_limit_errno(error: BaseException) -> Optional[int]:
+    """Return the EMFILE/ENFILE errno if descriptor exhaustion caused ``error``.
+
+    Walks ``__cause__`` and ``__context__`` (bounded, loop-guarded), since the
+    ``OSError`` is usually wrapped by a client library.
+    """
+    seen: set[int] = set()
+    current: Optional[BaseException] = error
+    depth = 0
+    while current is not None and depth < 20 and id(current) not in seen:
+        seen.add(id(current))
+        if (isinstance(current, OSError)
+                and current.errno in DESCRIPTOR_LIMIT_ERRNOS):
+            return current.errno
+        current = current.__cause__ or current.__context__
+        depth += 1
+    return None
 
 
 def fsExceptionHandler(func: Callable[P, R]) -> Callable[P, R]:

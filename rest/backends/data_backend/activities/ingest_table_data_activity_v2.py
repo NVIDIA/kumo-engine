@@ -24,6 +24,7 @@ from temporalio import activity
 
 from common_utils.kumo_timing import kumo_timing
 from io_utils import fsutil, logging
+from io_utils.fsutil.common import descriptor_limit_errno
 from kumo.connector.connector import ExportMetrics
 from kumo.connector.file_connector import FileConnector
 from kumo.data import MaterializationStage
@@ -84,12 +85,6 @@ _SAFE_INGESTION_PUBLIC_ERRORS = (
     TableIngestionOutOfMemoryError,
 )
 
-# File-descriptor exhaustion errnos: EMFILE is the per-process open-file limit,
-# ENFILE the system-wide one. Either names a transient resource limit rather
-# than a data or schema problem, so it is translated to a retryable public
-# error that reports the errno and the current RLIMIT_NOFILE soft limit.
-_DESCRIPTOR_LIMIT_ERRNOS = frozenset((errno.EMFILE, errno.ENFILE))
-
 # Composed from the error's TYPE and its own numeric fields, never from its
 # text: these types are also reached by translating a vendor exception, whose
 # text must not be republished. Keyed on the exact type, so a subclass added
@@ -145,26 +140,6 @@ def _safe_source_error_message(
     return template.format(**{**vars(error), 'table': name})
 
 
-def _descriptor_limit_errno(error: BaseException) -> int | None:
-    """Return the EMFILE/ENFILE errno if descriptor exhaustion caused ``error``.
-
-    Connectors surface an out-of-descriptors failure as an ``OSError`` buried in
-    the cause chain under a connector-specific wrapper, so walk ``__cause__``
-    and ``__context__`` (bounded, loop-guarded) looking for one.
-    """
-    seen: set[int] = set()
-    current: BaseException | None = error
-    depth = 0
-    while current is not None and depth < 20 and id(current) not in seen:
-        seen.add(id(current))
-        if (isinstance(current, OSError)
-                and current.errno in _DESCRIPTOR_LIMIT_ERRNOS):
-            return current.errno
-        current = current.__cause__ or current.__context__
-        depth += 1
-    return None
-
-
 def _file_descriptor_limit_error(
     errno_value: int, ) -> TableIngestionFileDescriptorLimitError:
     """Build the retryable descriptor-exhaustion error from numeric fields only.
@@ -197,7 +172,7 @@ def _raise_sanitized_table_ingestion_error(
     table: TableDefinition | None = None,
 ) -> NoReturn:
     public_error = extract_public_exception(error)
-    errno_value = _descriptor_limit_errno(error)
+    errno_value = descriptor_limit_errno(error)
     log.error(
         'Table ingestion failed (error_type=%s%s)',
         type(error).__name__,
