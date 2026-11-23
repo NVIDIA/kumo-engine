@@ -91,7 +91,8 @@ Before the Lambda changes a group, all owner tags of the group must match the sw
 The VM profile invokes only this Lambda. VMs in every configured region call it in the home region. Repository workflow permissions control runner access. Labels select hardware without restricting workflow access.
 
 Each declared instance type has one pool, with one group in each configured region. Every group starts with no VM and with `Launch` suspended.
-Its VMs have scale-in protection, so a lower desired capacity never terminates a VM.
+When a VM of the group reaches `InService`, it gets scale-in protection. From then on, a lower desired capacity never terminates it.
+A `Pending` VM has no protection. The sweep counts it as live and never sets the desired capacity below the live VMs that describe lists.
 Every minute until the capacity deadline, the Lambda counts the VMs and waiting cases of a pool. In the launch walk, it asks one zone after the other for the missing VMs with `LaunchInstances`.
 The walk starts no new launch call after 45 seconds. A call that started can still run for up to about 30 seconds. The sweep of the next minute continues at the next zone.
 An error for one zone, such as no capacity, moves to the next zone. Some answers skip the rest of that region in that sweep.

@@ -473,7 +473,7 @@ async function sweep(event, io) {
     return {filled, waiting: waiting.length, booting, missing: wanted, launched: answers.flatMap(a => a.instances || []),
       terminated: terminated.map(t => t.instance), closed: closing, blind, position: state.position, answers};
   } finally {
-    const release = () => write({...state, lease_until: 0, lease_owner: null}, {IfMatch: etag});
+    const release = () => write({...state, lease_until: 0}, {IfMatch: etag});
     try {
       await release().catch(error => {
         if (error.$metadata?.httpStatusCode === 409) return release();

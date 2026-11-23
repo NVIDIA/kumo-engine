@@ -1335,7 +1335,7 @@ test('only one sweep of a pool works at a time', async () => {
   assert.deepEqual([writes[0].IfNoneMatch, writes[0].Body.lease_until, writes[0].Body.lease_owner], ['*', f.io.now() + 120, 'owner-1']);
   const saved = writes.find(w => w.IfMatch === '"1"');
   assert.deepEqual([Object.keys(saved.Body.launched), saved.Body.lease_owner], [['i-00000001'], 'owner-1'], 'The launch is saved under the lease');
-  assert.deepEqual([writes.at(-1).IfMatch, writes.at(-1).Body.lease_until, writes.at(-1).Body.lease_owner], ['"2"', 0, null]);
+  assert.deepEqual([writes.at(-1).IfMatch, writes.at(-1).Body.lease_until, writes.at(-1).Body.lease_owner], ['"2"', 0, 'owner-1']);
   const state = f.claims.get(key);
   f.claims.set(key, {...state, lease_until: f.io.now() + 30, lease_owner: 'other'});
   assert.deepEqual(await sweep(event, f.io), {skipped: 'leased'});
@@ -1348,6 +1348,30 @@ test('only one sweep of a pool works at a time', async () => {
     return aws(service, operation, input, region);
   };
   assert.deepEqual(await sweep(event, f.io), {skipped: 'leased'}, 'A lost conditional write leaves the work to the other sweep');
+});
+test('a sweep that read the state before another sweep took and released the lease stays out, even when S3 makes ETags from the content', async () => {
+  const f = await started(), event = f.sweeps[0], key = stateKey(event.instance), aws = f.io.aws;
+  const md5 = body => '"' + createHash('md5').update(body).digest('hex') + '"';
+  f.io.aws = async (service, operation, input, region) => {
+    const out = await aws(service, operation, input, region);
+    if (operation !== 'put-object' || input.Key !== key) return out;
+    f.etags.set(key, md5(input.Body));
+    return {...out, ETag: f.etags.get(key)};
+  };
+  f.zones['us-west-2/subnet-1'] = 5;
+  for (let k = 0; k < 2; k++) await sweep(event, f.io);
+  let open, reached, held = false;
+  const gate = new Promise(resolve => { open = resolve; }), waiting = new Promise(resolve => { reached = resolve; });
+  const late = {...f.io, aws: async (service, operation, input, region) => {
+    if (!held && operation === 'describe-auto-scaling-groups') { held = true; reached(); await gate; }
+    return f.io.aws(service, operation, input, region);
+  }};
+  const second = sweep(event, late);
+  await waiting;
+  const first = await sweep(event, f.io);
+  open();
+  assert.deepEqual([first.skipped, first.missing, first.launched], [undefined, 0, []], 'The first sweep changes nothing in the pool');
+  assert.deepEqual(await second, {skipped: 'leased'});
 });
 test('launches are saved at once, so a lost release does not hide them from a blind region in the next sweep', async () => {
   const f = await started(), event = f.sweeps[0], key = stateKey(event.instance), aws = f.io.aws, start = f.io.now();
@@ -2082,7 +2106,10 @@ test('broker preserves authentication, routing, regional clients and S3 failure 
     assert.deepEqual(launches(f).map(c => c.region), ['us-west-2', 'us-west-2', 'us-east-2']);
     const leases = f.calls.filter(c => c.operation === 'put-object' && c.input.Key === stateKey(pool.instance)).map(c => c.input);
     assert.deepEqual(leases.map(c => c.IfNoneMatch || c.IfMatch), ['*', '"1"', '"2"', '"4"', '"5"']);
-    assert.deepEqual(leases.map(c => /^[0-9a-f-]{36}$/.test(JSON.parse(c.Body).lease_owner)), [true, true, false, true, false]);
+    const owners = leases.map(c => JSON.parse(c.Body).lease_owner);
+    assert.deepEqual(owners.map(o => /^[0-9a-f-]{36}$/.test(o)), [true, true, true, true, true]);
+    assert.deepEqual([new Set(owners.slice(0, 3)).size, new Set(owners.slice(3)).size, owners[0] === owners[3]], [1, 1, false],
+      'Each sweep keeps its own lease owner, also in its release');
     bounded();
     return;
   }
