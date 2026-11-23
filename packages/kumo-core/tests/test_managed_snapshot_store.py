@@ -4,6 +4,7 @@
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from kumo_core.diskgraph.snapshot import (
@@ -12,6 +13,8 @@ from kumo_core.diskgraph.snapshot import (
     DiskgraphSnapshotError,
     DiskgraphSnapshotHandle,
     LocalSnapshotStore,
+    check_diskgraph_output,
+    rebased,
 )
 
 
@@ -43,6 +46,58 @@ def test_publish_moves_bytes_and_rebases_results(staged, tmp_path):
     reopened = LocalSnapshotStore(store.config)
     assert reopened.path(handle) == str(target)
     assert reopened.predicted_result(handle) == published
+
+
+def test_crash_after_rename_preserves_a_recoverable_build(
+        staged, tmp_path, monkeypatch):
+    import kumo_core.diskgraph.snapshot as snapshots
+
+    store, handle, result, source = staged
+    target = tmp_path / 'indexes' / 'build'
+    marker = (source / '_SUCCESS').read_bytes()
+    metadata = (source / 'index_metadata.json').read_bytes()
+    data = source / 'node-data.bin'
+    data.write_bytes(b'completed node data')
+    inode = data.stat().st_ino
+    retained = tmp_path / 'indexes' / 'other-build' / 'node-data.bin'
+    retained.parent.mkdir(parents=True)
+    retained.write_bytes(b'other completed build')
+    write_marker = snapshots.write_diskgraph_success_marker
+
+    class Interrupted(BaseException):
+        pass
+
+    def interrupt_before_marker_rewrite(output_dir, published):
+        assert Path(output_dir) == target
+        assert not source.exists()
+        assert target.is_dir()
+        assert published.index_path == str(target)
+        raise Interrupted
+
+    monkeypatch.setattr(snapshots, 'write_diskgraph_success_marker',
+                        interrupt_before_marker_rewrite)
+    with pytest.raises(Interrupted):
+        store.publish(handle, result)
+
+    assert not source.exists()
+    assert not store._reference(handle).exists()
+    assert (target / '_SUCCESS').read_bytes() == marker
+    assert (target / 'index_metadata.json').read_bytes() == metadata
+    assert check_diskgraph_output(str(target)) is None
+    assert result.missing_paths()
+
+    # Recovery can address the physical build even while its logical reference
+    # is absent. Automatic discovery and reattachment are tracked in #486.
+    physical = SimpleNamespace(path=lambda _: str(target))
+    recovered = rebased(physical, handle)
+    assert recovered == DiskgraphIngestResult.for_index(target)
+    assert recovered.missing_paths() == []
+    write_marker(str(target), recovered)
+    assert check_diskgraph_output(str(target)) == recovered
+    assert (target / 'node-data.bin').read_bytes() == b'completed node data'
+    assert (target / 'node-data.bin').stat().st_ino == inode
+    assert retained.read_bytes() == b'other completed build'
+    assert not store._reference(handle).exists()
 
 
 def test_legacy_location_remains_readable(staged):
