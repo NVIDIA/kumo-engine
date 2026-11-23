@@ -1888,9 +1888,9 @@ class DiskGraphSource:
                 type=self._pa.int64(),
             )
             event_cutoffs = self._pc.take(self._pa.array(cutoffs), owners)
-            elapsed = self._pc.subtract(event_cutoffs, timestamps)
+            elapsed = self._pc.subtract_checked(event_cutoffs, timestamps)
             return self._pc.divide(
-                self._pc.cast(elapsed, self._pa.float64()),
+                arrow_float64(elapsed),
                 self._pa.scalar(
                     field.seconds_per_unit * 1000000000 / self._tick_nanos, type=self._pa.float64()
                 ),
