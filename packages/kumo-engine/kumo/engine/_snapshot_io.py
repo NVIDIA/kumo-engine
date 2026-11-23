@@ -403,11 +403,9 @@ def holds_export(index: Path, manifest: dict) -> bool:
 
 def _download(root: str, staging: Path, client: FileSystem,
               item: Tuple[str, int, int], stop: threading.Event) -> None:
-    from kumo_core.io.filesystem import open_file
-
     name, offset, length = item
     with (client.open_input_file(f'{root}/index/{name}') as reader,
-          open_file(str(staging / name), 'r+b') as writer):
+          open(staging / name, 'r+b') as writer):
         # Each range has its own stream, so parallel seeks cannot change
         # another range's position. Binary writes preserve Windows bytes.
         writer.seek(offset)
