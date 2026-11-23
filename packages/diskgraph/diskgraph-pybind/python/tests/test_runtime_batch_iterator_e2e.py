@@ -25,6 +25,7 @@ from __future__ import annotations
 import inspect
 import json
 import pathlib
+import shutil
 import struct
 from typing import Any
 
@@ -209,6 +210,8 @@ def seed_table_fixture(tmp_path_factory) -> dict[str, Any]:
     return {
         "manifest_path": str(manifest_path),
         "parent_root": str(parent_root),
+        "parent_config": parent_config,
+        "seed_config": seed_config,
         "tt_id": tt_id,
         "n_seeds": n_seeds,
         "n_users": n_users,
@@ -325,6 +328,280 @@ def test_iterator_yields_dict_matching_contract(seed_table_fixture):
             batch,
             batch_size=3,
             n_users=seed_table_fixture["n_users"],
+        )
+
+
+def test_external_extension_runs_without_an_index_local_copy(seed_table_fixture, tmp_path):
+    original = pathlib.Path(seed_table_fixture["parent_root"])
+    parent = tmp_path / "base"
+    shutil.copytree(original, parent, symlinks=True)
+    external = tmp_path / "task"
+    shutil.move(str(parent / "train_tables" / seed_table_fixture["tt_id"]), external)
+    before = {str(p.relative_to(parent)): p.read_bytes()
+              for p in parent.rglob("*") if p.is_file()}
+    manifest = json.loads(pathlib.Path(seed_table_fixture["manifest_path"]).read_text())
+    manifest["graph"]["index_path"] = str(parent)
+    manifest["stages"]["train"]["index_path"] = str(external)
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(manifest))
+    iterator, count = make_runtime_batch_iterator(
+        str(path), stage="train", entity_node_type="users", sampling_plan=_sampling_plan(),
+        num_workers=1, worker_id=0, shuffle=False, rnd_seed=17, epoch=0,
+        batch_size=3, drop_last=False,
+    )
+    assert count == seed_table_fixture["n_seeds"]
+    batches = list(iterator)
+    assert len(batches) == 2
+    for batch in batches:
+        _assert_runtime_batch_dict_contract(batch, 3, seed_table_fixture["n_users"])
+    assert {str(p.relative_to(parent)): p.read_bytes()
+            for p in parent.rglob("*") if p.is_file()} == before
+
+
+def test_index_build_identity_and_external_task(seed_table_fixture, tmp_path):
+    original = pathlib.Path(seed_table_fixture["parent_root"])
+    original_id = json.loads((original / "index_metadata.json").read_text())["index_build_id"]
+    assert original_id
+
+    copied = tmp_path / "copy"
+    shutil.copytree(original, copied, symlinks=True)
+    assert json.loads((copied / "index_metadata.json").read_text())["index_build_id"] == original_id
+
+    build_id = diskgraph.new_index_build_id()
+    index_dir = tmp_path / "new-base"
+    diskgraph.ingest(
+        config_json=json.dumps(seed_table_fixture["parent_config"]),
+        output_dir=str(index_dir),
+        col_stats=False,
+        index_build_id=build_id,
+    )
+    assert build_id != original_id
+    assert json.loads((index_dir / "index_metadata.json").read_text())["index_build_id"] == build_id
+    base_files = {str(p.relative_to(index_dir)): p.read_bytes()
+                  for p in index_dir.rglob("*") if p.is_file()}
+
+    task = tmp_path / "task-1"
+    shutil.copytree(original / "train_tables" / seed_table_fixture["tt_id"], task, symlinks=True)
+    from diskgraph._c import RuntimeIndex as NativeRuntimeIndex
+
+    with pytest.raises(diskgraph.DiskgraphConfigError, match="managed internal API"):
+        NativeRuntimeIndex(str(index_dir), str(task), 17, 1)
+    with pytest.raises(diskgraph.DiskgraphConfigError, match="belongs to index build"):
+        NativeRuntimeIndex._from_extension_path(str(index_dir), str(task), 17, 1)
+    manifest = json.loads(pathlib.Path(seed_table_fixture["manifest_path"]).read_text())
+    manifest["graph"]["index_path"] = str(index_dir)
+    manifest["stages"]["train"]["index_path"] = str(task)
+    manifest_path = tmp_path / "wrong-parent-manifest.json"
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(diskgraph.DiskgraphConfigError, match="belongs to index build"):
+        make_runtime_batch_iterator(
+            str(manifest_path), stage="train", entity_node_type="users",
+            sampling_plan=_sampling_plan(), num_workers=1, worker_id=0,
+            shuffle=False, rnd_seed=17, epoch=0, batch_size=3,
+            drop_last=False, num_threads=1,
+        )
+
+    # Ingest against the chosen base; only the sibling task tree is writable.
+    shutil.rmtree(task)
+    diskgraph.ingest(
+        config_json=json.dumps(seed_table_fixture["seed_config"]),
+        output_dir=str(task),
+        col_stats=True,
+        parent_index_path=str(index_dir),
+    )
+    NativeRuntimeIndex._from_extension_path(str(index_dir), str(task), 17, 1)
+    assert {str(p.relative_to(index_dir)): p.read_bytes()
+            for p in index_dir.rglob("*") if p.is_file()} == base_files
+
+
+def test_legacy_index_without_build_ids_remains_readable(seed_table_fixture, tmp_path):
+    parent = tmp_path / "legacy"
+    shutil.copytree(seed_table_fixture["parent_root"], parent, symlinks=True)
+    extension = parent / "train_tables" / seed_table_fixture["tt_id"]
+    for metadata_path in (parent / "index_metadata.json", extension / "index_metadata.json"):
+        metadata = json.loads(metadata_path.read_text())
+        metadata.pop("index_build_id", None)
+        metadata.pop("parent_index_build_id", None)
+        metadata_path.write_text(json.dumps(metadata))
+    from diskgraph._c import RuntimeIndex as NativeRuntimeIndex
+
+    NativeRuntimeIndex(str(parent), seed_table_fixture["tt_id"], 17, 1)
+
+
+@pytest.mark.parametrize("directory", ["train_tables", "pred_tables"])
+def test_extension_reference_preserves_index_local_layout(tmp_path, directory):
+    from diskgraph.runtime_batch_iterator import _extension_ref_from_stage_path
+
+    parent = tmp_path / "base"
+    assert _extension_ref_from_stage_path(
+        str(parent), str(parent / directory / "task")
+    ) == f"{directory}/task"
+
+
+def test_index_local_symlink_keeps_its_catalog_namespace(seed_table_fixture, tmp_path):
+    from diskgraph.runtime_batch_iterator import _extension_ref_from_stage_path
+
+    parent = tmp_path / "base"
+    shutil.copytree(seed_table_fixture["parent_root"], parent, symlinks=True)
+    target = tmp_path / "external" / "different-name"
+    target.parent.mkdir()
+    shutil.copytree(parent / "train_tables" / seed_table_fixture["tt_id"], target)
+    alias = parent / "train_tables" / "task-alias"
+    alias.symlink_to(target, target_is_directory=True)
+    assert _extension_ref_from_stage_path(str(parent), str(alias)) == "train_tables/task-alias"
+
+    manifest = json.loads(pathlib.Path(seed_table_fixture["manifest_path"]).read_text())
+    manifest["graph"]["index_path"] = str(parent)
+    manifest["stages"]["train"]["index_path"] = str(alias)
+    path = tmp_path / "alias-manifest.json"
+    path.write_text(json.dumps(manifest))
+    iterator, count = make_runtime_batch_iterator(
+        str(path), stage="train", entity_node_type="users", sampling_plan=_sampling_plan(),
+        num_workers=1, worker_id=0, shuffle=False, rnd_seed=17, epoch=0,
+        batch_size=3, drop_last=False,
+    )
+    assert count == seed_table_fixture["n_seeds"]
+    assert len(list(iterator)) == 2
+
+
+def test_manifest_opens_external_extension_with_matching_parent(seed_table_fixture, tmp_path):
+    from diskgraph.runtime_batch_iterator import _extension_ref_from_stage_path
+
+    parent = pathlib.Path(seed_table_fixture["parent_root"])
+    target = tmp_path / "external" / "different-name"
+    target.parent.mkdir()
+    shutil.copytree(parent / "train_tables" / seed_table_fixture["tt_id"], target)
+    assert _extension_ref_from_stage_path(str(parent), str(target)) == str(target)
+    manifest = json.loads(pathlib.Path(seed_table_fixture["manifest_path"]).read_text())
+    manifest["stages"]["train"]["index_path"] = str(target)
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(manifest))
+    iterator, count = make_runtime_batch_iterator(
+        str(path), stage="train", entity_node_type="users", sampling_plan=_sampling_plan(),
+        num_workers=1, worker_id=0, shuffle=False, rnd_seed=17, epoch=0,
+        batch_size=3, drop_last=False,
+    )
+    assert count == seed_table_fixture["n_seeds"]
+    assert len(list(iterator)) == 2
+
+
+@pytest.mark.parametrize("path_input", ["stage", "parent"])
+def test_extension_reference_resolves_symlink_before_parent_segment(tmp_path, path_input):
+    from diskgraph.runtime_batch_iterator import _extension_ref_from_stage_path
+
+    runs = tmp_path / "runs"
+    (runs / "run-1").mkdir(parents=True)
+    consumer = tmp_path / "consumer"
+    consumer.mkdir()
+    alias = consumer / "current"
+    alias.symlink_to(runs / "run-1", target_is_directory=True)
+    if path_input == "stage":
+        # Lexical collapse would silently select consumer/task instead of runs/task.
+        for task in (runs / "task", consumer / "task"):
+            task.mkdir()
+            (task / "index_metadata.json").write_text("{}")
+        parent = tmp_path / "base"
+        stage = alias / ".." / "task"
+    else:
+        parent = alias / ".." / "base"
+        stage = runs / "base" / "train_tables" / "task"
+        stage.mkdir(parents=True)
+        (stage / "index_metadata.json").write_text("{}")
+        expected = "train_tables/task"
+    if path_input == "stage":
+        assert _extension_ref_from_stage_path(str(parent), str(stage)) == str((runs / "task").resolve())
+    else:
+        assert _extension_ref_from_stage_path(str(parent), str(stage)) == expected
+
+
+@pytest.mark.parametrize("entrypoint", ["native", "manifest"])
+@pytest.mark.parametrize("kind", ["missing", "empty", "base", "base_alias", "index_local",
+                                 "legacy_alias"])
+def test_runtime_rejects_non_extension_paths(seed_table_fixture, tmp_path, kind, entrypoint):
+    parent = tmp_path / "base"
+    shutil.copytree(seed_table_fixture["parent_root"], parent, symlinks=True)
+    stage = tmp_path / "stage"
+    if kind == "empty":
+        stage.mkdir()
+    elif kind == "base":
+        stage = parent
+    elif kind == "base_alias":
+        stage.symlink_to(parent, target_is_directory=True)
+    elif kind == "index_local":
+        stage = parent / "arbitrary-directory"
+        stage.mkdir()
+        (stage / "index_metadata.json").write_text("{}")
+    elif kind == "legacy_alias":
+        stage = parent / "train_tables" / ("base-alias-" + entrypoint)
+        stage.symlink_to(parent, target_is_directory=True)
+    match = "base index" if kind in ("base", "base_alias", "legacy_alias") else "extension"
+    if kind == "missing" and entrypoint == "native":
+        match = "extension `stage`"
+    with pytest.raises(diskgraph.DiskgraphConfigError, match=match):
+        if entrypoint == "native":
+            from diskgraph._c import RuntimeIndex as NativeRuntimeIndex
+
+            ref = str(stage.relative_to(parent)) if kind == "legacy_alias" else str(stage)
+            if pathlib.Path(ref).is_absolute():
+                NativeRuntimeIndex._from_extension_path(str(parent), ref, 17, 1)
+            else:
+                NativeRuntimeIndex(str(parent), ref, 17, 1)
+        else:
+            manifest = json.loads(pathlib.Path(seed_table_fixture["manifest_path"]).read_text())
+            manifest["graph"]["index_path"] = str(parent)
+            manifest["stages"]["train"]["index_path"] = str(stage)
+            path = tmp_path / "manifest.json"
+            path.write_text(json.dumps(manifest))
+            make_runtime_batch_iterator(
+                str(path), stage="train", entity_node_type="users", sampling_plan=_sampling_plan(),
+                num_workers=1, worker_id=0, shuffle=False, rnd_seed=17, epoch=0,
+                batch_size=3, drop_last=False, num_threads=1,
+            )
+
+
+def test_nested_index_local_stage_path_is_rejected(seed_table_fixture, tmp_path):
+    from diskgraph.runtime_batch_iterator import _extension_ref_from_stage_path
+
+    parent = tmp_path / "base"
+    shutil.copytree(seed_table_fixture["parent_root"], parent, symlinks=True)
+    nested = parent / "train_tables" / seed_table_fixture["tt_id"] / "nested"
+    nested.mkdir()
+    assert _extension_ref_from_stage_path(str(parent), str(nested)) == str(nested)
+    from diskgraph._c import RuntimeIndex as NativeRuntimeIndex
+    with pytest.raises(diskgraph.DiskgraphConfigError, match="index-local extension"):
+        NativeRuntimeIndex._from_extension_path(str(parent), str(nested), 17, 1)
+
+    manifest = json.loads(pathlib.Path(seed_table_fixture["manifest_path"]).read_text())
+    manifest["graph"]["index_path"] = str(parent)
+    manifest["stages"]["train"]["index_path"] = str(nested)
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(diskgraph.DiskgraphConfigError, match="index-local extension"):
+        make_runtime_batch_iterator(
+            str(path), stage="train", entity_node_type="users", sampling_plan=_sampling_plan(),
+            num_workers=1, worker_id=0, shuffle=False, rnd_seed=17, epoch=0,
+            batch_size=3, drop_last=False, num_threads=1,
+        )
+
+
+def test_external_extension_metadata_is_validated_by_native_reader(seed_table_fixture, tmp_path):
+    original = pathlib.Path(seed_table_fixture["parent_root"])
+    parent = tmp_path / "base"
+    # Never expand fixture symlinks while copying the base.
+    shutil.copytree(original, parent, symlinks=True)
+    external = tmp_path / "not-an-index"
+    external.mkdir(parents=True)
+    (external / "index_metadata.json").write_text("{}")
+    manifest = json.loads(pathlib.Path(seed_table_fixture["manifest_path"]).read_text())
+    manifest["graph"]["index_path"] = str(parent)
+    manifest["stages"]["train"]["index_path"] = str(external)
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(diskgraph.DiskgraphSystemError, match="extension"):
+        make_runtime_batch_iterator(
+            str(path), stage="train", entity_node_type="users", sampling_plan=_sampling_plan(),
+            num_workers=1, worker_id=0, shuffle=False, rnd_seed=17, epoch=0,
+            batch_size=3, drop_last=False, num_threads=1,
         )
 
 

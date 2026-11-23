@@ -9,7 +9,9 @@ on: # yamllint disable-line rule:truthy
     branches:
       - main
     paths:
+      - ".github/actions/temporal-cli/**"
       - ".github/workflows/playwright_ui.yml"
+      - ".temporal-cli-version"
       - "Makefile"
       - "bin/**"
       - "docker/**"
@@ -87,7 +89,9 @@ jobs:
         uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96 # v47.0.6
         with:
           files: |
+            .github/actions/temporal-cli/**
             .github/workflows/playwright_ui.yml
+            .temporal-cli-version
             Makefile
             bin/**
             docker/**
@@ -178,13 +182,18 @@ jobs:
         with:
           packages: tmux
 
+      # Exports KUMO_TEMPORAL_CLI_PATH, which the startup script below runs.
+      - name: Set up Temporal CLI
+        if: steps.ui-changes.outputs.any_changed == 'true'
+        uses: ./.github/actions/temporal-cli
+
       # ---------------------------------------------------------------------
       # Local Temporal dev server on :7233 — the address configs/local.json
       # pins (orchestration.server_address = localhost:7233). The script
-      # installs the self-contained Temporal CLI (a Go binary; no Java) when
-      # missing, starts `temporal server start-dev --namespace devtest
-      # --port 7233`, and blocks on wait_server_ready.py until the namespace
-      # the deploy env resolves (devtest, for DEPLOY_STAGE=dev) is reachable.
+      # starts `temporal server start-dev --namespace devtest --port 7233`
+      # with the CLI provisioned above, and blocks on wait_server_ready.py
+      # until the namespace the deploy env resolves (devtest, for
+      # DEPLOY_STAGE=dev) is reachable.
       # ---------------------------------------------------------------------
       - name: Start local Temporal dev server
         if: steps.ui-changes.outputs.any_changed == 'true'

@@ -573,6 +573,8 @@ class _Reads:
             following: list[_Route] = []
             origin = f"neighborhoods.{name} hop {depth}"
             for traversal in layer.samples:
+                if traversal.strategy is None:
+                    raise ValueError("resolve GraphSample.strategy before deriving serving rows")
                 relation = self.relations[traversal.relation]
                 start = (
                     relation.left_table
@@ -590,7 +592,7 @@ class _Reads:
                         self.column(route.table, clock, "time column")
                     time = (
                         (clock, None, 0)
-                        if clock is not None and traversal.temporal == "inherit"
+                        if clock is not None and traversal.strategy == "recent"
                         else None
                     )
                     if traversal.strategy == "recent" and clock is not None:

@@ -6,10 +6,12 @@
 
 import datetime as dt
 import json
+from decimal import Decimal
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+import torch
 
 from kumo.pytorch.api import (
     NON_TEMPORAL,
@@ -37,7 +39,7 @@ from kumo.pytorch.api import (
     prepare,
 )
 
-pytest.importorskip("diskgraph")
+diskgraph = pytest.importorskip("diskgraph")
 
 
 def _contract(dtype):
@@ -86,6 +88,76 @@ def test_a_later_file_cannot_change_the_declared_type(tmp_path):
             engine=DiskGraphEngine(index=index),
         )
     assert not index.exists()
+
+
+def test_declared_int64_ingests_mixed_integer_and_scale_zero_decimal_files(tmp_path):
+    minimum, maximum = -(2**63), 2**63 - 1
+    cases = (
+        (pa.int8(), -128),
+        (pa.int16(), -32768),
+        (pa.int32(), 2147483647),
+        (pa.decimal128(38, 0), Decimal(minimum)),
+        (pa.decimal256(76, 0), Decimal(maximum)),
+        (pa.int32(), None),
+    )
+    parts = tmp_path / "parts"
+    parts.mkdir()
+    for row, (dtype, value) in enumerate(cases, start=1):
+        key = Decimal(row) if pa.types.is_decimal(dtype) else row
+        pq.write_table(
+            pa.table({"id": pa.array([key], type=dtype), "value": pa.array([value], type=dtype)}),
+            parts / f"{row}.parquet",
+        )
+    dataset = Dataset({"rows": Parquet(str(parts))})
+    engine = DiskGraphEngine(index=tmp_path / "index", num_threads=1)
+    requests = tuple(SampleRequest(str(row), row, 0) for row in range(1, len(cases) + 1))
+    with prepare(_contract(DType("int64")), dataset, engine) as plan:
+        with plan.materialize(requests) as task:
+            batch = next(task.batches(batch_size=len(cases), shuffle=False))
+    field = batch.inputs["values"]["value"]
+    assert field["values"].dtype == torch.int64
+    assert field["values"].tolist() == [-128, -32768, 2147483647, minimum, maximum, 0]
+    assert field["valid"].tolist() == [True, True, True, True, True, False]
+
+
+@pytest.mark.parametrize("dtype", [pa.decimal128(38, 0), pa.decimal256(76, 0)])
+@pytest.mark.parametrize("value", [-(2**63) - 1, 2**63])
+def test_int64_ingest_rejects_scale_zero_decimal_overflow_in_a_later_file(tmp_path, dtype, value):
+    parts = tmp_path / "parts"
+    parts.mkdir()
+    pq.write_table(pa.table({"id": [1], "value": [0]}), parts / "one.parquet")
+    pq.write_table(
+        pa.table({"id": [2], "value": pa.array([Decimal(value)], type=dtype)}),
+        parts / "two.parquet",
+    )
+    index = tmp_path / "index"
+    with pytest.raises(diskgraph.DiskgraphSourceValidationError, match=r"rows.*value.*64-bit"):
+        prepare(
+            _contract(DType("int64")),
+            Dataset({"rows": Parquet(str(parts))}),
+            DiskGraphEngine(index=index, num_threads=1),
+        )
+    assert not index.exists()
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        pa.array([Decimal("42.0")], type=pa.decimal128(38, 1)),
+        pa.array([42], type=pa.uint64()),
+        pa.array([42.0], type=pa.float64()),
+    ],
+    ids=["scaled-decimal", "uint64", "float"],
+)
+def test_declared_int64_still_rejects_incompatible_physical_types(tmp_path, values):
+    path = tmp_path / "rows.parquet"
+    pq.write_table(pa.table({"id": [1], "value": values}), path)
+    with pytest.raises(ValueError, match=r"rows.value.*declared.*physical"):
+        prepare(
+            _contract(DType("int64")),
+            Dataset({"rows": Parquet(str(path))}),
+            DiskGraphEngine(index=tmp_path / "index"),
+        )
 
 
 def test_untyped_all_null_source_is_not_guessed_from_a_declaration(tmp_path):
