@@ -12,6 +12,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 from kumoapi.plugin import SnapshotStore, _Handle
@@ -19,6 +20,15 @@ from kumoapi.plugin import SnapshotStore, _Handle
 from kumo._managed_paths import _ManagedIndexPaths
 
 logger = logging.getLogger(__name__)
+
+_SNAPSHOT_REFERENCE_SUFFIX = ".index.json"
+
+
+def _read_json_object(path: Path) -> dict[str, Any]:
+    payload = json.loads(path.read_text())
+    if not isinstance(payload, dict):
+        raise ValueError(f"{path.name} must contain a JSON object")
+    return payload
 
 
 class DiskgraphSnapshotError(RuntimeError):
@@ -99,17 +109,23 @@ def _to_diskgraph_object_store_path(path: str) -> str:
 
 
 class LocalSnapshotStore:
-    """Manage reconstructable DiskGraph snapshots under an explicit root."""
+    """Manage reconstructable DiskGraph snapshots under an explicit root.
+
+    New managed publications reserve ``.index.json`` for reference files.
+    Existing legacy directories with that suffix remain readable in place.
+    """
     def __init__(self, config: DiskgraphLocalConfig) -> None:
         self.config = config
 
     def path(self, handle: DiskgraphSnapshotHandle) -> str:
         reference = self._reference(handle)
         if self.config.managed_root is not None and reference.is_file():
-            build_id = json.loads(reference.read_text())["index_build_id"]
+            build_id = _read_json_object(reference).get("index_build_id")
+            if not isinstance(build_id, str) or not build_id:
+                raise ValueError("snapshot reference must name an index_build_id")
             paths = _ManagedIndexPaths(build_id, root=Path(self.config.managed_root))
             if paths.index_dir.exists():
-                metadata = json.loads((paths.index_dir / "index_metadata.json").read_text())
+                metadata = _read_json_object(paths.index_dir / "index_metadata.json")
                 if metadata.get("index_build_id") != build_id:
                     raise ValueError("managed index build ID mismatch")
                 return str(paths.index_dir)
@@ -124,13 +140,15 @@ class LocalSnapshotStore:
         )
 
     def _reference(self, handle: DiskgraphSnapshotHandle) -> Path:
-        return Path(self.staging_path(handle) + ".index.json")
+        return Path(self.staging_path(handle) + _SNAPSHOT_REFERENCE_SUFFIX)
 
     def use_legacy(self, handle: DiskgraphSnapshotHandle) -> None:
         """Select a verified restore at the legacy location, preserving old bases."""
         legacy = LocalSnapshotStore(DiskgraphLocalConfig(self.config.data_root))
         legacy.verify(handle)
-        self._reference(handle).unlink(missing_ok=True)
+        reference = self._reference(handle)
+        if reference.is_file():
+            reference.unlink()
 
     def publish(self, handle: DiskgraphSnapshotHandle,
                 result: DiskgraphIngestResult) -> DiskgraphIngestResult:
@@ -144,8 +162,16 @@ class LocalSnapshotStore:
         if self.config.managed_root is None:
             return result
 
+        # Existing suffix-named legacy directories stay readable, but new
+        # managed versions must not occupy another version's reference name.
+        if handle.graph_data_version.endswith(_SNAPSHOT_REFERENCE_SUFFIX):
+            raise ValueError("managed snapshot versions must not end with "
+                             + _SNAPSHOT_REFERENCE_SUFFIX)
+        reference = self._reference(handle)
+        if reference.is_dir():
+            raise FileExistsError(f"Snapshot reference is a directory: {reference}")
         source = Path(result.index_path)
-        metadata = json.loads((source / "index_metadata.json").read_text())
+        metadata = _read_json_object(source / "index_metadata.json")
         build_id = metadata.get("index_build_id")
         if not isinstance(build_id, str) or not build_id:
             raise DiskgraphSnapshotError("New snapshot has no index_build_id")
@@ -162,7 +188,6 @@ class LocalSnapshotStore:
         published = replace(DiskgraphIngestResult.for_index(target),
                             pkey_duplicate_counts=result.pkey_duplicate_counts)
         write_diskgraph_success_marker(str(target), published)
-        reference = self._reference(handle)
         temporary = reference.with_name(reference.name + f".{uuid.uuid4().hex}.tmp")
         try:
             temporary.write_text(json.dumps({"index_build_id": build_id}))
@@ -192,8 +217,9 @@ class LocalSnapshotStore:
 
     def list_ready(self) -> list[DiskgraphSnapshotHandle]:
         ready: list[DiskgraphSnapshotHandle] = []
+        seen: set[DiskgraphSnapshotHandle] = set()
         try:
-            graph_keys = os.listdir(self.config.data_root)
+            graph_keys = sorted(os.listdir(self.config.data_root))
         except OSError:
             return ready
         for graph_key in graph_keys:
@@ -201,15 +227,17 @@ class LocalSnapshotStore:
             if not os.path.isdir(graph_dir):
                 continue
             try:
-                versions = os.listdir(graph_dir)
+                versions = sorted(os.listdir(graph_dir))
             except OSError:
                 continue
             for version in versions:
-                is_reference = (self.config.managed_root is not None
-                                and version.endswith(".index.json"))
-                handle = DiskgraphSnapshotHandle(
-                    graph_key, version[:-11] if is_reference else version)
                 snapshot_dir = os.path.join(graph_dir, version)
+                is_reference = (self.config.managed_root is not None
+                                and version.endswith(_SNAPSHOT_REFERENCE_SUFFIX)
+                                and os.path.isfile(snapshot_dir))
+                handle = DiskgraphSnapshotHandle(
+                    graph_key, version.removesuffix(_SNAPSHOT_REFERENCE_SUFFIX)
+                    if is_reference else version)
                 if not is_reference and not os.path.isdir(snapshot_dir):
                     continue
                 try:
@@ -220,8 +248,9 @@ class LocalSnapshotStore:
                     logger.warning("Skipping invalid snapshot at %s",
                                    snapshot_dir)
                     continue
-                if result is not None and handle not in ready:
+                if result is not None and handle not in seen:
                     ready.append(handle)
+                    seen.add(handle)
         return ready
 
     def verify(self, handle: DiskgraphSnapshotHandle) -> DiskgraphIngestResult:
@@ -325,7 +354,7 @@ def validate_cached_source_times(output_dir: str) -> None:
     metadata_path = Path(output_dir) / 'index_metadata.json'
     if not metadata_path.is_file():
         return  # Structural/missing-artifact validation is a separate check.
-    metadata = json.loads(metadata_path.read_text())
+    metadata = _read_json_object(metadata_path)
     for table in metadata.get('node_types', []):
         column = table.get('create_time_col')
         if not column:

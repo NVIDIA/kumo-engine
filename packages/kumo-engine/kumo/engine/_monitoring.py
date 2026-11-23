@@ -968,7 +968,10 @@ def _missing(what: str, sides: Mapping[str, Mapping[str, Any]],
 
 
 def _local_index(snapshot_id: str) -> Optional[Path]:
-    from kumo_core.diskgraph.snapshot import DiskgraphSnapshotHandle
+    from kumo_core.diskgraph.snapshot import (
+        _SNAPSHOT_REFERENCE_SUFFIX,
+        DiskgraphSnapshotHandle,
+    )
 
     from kumo.engine._scratch import get_scratch_dir
     from kumo.engine.graph import _store
@@ -982,8 +985,9 @@ def _local_index(snapshot_id: str) -> Optional[Path]:
     # Public snapshot IDs contain only the first 16 characters of the version.
     for path in root.glob(f'{version}*'):
         try:
-            if path.name.endswith('.index.json') and path.is_file():
-                handle = DiskgraphSnapshotHandle(graph_key, path.name[:-11])
+            if path.name.endswith(_SNAPSHOT_REFERENCE_SUFFIX) and path.is_file():
+                handle = DiskgraphSnapshotHandle(
+                    graph_key, path.name.removesuffix(_SNAPSHOT_REFERENCE_SUFFIX))
                 index = Path(store.path(handle))
             else:
                 index = path

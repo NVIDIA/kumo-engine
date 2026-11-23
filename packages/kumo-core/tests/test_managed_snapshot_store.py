@@ -164,3 +164,157 @@ def test_listing_includes_managed_and_idless_legacy_snapshots(staged, tmp_path):
     assert store.path(legacy) == str(path)
     store._reference(handle).write_text('{invalid')
     assert store.list_ready() == [legacy]
+
+
+def _completed_legacy(store, handle):
+    path = Path(store.staging_path(handle))
+    path.mkdir(parents=True)
+    (path / 'index_metadata.json').write_text('{}')
+    (path / 'col_stats.json').write_text('{}')
+    (path / 'ingest_stats.json').write_text('{}')
+    (path / 'kumo_col_stats').mkdir()
+    (path / '_SUCCESS').write_text(DiskgraphIngestResult.for_index(path).to_json())
+    (path / '_MANIFEST.json').write_text(json.dumps({
+        'schema_version': 1,
+        'files': [{'rel_path': name, 'size_bytes': (path / name).stat().st_size}
+                  for name in ('index_metadata.json', 'col_stats.json',
+                               'ingest_stats.json')],
+    }))
+    return path
+
+
+def test_legacy_directory_with_reference_suffix_remains_readable(staged):
+    store, _, _, _ = staged
+    legacy = DiskgraphSnapshotHandle('graph', 'old.index.json')
+    path = _completed_legacy(store, legacy)
+
+    assert store.path(legacy) == str(path)
+    assert legacy in store.list_ready()
+    assert DiskgraphSnapshotHandle('graph', 'old') not in store.list_ready()
+
+
+def test_reserved_version_publication_is_rejected_before_mutation(staged):
+    store, _, result, source = staged
+    reserved = DiskgraphSnapshotHandle('graph', 'version.index.json')
+    marker = (source / '_SUCCESS').read_bytes()
+
+    with pytest.raises(ValueError, match='must not end'):
+        store.publish(reserved, result)
+
+    assert source.is_dir()
+    assert (source / '_SUCCESS').read_bytes() == marker
+    assert not (source.parents[2] / 'indexes').exists()
+    assert not store._reference(reserved).exists()
+
+
+def test_reference_publication_does_not_replace_a_legacy_directory(staged):
+    store, handle, result, source = staged
+    legacy = DiskgraphSnapshotHandle(
+        handle.graph_key, handle.graph_data_version + '.index.json')
+    legacy_path = _completed_legacy(store, legacy)
+    marker = (legacy_path / '_SUCCESS').read_bytes()
+
+    with pytest.raises(FileExistsError, match='reference is a directory'):
+        store.publish(handle, result)
+
+    assert source.is_dir()
+    assert (legacy_path / '_SUCCESS').read_bytes() == marker
+    assert not (source.parents[2] / 'indexes').exists()
+    assert store.path(legacy) == str(legacy_path)
+    assert set(store.list_ready()) == {handle, legacy}
+
+
+def test_listing_deduplicates_handles_and_has_stable_order(staged):
+    store, handle, result, _ = staged
+    store.publish(handle, result)
+    _completed_legacy(store, handle)
+    first = DiskgraphSnapshotHandle(handle.graph_key, 'a-version')
+    _completed_legacy(store, first)
+
+    assert store.list_ready() == [first, handle]
+    assert store.list_ready() == [first, handle]
+
+
+@pytest.mark.parametrize('payload', [
+    [], None, 1, 'reference', {}, {'index_build_id': None},
+    {'index_build_id': []}, {'index_build_id': 3}, {'index_build_id': ''},
+])
+def test_invalid_reference_shapes_do_not_break_listing(staged, payload):
+    store, handle, result, _ = staged
+    store.publish(handle, result)
+    legacy = DiskgraphSnapshotHandle('other', 'legacy')
+    _completed_legacy(store, legacy)
+    store._reference(handle).write_text(json.dumps(payload))
+
+    with pytest.raises(ValueError):
+        store.path(handle)
+    assert store.list_ready() == [legacy]
+
+
+@pytest.mark.parametrize('payload', [[], None, 1, 'metadata', {},
+                                     {'index_build_id': 3}])
+def test_invalid_managed_metadata_does_not_break_listing(
+        staged, tmp_path, payload):
+    store, handle, result, _ = staged
+    store.publish(handle, result)
+    legacy = DiskgraphSnapshotHandle('other', 'legacy')
+    _completed_legacy(store, legacy)
+    (tmp_path / 'indexes/build/index_metadata.json').write_text(
+        json.dumps(payload))
+
+    with pytest.raises(ValueError):
+        store.path(handle)
+    assert store.list_ready() == [legacy]
+
+
+@pytest.mark.parametrize('payload', [[], None, 1, 'metadata'])
+def test_invalid_legacy_metadata_does_not_break_listing(staged, payload):
+    store, _, _, source = staged
+    legacy = DiskgraphSnapshotHandle('other', 'legacy')
+    _completed_legacy(store, legacy)
+    (source / 'index_metadata.json').write_text(json.dumps(payload))
+
+    assert store.list_ready() == [legacy]
+
+
+def test_existing_managed_reference_for_a_reserved_version_remains_readable(staged):
+    store, handle, result, _ = staged
+    published = store.publish(handle, result)
+    old_version = DiskgraphSnapshotHandle(handle.graph_key,
+                                          handle.graph_data_version + '.index.json')
+    store._reference(handle).rename(store._reference(old_version))
+
+    assert store.path(old_version) == published.index_path
+    assert store.list_ready() == [old_version]
+
+
+def test_selecting_legacy_restore_preserves_suffix_named_directory(staged):
+    store, original, _, _ = staged
+    restored = DiskgraphSnapshotHandle('graph', 'restore')
+    suffix_named = DiskgraphSnapshotHandle('graph', 'restore.index.json')
+    restored_path = _completed_legacy(store, restored)
+    other_path = _completed_legacy(store, suffix_named)
+    marker = (other_path / '_SUCCESS').read_bytes()
+
+    store.use_legacy(restored)
+
+    assert store.verify(restored).index_path == str(restored_path)
+    assert (other_path / '_SUCCESS').read_bytes() == marker
+    assert store.path(suffix_named) == str(other_path)
+    assert set(store.list_ready()) == {original, restored, suffix_named}
+
+
+@pytest.mark.parametrize('payload', [[], None, 1, 'metadata'])
+def test_nonobject_ingest_metadata_is_rejected_before_publication(
+        staged, payload):
+    store, handle, result, source = staged
+    (source / 'index_metadata.json').write_text(json.dumps(payload))
+    marker = (source / '_SUCCESS').read_bytes()
+
+    with pytest.raises(ValueError, match='must contain a JSON object'):
+        store.publish(handle, result)
+
+    assert source.is_dir()
+    assert (source / '_SUCCESS').read_bytes() == marker
+    assert not (source.parents[2] / 'indexes').exists()
+    assert not store._reference(handle).exists()
