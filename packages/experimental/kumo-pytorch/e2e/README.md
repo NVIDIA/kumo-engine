@@ -304,8 +304,9 @@ The nightly GPU matrix runs S02 (Synthetic nuFormer), L01 (AML LI Medium
 Combined), S01 (Synthetic PRAGMA), M04 (MBD GraphSAGE), S04 (Synthetic
 Combined) and M03 (MBD nuFormer). The package runner prepares DiskGraph and
 loads batches on CPU. Each GPU model trains for two complete passes over its
-registered training split, including the tail. It evaluates validation after
-each epoch and test after epoch two. Batches without eligible targets count
+registered training split, including the tail. Each pass verifies every original
+row and sample ID exactly once in the order delivered by DiskGraph. It evaluates
+validation after each epoch and test after epoch two. Batches without eligible targets count
 toward delivery and skip the optimizer update. For each anchor, the training
 runner selects the latest 64 history events across its event sources and
 delivers them oldest first. Each graph hop samples up to 64 recent neighbors

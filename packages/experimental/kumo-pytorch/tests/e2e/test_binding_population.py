@@ -7,7 +7,10 @@
 import os
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import Mock
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 from e2e.datasets.binding_sources import full_source
@@ -22,6 +25,37 @@ from tests.e2e.full_binding_run import (
 )
 from tests.helpers import parquet_anchors
 from tests.test_history_cap_pushdown import _history_case
+
+
+def test_training_verifies_reordered_native_rows_exactly_once(tmp_path):
+    from tests.test_native_anchor_handoff import _native_inputs
+
+    spec, data, table = _native_inputs(tmp_path)
+    path = tmp_path / "anchors.parquet"
+    rows = pq.read_table(path)
+    source = rows.select(["sid", "split"]).rename_columns(["sample_id", "split"])
+    rows = rows.append_column("anchor_row_position", pa.array(range(len(rows))))
+    pq.write_table(rows.take([5, 2, 3, 1, 4, 0, 6]), path)
+    table = replace(table, metadata=("anchor_row_position",))
+    engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=1)
+    with (
+        api.prepare(spec, data, engine) as plan,
+        plan.materialize(table, fit_split="train") as task,
+    ):
+        batches = list(full_batches(task, source, 3, "train"))
+    assert sorted(s for batch in batches for s in batch.metadata["sample_ids"]) == list("abdf")
+    replay = Mock()
+    replay.batches.return_value = batches
+    with pytest.raises(ValueError, match="arrived after"):
+        list(full_batches(replay, source, 3, "train", ordered=True))
+    with pytest.raises(ValueError, match="expected sample ID"):
+        list(full_batches(replay, source.take([1, 0, 2, 3, 4, 5, 6]), 3, "train"))
+    replay.batches.return_value = batches + batches[:1]
+    with pytest.raises(ValueError, match="repeated source row"):
+        list(full_batches(replay, source, 3, "train"))
+    replay.batches.return_value = batches[:-1]
+    with pytest.raises(ValueError, match="omitted source row"):
+        list(full_batches(replay, source, 3, "train"))
 
 
 def test_training_history_keeps_recent_merged_rows(tmp_path, native_anchor_delivery):
@@ -59,7 +93,7 @@ def test_training_history_keeps_recent_merged_rows(tmp_path, native_anchor_deliv
 def _check_population(binding, files, native, index):
     spec, data, table = native
     _, _, selector, representation = BINDINGS[binding]
-    column, counts, targets, cutoff = source_population(binding, files)
+    _, counts, targets, cutoff, identities = source_population(binding, files)
     report = BindingReport(
         binding,
         selector,
@@ -78,7 +112,7 @@ def _check_population(binding, files, native, index):
         for split, count in counts.items():
             assert task.count(split) == count
             for batch in full_batches(
-                task, files["anchors"], column, 32 if binding == "L01" else 4, split
+                task, identities, 32 if binding == "L01" else 4, split, ordered=True
             ):
                 report.observe(batch)
     report.publish()

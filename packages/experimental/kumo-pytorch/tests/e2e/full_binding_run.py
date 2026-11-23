@@ -17,7 +17,6 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import perf_counter
 
-import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.dataset as ds
 import pyarrow.parquet as pq
@@ -105,24 +104,17 @@ def source_population(binding, files):
         else {s: raw.count_rows(filter=pred & eligible) for s, pred in splits.items()}
         for name, eligible in _source_heads(binding).items()
     }
-    return column, counts, targets, cutoff
+    identities = pq.read_table(
+        files["anchors"], columns=["sample_id", column], read_dictionary=[column]
+    ).rename_columns(["sample_id", "split"])
+    return column, counts, targets, cutoff, identities
 
 
-def _anchor_ids(path, split_column, split):
-    offset = 0
-    for batch in pq.ParquetFile(path).iter_batches(columns=["sample_id", split_column]):
-        indices = pc.indices_nonzero(pc.equal(batch[split_column], split))
-        yield from zip(
-            pc.add(indices.cast(pa.int64()), offset).to_pylist(),
-            batch["sample_id"].take(indices).to_pylist(),
-            strict=True,
-        )
-        offset += len(batch)
-
-
-def full_batches(task, anchors, column, batch_size, split, epoch=0):
-    """Stream and compare each physical source identity, including the final batch."""
-    expected = _anchor_ids(anchors, column, split)
+def full_batches(task, identities, batch_size, split, epoch=0, *, ordered=False):
+    """Verify each original split row exactly once, including the final batch."""
+    remaining = pc.fill_null(pc.equal(identities["split"], split), False).to_numpy().copy()
+    sample_ids = identities["sample_id"]
+    previous = -1
     for batch in task.batches(
         split=split,
         batch_size=batch_size,
@@ -140,17 +132,23 @@ def full_batches(task, anchors, column, batch_size, split, epoch=0):
         )
         if len(meta["sample_ids"]) != batch.batch_size:
             raise ValueError(f"{split}: native batch size differs from its sample IDs")
-        for actual in ids:
-            original = next(expected, None)
-            if actual != original:
+        for position, sample_id in ids:
+            if not 0 <= position < len(remaining) or not remaining[position]:
+                raise ValueError(f"{split}: unexpected or repeated source row {position}")
+            expected = sample_ids[position].as_py()
+            if sample_id != expected:
                 raise ValueError(
-                    f"{split}: expected source row and ID {original}, observed {actual}"
+                    f"{split} row {position}: expected sample ID {expected!r}, got {sample_id!r}"
                 )
+            if ordered and position <= previous:
+                raise ValueError(f"{split}: source row {position} arrived after {previous}")
+            previous = position
+            remaining[position] = False
         if set(meta["splits"]) != {split} or meta["is_padding"].any():
             raise ValueError(f"{split}: unexpected split or padding in native batch")
         yield batch
-    if (missing := next(expected, None)) is not None:
-        raise ValueError(f"{split}: native loader omitted source row and ID {missing}")
+    if remaining.any():
+        raise ValueError(f"{split}: native loader omitted source row {remaining.argmax()}")
 
 
 def _allocated_bytes(files, work):
@@ -211,7 +209,7 @@ def run_full_binding(binding, e2e_dir, output):
             publish("ingestion")
             start = perf_counter()
             files = full_source(binding, Path(os.environ["KUMO_PYTORCH_DATA_ROOT"]))
-            column, counts, targets, cutoff = source_population(binding, files)
+            column, counts, targets, cutoff, identities = source_population(binding, files)
             for key in ("source_manifest", "anchor_manifest"):
                 report[key + "_sha256"] = hashlib.sha256(files[key].read_bytes()).hexdigest()
             report.update(
@@ -260,9 +258,7 @@ def run_full_binding(binding, e2e_dir, output):
                         binding,
                         batch_size=batch_size,
                         device=device,
-                        split_batches=partial(
-                            full_batches, task, files["anchors"], column, batch_size
-                        ),
+                        split_batches=partial(full_batches, task, identities, batch_size),
                         train_window=partial(training_gpu_window, device),
                         on_split=save_split,
                     )
