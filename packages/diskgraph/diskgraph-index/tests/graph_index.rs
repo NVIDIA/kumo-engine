@@ -66,6 +66,8 @@ fn graph_builder_and_reader_multi_table() {
     let metadata = DatasetMetadata {
         timestamp_unit: diskgraph_core::time::TimeUnit::Seconds,
         dataset_name: "graph-index-test".into(),
+        index_build_id: None,
+        parent_index_build_id: None,
         node_types: vec![
             NodeTypeMetadata {
                 name: "User".into(),
@@ -233,6 +235,8 @@ fn resumable_jobs_reuse_only_committed_shards_and_cleanup_is_idempotent() {
     let metadata = DatasetMetadata {
         timestamp_unit: diskgraph_core::time::TimeUnit::Seconds,
         dataset_name: "resumable-index-test".into(),
+        index_build_id: None,
+        parent_index_build_id: None,
         node_types: vec![NodeTypeMetadata {
             name: "User".into(),
             max_id: 3,

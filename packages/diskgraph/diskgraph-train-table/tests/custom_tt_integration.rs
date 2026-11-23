@@ -2420,7 +2420,7 @@ fn test_custom_tt_passthrough_skips_orphan_entity() {
 // After `execute_tt_pass_with_source` produces tt.parquet (+ per-stage seed
 // parquets for split plans), the custom path must ingest a DG extension (mirroring
 // the PQL `execute_tt_plan` seam) so the materialized seeds are samplable. We
-// open the published extension via `open_with_extension_subdir` and assert the
+// open the published extension via `_open_with_extension_subdir` and assert the
 // ENTITY (and TARGET, for LP) FKs resolve into `seed.edges.bin`.
 
 /// Collect every FK dst_id (across all relation segments) for every seed row
@@ -2564,7 +2564,7 @@ fn test_custom_tt_lp_ingests_samplable_extension() {
 
     // Open the published extension and assert LP resolution-mode writes the
     // resolved ids into rowpack columns, not seed FK edges.
-    let reader = diskgraph_index::graph::GraphIndexReader::open_with_extension_subdir(
+    let reader = diskgraph_index::graph::GraphIndexReader::_open_with_extension_subdir(
         &index,
         &format!("train_tables/{tt_id}"),
         tt_id,
@@ -2673,7 +2673,7 @@ fn test_custom_tt_pred_passthrough_ingests_predict_stage() {
     assert_eq!(res.stage_counts[0].0, "predict");
     assert_eq!(res.stage_counts[0].1, 6);
 
-    let reader = diskgraph_index::graph::GraphIndexReader::open_with_extension_subdir(
+    let reader = diskgraph_index::graph::GraphIndexReader::_open_with_extension_subdir(
         &index,
         &format!("pred_tables/{tt_id}"),
         tt_id,

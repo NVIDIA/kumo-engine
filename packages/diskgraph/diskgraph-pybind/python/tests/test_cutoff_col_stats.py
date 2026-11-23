@@ -143,6 +143,21 @@ def test_recompute_from_the_index_matches_ingest(data, ingested, tmp_path):
     assert _stats(str(index)) == _stats(ingested)
 
 
+def test_private_cache_writer_keeps_base_unchanged(data, ingested, tmp_path):
+    index_dir = tmp_path / "base"
+    cache_dir = tmp_path / "cache"
+    shutil.copytree(ingested, index_dir, ignore=shutil.ignore_patterns("col_stats"))
+    from diskgraph._c import _cutoff_col_stats_at
+
+    with pytest.raises(TypeError, match="output_dir"):
+        diskgraph.cutoff_col_stats(str(index_dir), json.dumps(REQUEST),
+                                   output_dir=str(cache_dir))
+    _cutoff_col_stats_at(str(index_dir), str(cache_dir), json.dumps(REQUEST),
+                         num_threads=2)
+    assert _stats(str(cache_dir)) == _stats(ingested)
+    assert not (index_dir / "col_stats").exists()
+
+
 def test_rejects_unknown_columns_and_exclusive_options(data, ingested, tmp_path):
     with pytest.raises(Exception, match="has no column missing"):
         diskgraph.cutoff_col_stats(ingested, json.dumps(
