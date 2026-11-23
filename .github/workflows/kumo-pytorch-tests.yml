@@ -4,10 +4,11 @@
 
 name: PyTorch suite
 run-name: >-
-  PyTorch suite · ${{ github.event_name == 'pull_request' && format('PR #{0}', github.event.pull_request.number) || 'nightly' }}
+  PyTorch suite · ${{ github.event_name == 'pull_request' && format('PR #{0}', github.event.pull_request.number) || github.event_name == 'workflow_dispatch' && 'manual nightly replay' || 'nightly' }}
 
 on:  # yamllint disable-line rule:truthy
   pull_request:
+  workflow_dispatch:
   schedule:
     - cron: '17 10 * * *'
 
@@ -27,7 +28,7 @@ jobs:
   plan:
     name: Select suite jobs
     runs-on: ubuntu-24.04
-    permissions: {contents: read}
+    permissions: {contents: read, pull-requests: read}
     outputs:
       plan: ${{ steps.select.outputs.plan }}
       training_bindings: ${{ steps.select.outputs.training_bindings }}
@@ -37,6 +38,13 @@ jobs:
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
         with:
           persist-credentials: false
+      - name: Verify manual replay revision
+        if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq \
+            '.[] | select(.state == "open" and .head.repo.full_name == .base.repo.full_name) | .head.sha' | grep -Fx "$GITHUB_SHA"
       - id: select
         run: python3 -m tests.e2e.ci_plan plan --output "$RUNNER_TEMP/plan.json"
 

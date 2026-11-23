@@ -45,8 +45,9 @@ def jobs(p):
 def test_pr_and_nightly_require_identical_package_jobs_and_evidence():
     pr = plan()
     nightly = plan("schedule")
+    replay = plan("workflow_dispatch", inputs={})
     for field in ("jobs", "selections", "training_bindings", "seed_start", "torch_backend"):
-        assert pr[field] == nightly[field]
+        assert pr[field] == nightly[field] == replay[field]
     assert ci.evidence_names(pr) == ci.evidence_names(nightly)
     assert all(pr["jobs"].values())
     assert not {"cuda", "binding-full", "aml-benchmark", "streaming-25b"} & pr["jobs"].keys()

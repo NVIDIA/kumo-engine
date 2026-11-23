@@ -7,7 +7,8 @@ measured against. It's development tooling, not part of the `kumo.pytorch` wheel
 
 Pull requests and nightly runs use the same [package suite](../../../../.github/workflows/kumo-pytorch-tests.yml)
 to run package and distribution checks, H&M at sizes S and M, conformance shards
-and six full-population GPU training jobs. Both publish the same reports.
+and six full-population GPU training jobs. Both publish the same reports. To replay the nightly suite, manually dispatch this
+workflow without inputs on main or the current head of an open same-repository PR.
 
 For an on-demand CUDA, AML, full-binding or Streaming 25B run, select the
 [manual benchmark workflow](../../../../.github/workflows/kumo-pytorch-benchmarks.yml)

@@ -45,12 +45,14 @@ def gh(endpoint, *, pages=False):
 def make_plan(event_name, event, *, ref, **identity):
     pr = event.get("pull_request", {})
     repository = identity["repository"]
-    suite = event_name in {"pull_request", "schedule"}
+    inputs = event.get("inputs") or {}
+    suite = event_name in {"pull_request", "schedule"} or (
+        event_name == "workflow_dispatch" and not inputs
+    )
     if event_name == "pull_request" and pr["head"]["repo"]["full_name"] != repository:
         raise ValueError(
             "The full package suite requires private datasets and a same-repository PR"
         )
-    inputs = event.get("inputs") or {}
     mode = "package" if suite else inputs.get("mode")
     if not suite and (
         event_name != "workflow_dispatch"
