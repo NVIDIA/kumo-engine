@@ -52,7 +52,7 @@ def test_pr_and_nightly_require_identical_package_jobs_and_evidence(monkeypatch)
     replay = plan("workflow_dispatch", inputs={})
     for field in ("jobs", "selections", "training_bindings", "seed_start", "torch_backend"):
         assert pr[field] == nightly[field] == replay[field]
-    assert ci.evidence_names(pr) == ci.evidence_names(nightly)
+    assert ci.evidence_names(pr) == ci.evidence_names(nightly) == ci.evidence_names(replay)
     assert nightly["seed_start"] == 1200
     assert all(pr["jobs"].values())
     assert not {"cuda", "binding-full", "aml-benchmark", "streaming-25b"} & pr["jobs"].keys()
@@ -63,7 +63,8 @@ def test_pr_and_nightly_require_identical_package_jobs_and_evidence(monkeypatch)
     for mode in ("correctness", "training", "lifecycle"):
         assert {r["binding"] for r in rows if r["mode"] == mode} == set(ci.BINDINGS)
     assert [r["binding"] for r in rows if r["scope"] == "full_source"] == pr["training_bindings"]
-    assert all(pr["jobs"][f"Package tests / Engine conformance (shard {i})"] for i in range(3))
+    assert pr["jobs"]["Package tests / Package and dataset tests"]
+    assert all(pr["jobs"][f"Package tests / Engine conformance {i}/3"] for i in (1, 2, 3))
     training = [name for name in pr["jobs"] if name.startswith("Training · ")]
     assert len(training) == 15
     assert "Training · AML L01 / GPU" in training
@@ -107,7 +108,9 @@ def test_integrated_suite_runs_full_package_pytest_once():
             ):
                 continue
             full_runs.append((workflow.name, job, args))
-    assert [(file, job) for file, job, _ in full_runs] == [(suite.name, "cpu")]
+    assert [(file, job) for file, job, _ in full_runs] == [
+        ("_kumo-pytorch-package-tests.yml", "package")
+    ]
     assert {"--complete-fixtures", "--require-imports"} <= set(full_runs[0][2])
 
 

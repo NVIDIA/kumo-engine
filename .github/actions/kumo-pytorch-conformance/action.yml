@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Run an engine conformance shard
+description: Check both engines and publish the shard receipt and failure reproductions.
+inputs:
+  seed_start:
+    description: First extra conformance seed batch shared by all shards.
+    required: true
+  shard:
+    description: Zero-based shard index.
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: ./.github/actions/kumo-pytorch-setup
+      with:
+        diskgraph-wheel-artifact: diskgraph-wheel
+    - name: Check every property on the day's seed batches
+      env:
+        KUMO_PYTORCH_DIAGNOSTICS: ${{ runner.temp }}/pytorch-${{ github.run_id }}-${{ github.run_attempt }}
+        CONFORMANCE_REPROS: ${{ runner.temp }}/conformance-repros
+        START: ${{ inputs.seed_start }}
+        SHARD: ${{ inputs.shard }}
+      shell: bash
+      working-directory: packages/experimental/kumo-pytorch
+      run: |
+        python -m tests.e2e.ci_command "$KUMO_PYTORCH_DIAGNOSTICS/conformance.log" \
+          python -m conformance --engine all --seeds 12 --seed-start "$START" --shard "$SHARD"
+    - uses: ./.github/actions/kumo-pytorch-results
+      if: always()
+      with:
+        retention-days: 14
+        name: kumo-pytorch-t2b-conformance-${{ inputs.shard }}
+        path: |
+          ${{ runner.temp }}/conformance-repros
+          ${{ runner.temp }}/pytorch-${{ github.run_id }}-${{ github.run_attempt }}/conformance-shard-*.json

@@ -1,0 +1,77 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: PyTorch package tests
+
+on:  # yamllint disable-line rule:truthy
+  workflow_call:
+    inputs:
+      seed_start:
+        description: First extra conformance seed batch, shared by all shards
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+    working-directory: packages/experimental/kumo-pytorch
+
+jobs:
+  package:
+    name: Package and dataset tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions: {contents: read, id-token: write}
+    environment: {name: gha-kumo-workflow-tests, deployment: false}
+    steps:
+      - &checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/kumo-pytorch-stage
+      - uses: ./.github/actions/kumo-pytorch-setup
+        with:
+          diskgraph-wheel-artifact: diskgraph-wheel
+      - name: Test suite
+        env: &diagnostics
+          KUMO_PYTORCH_DIAGNOSTICS: ${{ runner.temp }}/pytorch-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          python -c 'import diskgraph, pyarrow; print(diskgraph.__file__)'
+          python -m tests.e2e.ci_command "$KUMO_PYTORCH_DIAGNOSTICS/pytest.log" \
+            python -m pytest -q --complete-fixtures --require-imports --ignore=tests/conformance \
+              --junitxml="$KUMO_PYTORCH_DIAGNOSTICS/junit.xml"
+      - name: Style
+        env: *diagnostics
+        run: |
+          python -m tests.e2e.ci_command "$KUMO_PYTORCH_DIAGNOSTICS/style.log" \
+            bash -ec 'uvx ruff@0.17.3 check . && uvx ruff@0.17.3 format --check .'
+      - name: Package build
+        env: *diagnostics
+        run: |
+          python -m tests.e2e.ci_command "$KUMO_PYTORCH_DIAGNOSTICS/build.log" \
+            uv build --wheel --out-dir "$RUNNER_TEMP/kumo-pytorch-wheel" .
+      - uses: ./.github/actions/kumo-pytorch-results
+        if: always()
+        with: {name: kumo-pytorch-tests}
+
+  conformance:
+    name: Engine conformance ${{ matrix.part }}/3
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {part: 1, shard: 0}
+          - {part: 2, shard: 1}
+          - {part: 3, shard: 2}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - *checkout
+      - uses: ./.github/actions/kumo-pytorch-conformance
+        with:
+          shard: ${{ matrix.shard }}
+          seed_start: ${{ inputs.seed_start }}

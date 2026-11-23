@@ -54,53 +54,22 @@ jobs:
     uses: ./.github/workflows/_diskgraph-wheel.yml
     with: {diagnostics: true}
 
-  cpu:
+  package-tests:
     name: Package tests
     if: github.repository == 'NVIDIA/kumo-engine' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     needs: [plan, diskgraph-wheel]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # A single matrix call groups the dataset job and its three conformance peers in Actions.
+    strategy:
+      matrix:
+        seed_start: ["${{ format('{0}', fromJSON(needs.plan.outputs.plan).seed_start) }}"]
     permissions: {contents: read, id-token: write}
-    environment: {name: gha-kumo-workflow-tests, deployment: false}
-    steps:
-      - *checkout
-      - uses: ./.github/actions/kumo-pytorch-stage
-      - uses: ./.github/actions/kumo-pytorch-setup
-        with:
-          diskgraph-wheel-artifact: diskgraph-wheel
-      - name: Test suite
-        env: &diagnostics
-          KUMO_PYTORCH_DIAGNOSTICS: ${{ runner.temp }}/pytorch-${{ github.run_id }}-${{ github.run_attempt }}
-        run: |
-          python -c 'import diskgraph, pyarrow; print(diskgraph.__file__)'
-          python -m tests.e2e.ci_command "$KUMO_PYTORCH_DIAGNOSTICS/pytest.log" \
-            python -m pytest -q --complete-fixtures --require-imports --ignore=tests/conformance \
-              --junitxml="$KUMO_PYTORCH_DIAGNOSTICS/junit.xml"
-      - name: Style
-        env: *diagnostics
-        run: |
-          python -m tests.e2e.ci_command "$KUMO_PYTORCH_DIAGNOSTICS/style.log" \
-            bash -ec 'uvx ruff@0.17.3 check . && uvx ruff@0.17.3 format --check .'
-      - name: Package build
-        env: *diagnostics
-        run: |
-          python -m tests.e2e.ci_command "$KUMO_PYTORCH_DIAGNOSTICS/build.log" \
-            uv build --wheel --out-dir "$RUNNER_TEMP/kumo-pytorch-wheel" .
-      - uses: ./.github/actions/kumo-pytorch-results
-        if: always()
-        with: {name: kumo-pytorch-tests}
+    uses: ./.github/workflows/_kumo-pytorch-package-tests.yml
+    with: {seed_start: '${{ matrix.seed_start }}'}
 
   distribution:
     name: Distribution
     needs: [plan, diskgraph-wheel]
     uses: ./.github/workflows/_kumo-pytorch-distribution.yml
-
-  conformance:
-    name: Package tests
-    needs: [plan, diskgraph-wheel]
-    uses: ./.github/workflows/_kumo-pytorch-conformance.yml
-    with:
-      seed_start: ${{ format('{0}', fromJSON(needs.plan.outputs.plan).seed_start) }}
 
   training:
     name: Training · ${{ matrix.label }}
@@ -135,7 +104,7 @@ jobs:
     outputs:
       gate_outcome: ${{ steps.validate.outcome }}
     if: always()
-    needs: [plan, diskgraph-wheel, cpu, distribution, conformance, training, lifecycle]
+    needs: [plan, diskgraph-wheel, package-tests, distribution, training, lifecycle]
     runs-on: ubuntu-24.04
     permissions: {contents: read, actions: read}
     steps:
