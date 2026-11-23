@@ -117,6 +117,17 @@ def test_publish_does_not_replace_an_existing_build(staged, tmp_path):
     assert (target / 'sentinel').read_text() == 'keep'
     assert not store._reference(handle).exists()
 
+    # The normal cache lookup can still reuse the retained completed staging.
+    assert store.path(handle) == str(source)
+    assert check_diskgraph_output(store.path(handle)) == result
+    retained = rebased(store, handle)
+    assert retained == result
+    with pytest.raises(FileExistsError):
+        store.publish(handle, retained)
+    assert check_diskgraph_output(str(source)) == result
+    assert (target / 'sentinel').read_text() == 'keep'
+    assert not store._reference(handle).exists()
+
 
 @pytest.mark.parametrize('damage', ['missing_id', 'incomplete'])
 def test_invalid_build_is_not_published(staged, damage):
