@@ -1466,12 +1466,17 @@ test('the 15-minute rule reads the runner list again and spares a VM whose runne
   assert.ok(!f.calls.some(c => c.operation === 'terminate-instance-in-auto-scaling-group'));
   assert.equal(f.claims.has(closedKey(event.instance, 'us-west-2')), false);
 });
-test('a VM without a runner after 15 minutes still closes its region when its terminate fails', async () => {
+test('a VM without a runner after 15 minutes still closes its region when its terminate fails, and the next sweep terminates it', async () => {
   const f = await started(), event = f.sweeps[0], [west] = f.owned, aws = f.io.aws, now = f.io.now();
   west.Instances.push({InstanceId: 'i-00000101', LifecycleState: 'InService'}); west.DesiredCapacity = 1;
   seed(f, event.instance, {'i-00000101': {region: 'us-west-2', at: now - 900}});
+  let busy = true;
+  const tries = [];
   f.io.aws = async (service, operation, input, region) => {
-    if (operation === 'terminate-instance-in-auto-scaling-group') throw sdkError('ScalingActivityInProgress', 400, 1);
+    if (operation === 'terminate-instance-in-auto-scaling-group') {
+      tries.push(input);
+      if (busy) throw sdkError('ScalingActivityInProgress', 400, 1);
+    }
     return aws(service, operation, input, region);
   };
   const result = await sweep(event, f.io);
@@ -1480,6 +1485,13 @@ test('a VM without a runner after 15 minutes still closes its region when its te
   assert.equal(f.claims.get(closedKey(event.instance, 'us-west-2')).reason, 'No runner 15 minutes after launch');
   assert.deepEqual(f.claims.get(stateKey(event.instance)).launched['i-00000101'], {region: 'us-west-2', at: now - 900, seen: true},
     'A VM that is still live keeps its launch time');
+  busy = false;
+  const marks = f.calls.filter(c => c.operation === 'put-object' && c.input.Key === closedKey(event.instance, 'us-west-2')).length;
+  const retried = await sweep(event, f.io);
+  assert.deepEqual([retried.terminated, retried.closed, f.claims.get(stateKey(event.instance)).launched['i-00000101']], [['i-00000101'], [], undefined]);
+  assert.deepEqual(tries, [{InstanceId: 'i-00000101', ShouldDecrementDesiredCapacity: true}, {InstanceId: 'i-00000101', ShouldDecrementDesiredCapacity: true}]);
+  assert.equal(f.calls.filter(c => c.operation === 'put-object' && c.input.Key === closedKey(event.instance, 'us-west-2')).length, marks,
+    'The region is not closed twice');
 });
 test('a terminated VM without a runner stays in the state until its close is saved, so a failed close closes the region in the next sweep', async () => {
   for (const listed of [true, false]) {
