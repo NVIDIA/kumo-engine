@@ -4,7 +4,7 @@
 writes Parquet source files with `fixture.py`, builds a connector graph snapshot,
 and prepares an FM payload through public PyTorch plans.
 
-Install matching engine, DiskGraph, settings, PyTorch and FM wheels. Calling
+Install the candidate merged `kumo-engine[fm]` wheel. Calling
 `build_index_and_load_batch()` uses only those packages. For model inference, additionally install
 the pinned SDM environment documented at the top of
 [`walkthrough.ipynb`](walkthrough.ipynb) and run:

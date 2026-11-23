@@ -74,6 +74,7 @@ The base package reads and writes local CSV and Parquet files. Optional extras a
 | `mlflow` | MLflow run tracking and model registry |
 | `sagemaker` | SageMaker managed MLflow |
 | `pytorch` | (Experimental) `kumo.pytorch`, for training your own PyTorch models on your tables |
+| `fm` | (Experimental) Snapshot-backed FM payload loading through `kumo.fm` |
 
 Choose your hardware and runtime environment:
 

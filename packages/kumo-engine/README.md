@@ -38,6 +38,7 @@ The base package reads and writes local CSV and Parquet files. Optional extras a
 | `mlflow` | MLflow run tracking and model registry |
 | `sagemaker` | SageMaker managed MLflow |
 | `pytorch` | (Experimental) `kumo.pytorch`, for training your own PyTorch models on your tables |
+| `fm` | (Experimental) Snapshot-backed FM payload loading through `kumo.fm` |
 
 Kumo Engine defaults to CPU for training and model loading on native Windows; use WSL2 for NVIDIA GPU workloads. On other platforms it selects an NVIDIA GPU or an Apple silicon GPU when available, and CPU otherwise. To choose the device explicitly, pass `accelerator="gpu"`, `"mps"`, or `"cpu"` to `Trainer`.
 

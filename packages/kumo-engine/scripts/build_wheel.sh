@@ -21,8 +21,8 @@
 # accident); `--release` stamps exactly `<version>`. CI only passes --release
 # for a published GitHub release tagged `kumo-engine-v<version>`.
 #
-# Wheel tag: DiskGraph is the only native component and is a stable-ABI
-# (abi3) extension, so one wheel serves every CPython at or above its floor,
+# Wheel tag: DiskGraph and the FM arrays encoder use the stable ABI
+# (abi3), so one wheel serves every CPython at or above their floor,
 # currently 3.11. The merger intersects every component Requires-Python
 # constraint for the resulting wheel. Linux uses manylinux_<MAX_GLIBC>,
 # backed by check_glibc_floor. macOS and Windows inherit DiskGraph's native tag.
@@ -35,13 +35,13 @@
 #                      directory with a pyproject.toml or setup.py, EXCEPT
 #                      kumo-sdk: it ships the hosted `kumoai_studio` SDK,
 #                      and this wheel is the local-only closure.
-#     kumo-pytorch     packages/experimental/kumo-pytorch -- `kumo.pytorch`,
-#                      the only bundled package from packages/experimental/
+#     kumo-pytorch     packages/experimental/kumo-pytorch
+#     kumo-fm          packages/experimental/kumo-fm -- stable-ABI arrays encoder
 #     diskgraph        packages/diskgraph -- native abi3 extension plus the
 #                      standalone `ingest` binary
 #
-# kumo-api, kumo-pql, kumo-core, kumo-pytorch and every provider are always
-# bundled.
+# kumo-api, kumo-pql, kumo-core, kumo-pytorch, kumo-fm and every provider
+# are always bundled.
 # kumo-glove-6b-50d stays a PyPI dependency of the `text` extra.
 #
 # Everything else (torch, torch-geometric, pytorch-frame, pytorch-lightning,
@@ -165,8 +165,8 @@ if [ "${HOST_OS}" = "Windows" ] && [ -n "${VERIFY_IMAGE}" ]; then
     die "--verify-image requires a Linux Docker runtime; qualify Windows wheels natively"
 fi
 
-# The build host's interpreter only drives pip and the merge. Every pure-Python
-# component is built with `pip wheel`; DiskGraph's wheel tag comes from its
+# The build host's interpreter drives pip and the merge. Python components
+# are built with `pip wheel`; FM uses abi3 and DiskGraph's tag comes from its
 # abi3 build config, not from this interpreter.
 PYTHON="${PYTHON:-python3}"
 command -v "${PYTHON}" >/dev/null 2>&1 || die "no ${PYTHON} on PATH"
@@ -243,7 +243,8 @@ record() {
 }
 
 # --------------------------------------------------------------------------
-# 1) The first-party pure-Python distributions: every packages/* directory
+# 1) First-party distributions: every packages/* directory and the explicitly
+#    released experimental PyTorch and FM packages,
 #    except kumo-sdk (the hosted `kumoai_studio` SDK, not part of the local
 #    closure) and the native DiskGraph build below. A new provider package
 #    ships the moment it lands under packages/, but merge_wheels.py refuses
@@ -254,9 +255,10 @@ if [ -n "$(git -C "${KUMO_REPO}" status --porcelain -- packages 2>/dev/null)" ];
     KUMO_REPO_DIRTY="+local changes"
 fi
 for pkg_dir in "${KUMO_REPO}"/packages/*/ \
-        "${KUMO_REPO}/packages/experimental/kumo-pytorch/"; do
+        "${KUMO_REPO}/packages/experimental/kumo-pytorch/" \
+        "${KUMO_REPO}/packages/experimental/kumo-fm/"; do
     pkg_name="$(basename "${pkg_dir}")"
-    # Of packages/experimental/, only kumo-pytorch (listed above) is released.
+    # Only the explicitly listed experimental packages ship in this wheel.
     case "${pkg_name}" in kumo-sdk|diskgraph|experimental) continue ;; esac
     [ -f "${pkg_dir}pyproject.toml" ] || [ -f "${pkg_dir}setup.py" ] || continue
     dist_glob="${pkg_name//-/_}-*.whl"

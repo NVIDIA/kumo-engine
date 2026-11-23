@@ -87,7 +87,20 @@ struct Writer {
         }
         time_t raw = static_cast<time_t>(seconds);
         struct tm parts {};
-        if (static_cast<int64_t>(raw) != seconds || !gmtime_r(&raw, &parts))
+        #ifdef _WIN32
+        // Windows' calendar routine rejects dates before 1970 and after 3000.
+        // Gregorian dates repeat every 400 years; convert inside that range.
+        constexpr int64_t era_seconds = 146097LL * 86400;
+        int64_t eras = seconds / era_seconds;
+        int64_t within_era = seconds % era_seconds;
+        if (within_era < 0) { within_era += era_seconds; --eras; }
+        time_t shifted = static_cast<time_t>(within_era);
+        bool converted = gmtime_s(&parts, &shifted) == 0;
+        parts.tm_year += static_cast<int>(eras * 400);
+        #else
+        bool converted = gmtime_r(&raw, &parts) != nullptr;
+        #endif
+        if (static_cast<int64_t>(raw) != seconds || !converted)
             throw std::invalid_argument("Arrow timestamp outside platform calendar range");
         int64_t year = static_cast<int64_t>(parts.tm_year) + 1900;
         put('"');

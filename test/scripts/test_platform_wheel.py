@@ -47,8 +47,8 @@ def wheel(tmp_path, platform='manylinux_2_34_aarch64', updates=None,
     info = 'kumo_engine-1.0.dist-info'
     windows = platform == 'win_amd64'
     files = {name + '/__init__.py': b'# package' for name in
-             ('kumo/engine', 'kumo/pytorch', 'kumo_core', 'kumoapi', 'kumopql',
-              'diskgraph')}
+             ('kumo/engine', 'kumo/fm', 'kumo/pytorch', 'kumo_core',
+              'kumoapi', 'kumopql', 'diskgraph')}
     files.update({
         info + '/METADATA': b'Name: kumo-engine\nRequires-Python: >=3.11\n'
         b'License-Expression: Apache-2.0\n',
@@ -57,6 +57,8 @@ def wheel(tmp_path, platform='manylinux_2_34_aarch64', updates=None,
         info + '/licenses/THIRD-PARTY.txt': b'notices',
         'kumo_bundle_manifest.json': b'{}',
         'diskgraph/_c.pyd' if windows else 'diskgraph/_c.abi3.so':
+        pe() if windows else elf(),
+        'kumo/fm/_native_json.pyd' if windows else 'kumo/fm/_native_json.abi3.so':
         pe() if windows else elf(),
         'diskgraph/bin/ingest.exe' if windows else 'diskgraph/bin/ingest':
         pe('kernel32.dll') if windows else elf(),
@@ -89,7 +91,8 @@ def test_complete_wheel(tmp_path, platform):
 
 
 @pytest.mark.parametrize('member', [
-    'diskgraph/_c.abi3.so', 'diskgraph/bin/ingest'])
+    'diskgraph/_c.abi3.so', 'kumo/fm/_native_json.abi3.so',
+    'diskgraph/bin/ingest'])
 def test_wrong_elf_architecture(tmp_path, member):
     with pytest.raises(ValueError, match='ELF architecture'):
         VERIFY(wheel(tmp_path, updates={member: elf(62)}),
@@ -152,3 +155,15 @@ def test_mismatched_tag(tmp_path):
         VERIFY(wheel(tmp_path, updates={
             'kumo_engine-1.0.dist-info/WHEEL': b'Tag: cp312-cp312-win_amd64\n'
         }), 'manylinux_2_34_aarch64')
+
+
+def test_fm_encoder_cannot_be_omitted(tmp_path):
+    with pytest.raises(ValueError, match='stable-ABI FM arrays encoder'):
+        VERIFY(wheel(tmp_path, missing='kumo/fm/_native_json.abi3.so'),
+               'manylinux_2_34_aarch64')
+
+
+def test_fm_encoder_rejects_versioned_python_dll(tmp_path):
+    with pytest.raises(ValueError, match='versioned Python'):
+        VERIFY(wheel(tmp_path, 'win_amd64',
+                     {'kumo/fm/_native_json.pyd': pe('python312.dll')}), 'win_amd64')
