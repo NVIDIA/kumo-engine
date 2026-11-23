@@ -1245,7 +1245,7 @@ pub struct RuntimeIndex {
     reader: Arc<diskgraph_index::graph::GraphIndexReader>,
     engine: Arc<DiskGraphEngine>,
     namespace: String,
-    weighted_manifest: std::sync::OnceLock<serde_json::Value>,
+    weighted_sampling_metadata: Option<weighted_sampling::WeightedSamplingMetadata>,
 }
 impl RuntimeIndex {
     /// Open the graph and training-table extension; propagate typed index errors.
@@ -1258,6 +1258,11 @@ impl RuntimeIndex {
         let parent_path = std::path::Path::new(&parent_root);
         let reader = diskgraph_index::graph::GraphIndexReader::open_with_tt(parent_path, &tt_id)
             .map_err(|e| RuntimeError::system(e.to_string()))?;
+        let weighted_sampling_metadata = reader
+            .tt_extension_root()
+            .map(weighted_sampling::read_manifest)
+            .transpose()?
+            .flatten();
         let namespace = tt_id.rsplit('/').next().unwrap_or(&tt_id).to_string();
         let reader = Arc::new(reader);
         let engine = Arc::new(
@@ -1268,7 +1273,7 @@ impl RuntimeIndex {
             reader,
             engine,
             namespace,
-            weighted_manifest: std::sync::OnceLock::new(),
+            weighted_sampling_metadata,
         })
     }
 
@@ -1345,19 +1350,12 @@ impl RuntimeIndex {
     ) -> Result<RuntimeBatchIterator> {
         let weighted_seed_sampling = weighted_seed_sampling
             .map(|options| {
-                let root = self.reader.tt_extension_root().ok_or_else(|| {
-                    RuntimeError::config("weighted_seed_sampling requires a TT extension root")
+                let metadata = self.weighted_sampling_metadata.as_ref().ok_or_else(|| {
+                    RuntimeError::config(
+                        "weighted_seed_sampling requires extension metadata in diskgraph_manifest.json",
+                    )
                 })?;
-                let manifest = match self.weighted_manifest.get() {
-                    Some(manifest) => manifest,
-                    None => {
-                        let manifest = weighted_sampling::read_manifest(root)?;
-                        self.weighted_manifest.get_or_init(|| manifest)
-                    }
-                };
-                weighted_sampling::resolve(
-                    manifest,
-                    root,
+                metadata.resolve(
                     stage_table.rsplit('/').next().unwrap_or(&stage_table),
                     options,
                 )

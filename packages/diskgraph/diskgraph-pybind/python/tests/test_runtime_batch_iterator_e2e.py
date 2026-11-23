@@ -523,35 +523,88 @@ def test_iterator_weighted_seed_sampling_draws_with_replacement(
         ),
     )
 
-    iterator, num_samples = index.iter(options)
-    assert num_samples == 6
-    seen: list[int] = []
-    for batch in iterator:
-        seen.extend(int(v) for v in batch["task"]["tt_stage_node_ids"].to_pylist())
-    assert len(seen) == 6
-    assert set(seen) <= {0, 1, 2}
-    assert seen.count(2) > seen.count(0)
-    assert seen.count(2) > seen.count(1)
+    index.sampler("train")
+    extension_manifest.write_text("invalid json after native index construction")
+    try:
+        iterator, num_samples = index.iter(options)
+        assert num_samples == 6
+        seen: list[int] = []
+        for batch in iterator:
+            seen.extend(int(v) for v in batch["task"]["tt_stage_node_ids"].to_pylist())
+        assert len(seen) == 6
+        assert set(seen) <= {0, 1, 2}
+        assert seen.count(2) > seen.count(0)
+        assert seen.count(2) > seen.count(1)
 
-    extension_manifest.write_text("invalid json after first iteration")
-    iterator, num_samples = index.iter(
-        replace(
-            options,
-            weighted_seed_sampling=WeightedSeedSampling(
-                false_weight=0.0,
-                true_weight=1.0,
-                num_samples=4,
-            ),
+        iterator, num_samples = index.iter(
+            replace(
+                options,
+                weighted_seed_sampling=WeightedSeedSampling(
+                    false_weight=0.0,
+                    true_weight=1.0,
+                    num_samples=4,
+                ),
+            )
         )
+        assert num_samples == 4
+        assert [
+            value
+            for batch in iterator
+            for value in batch["task"]["tt_stage_node_ids"].to_pylist()
+        ] == [2] * 4
+        with pytest.raises(TypeError, match="diskgraph.WeightedSeedSampling"):
+            index.iter(replace(options, weighted_seed_sampling=object()))
+    finally:
+        extension_manifest.write_text(json.dumps(extension_payload))
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "invalid json",
+        json.dumps(
+            {
+                "task_dataset": {
+                    "stages": {
+                        "train": {
+                            "table_name": "train_seeds",
+                            "binary_label_index": {
+                                "false_node_ids": "false.bin",
+                                "false_count": "invalid count",
+                                "true_node_ids": "true.bin",
+                                "true_count": 1,
+                            },
+                        }
+                    }
+                }
+            }
+        ),
+    ],
+)
+def test_native_index_rejects_malformed_sampling_metadata_at_open(
+    seed_table_fixture: dict[str, str | int],
+    payload: str,
+) -> None:
+    """Reject malformed sampling metadata before constructing an iterator.
+
+    Args:
+        seed_table_fixture: Graph and extension paths for the native index.
+        payload: Invalid JSON or invalid typed sidecar metadata.
+    """
+    parent_root = pathlib.Path(str(seed_table_fixture["parent_root"]))
+    extension_ref = f"train_tables/{seed_table_fixture['tt_id']}"
+    manifest_path = parent_root / extension_ref / "diskgraph_manifest.json"
+    original = (
+        manifest_path.read_bytes()
+        if manifest_path.exists()
+        else b'{"task_dataset":{"stages":{}}}'
     )
-    assert num_samples == 4
-    assert [
-        value
-        for batch in iterator
-        for value in batch["task"]["tt_stage_node_ids"].to_pylist()
-    ] == [2] * 4
-    with pytest.raises(TypeError, match="diskgraph.WeightedSeedSampling"):
-        index.iter(replace(options, weighted_seed_sampling=object()))
+    manifest_path.write_text(payload)
+    try:
+        with pytest.raises(diskgraph.DiskgraphDataError):
+            diskgraph._c.RuntimeIndex(str(parent_root), extension_ref)
+    finally:
+        manifest_path.write_bytes(original)
 
 
 def test_iterator_weighted_seed_sampling_partitions_across_workers(

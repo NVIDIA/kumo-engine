@@ -219,10 +219,13 @@ falling back to the natural seed order.
 ## Runtime Contract
 
 Kumo passes `weighted_seed_sampling` to the Python wrapper, which forwards the
-`WeightedSeedSampling` dataclass directly to Rust. Rust lazily caches the opened
-extension's `diskgraph_manifest.json`, selects metadata by stage table name, and
-resolves sidecar paths relative to that extension. No extra metadata arguments
-are needed. The native seed scheduler consumes typed buckets with this shape:
+`WeightedSeedSampling` dataclass directly to Rust. The native `RuntimeIndex`
+constructor deserializes the extension's `diskgraph_manifest.json` into typed
+metadata and resolves sidecar paths once. Iteration looks up that metadata by
+table name and applies the current weights and sample count, with no extra
+metadata arguments or JSON parsing. A missing manifest is allowed for unweighted
+indexes; malformed metadata in an existing manifest fails when opening the index.
+The native seed scheduler consumes typed buckets with this shape:
 
 ```json
 {
