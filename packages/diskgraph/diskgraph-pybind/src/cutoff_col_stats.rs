@@ -158,7 +158,8 @@ fn compute_cutoff_col_stats(
 
 /// Recover a column's population moments when its unscaled variance lost range.
 #[pyfunction]
-#[pyo3(signature = (index_dir, table, column, cutoff, unit, num_threads=None))]
+#[pyo3(signature = (index_dir, table, column, cutoff, unit, origin, num_threads=None))]
+#[allow(clippy::too_many_arguments)]
 fn _scaled_column_moments(
     py: Python<'_>,
     index_dir: &str,
@@ -166,13 +167,15 @@ fn _scaled_column_moments(
     column: &str,
     cutoff: Option<i64>,
     unit: f64,
+    origin: f64,
     num_threads: Option<usize>,
 ) -> PyResult<(u64, f64, f64)> {
     py.detach(|| -> Result<_> {
         ensure!(
-            unit.is_finite() && unit > 0.0,
-            "expected a positive finite unit"
+            unit.is_finite() && unit > 0.0 && origin.is_finite(),
+            "expected a positive finite unit and a finite origin"
         );
+        let scaled_origin = origin / unit;
         let (tables, clock) = stored_tables(Path::new(index_dir), &HashSet::from([table.into()]))?;
         let stored = &tables[table];
         let col = stored
@@ -199,7 +202,7 @@ fn _scaled_column_moments(
                         let values = float64s(batch.column(0))?;
                         for row in 0..values.len() {
                             if keep.value(row) && values.is_valid(row) {
-                                moments.observe(values.value(row) / unit);
+                                moments.observe(values.value(row) / unit - scaled_origin);
                             }
                         }
                         Ok(())
@@ -213,7 +216,11 @@ fn _scaled_column_moments(
             moments.merge(&part);
         }
         let deviation = (moments.m2 / moments.count.max(1) as f64).sqrt();
-        Ok((moments.count, moments.mean() * unit, deviation * unit))
+        Ok((
+            moments.count,
+            (moments.mean() + scaled_origin) * unit,
+            deviation * unit,
+        ))
     })
     .map_err(map_anyhow_err)
 }

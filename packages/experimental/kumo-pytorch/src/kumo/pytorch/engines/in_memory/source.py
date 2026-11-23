@@ -23,8 +23,6 @@ from kumo.pytorch.column_stats import (
     ColumnStats,
     StatRequest,
     TableColumnEncoder,
-    _needs_zscore_scan,
-    column_moments,
     file_name_part,
     read_column_stats,
 )
@@ -111,18 +109,8 @@ class InMemorySource:
             ensure_diskgraph_index(DataSchema(tables=tuple(stored)), Dataset(sources), index)
             names = {table.name for table in stored}
             group = [item for item in requests if item[0] in names]
-            stats = read_column_stats(index, group, ticks, "seconds")
-            columns.update(stats.columns)
-            # The temporary index closes here. Keep any otherwise unrecoverable moments.
-            recovered = {
-                key: column_moments(stats, key)
-                for key, data in stats.columns.items()
-                if key[2] == "numerical"
-                and _needs_zscore_scan(data, data["count"] - data["null_count"])
-            }
-        return ColumnStats(
-            columns, {"value": ticks, "unit": "seconds"}, rescan=lambda key, _: recovered[key]
-        )
+            columns.update(read_column_stats(index, group, ticks, "seconds").columns)
+        return ColumnStats(columns, {"value": ticks, "unit": "seconds"})
 
     def column_text(self, encoder: TableColumnEncoder, cutoff: int | None) -> tuple[str, None]:
         import diskgraph
