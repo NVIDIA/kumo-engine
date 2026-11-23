@@ -691,6 +691,17 @@ fn encoded_index_build_id(root: &Path) -> Result<Option<String>> {
 }
 
 fn recorded_index_build_id(root: &Path) -> Result<Option<String>> {
+    let encoded_id = encoded_index_build_id(root)?;
+    // Index creates metadata before completion, and finalization rewrites it
+    // after the Index marker. Until publication, resume rebuilds Index from
+    // the Encode state and must tolerate either interrupted metadata write.
+    if encoded_id.is_some()
+        && !root
+            .join(crate::success_marker::SUCCESS_MARKER_FILENAME)
+            .exists()
+    {
+        return Ok(encoded_id);
+    }
     let metadata_path = root.join("index_metadata.json");
     let metadata_id = match fs::read(&metadata_path) {
         Ok(bytes) => serde_json::from_slice::<DatasetMetadata>(&bytes)
@@ -702,7 +713,6 @@ fn recorded_index_build_id(root: &Path) -> Result<Option<String>> {
                 .with_context(|| format!("read index metadata: {}", metadata_path.display()))
         }
     };
-    let encoded_id = encoded_index_build_id(root)?;
     if let (Some(metadata_id), Some(encoded_id)) = (&metadata_id, &encoded_id) {
         ensure!(
             metadata_id == encoded_id,
@@ -2268,9 +2278,34 @@ mod tests_repopulate_helpers {
     #[test]
     fn resume_rejects_corrupt_index_metadata() {
         let directory = tempfile::tempdir().unwrap();
-        fs::write(directory.path().join("index_metadata.json"), b"not json").unwrap();
-        let error = recorded_index_build_id(directory.path()).unwrap_err();
-        assert!(error.to_string().contains("decode index metadata"));
+        for bytes in [
+            b"".as_slice(),
+            b"not json",
+            br#"{"dataset_name":"interrupted"#,
+        ] {
+            fs::write(directory.path().join("index_metadata.json"), bytes).unwrap();
+            let error = recorded_index_build_id(directory.path()).unwrap_err();
+            assert!(error.to_string().contains("decode index metadata"));
+        }
+    }
+
+    #[test]
+    fn resume_rejects_corrupt_published_metadata() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        fs::create_dir(root.join("_tmp")).unwrap();
+        let encoded = make_ctx(graph_config(Vec::new()), local_target(root), 1);
+        encoded.persist_encode_state().unwrap();
+        fs::write(
+            root.join(crate::success_marker::SUCCESS_MARKER_FILENAME),
+            b"{}",
+        )
+        .unwrap();
+        for bytes in [b"".as_slice(), br#"{"dataset_name":"interrupted"#] {
+            fs::write(root.join("index_metadata.json"), bytes).unwrap();
+            let error = recorded_index_build_id(root).unwrap_err();
+            assert!(error.to_string().contains("decode index metadata"));
+        }
     }
 
     #[test]
