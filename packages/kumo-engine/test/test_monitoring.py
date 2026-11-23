@@ -1267,13 +1267,16 @@ def test_feature_drift_reads_the_training_snapshot_of_a_derived_model(
 
 
 @pytest.mark.parametrize('managed', [False, True])
-def test_local_index_resolves_snapshot_storage(tmp_path, monkeypatch, managed):
+@pytest.mark.parametrize('short_id', [False, True])
+def test_local_index_resolves_snapshot_storage(
+        tmp_path, monkeypatch, managed, short_id):
     import json
 
     from kumo.engine import _monitoring
 
     monkeypatch.setattr('kumo.engine._scratch._root', tmp_path)
-    logical = tmp_path / 'snapshots' / 'graph' / 'version'
+    version = '0123456789abcdef' * 4
+    logical = tmp_path / 'snapshots' / 'graph' / version
     if managed:
         index = tmp_path / 'indexes' / 'build'
         logical.parent.mkdir(parents=True)
@@ -1286,6 +1289,12 @@ def test_local_index_resolves_snapshot_storage(tmp_path, monkeypatch, managed):
         json.dumps({'index_build_id': 'build'}))
     (index / 'col_stats.json').write_text('{}')
 
-    assert _monitoring._local_index('graph@version') == index
+    snapshot_id = 'graph@' + (version[:16] if short_id else version)
+    assert _monitoring._local_index(snapshot_id) == index
     assert _monitoring._local_index('graph@missing') is None
     assert _monitoring._local_index('invalid') is None
+    if short_id:
+        other = logical.with_name(version[:16] + '-other')
+        other.mkdir()
+        (other / 'col_stats.json').write_text('{}')
+        assert _monitoring._local_index(snapshot_id) is None
