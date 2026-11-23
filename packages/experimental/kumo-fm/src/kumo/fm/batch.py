@@ -13,7 +13,7 @@ import pyarrow as pa
 from . import native_json
 from ._contract import metadata_for
 from ._encoding import encode_arrow_table
-from .bundle import TYPES
+from ._types import TYPES
 
 
 def _typed_table(table, columns, max_columns):

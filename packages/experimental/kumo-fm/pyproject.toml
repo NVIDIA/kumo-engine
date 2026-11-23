@@ -21,8 +21,6 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=8,<10"]
-benchmark = ["duckdb==2.0.0"]
-relbench = ["PyYAML>=6,<7"]
 
 [tool.uv.sources]
 kumo-pytorch = {workspace = true}
@@ -34,9 +32,6 @@ package-dir = {"" = "src"}
 where = ["src"]
 include = ["kumo.fm*"]
 namespaces = true
-
-[tool.setuptools.package-data]
-"kumo.fm._dataset_support" = ["presets/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

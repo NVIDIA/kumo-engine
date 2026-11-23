@@ -10,7 +10,7 @@ import pyarrow.compute as pc
 
 from . import native_json
 from ._phase import phase
-from .bundle import TYPES
+from ._types import TYPES
 
 
 def encode_arrow_table(table, columns, encoding, budget, *, native_arrays=False):

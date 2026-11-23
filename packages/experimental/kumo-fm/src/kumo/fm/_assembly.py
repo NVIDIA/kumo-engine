@@ -10,7 +10,7 @@ import pyarrow as pa
 import pyarrow.compute as pc
 
 from ._phase import phase
-from .bundle import TYPES
+from ._types import TYPES
 
 
 def empty_features(columns):
@@ -100,7 +100,7 @@ class GraphAssembler:
             if not np.array_equal(indices(node_tables[workload.entity]['id_b'].slice(0, len(seeds))), np.asarray(ids)):
                 raise ValueError('Native root IDs differ from resolved seeds')
             if root_spec.get('time_column'):
-                from .bundle import TYPES
+                from ._types import TYPES
                 anchors = pa.array([s['anchor_time'] for s in seeds], TYPES['timestamp[us]'])
                 if not pc.all(pc.fill_null(pc.less_equal(root[root_spec['time_column']].slice(0, len(seeds)), anchors), False)).as_py():
                     raise ValueError('Task entity is not eligible at its anchor')

@@ -18,10 +18,9 @@ import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
 from ._assembly import GraphAssembler
-from ._pytorch import KumoPytorchBackend
+from ._columnar import adapt_columnar_batch
+from ._types import TYPES, timestamp, validate_scalar
 from .batch import PayloadBatch
-from .bundle import TYPES
-from .workload import timestamp, validate_scalar
 
 
 @dataclass(frozen=True)
@@ -363,7 +362,7 @@ class SnapshotFMLoader:
                 chunk = [expected[value] for value in identifiers]
                 local = SimpleNamespace(inputs=batch.inputs,
                                         metadata={"sample_ids": list(range(len(chunk)))})
-                related = KumoPytorchBackend._adapt_columnar_batch(
+                related = adapt_columnar_batch(
                     self._adapter, self.workload, chunk, local)
                 for name, table in related.items():
                     parts[name].append(table)

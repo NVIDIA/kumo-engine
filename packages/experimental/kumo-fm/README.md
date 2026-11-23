@@ -1,140 +1,74 @@
 # Kumo FM payload loader
 
-The primary workflow starts with a graph built through `kumo.engine` connectors.
-Configure storage once with `kumo.settings.configure(scratch_dir=...)`, then
-adopt its snapshot with `api.DiskGraphEngine.from_snapshot(snapshot)`.
-Declare a public PyTorch `SampleSpec` with one
-`NeighborhoodSpec` and a bounded future `Aggregate` or `Compare` target, then
-call `fm.prepare(engine=..., sample=..., target=..., task=..., features=...)`.
-See the runnable
-[`connector_to_prediction.py`](examples/local_sdm/connector_to_prediction.py).
-FM derives table and relation metadata from `engine.schema`; it creates
-context/query anchors, computes context labels in a separate public PyTorch
-plan, samples one columnar graph plan over the same index, and aligns both by
-occurrence ID. The snapshot must belong to the configured root when it is adopted. The engine
-keeps that root after settings change; task extensions and caches use managed
-sibling directories, and the base index remains unchanged. To use an exported
-snapshot under another root, configure that root, load it with
-`GraphSnapshot.load_from_connector(...)`, then adopt the returned handle.
-Columnar graph output does not
-currently fuse computed labels into the graph batch.
-For an advanced public relation alias or table projection, pass
-`schema=api.DataSchema(...)`; PyTorch checks it against the adopted index.
+Experimental `kumo.fm` prepares retained Arrow payloads from completed engine
+snapshots, using the public PyTorch sampling API. Arrays and Arrow IPC encode
+the same retained tables without sampling again. SDM is needed only to run the
+optional local model example; the loader has no DuckDB dependency.
 
-`fm.Context(entities=..., times=...)` produces entities × times, with time as
-the outer axis. `fm.Query(entities=..., at=...)` uses one query time. Either
-accepts ordered `pairs=[(entity, time), ...]`; a third element supplies an
-explicit int64 occurrence ID. Repeated pairs remain separate. Without explicit
-IDs each split uses zero-based positions. Context's future label window must be
-fully observable before the earliest query time. Query targets never enter the
-request. `loader.materialize(context=..., query=...).load()` and the shortcut
-`loader.load(context=..., query=...)` return the same `PayloadBatch` type as
-the frozen-bundle path. `batch.tables(split)` and both `batch.encode(...)`
-methods reuse its retained Arrow tables without sampling again.
+## Snapshot workflow
 
-The snapshot path currently accepts a single public neighborhood, bounded
-`recent` fanouts, supported scalar FM wire types and `Aggregate(Rows(...,
-time=TimeWindow(start=0, stop=positive)))` or `Compare` over that aggregate.
-Multiple `GraphLayer`s in that neighborhood are passed to one native sampling
-operation. Classification requires an explicit two-entry raw-label-to-name
-`classes` map; regression accepts a numeric aggregate. Unsupported types,
-timeless destinations and uniform sampling fail explicitly. Native labels and
-graphs remain separate materializations over the adopted snapshot.
-The snapshot path and `import kumo.fm` do not require DuckDB.
+Configure storage once with `kumo.settings.configure(scratch_dir=...)`. Build a
+`kumo.engine.Graph` from connector tables and call `graph.snapshot()`, then
+adopt that handle with `api.DiskGraphEngine.from_snapshot(snapshot)`.
 
-## Frozen bundle compatibility
-
-Experimental `kumo-fm` builds the existing Kumo Relational HTTP request from
-public `kumo.pytorch` columnar graph batches backed by DiskGraph. Sampling and
-FM assembly happen once per `PreparedRequest.load()`. The returned
-`PayloadBatch` retains typed Arrow tables; calls to `encode("arrays")` and
-`encode("arrow_ipc")` serialize those same tables without sampling.
-
-Build and install `kumo-pytorch` and DiskGraph from the same engine revision,
-then build and install this package's wheel. The example under
-`examples/local_sdm` additionally needs SDM and a compatible pretrained
-checkpoint; SDM is not a runtime dependency.
-
-```bash
-uv build --wheel --package kumo-pytorch --out-dir dist
-uv build --sdist --package kumo-fm --out-dir dist
-uv build --wheel dist/kumo_fm-*.tar.gz --out-dir dist
-uv pip install --python /path/to/venv/bin/python --torch-backend cpu \
-  /path/to/matching/diskgraph-*.whl dist/kumo_pytorch-*.whl dist/kumo_fm-*.whl
-```
-
-The frozen-bundle comparison path uses DuckDB for source validation and
-compatibility checks. Install `duckdb==2.0.0` (the `kumo-fm[benchmark]` extra)
-only in that benchmark environment. The connector snapshot path uses the base
-wheel without DuckDB.
+Declare a public PyTorch `SampleSpec` with a future target and one neighborhood:
 
 ```python
-from kumo import fm, settings
+from kumo import fm
+from kumo.pytorch import api
 
-settings.configure(scratch_dir="/data/kumo-scratch")
-with fm.prepare("/data/bundle", "/data/workload.json", index="/data/fm-index") as loader:
-    with loader.materialize(context=[101, 102], predict=[201]) as request:
-        batch = request.load()
-        context = batch.tables("context")
-        print(context["instance_table"].schema)
-        arrays_body = batch.encode("arrays")
-        ipc_body = batch.encode("arrow_ipc")
+engine = api.DiskGraphEngine.from_snapshot(snapshot)
+with fm.prepare(engine=engine, sample=sample, target="next_orders",
+                task="binary_classification", classes={False: "no", True: "yes"},
+                features={"users": ["user_id"], "orders": ["order_time"]}) as loader:
+    batch = loader.load(
+        context=fm.Context(entities=range(32), times=["2025-06-01T00:00:00Z"]),
+        query=fm.Query(entities=range(8), at="2025-11-01T00:00:00Z"))
+
+context_tables = batch.tables("context")
+arrays_body = batch.encode("arrays")
+ipc_body = batch.encode("arrow_ipc")
 ```
 
-The optional `context` and `predict` lists contain ordered instance IDs
-already validated by the workload. Omit a list to use that split's frozen
-instances. Pass `[]` to omit a split. A direct SDM prediction needs both.
-`materialize()` prepares the requested anchors; `load()` samples and assembles
-them. Each explicit `load()` can produce a new batch. Retained batches own
-their Arrow references after request and loader closure.
+See [the runnable example](examples/local_sdm/connector_to_prediction.py) for a
+complete `Graph` and `SampleSpec`. It writes small PyArrow tables to Parquet and
+uses `FileConnector`; tests follow the same approach with hand-authored expected
+labels and selected rows. There are no bundle manifests or frozen-workload APIs
+in the runtime package. Benchmark comparisons and their dataset tooling are
+maintained separately from this PR's production path.
 
-`batch.metadata` and `batch.as_arrow_request()` provide defensive metadata
-copies. `batch.tables(split)` returns the instance Arrow table and named
-related Arrow tables. `batch.logical_arrow_bytes` sums their `Table.nbytes`;
-it is neither peak process memory nor the encoded HTTP body size. Row and
-column limits and the decoded Arrow limit apply during assembly. The final
-JSON body limit applies only during encoding. Encoding failures leave the
-batch usable.
+The snapshot must belong to the configured root when adopted. The engine keeps
+that root after settings change; tasks and caches use managed sibling paths and
+the base stays unchanged. For an exported snapshot, configure the destination
+root, call `GraphSnapshot.load_from_connector(...)`, then adopt its handle.
+Task cleanup retains base indexes and caches; there is no automatic collection.
 
-The wire envelope, composite `(instance_id, primary_key)` identity, selected
-`__fm_edge_*` relationship columns, large integer representation, and
-context-only target follow the prior loader contract. Arrays remain the
-default wire format; Arrow IPC is opt-in. No SDM conversion runs in this wheel.
+## Occurrences and supported plans
 
-## Compatibility
+`Context(entities=..., times=...)` forms entities × times with time as the outer
+axis. `Query(entities=..., at=...)` uses one time. Either accepts ordered
+`pairs=[(entity, time[, occurrence_id]), ...]`. IDs default to zero-based
+positions within each split; repeated pairs remain distinct. Context label
+windows must end before the earliest query. Query targets never enter payloads.
 
-The production path accepts frozen `native_multihop` workloads whose graph
-sampling can be expressed exactly as public `kumo.pytorch` recent sampling.
-Uniform sampling into timeless tables and empty graph layers fail explicitly.
-The old `local_native` and `temporal_query` selection implementations are
-comparison references, not fallbacks in this package. The frozen path's `index`
-argument names its FM workspace for source links, anchors and provenance; it
-does not select a DiskGraph index. Its marker must match the bundle, contract
-and dependencies; unrelated or incomplete workspaces are refused. Each opening
-creates a fresh Dataset engine and ingests independently under the configured
-root. That costs ingest time and disk space; closing tasks retains base indexes
-and caches, with no automatic garbage collection. Reuse one loader for repeated
-frozen requests, or use the connector snapshot path to reuse a completed base.
+FM derives schema metadata from the adopted engine. For a relation alias or
+projection, pass `schema=api.DataSchema(...)`; PyTorch validates it against the
+stored graph. Supported plans use one neighborhood, bounded recent fanouts,
+scalar FM wire types, and `Aggregate(Rows(..., time=TimeWindow(start=0,
+stop=positive)))` or a `Compare` over that aggregate. Multiple graph layers run
+in one native sampling plan. Timeless destinations and uniform sampling fail
+explicitly. Classification needs a two-entry raw-label-to-name map; regression
+accepts a numeric aggregate. Labels and graphs use separate materializations
+against the same base.
 
-| Contract area | Status |
-| --- | --- |
-| One or both frozen context/predict splits; ordered instance selection | Supported |
-| Classification and regression targets; context label availability checks | Supported |
-| Temporal recent sampling, forward/reverse steps, multiple relations and hops | Supported through the public columnar graph API |
-| Per-instance identity, selected edges, nulls, empty related tables, exact int64 IDs | Preserved in typed Arrow tables and both encodings |
-| Bundle hashes, source schema, keys/FKs, clock precision, rows/columns/bytes | Checked before or during sampling/encoding |
-| Uniform sampling into timeless destinations, empty graph layers | Explicitly rejected |
-| `local_native` and `temporal_query` selection | Comparison-only; no production fallback |
+`loader.materialize(...).load()` and `loader.load(...)` return `PayloadBatch`.
+Its Arrow tables and metadata survive request and loader closure. Row, column
+and decoded-byte budgets apply during assembly; HTTP byte budgets apply during
+encoding. Arrays encoding requires the built C++ extension, with no Python
+fallback; Arrow IPC is an alternate wire format.
 
-| Prior entry point | This package |
-| --- | --- |
-| `Bundle(root)`, `Workload(bundle, spec)` | `fm.prepare(root, spec, index=...)` |
-| `KumoPytorchBackend.prepare_batch(seeds)` | `loader.materialize(context=..., predict=...)` |
-| `build_arrow_tables(backend, workload)` | `request.load().as_arrow_request()` |
-| `build_payload(..., encoding="arrays")` | `batch.encode("arrays")` |
-| `build_payload(..., encoding="arrow_ipc")` | `batch.encode("arrow_ipc")` |
-| `arrow_to_sdm(request)` | `examples/local_sdm/adapter.py:arrow_to_sdm(batch)` |
+## Source installation
 
-Source baselines: fm-dataloader `b4516394e98929c5b4752745866d5e3138276255`;
-engine `9637e9cc9e2da877959b3c6b9db88c0fc7e35f3f`. The public columnar
-API landed in engine PRs #340 and #365.
+Build and install matching DiskGraph, settings and PyTorch wheels from this
+workspace, then `uv build --wheel --package kumo-fm`. The [local SDM example](
+examples/local_sdm/README.md) documents its separate optional inference setup.

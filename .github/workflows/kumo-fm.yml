@@ -49,7 +49,7 @@ jobs:
       - name: Test the source package against the current native stack
         run: |
           uv sync --locked --inexact --no-install-package diskgraph --no-install-package torch \
-            --package kumo-fm --extra test --extra benchmark
+            --package kumo-fm --extra test
           uv run --no-sync --package kumo-fm python -m pytest -q \
             packages/experimental/kumo-fm/tests
       - name: Build matching settings, PyTorch and FM wheels
@@ -74,7 +74,6 @@ jobs:
           cd "$RUNNER_TEMP/stage"
           ../fresh/bin/python -I -c 'import importlib.util; assert importlib.util.find_spec("duckdb") is None; import kumo.fm'
           ../fresh/bin/python -m pytest -q tests/test_snapshot_api.py
-          uv pip install --python ../fresh/bin/python 'duckdb==2.0.0'
       - name: Run tests using only installed runtime packages
         run: |
           cd "$RUNNER_TEMP/stage"
