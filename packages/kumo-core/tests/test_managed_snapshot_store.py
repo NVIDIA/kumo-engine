@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -346,6 +347,39 @@ def test_selecting_legacy_restore_preserves_suffix_named_directory(staged):
     assert (other_path / '_SUCCESS').read_bytes() == marker
     assert store.path(suffix_named) == str(other_path)
     assert set(store.list_ready()) == {original, restored, suffix_named}
+
+
+@pytest.mark.parametrize('collision', ['reserved_version', 'reference_directory'])
+def test_import_publication_preserves_builds_on_reference_name_collision(
+        staged, collision):
+    store, handle, _, _ = staged
+    imported = DiskgraphSnapshotHandle('graph', 'import')
+    source = _completed_legacy(store, imported)
+    metadata = source / 'index_metadata.json'
+    metadata.write_text(json.dumps({'index_build_id': 'import-build'}))
+    manifest = source / '_MANIFEST.json'
+    content = json.loads(manifest.read_text())
+    for entry in content['files']:
+        if entry['rel_path'] == metadata.name:
+            entry['size_bytes'] = metadata.stat().st_size
+    manifest.write_text(json.dumps(content))
+    published = store.publish_import(imported, DiskgraphIngestResult.for_index(source))
+    retained = Path(published.index_path)
+    before = {p.name: p.read_bytes() for p in retained.iterdir() if p.is_file()}
+    shutil.copytree(retained, source)
+    (source / '_SUCCESS').write_text(DiskgraphIngestResult.for_index(source).to_json())
+    if collision == 'reserved_version':
+        bad = DiskgraphSnapshotHandle('graph', 'import.index.json')
+        expected = ValueError
+    else:
+        bad = handle
+        store._reference(bad).mkdir()
+        expected = FileExistsError
+    with pytest.raises(expected):
+        store.publish_import(bad, DiskgraphIngestResult.for_index(source))
+    assert source.is_dir()
+    assert {p.name: p.read_bytes() for p in retained.iterdir()
+            if p.is_file()} == before
 
 
 @pytest.mark.parametrize('payload', [[], None, 1, 'metadata'])

@@ -446,6 +446,16 @@ def _index_files(
     return index_manifest, files, snapshot_manifest
 
 
+def exported_build_id(connector: Any, path: str, root: str) -> Optional[str]:
+    """Read native identity to find an already imported build before copying."""
+    filesystem, _ = _location(connector, path)
+    try:
+        metadata = json.loads(_read_bytes(filesystem, f'{root}/index/index_metadata.json'))
+    except ValueError:
+        return None  # The normal load reports the native compatibility error.
+    return metadata.get('index_build_id') if isinstance(metadata, dict) else None
+
+
 def load_into(connector: Any, path: str, root: str, manifest: dict,
               target: Path) -> None:
     from kumo_core.diskgraph.snapshot import (

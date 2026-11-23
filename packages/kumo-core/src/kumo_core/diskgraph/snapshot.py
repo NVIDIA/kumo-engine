@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import uuid
 from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass, replace
@@ -149,6 +150,81 @@ class LocalSnapshotStore:
         if reference.is_file():
             reference.unlink()
 
+    def existing_build(self, build_id: str) -> DiskgraphIngestResult | None:
+        """Find a verified physical build, independently of logical references."""
+        from diskgraph import DiskgraphCorruptionError
+
+        if self.config.managed_root is None:
+            return None
+        if not isinstance(build_id, str) or not build_id:
+            raise ValueError("imported snapshot has an invalid index_build_id")
+        path = _ManagedIndexPaths(build_id, root=Path(self.config.managed_root)).index_dir
+        try:
+            if _read_json_object(path / "index_metadata.json").get("index_build_id") != build_id:
+                return None
+            self._verify_path(str(path))
+        except (DiskgraphCorruptionError, DiskgraphSnapshotError,
+                FileNotFoundError, ValueError, KeyError):
+            return None
+        return DiskgraphIngestResult.for_index(path)
+
+    def publish_import(self, handle: DiskgraphSnapshotHandle,
+                       result: DiskgraphIngestResult) -> DiskgraphIngestResult:
+        """Adopt a verified import without replacing a healthy physical build.
+
+        The caller holds the graph lock. Old exports without a native build ID
+        retain their legacy location. Damaged physical copies are displaced only
+        once their replacement is complete and verified.
+        """
+        from diskgraph import snapshot_range_checksums
+
+        source = Path(result.index_path)
+        self._verify_path(str(source))
+        build_id = _read_json_object(source / "index_metadata.json").get("index_build_id")
+        if self.config.managed_root is None or build_id is None:
+            self.use_legacy(handle)
+            return DiskgraphIngestResult.for_index(source)
+        if not isinstance(build_id, str) or not build_id:
+            raise ValueError("imported snapshot has an invalid index_build_id")
+        self._publication_reference(handle)
+        target = _ManagedIndexPaths(build_id, root=Path(self.config.managed_root)).index_dir
+        existing = self.existing_build(build_id)
+        if existing is not None:
+            if source != target:
+                span = 16 * 1024 * 1024
+                if (snapshot_range_checksums(str(source), span)
+                        != snapshot_range_checksums(str(target), span)):
+                    raise ValueError(f"Conflicting contents for index build {build_id}")
+                shutil.rmtree(source)
+            self._publish_reference(handle, build_id)
+            return existing
+        if target.exists():
+            damaged = source.parent / ".damaged" / f"{build_id}-{uuid.uuid4().hex}"
+            damaged.parent.mkdir(parents=True, exist_ok=True)
+            target.rename(damaged)
+        return self.publish(handle, result)
+
+    def _publish_reference(self, handle: DiskgraphSnapshotHandle, build_id: str) -> None:
+        reference = self._publication_reference(handle)
+        temporary = reference.with_name(reference.name + f".{uuid.uuid4().hex}.tmp")
+        reference.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            temporary.write_text(json.dumps({"index_build_id": build_id}))
+            temporary.replace(reference)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def _publication_reference(self, handle: DiskgraphSnapshotHandle) -> Path:
+        # Suffix-named legacy directories remain readable, but new managed
+        # versions must not occupy another version's reference name.
+        if handle.graph_data_version.endswith(_SNAPSHOT_REFERENCE_SUFFIX):
+            raise ValueError("managed snapshot versions must not end with "
+                             + _SNAPSHOT_REFERENCE_SUFFIX)
+        reference = self._reference(handle)
+        if reference.is_dir():
+            raise FileExistsError(f"Snapshot reference is a directory: {reference}")
+        return reference
+
     def publish(self, handle: DiskgraphSnapshotHandle,
                 result: DiskgraphIngestResult) -> DiskgraphIngestResult:
         """Publish a fresh build under its native ID without copying its files.
@@ -161,14 +237,7 @@ class LocalSnapshotStore:
         if self.config.managed_root is None:
             return result
 
-        # Existing suffix-named legacy directories stay readable, but new
-        # managed versions must not occupy another version's reference name.
-        if handle.graph_data_version.endswith(_SNAPSHOT_REFERENCE_SUFFIX):
-            raise ValueError("managed snapshot versions must not end with "
-                             + _SNAPSHOT_REFERENCE_SUFFIX)
-        reference = self._reference(handle)
-        if reference.is_dir():
-            raise FileExistsError(f"Snapshot reference is a directory: {reference}")
+        self._publication_reference(handle)
         source = Path(result.index_path)
         metadata = _read_json_object(source / "index_metadata.json")
         build_id = metadata.get("index_build_id")
@@ -187,12 +256,7 @@ class LocalSnapshotStore:
         published = replace(DiskgraphIngestResult.for_index(target),
                             pkey_duplicate_counts=result.pkey_duplicate_counts)
         write_diskgraph_success_marker(str(target), published)
-        temporary = reference.with_name(reference.name + f".{uuid.uuid4().hex}.tmp")
-        try:
-            temporary.write_text(json.dumps({"index_build_id": build_id}))
-            temporary.replace(reference)
-        finally:
-            temporary.unlink(missing_ok=True)
+        self._publish_reference(handle, build_id)
         return published
 
     @staticmethod
