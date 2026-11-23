@@ -51,13 +51,11 @@ def test_snapshot_warns_when_invalid_primary_keys_drop_rows(tmp_path):
         _warn_ingest_data_loss(result, graph_config)
 
 
-@pytest.mark.parametrize('failure', [None, 'stage', 'ingest', 'cached'])
-def test_snapshot_discards_only_owned_staging(tmp_path, monkeypatch, failure):
+@pytest.mark.parametrize('failure', [None, 'stage', 'ingest', 'publish', 'cached'])
+def test_snapshot_discards_only_owned_staging(
+        tmp_path, monkeypatch, failure, completed_diskgraph_ingest):
     import kumo_core.diskgraph.ingest as ingest
     import kumo_core.diskgraph.snapshot as snapshots
-
-    monkeypatch.setattr(snapshots.LocalSnapshotStore, 'publish',
-                        lambda self, handle, result: result)
     import kumo_core.sources.transfer as transfer
     from filelock import FileLock, Timeout
 
@@ -79,8 +77,6 @@ def test_snapshot_discards_only_owned_staging(tmp_path, monkeypatch, failure):
     index = tmp_path / 'retained-index'
     index.mkdir()
     (index / 'index').write_bytes(b'index')
-    result = SimpleNamespace(index_path=str(index))
-    monkeypatch.setattr(snapshots, 'rebased', lambda store, handle: result)
     calls = []
 
     class Source:
@@ -114,23 +110,47 @@ def test_snapshot_discards_only_owned_staging(tmp_path, monkeypatch, failure):
             'fkeys': [],
         } for table in tables]
     }
-    monkeypatch.setattr(snapshots, 'check_diskgraph_output', lambda path: result
-                        if failure == 'cached' else None)
-    monkeypatch.setattr(snapshots.DiskgraphIngestResult, 'for_index',
-                        lambda path: SimpleNamespace(to_json=lambda: '{}'))
+    ingests = []
+    cached_ready = False
 
     def execute(graph_config, spec):
         assert all(Path(path).is_dir() for path in spec.source_paths.values())
+        assert not cached_ready, 'cached snapshots must not ingest again'
+        ingests.append(spec)
         if failure == 'ingest':
             raise ValueError('ingest failure')
-        return result
+        return completed_diskgraph_ingest(graph_config, spec)
 
     monkeypatch.setattr(ingest, 'execute_diskgraph_ingest', execute)
-    if failure in ('stage', 'ingest'):
+    if failure == 'publish':
+        def interrupt_publication(output_dir, result):
+            assert Path(output_dir).parent == tmp_path / 'indexes'
+            assert not Path(ingests[0].output_dir).exists()
+            raise ValueError('publication failure')
+
+        monkeypatch.setattr(snapshots, 'write_diskgraph_success_marker',
+                            interrupt_publication)
+    if failure == 'cached':
+        previous = graph.snapshot()
+        cached_ready = True
+        calls.clear()
+    if failure in ('stage', 'ingest', 'publish'):
         with pytest.raises(ValueError, match='failure'):
             graph.snapshot()
     else:
-        assert graph.snapshot().index_path == index
+        snapshot = graph.snapshot()
+        assert snapshot.index_path.parent == tmp_path / 'indexes'
+        assert (snapshot.index_path / 'node-data.bin').read_bytes() == (
+            b'completed index bytes')
+        assert snapshots.check_diskgraph_output(str(snapshot.index_path)) is not None
+        if failure == 'cached':
+            assert snapshot.index_path == previous.index_path
+        assert len(ingests) == 1
+    if failure == 'publish':
+        retained_build, = (tmp_path / 'indexes').iterdir()
+        assert (retained_build / 'node-data.bin').read_bytes() == (
+            b'completed index bytes')
+        assert not list((tmp_path / 'snapshots').rglob('*.index.json'))
     assert calls == ['first', 'second']
     assert not (tmp_path / 'snapshots' / 'graph-key' / 'source_tables').exists()
     assert not list(tmp_path.rglob('*.discarded-*'))

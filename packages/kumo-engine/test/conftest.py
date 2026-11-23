@@ -20,6 +20,34 @@ from kumo.engine.graph import GraphSnapshot
 
 
 @pytest.fixture
+def completed_diskgraph_ingest():
+    """Complete a synthetic ingest while retaining real snapshot publication."""
+    from pathlib import Path
+
+    from diskgraph import new_index_build_id
+    from kumo_core.diskgraph.snapshot import DiskgraphIngestResult
+
+    def complete(graph_config, spec):
+        index = Path(spec.output_dir)
+        index.mkdir(parents=True, exist_ok=True)
+        (index / 'index_metadata.json').write_text(json.dumps({
+            'index_build_id': new_index_build_id(),
+            'timestamp_unit': spec.timestamp_precision,
+            'node_types': [],
+        }))
+        (index / 'diskgraph_config.json').write_text(json.dumps(graph_config))
+        (index / 'col_stats.json').write_text('{}')
+        (index / 'ingest_stats.json').write_text('{}')
+        (index / 'kumo_col_stats').mkdir()
+        (index / 'node-data.bin').write_bytes(b'completed index bytes')
+        result = DiskgraphIngestResult.for_index(index)
+        (index / '_SUCCESS').write_text(result.to_json())
+        return result
+
+    return complete
+
+
+@pytest.fixture
 def staged_seed_dir(tmp_path):
     """Supply seed metadata for adapter tests that mock materialization."""
     from kumo_core.training.export import INGEST_SPEC
