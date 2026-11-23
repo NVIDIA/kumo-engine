@@ -91,6 +91,13 @@ When training completes, the example prints the first five predictions:
 
 `graph.snapshot()` writes the graph to a scratch directory, `~/.cache/kumo-engine` by default, which also holds training runs, model bundles, and predictions. If your home directory is on a network volume, such as an Amazon EBS boot volume, call `kumo.engine.configure(scratch_dir=...)` before constructing the `Graph` to use a directory on a local NVMe SSD instead. Each `Graph` captures that root at construction; later `configure()` calls affect new graphs, while existing graphs keep their original snapshot storage and reuse.
 
+ID-only monitoring lookups and `GraphSnapshot.load_from_connector()` use the
+current scratch root, independently of any Graph's captured root. After changing
+roots, pass the existing handles as `snapshot=` and `training_snapshot=` to
+`score_drift()` to read their original local statistics, or provide an MLOps root
+holding their exports. Loading an export imports it into the current root;
+`graph=` compares its schema and sources, not its destination root.
+
 New completed snapshots live at `<scratch>/indexes/<index_build_id>`. Kumo
 keeps a graph/data-version reference under `<scratch>/snapshots` for reuse;
 existing snapshots in the older graph/version directories remain readable

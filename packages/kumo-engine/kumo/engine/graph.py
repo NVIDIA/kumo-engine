@@ -464,13 +464,18 @@ class GraphSnapshot:
                             path: Optional[str] = None,
                             id: Optional[str] = None,
                             graph: Optional['Graph'] = None) -> 'GraphSnapshot':
-        r"""Load a snapshot exported at `path`.
+        r"""Load an exported snapshot into the current scratch root.
+
+        This destination follows the current scratch scope or configuration,
+        independently of the root captured by a supplied ``graph``. Existing
+        snapshot handles keep their own physical paths.
 
         Args:
             connector: a connector, or a `kumo.MLOps` for its artifact root.
             path: the location `export` returned.
             id: a snapshot id under the `kumo.MLOps` root, instead of `path`.
-            graph: warn if its sources changed since the snapshot.
+            graph: compare schema and warn about changed sources; does not
+                select the destination root.
         """
         from kumo.engine._mlops import MLOps, on_root, snapshot_path
         from kumo.engine._snapshot_io import read

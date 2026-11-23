@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import json
 import threading
 from contextlib import nullcontext
 from contextvars import ContextVar
@@ -66,6 +67,48 @@ def test_graph_captures_root_at_construction_and_reuses_it(
     assert second.index_path != first.index_path
     assert len(outputs) == 2
     assert first.index_path.is_dir()
+
+
+def test_id_only_monitoring_uses_current_root_but_handles_keep_their_paths(
+        tmp_path, source_graph):
+    from kumo.engine._monitoring import _local_index, _reader
+
+    snapshot = source_graph.snapshot()
+    stats = json.loads((snapshot.index_path / 'col_stats.json').read_text())
+    assert _local_index(snapshot.id) == snapshot.index_path
+
+    other = tmp_path / 'other'
+    kumo.configure(scratch_dir=other)
+    assert _local_index(snapshot.id) is None
+    assert _reader(None, snapshot.id, None)('col_stats.json') is None
+    assert _reader(snapshot, snapshot.id, None)('col_stats.json') == stats
+    assert source_graph.snapshot() == snapshot
+    assert get_scratch_dir() == other
+    assert not other.exists()
+
+
+def test_loading_uses_current_root_even_when_graph_captured_another(
+        tmp_path, source_graph):
+    snapshot = source_graph.snapshot()
+    exports = kumo.FileConnector(root_dir=str(tmp_path / 'exports'))
+    location = snapshot.export(kumo.SnapshotOutputConfig(exports, 'snapshot'))
+    before = {path.relative_to(snapshot.index_path): path.read_bytes()
+              for path in snapshot.index_path.rglob('*') if path.is_file()}
+    build_id = json.loads(before[Path('index_metadata.json')])['index_build_id']
+
+    other = tmp_path / 'other'
+    kumo.configure(scratch_dir=other)
+    loaded = kumo.GraphSnapshot.load_from_connector(
+        exports, path=location, graph=source_graph)
+    assert loaded.index_path.is_relative_to(other)
+    assert loaded.index_path != snapshot.index_path
+    assert loaded.id == snapshot.id
+    assert json.loads((loaded.index_path / 'index_metadata.json').read_text())[
+        'index_build_id'] == build_id
+    assert {path.relative_to(snapshot.index_path): path.read_bytes()
+            for path in snapshot.index_path.rglob('*') if path.is_file()} == before
+    assert source_graph.snapshot() == snapshot
+    assert get_scratch_dir() == other
 
 
 def test_callback_configuration_cannot_split_snapshot_paths(
