@@ -24,7 +24,7 @@ from typing import Any, Literal, TypeAlias, get_args
 
 from kumo.pytorch.contract._frozen import FrozenMapping
 from kumo.pytorch.contract.dtypes import DType
-from kumo.pytorch.contract.schema import DataSchema
+from kumo.pytorch.contract.schema import DataSchema, table_clock
 from kumo.pytorch.data.records import (
     EntityHistory,
     Event,
@@ -695,36 +695,31 @@ class GraphSample:
     :param direction: which way to follow the relation; ``"forward"`` is left
         table to right as written in :class:`RelationSpec`.
     :param relation: the declared relation followed.
-    :param strategy: how to choose when more neighbors exist than ``fanout``:
-        ``"recent"`` (the default) keeps the most recent and needs a clock, even
-        when ``temporal="static"``; ``"uniform"`` draws evenly among the candidates. Which tied
-        neighbors at the fanout limit are kept is unspecified (G-GRAPH-001). The
-        DiskGraph engine supports ``"recent"`` only.
+    :param strategy: ``None`` selects ``"recent"`` when the destination table
+        declares a clock, otherwise ``"uniform"``. Recent keeps the newest rows
+        at or before the anchor and requires a declared clock. Uniform samples
+        without replacement, ignoring the real-time anchor even on timed tables.
+        Which equally recent neighbors are kept is unspecified (G-GRAPH-001).
 
     Relations-topology edges keep the declared left-to-right orientation whatever
     the traversal direction, self-relations included. Sampled topology retains
     the native traversal direction instead.
     :param time_column: overrides the destination table's declared clock.
-    :param temporal: ``"inherit"`` filters by the resolved clock; ``"static"``
-        states that this traversal is deliberately unfiltered.
     """
 
     relation: str
     fanout: int
     direction: Literal["forward", "reverse"] = "forward"
-    strategy: Literal["recent", "uniform"] = "recent"
+    strategy: Literal["recent", "uniform"] | None = None
     time_column: str | None = None
-    temporal: Literal["inherit", "static"] = "inherit"
 
     def __post_init__(self) -> None:
         if self.fanout <= 0:
             raise ValueError("graph fanout must be positive")
         if self.direction not in {"forward", "reverse"}:
             raise ValueError("graph direction must be 'forward' or 'reverse'")
-        if self.strategy not in {"uniform", "recent"}:
-            raise ValueError("graph strategy must be 'uniform' or 'recent'")
-        if self.temporal not in {"inherit", "static"}:
-            raise ValueError("graph temporal must be 'inherit' or 'static'")
+        if self.strategy not in {None, "uniform", "recent"}:
+            raise ValueError("graph strategy must be None, 'uniform' or 'recent'")
 
 
 @dataclass(frozen=True)
@@ -1213,10 +1208,25 @@ def value_dtype(
 
 
 def resolve_sample_types(schema: DataSchema, sample: SampleSpec) -> SampleSpec:
-    """Return concrete calculation types for every sampled scope."""
+    """Resolve calculation types and schema-dependent graph strategies."""
+
+    tables = {table.name: table for table in schema.tables}
+    relations = {relation.name: relation for relation in schema.relations}
+
+    def traversal(item: GraphSample) -> GraphSample:
+        relation = relations.get(item.relation)
+        if item.strategy is not None or relation is None:
+            return item
+        destination = relation.right_table if item.direction == "forward" else relation.left_table
+        table = tables.get(destination)
+        if table is None:
+            return item  # Contract validation reports unknown tables and relations.
+        return replace(item, strategy="recent" if table_clock(table) is not None else "uniform")
 
     def unresolved(value: Any) -> bool:
         if isinstance(value, (Aggregate, Reduce, Derived)) and value.dtype is None:
+            return True
+        if isinstance(value, GraphSample) and value.strategy is None:
             return True
         if is_dataclass(value):
             return any(unresolved(getattr(value, item.name)) for item in fields(value))
@@ -1284,6 +1294,16 @@ def resolve_sample_types(schema: DataSchema, sample: SampleSpec) -> SampleSpec:
         dated[name] = replace(item, field=values.pop(name), fields=values)
     return replace(
         sample,
+        neighborhoods={
+            name: replace(
+                neighborhood,
+                layers=tuple(
+                    replace(layer, samples=tuple(traversal(item) for item in layer.samples))
+                    for layer in neighborhood.layers
+                ),
+            )
+            for name, neighborhood in sample.neighborhoods.items()
+        },
         entity_values=scope(sample.entity_values, root),
         dated_entity_values=dated,
         events=events(sample.events),

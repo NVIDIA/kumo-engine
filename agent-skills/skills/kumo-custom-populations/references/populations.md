@@ -61,12 +61,7 @@ trainer = kumo.Trainer(model_plan)
 training_result = trainer.fit(training_table, snapshot=snapshot)
 ```
 
-Use `TrainingTableSpec()` when no weights or manual splits are supplied. Without `split_col`,
-normal generation-plan split inference applies; a public `TrainingTableGenerationPlan` may
-be passed as `plan=`. Do not assume every task uses the same random split. A supplied split
-column overrides split assignment with 0/1/2. Inspect required nonempty splits for the
-requested evaluation. Generated training tables are a distinct path and do not accept a
-caller-supplied weight column by passing `TrainingTableSpec` to generation.
+Use `TrainingTableSpec()` when no weights or manual splits are supplied. Without `split_col`, normal generation-plan split inference applies; a `kumo.TrainingTableGenerationPlan` may be passed as `plan=`. Do not assume every task uses the same random split. A supplied split column overrides split assignment with 0/1/2. Inspect required nonempty splits for the requested evaluation. Generated training tables are a distinct path and do not accept a caller-supplied weight column by passing `TrainingTableSpec` to generation.
 
 ## String or other non-numeric splits
 

@@ -29,7 +29,7 @@ from kumo.pytorch.contract.batch.encodings import (
     Vocabulary,
     ZScore,
 )
-from kumo.pytorch.contract.dtypes import DType, arrow_float64
+from kumo.pytorch.contract.dtypes import DType, _strip_utc_timezone, arrow_float64
 
 
 def typed_key(dtype: DType, value: Any) -> tuple[str, Any]:
@@ -72,7 +72,10 @@ def json_value(value: Any) -> Any:
         import pyarrow.compute as pc
 
         if isinstance(value, pa.TimestampScalar):
-            return {"$timestamp": pc.cast(value, pa.string()).as_py()}
+            text = pc.cast(_strip_utc_timezone(value), pa.string()).as_py()
+            if text is not None and value.type.tz == "UTC":
+                text += "Z"
+            return {"$timestamp": text}
     if isinstance(value, dt.date):
         return {"$date": value.isoformat()}
     if isinstance(value, float):

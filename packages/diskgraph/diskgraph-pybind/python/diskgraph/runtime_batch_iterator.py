@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 from typing import Any, Mapping, Optional
 
 from ._exceptions import DiskgraphConfigError
@@ -113,26 +114,30 @@ def _extension_ref_from_stage_path(parent_root: str, stage_index_path: str) -> s
     """Recover the seed-table extension reference from a stage ``index_path``.
 
     The stage path itself is the source of truth: return a relative
-    ``train_tables/<tt_id>`` or ``pred_tables/<job_id>`` ref under the parent.
+    ``train_tables/<tt_id>`` or ``pred_tables/<job_id>`` ref under the parent,
+    or an absolute external path. Kumo chooses external locations; the native
+    reader validates finalized extension metadata and parent build identity.
+    The catalog namespace is the index-local ID for a relative ref, including
+    a symlink, and the supplied directory basename for an absolute external ref.
     """
-    abs_parent = os.path.abspath(parent_root.rstrip("/"))
-    abs_stage = os.path.abspath(stage_index_path.rstrip("/"))
-    for extension_dir in ("train_tables", "pred_tables"):
-        expected_prefix = os.path.join(abs_parent, extension_dir) + os.sep
-        if not abs_stage.startswith(expected_prefix):
-            continue
-        extension_id = abs_stage[len(expected_prefix):].split(os.sep, 1)[0]
-        if not extension_id:
-            raise DiskgraphConfigError(
-                "could not extract extension id from stage index_path "
-                f"{stage_index_path}"
-            )
-        return f"{extension_dir}/{extension_id}"
-    raise DiskgraphConfigError(
-        "stage index_path must live under <graph_index_path>/train_tables/ "
-        "or <graph_index_path>/pred_tables/: "
-        f"parent={abs_parent}, stage={abs_stage}"
-    )
+    # Keep the catalog ID for an index-local symlink even if its target is
+    # elsewhere. Let the native reader resolve and validate the target.
+    if ".." not in Path(parent_root).parts and ".." not in Path(stage_index_path).parts:
+        lexical_parent = Path(os.path.abspath(parent_root))
+        lexical_stage = Path(os.path.abspath(stage_index_path))
+        if lexical_stage.is_relative_to(lexical_parent):
+            parts = lexical_stage.relative_to(lexical_parent).parts
+            if len(parts) == 2 and parts[0] in ("train_tables", "pred_tables"):
+                return "/".join(parts)
+        return str(lexical_stage)
+    # Resolve other paths before testing placement: a symlink before '..'
+    # changes which directory that segment names.
+    parent, stage = Path(parent_root).resolve(), Path(stage_index_path).resolve()
+    if stage.is_relative_to(parent):
+        parts = stage.relative_to(parent).parts
+        if len(parts) == 2 and parts[0] in ("train_tables", "pred_tables"):
+            return "/".join(parts)
+    return str(stage)
 
 
 def _sampling_plan_json(sampling_plan: Any) -> str:
@@ -330,12 +335,14 @@ class RuntimeIndex:
         idx = self._indexes.get(extension_ref)
         if idx is None:
             from ._c import RuntimeIndex as _RuntimeIndex
-            idx = _RuntimeIndex(
-                self._parent_root,
-                extension_ref,
-                self._rnd_seed,
-                self._num_threads,
-            )
+            if Path(extension_ref).is_absolute():
+                idx = _RuntimeIndex._from_extension_path(
+                    self._parent_root, extension_ref, self._rnd_seed, self._num_threads,
+                )
+            else:
+                idx = _RuntimeIndex(
+                    self._parent_root, extension_ref, self._rnd_seed, self._num_threads,
+                )
             self._indexes[extension_ref] = idx
         return idx
 
@@ -458,5 +465,3 @@ class RuntimeIndex:
             projections,
         )
         return iterator, iterator.num_samples()
-
-

@@ -16,6 +16,128 @@ from tests.test_model_history_limits import history_data as history_data
 pytest.importorskip("diskgraph")
 
 
+@pytest.fixture
+def without_utc_zoneinfo(monkeypatch):
+    import pyarrow.compute as pc
+
+    # Reproduce Arrow's missing UTC lookup without changing the host's tzdata.
+    def require_zoneinfo(kernel):
+        def call(values, *args, **kwargs):
+            if pa.types.is_timestamp(values.type) and values.type.tz == "UTC":
+                raise pa.ArrowInvalid("Cannot locate or parse timezone 'UTC'")
+            return kernel(values, *args, **kwargs)
+
+        return call
+
+    for name in (
+        "year",
+        "month",
+        "day",
+        "day_of_week",
+        "hour",
+        "minute",
+        "second",
+        "ceil_temporal",
+        "floor_temporal",
+        "strftime",
+    ):
+        monkeypatch.setattr(pc, name, require_zoneinfo(getattr(pc, name)))
+
+    cast = pc.cast
+    cast_text = require_zoneinfo(cast)
+
+    def cast_without_zoneinfo(values, target_type=None, *args, **kwargs):
+        kernel = cast_text if target_type == pa.string() else cast
+        return kernel(values, target_type, *args, **kwargs)
+
+    monkeypatch.setattr(pc, "cast", cast_without_zoneinfo)
+
+
+@pytest.mark.usefixtures("without_utc_zoneinfo")
+@pytest.mark.parametrize("parquet_anchors", [False, True], ids=["requests", "parquet"])
+def test_calendar_parts_without_utc_zoneinfo(tmp_path, parquet_anchors):
+    timestamp = api.DType("timestamp", unit="ns", timezone="UTC")
+    ids = [1, 2, 3, 4]
+    times = pa.array([-1, 0, 1709251199000000001, None], type=timestamp.to_arrow())
+    source = tmp_path / "users.parquet"
+    pq.write_table(
+        pa.table(
+            {
+                "id": ids,
+                "time": times,
+                "created": pa.array([-(10**9)] * len(ids), type=timestamp.to_arrow()),
+            }
+        ),
+        source,
+    )
+    expected = {
+        "year": [1969, 1970, 2024, None],
+        "month": [12, 1, 2, None],
+        "day": [31, 1, 29, None],
+        "weekday": [2, 3, 3, None],
+        "hour": [23, 0, 23, None],
+        "minute": [59, 0, 59, None],
+        "second": [59, 0, 59, None],
+    }
+    contract = api.DataLoaderSpec(
+        api.DataSchema(
+            (
+                api.TableSpec(
+                    "users",
+                    "id",
+                    {"id": api.DType("int64"), "time": timestamp, "created": timestamp},
+                    time_column="created",
+                ),
+            )
+        ),
+        api.SampleSpec(
+            api.EntitySpec("users"),
+            entity_values={
+                "time": api.Field("time"),
+                **{part: api.Derived(api.CalendarPart(part), ("time",)) for part in expected},
+            },
+        ),
+        api.BatchSpec(
+            {
+                "entity": api.Input(
+                    api.EntitySource(),
+                    api.Fields(tuple(api.Encode(name, api.Raw()) for name in ("time", *expected))),
+                    api.Separate(),
+                ),
+            }
+        ),
+    )
+    cutoff = 1709251200  # 2024-03-01 00:00 UTC
+    if parquet_anchors:
+        path = tmp_path / "anchors.parquet"
+        pq.write_table(
+            pa.table(
+                {
+                    "id": ids,
+                    "at": pa.array([cutoff * 10**9] * len(ids), type=timestamp.to_arrow()),
+                }
+            ),
+            path,
+        )
+        anchors = api.AnchorTable(api.Parquet(str(path)), "id", "at")
+    else:
+        anchors = tuple(api.SampleRequest(str(i), i, cutoff) for i in ids)
+    dataset = api.Dataset({"users": api.Parquet(str(source))})
+    engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=1)
+    with api.prepare(contract, dataset, engine) as plan, plan.materialize(anchors) as task:
+        values = next(task.batches(batch_size=len(ids), shuffle=False)).inputs["entity"]
+    assert values["time"]["values"].equals(times)
+    for part, wanted in expected.items():
+        result = values[part]
+        assert [
+            value if valid else None
+            for value, valid in zip(
+                result["values"].tolist(), result["valid"].tolist(), strict=True
+            )
+        ] == wanted
+
+
+@pytest.mark.usefixtures("without_utc_zoneinfo")
 @pytest.mark.parametrize("unit,tick", [("s", 10**9), ("ms", 10**6), ("us", 1000)])
 @pytest.mark.parametrize("integer", [False, True])
 def test_stored_array_values_round_up_before_safe_cast(unit, tick, integer):
@@ -29,6 +151,7 @@ def test_stored_array_values_round_up_before_safe_cast(unit, tick, integer):
         [tick + 1, -tick - 1, None], type=pa.int64() if integer else pa.timestamp("ns", tz="UTC")
     )
     actual = source._typed_array(values, api.DType("timestamp", unit=unit, timezone="UTC"))
+    assert actual.type == pa.timestamp(unit, tz="UTC")
     assert actual.cast(pa.int64()).to_pylist() == [2, -1, None]
 
 
@@ -50,6 +173,18 @@ def test_overflowing_cutoffs_are_refused_in_both_paths(value, typed):
         source._cutoff(values[0] if typed else value)
     with pytest.raises((ValueError, pa.ArrowInvalid), match="overflow|bounds|range"):
         source._cutoff_array(values)
+
+
+def test_hour_cutoff_rounding_keeps_non_utc_offset():
+    import pyarrow.compute as pc
+
+    from kumo.pytorch.engines.diskgraph import DiskGraphSource
+
+    source = DiskGraphSource.__new__(DiskGraphSource)
+    source._clock, source._pa, source._pc = "hours", pa, pc
+    # In Kolkata, 01:00 UTC on January 1, 1970 floors to 00:30 UTC.
+    values = pa.array([3600, 7200, None], type=pa.timestamp("s", tz="Asia/Kolkata"))
+    assert source._cutoff_array(values).to_pylist() == [0, 1, None]
 
 
 @pytest.mark.parametrize("unit", ["ms", "us", "ns"])
@@ -321,6 +456,7 @@ def test_integer_anchor_times_keep_epoch_seconds_contract(clock, factor):
     ).to_pylist() == [seconds * factor]
 
 
+@pytest.mark.usefixtures("without_utc_zoneinfo")
 @pytest.mark.parametrize(
     "clock,unit",
     [
@@ -370,6 +506,7 @@ def test_cutoffs_preserve_causal_floor_in_scalar_and_batch_paths(clock, unit, ns
     assert source._cutoff(instant) == expected_datetime
 
 
+@pytest.mark.usefixtures("without_utc_zoneinfo")
 @pytest.mark.parametrize("unit,tick", [("s", 10**9), ("ms", 10**6), ("us", 1000), ("ns", 1)])
 @pytest.mark.parametrize("ns", [-1500000001, -500001, -1, 0, 1, 500001, 1500000001])
 def test_stored_timestamps_round_up_consistently_without_pandas(unit, tick, ns, monkeypatch):
@@ -394,6 +531,24 @@ def test_stored_timestamps_round_up_consistently_without_pandas(unit, tick, ns, 
     assert typed_key(dtype, dtype.normalize(expected)) == ("timestamp", expected)
     restored = unjson_value(json_value(normalized))
     assert typed_key(dtype, restored) == ("timestamp", expected)
+
+
+@pytest.mark.usefixtures("without_utc_zoneinfo")
+def test_overflowing_utc_scalar_reports_ticks_without_zoneinfo():
+    instant = pa.scalar(10**10, type=pa.timestamp("s", tz="UTC"))
+    dtype = api.DType("timestamp", unit="ns", timezone="UTC")
+    with pytest.raises(ValueError, match="10000000000 ticks.*not a valid.*timestamp"):
+        dtype.normalize(instant)
+
+
+@pytest.mark.usefixtures("without_utc_zoneinfo")
+def test_utc_scalar_keeps_its_exact_serialized_timestamp():
+    from kumo.pytorch.encoding import json_value, unjson_value
+
+    instant = pa.scalar(-1, type=pa.timestamp("ns", tz="UTC"))
+    saved = json_value(instant)
+    assert saved == {"$timestamp": "1969-12-31 23:59:59.999999999Z"}
+    assert unjson_value(saved).equals(instant)
 
 
 def test_nanosecond_saved_state_without_pandas_in_fresh_process():

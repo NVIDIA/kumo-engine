@@ -258,7 +258,9 @@ class NativeAnchors:
         path = self.path / "runtime.json"
         path.write_text(json.dumps(manifest))
         self._runtime = self._source._diskgraph.RuntimeIndex(
-            str(path), rnd_seed=0, num_threads=self._source._num_threads
+            str(path),
+            rnd_seed=self._source._random_seed,
+            num_threads=self._source._num_threads,
         )
         if self._stages:
             # Preparation may use a base reader. The loading loop uses only the
@@ -1327,6 +1329,7 @@ class NativeAnchors:
                     world_size=world_size,
                     plan=plan,
                     projections=projections,
+                    neighborhoods=named,
                 ):
                     yield runtime, self._requests(stage, runtime)
                 offset += stage["count"]

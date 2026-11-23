@@ -598,7 +598,7 @@ def test_predict_works_after_load_without_refitting(snapshot: GraphSnapshot,
             task_type='binary_classification', stage_counts={'predict': 1}))
     monkeypatch.setattr(ResolvedNumericalTask, 'from_manifest',
                         lambda *a, **k: None)
-    monkeypatch.setattr('kumo_core.train.trainer.load_encoders',
+    monkeypatch.setattr('kumo_core.train.diskgraph_nested_trainer.load_encoders',
                         lambda *a: None)
 
     def fake_predict(**kwargs) -> None:
@@ -625,7 +625,7 @@ def test_predict_works_after_load_without_refitting(snapshot: GraphSnapshot,
             worker, {kind: writer.stats})
 
     monkeypatch.setattr(DiskgraphNestedTrainer, 'load',
-                        lambda *a, **k: SimpleNamespace(predict=fake_predict))
+                        lambda task, *a, **k: SimpleNamespace(task=task, predict=fake_predict))
 
     result = trainer.predict(table, snapshot=snapshot, output_config=output,
                              binary_classification_threshold=.5)

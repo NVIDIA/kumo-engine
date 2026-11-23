@@ -43,7 +43,7 @@ const TOKENIZER_TRAINER: &str = "tokenizers 0.23.2 onig";
 type WordCounts = AHashMap<CompactString, u64>;
 
 /// Recomputes `request` from an index's stored rows.
-fn from_index(index_dir: &Path, request: &CutoffColStatsRequest) -> Result<()> {
+fn from_index(index_dir: &Path, output_dir: &Path, request: &CutoffColStatsRequest) -> Result<()> {
     let config = read_persisted_config(index_dir)?;
     request.validate(&config.tables)?;
     let names: HashSet<String> = request.columns.keys().cloned().collect();
@@ -107,15 +107,38 @@ fn from_index(index_dir: &Path, request: &CutoffColStatsRequest) -> Result<()> {
         }
         tables.push(table);
     }
-    request.publish(index_dir, clock, tables)
+    request.publish(output_dir, clock, tables)
 }
 
-/// Recomputes column statistics at cutoffs from an index's stored rows, into `col_stats/<dir>/`.
+/// Recomputes statistics from stored rows into `index_dir/col_stats/<dir>/`.
 #[pyfunction]
 #[pyo3(signature = (index_dir, request_json, num_threads=None))]
 pub fn cutoff_col_stats(
     py: Python<'_>,
     index_dir: &str,
+    request_json: &str,
+    num_threads: Option<usize>,
+) -> PyResult<()> {
+    compute_cutoff_col_stats(py, index_dir, index_dir, request_json, num_threads)
+}
+
+/// Internal managed-cache writer; callers derive the destination from the root.
+#[pyfunction]
+#[pyo3(signature = (index_dir, output_dir, request_json, num_threads=None))]
+fn _cutoff_col_stats_at(
+    py: Python<'_>,
+    index_dir: &str,
+    output_dir: &str,
+    request_json: &str,
+    num_threads: Option<usize>,
+) -> PyResult<()> {
+    compute_cutoff_col_stats(py, index_dir, output_dir, request_json, num_threads)
+}
+
+fn compute_cutoff_col_stats(
+    py: Python<'_>,
+    index_dir: &str,
+    output_dir: &str,
     request_json: &str,
     num_threads: Option<usize>,
 ) -> PyResult<()> {
@@ -125,7 +148,9 @@ pub fn cutoff_col_stats(
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(num_threads.unwrap_or(0))
             .build()?;
-        pool.install(|| from_index(Path::new(index_dir), &request))
+        pool.install(|| {
+            from_index(Path::new(index_dir), Path::new(output_dir), &request)
+        })
     })
     .map_err(map_anyhow_err)
 }
@@ -474,6 +499,7 @@ fn chunk_lengths(
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(cutoff_col_stats, m)?)?;
+    m.add_function(wrap_pyfunction!(_cutoff_col_stats_at, m)?)?;
     m.add_function(wrap_pyfunction!(write_column_stats_for_parquet, m)?)?;
     m.add_function(wrap_pyfunction!(train_tokenizer, m)?)?;
     m.add_function(wrap_pyfunction!(token_lengths, m)?)?;

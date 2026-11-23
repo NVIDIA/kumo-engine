@@ -31,7 +31,8 @@ In a bit more detail:
 
 - Each example only sees rows from at or before its
   prediction time, including rows it reaches through other tables, so your model
-  can't learn from the future by accident.
+  can't learn from the future by accident. Explicit uniform graph sampling
+  deliberately ignores the prediction time.
 - Counts and sums over time windows, the time since a user's last
   purchase, calendar parts and similar values are declared next to the raw
   columns.

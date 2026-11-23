@@ -254,7 +254,6 @@ neighborhood = api.NeighborhoodSpec(
                     fanout=1,
                     direction="reverse",
                     strategy="uniform",
-                    temporal="static",
                 ),
             )
         ),
@@ -306,15 +305,13 @@ owning sample: [0, 0, 1]
 edge types: ('item_purchases', 'user_purchases')
 ```
 
-- A timed destination is filtered by its clock; a clockless one must say
-  `temporal="static"`, so you never read a table without its time filter by
-  mistake.
-- `strategy="recent"`, the default, keeps the newest rows and needs a clock,
-  even for a static traversal. `"uniform"` draws a deterministic random sample,
-  but only on the in-memory engine; the DiskGraph engine refuses it at
-  `check()`. So on DiskGraph a traversal can't reach a clockless table like
-  `items` here; give the table a clock if you need to sample it there (see
-  [limitations](limitations.md#time)).
+- An omitted strategy resolves to `recent` for a destination with a declared
+  clock and `uniform` for a clockless destination. Explicit `recent` requires
+  a declared clock and keeps the newest neighbors at or before the anchor.
+- Explicit `uniform` samples without replacement from all related rows,
+  ignoring the anchor even if the destination has a clock. DiskGraph uses
+  `DiskGraphEngine(random_seed=0)` by default; a fixed engine seed replays the
+  same selections on the same index across epochs.
 - Each example's graph is disjoint: item 10 appears once for each user that
   reached it. Edges keep the relation's declared left-to-right orientation even
   when traversed in reverse.

@@ -516,9 +516,8 @@ class GraphSample(
     relation: str,
     fanout: int,
     direction: Literal['forward', 'reverse'] = 'forward',
-    strategy: Literal['recent', 'uniform'] = 'recent',
+    strategy: Literal['recent', 'uniform'] | None = None,
     time_column: str | None = None,
-    temporal: Literal['inherit', 'static'] = 'inherit',
 )
 ```
 
@@ -533,9 +532,8 @@ the native traversal direction instead.
 - `fanout`: maximum neighbors kept per frontier row.
 - `direction`: which way to follow the relation; `"forward"` is left table to right as written in `RelationSpec`.
 - `relation`: the declared relation followed.
-- `strategy`: how to choose when more neighbors exist than `fanout`: `"recent"` (the default) keeps the most recent and needs a clock, even when `temporal="static"`; `"uniform"` draws evenly among the candidates. Which tied neighbors at the fanout limit are kept is unspecified (G-GRAPH-001). The DiskGraph engine supports `"recent"` only.
+- `strategy`: `None` selects `"recent"` when the destination table declares a clock, otherwise `"uniform"`. Recent keeps the newest rows at or before the anchor and requires a declared clock. Uniform samples without replacement, ignoring the real-time anchor even on timed tables. Which equally recent neighbors are kept is unspecified (G-GRAPH-001).
 - `time_column`: overrides the destination table's declared clock.
-- `temporal`: `"inherit"` filters by the resolved clock; `"static"` states that this traversal is deliberately unfiltered.
 
 ### `ExternalTarget`
 

@@ -123,6 +123,37 @@ def test_partial_declarations_check_explicit_types_and_every_file(tmp_path):
         _source_contract({"id": api.DType(name="string"), "value": None}).resolve(dataset=dataset)
 
 
+def test_partial_parquet_resolution_preserves_explicit_int64(tmp_path):
+    int64 = api.DType("int64")
+    pq.write_table(
+        pa.table({"id": [1], "value": pa.array([42], type=pa.int8())}),
+        tmp_path / "one.parquet",
+    )
+    pq.write_table(
+        pa.table({"id": [2], "value": pa.array([Decimal(2**63)], type=pa.decimal128(38, 0))}),
+        tmp_path / "two.parquet",
+    )
+    dataset = api.Dataset({"users": api.Parquet(str(tmp_path))})
+    contract = _source_contract({"id": None, "value": int64})
+    engine = api.DiskGraphEngine(index=tmp_path / "index")
+    # The decimal overflows int64. Metadata validation leaves that check to ingest.
+    with patch("pyarrow.parquet.read_table", side_effect=AssertionError("read source rows")):
+        assert api.check(contract, dataset, engine) == ()
+        resolved = contract.resolve(dataset=dataset)
+    assert resolved.schema.tables[0].columns == {"id": int64, "value": int64}
+
+
+def test_inferred_int64_requires_matching_types_across_files(tmp_path):
+    pq.write_table(pa.table({"id": [1], "value": [42]}), tmp_path / "one.parquet")
+    pq.write_table(
+        pa.table({"id": [2], "value": pa.array([42], type=pa.int8())}),
+        tmp_path / "two.parquet",
+    )
+    dataset = api.Dataset({"users": api.Parquet(str(tmp_path))})
+    with pytest.raises(ValueError, match=r"users.*two.parquet.*declared.*physical"):
+        _source_contract().resolve(dataset=dataset)
+
+
 def test_discovery_checks_all_file_columns_while_explicit_selection_can_ignore_extras(tmp_path):
     pq.write_table(pa.table({"id": [1], "value": [1.5]}), tmp_path / "a.parquet")
     pq.write_table(pa.table({"id": [2], "value": [2.5], "extra": [3]}), tmp_path / "b.parquet")

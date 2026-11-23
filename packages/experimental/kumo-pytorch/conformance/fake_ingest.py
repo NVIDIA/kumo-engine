@@ -12,6 +12,7 @@ checked on the CPU job, with no DiskGraph wheel. It cannot check native semantic
 from __future__ import annotations
 
 import json
+import uuid
 from collections import Counter
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -146,6 +147,7 @@ class FakeDiskGraph:
         index_threads: int | None = None,
         parent_index_path: str | None = None,
         cutoff_col_stats: str | None = None,
+        index_build_id: str | None = None,
     ) -> None:
         """The parameters of the pinned ``diskgraph.ingest``; an unknown keyword fails."""
 
@@ -163,6 +165,7 @@ class FakeDiskGraph:
             "index_threads": index_threads,
             "parent_index_path": parent_index_path,
             "cutoff_col_stats": cutoff_col_stats,
+            "index_build_id": index_build_id,
         }
         call = IngestCall(config, Path(output_dir), options)
         self.calls.append(call)
@@ -170,11 +173,20 @@ class FakeDiskGraph:
         (call.output_dir / "diskgraph_config.json").write_text(config_json)
         if self.during is not None:
             self.during(call)
+        parent_build_id = None
+        if parent_index_path is not None:
+            parent_metadata = json.loads(
+                (Path(parent_index_path) / "index_metadata.json").read_text()
+            )
+            parent_build_id = parent_metadata.get("index_build_id")
         metadata = {
             "dataset_name": config["dataset_name"],
             "timestamp_unit": "seconds",
             "edge_relations": edge_relations(config),
+            "index_build_id": (index_build_id if index_build_id is not None else str(uuid.uuid4())),
         }
+        if parent_build_id is not None:
+            metadata["parent_index_build_id"] = parent_build_id
         (call.output_dir / "index_metadata.json").write_text(json.dumps(metadata))
         stats = {"stats": {"dropped_rows_counts": dict(self.dropped)}}
         (call.output_dir / "ingest_stats.json").write_text(json.dumps(stats))

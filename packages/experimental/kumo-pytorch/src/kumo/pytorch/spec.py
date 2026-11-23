@@ -692,23 +692,13 @@ class _Validator:
                             f"not this frontier {sorted(frontier)}",
                         )
                     destinations.add(end)
-                    clock = traversal.time_column or table_clock(self.tables[end])
                     if traversal.time_column:
                         self._time(end, traversal.time_column, f"{item}.time_column")
-                    if traversal.temporal == "inherit":
-                        if clock is None:
-                            self.add(
-                                f"{item}.temporal",
-                                f"traversal into {end!r} has no clock to filter by, "
-                                "and does not say it is intentionally non-temporal",
-                                'declare TableSpec.time_column or set temporal="static" '
-                                "for an intentionally non-temporal traversal",
-                            )
-                    if traversal.strategy == "recent" and clock is None:
+                    if traversal.strategy == "recent" and table_clock(self.tables[end]) is None:
                         self.add(
                             f"{item}.strategy",
                             f"'recent' sampling of {end!r} has no time column to order by",
-                            "declare TableSpec.time_column or an explicit traversal time_column",
+                            "declare TableSpec.time_column or use strategy='uniform'",
                         )
                 frontier = destinations
 
