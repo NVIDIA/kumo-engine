@@ -372,20 +372,40 @@ def validate_cached_source_times(output_dir: str) -> None:
     """Reject cached required-time tables with no retained node rows.
 
     Parse failures describe discarded source rows, not invalid retained data.
+    Malformed shapes in the inspected metadata fields are invalid caches.
     No source data is rescanned or cached artifacts modified here.
     """
     metadata_path = Path(output_dir) / 'index_metadata.json'
     if not metadata_path.is_file():
         return  # Structural/missing-artifact validation is a separate check.
     metadata = _read_json_object(metadata_path)
-    for table in metadata.get('node_types', []):
+    tables = metadata.get('node_types', [])
+    if not isinstance(tables, list):
+        raise ValueError("cached node_types must be an array")
+    for table in tables:
+        if not isinstance(table, dict):
+            raise ValueError("cached node_types entries must be objects")
         column = table.get('create_time_col')
+        if column is not None and not isinstance(column, str):
+            raise ValueError("cached create_time_col must be a string or null")
         if not column:
             continue
+        name = table.get('name')
+        if not isinstance(name, str):
+            raise ValueError("cached required-time table name must be a string")
         shards = table.get('shards', [])
-        if not any(s['max_id'] >= s['min_id'] for s in shards):
+        if not isinstance(shards, list):
+            raise ValueError("cached required-time shards must be an array")
+        has_rows = False
+        for shard in shards:
+            if (not isinstance(shard, dict)
+                    or type(shard.get('min_id')) is not int
+                    or type(shard.get('max_id')) is not int):
+                raise ValueError("cached shard bounds must be integer min_id/max_id")
+            has_rows = has_rows or shard['max_id'] >= shard['min_id']
+        if not has_rows:
             raise DiskgraphSnapshotError(
-                f"Cached graph table {table['name']!r} has no usable rows "
+                f"Cached graph table {name!r} has no usable rows "
                 f"for {column!r}; correct the source and rebuild the snapshot")
 
 
