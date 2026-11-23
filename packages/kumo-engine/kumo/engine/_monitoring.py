@@ -968,25 +968,30 @@ def _missing(what: str, sides: Mapping[str, Mapping[str, Any]],
 
 
 def _local_index(snapshot_id: str) -> Optional[Path]:
+    from kumo_core.diskgraph.snapshot import DiskgraphSnapshotHandle
+
     from kumo.engine._scratch import get_scratch_dir
+    from kumo.engine.graph import _store
 
     graph_key, _, version = snapshot_id.partition('@')
     if not graph_key or not version:
         return None
-    from kumo_core.diskgraph.snapshot import DiskgraphSnapshotHandle
-
-    from kumo.engine.graph import _store
-
-    try:
-        index = Path(_store().path(DiskgraphSnapshotHandle(graph_key, version)))
-    except (OSError, ValueError, KeyError):
-        return None
-    if (index / 'col_stats.json').is_file():
-        return index
     root = get_scratch_dir() / 'snapshots' / graph_key
-    found = sorted(path for path in root.glob(f'{version}*')
-                   if (path / 'col_stats.json').is_file())
-    return found[0] if len(found) == 1 else None
+    store = _store()
+    found = set()
+    # Public snapshot IDs contain only the first 16 characters of the version.
+    for path in root.glob(f'{version}*'):
+        try:
+            if path.name.endswith('.index.json') and path.is_file():
+                handle = DiskgraphSnapshotHandle(graph_key, path.name[:-11])
+                index = Path(store.path(handle))
+            else:
+                index = path
+            if (index / 'col_stats.json').is_file():
+                found.add(index)
+        except (OSError, ValueError, KeyError):
+            continue
+    return next(iter(found)) if len(found) == 1 else None
 
 
 def _used_columns(result: Any) -> Optional[Dict[str, set]]:
