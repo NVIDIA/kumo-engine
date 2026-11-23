@@ -18,11 +18,9 @@ from urllib.parse import urlparse
 
 from kumoapi.plugin import SnapshotStore, _Handle
 
-from kumo._managed_paths import _ManagedIndexPaths
+from kumo._managed_paths import _ManagedIndexPaths, _SnapshotPaths
 
 logger = logging.getLogger(__name__)
-
-_SNAPSHOT_REFERENCE_SUFFIX = ".index.json"
 
 
 def _read_json_object(path: Path) -> dict[str, Any]:
@@ -117,6 +115,7 @@ class LocalSnapshotStore:
     """
     def __init__(self, config: DiskgraphLocalConfig) -> None:
         self.config = config
+        self._paths = _SnapshotPaths(Path(config.data_root))
 
     def path(self, handle: DiskgraphSnapshotHandle) -> str:
         reference = self._reference(handle)
@@ -134,14 +133,10 @@ class LocalSnapshotStore:
 
     def staging_path(self, handle: DiskgraphSnapshotHandle) -> str:
         """Legacy location, also used while the subprocess builds a new index."""
-        return os.path.join(
-            self.config.data_root,
-            handle.graph_key,
-            handle.graph_data_version,
-        )
+        return str(self._paths.version_dir(handle.graph_key, handle.graph_data_version))
 
     def _reference(self, handle: DiskgraphSnapshotHandle) -> Path:
-        return Path(self.staging_path(handle) + _SNAPSHOT_REFERENCE_SUFFIX)
+        return self._paths.reference(handle.graph_key, handle.graph_data_version)
 
     def use_legacy(self, handle: DiskgraphSnapshotHandle) -> None:
         """Select a verified restore at the legacy location, preserving old bases."""
@@ -216,12 +211,8 @@ class LocalSnapshotStore:
             temporary.unlink(missing_ok=True)
 
     def _publication_reference(self, handle: DiskgraphSnapshotHandle) -> Path:
-        # Suffix-named legacy directories remain readable, but new managed
-        # versions must not occupy another version's reference name.
-        if handle.graph_data_version.endswith(_SNAPSHOT_REFERENCE_SUFFIX):
-            raise ValueError("managed snapshot versions must not end with "
-                             + _SNAPSHOT_REFERENCE_SUFFIX)
-        reference = self._reference(handle)
+        reference = self._paths.publication_reference(
+            handle.graph_key, handle.graph_data_version)
         if reference.is_dir():
             raise FileExistsError(f"Snapshot reference is a directory: {reference}")
         return reference
@@ -284,18 +275,22 @@ class LocalSnapshotStore:
     ) -> Iterator[tuple[DiskgraphSnapshotHandle, str]]:
         from diskgraph import DiskgraphCorruptionError
 
-        graph_dir = os.path.join(self.config.data_root, graph_key)
         try:
+            graph_dir = self._paths.graph_dir(graph_key)
             versions = sorted(os.listdir(graph_dir))
-        except (FileNotFoundError, NotADirectoryError):
+        except (FileNotFoundError, NotADirectoryError, ValueError):
             return
         for version in versions:
-            snapshot_dir = os.path.join(graph_dir, version)
+            try:
+                snapshot_dir = str(self._paths.version_dir(graph_key, version))
+            except ValueError:
+                continue
+            reference_version = self._paths.reference_version(version)
             is_reference = (self.config.managed_root is not None
-                            and version.endswith(_SNAPSHOT_REFERENCE_SUFFIX)
+                            and reference_version is not None
                             and os.path.isfile(snapshot_dir))
-            if is_reference:
-                version = version.removesuffix(_SNAPSHOT_REFERENCE_SUFFIX)
+            if is_reference and reference_version is not None:
+                version = reference_version
             elif not os.path.isdir(snapshot_dir):
                 continue
             if not version.startswith(version_prefix):
