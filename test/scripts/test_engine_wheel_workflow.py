@@ -181,10 +181,10 @@ def test_all_platforms_require_validation_and_release_environment() -> None:
         row["arch"]
         for row in JOBS["attach-to-release"]["strategy"]["matrix"]["include"]
     }
-    assert {"x86_64", "arm64"} <= release_arches
-    assert release_arches <= {"x86_64", "arm64", "aarch64"}
-    if "aarch64" in release_arches:
-        assert "platform-qualification" in JOBS["attach-to-release"]["needs"]
+    assert release_arches == arches
+    assert "platform-qualification" in JOBS["attach-to-release"]["needs"]
+    assert next(row for row in JOBS["kitmaker"]["strategy"]["matrix"]["include"]
+                if row["arch"] == "windows-x86_64")["platform"] == "win_amd64"
     for job in ["attach-to-release", "kitmaker"]:
         published = {row["arch"] for row in JOBS[job]["strategy"]["matrix"]["include"]}
         assert published == release_arches
@@ -217,19 +217,13 @@ def test_all_platforms_require_validation_and_release_environment() -> None:
         "|| (github.event_name == 'workflow_dispatch' "
         "&& github.ref == 'refs/heads/main') }}"
     )
-    assert (
-        PORTAL_WORKFLOW[True]["workflow_call"]["secrets"]["KITMAKER_API_TOKEN"][
-            "required"
-        ]
-        is True
-    )
+    assert 'secrets' not in PORTAL_WORKFLOW[True]['workflow_call']
+    assert portal["env"]["KITMAKER_API_TOKEN"] == "${{ secrets.KITMAKER_API_TOKEN }}"
     glove = yaml.safe_load(
         (WORKFLOW.parent / "kumo-glove-6b-50d-wheel.yml").read_text()
     )
     for caller in [JOBS["kitmaker"], glove["jobs"]["kitmaker"]]:
-        assert caller["secrets"] == {
-            "KITMAKER_API_TOKEN": "${{ secrets.KITMAKER_API_TOKEN }}"
-        }
+        assert 'secrets' not in caller
     assert portal["env"]["RELEASE_TAG"] == "${{ inputs.release_tag }}"
     assert JOBS["kitmaker"]["with"]["release_tag"] == (
         "${{ github.event.release.tag_name }}"
@@ -346,6 +340,7 @@ def test_desktop_target_selection(tmp_path, native_only, count):
     windows = next(row for row in targets if row['name'] == 'windows-native')
     assert windows['artifact'] == 'windows-x86_64'
     assert windows['device'] == 'cpu'
+    assert 'extra' not in windows  # Qualify the default Windows installation.
 
 
 @pytest.mark.parametrize('change,accepted', [

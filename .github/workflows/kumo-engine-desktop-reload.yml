@@ -54,7 +54,7 @@ jobs:
               {'name': 'macos-26', 'runner': 'macos-26',
                'artifact': 'arm64', 'device': 'cpu'},
               {'name': 'windows-native', 'runner': 'windows-amd64-cpu4',
-               'artifact': 'windows-x86_64', 'device': 'cpu', 'torch': '--torch-backend=cpu', 'extra': '[cpu]'},
+               'artifact': 'windows-x86_64', 'device': 'cpu', 'torch': '--torch-backend=cpu'},
           ]
           if os.environ['NATIVE_WINDOWS_ONLY'] == 'true':
               targets = [row for row in targets if row['name'] == 'windows-native']
