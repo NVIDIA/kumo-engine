@@ -1063,7 +1063,7 @@ def _capped_binary_eval_node_ids(
     stage: str,
     num_rows: int,
     seed: int,
-) -> list[int] | None:
+) -> tuple[list[int], tuple[float, float]] | None:
     import numpy as np
 
     stage_ref = (_load_json(runtime_manifest_path).get("stages")
@@ -1071,6 +1071,9 @@ def _capped_binary_eval_node_ids(
     index = (stage_ref.get("binary_label_index") if isinstance(
         stage_ref, Mapping) else None)
     if not isinstance(index, Mapping):
+        logger.warning(f"Capped {stage} evaluation reads the first {num_rows} "
+                       f"stored rows: stage {stage!r} has no "
+                       f"binary_label_index.")
         return None
     counts = {
         label: int(index[f"{label}_count"])
@@ -1089,9 +1092,15 @@ def _capped_binary_eval_node_ids(
             dtype="<u8", mode="r", shape=(counts[label], ))
         if take[label] < counts[label]:
             ids = ids[np.sort(
-                rng.choice(counts[label], take[label], replace=False))]
+                rng.choice(counts[label], take[label], replace=False,
+                           shuffle=False))]
         node_ids.append(np.asarray(ids, dtype=np.uint64))
-    return np.sort(np.concatenate(node_ids)).tolist()
+    rows, total = sum(take.values()), sum(counts.values())
+    false_weight, true_weight = (
+        counts[label] * rows / (total * take[label]) if take[label] else 1.0
+        for label in ("false", "true"))
+    return (np.sort(np.concatenate(node_ids)).tolist(),
+            (false_weight, true_weight))
 
 
 def _sample_weight_index_for_stage(
@@ -1958,6 +1967,7 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
         self.eval_loader_kwargs: dict[str, Any] = {
             'batch_size': self.eval_batch_size,
         }
+        self.eval_class_weights: dict[str, tuple[float, float] | None] = {}
 
         # Feature access and graph schema for the explainer; populated only during
         # DiskgraphNestedTrainer.explain.
@@ -2413,12 +2423,17 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
             batch_size = int(self.eval_loader_kwargs['batch_size'])
             max_batches = self._max_eval_batches(num_seeds, batch_size,
                                                  max_eval_steps)
-            if (max_batches is not None and self._task_type
+            selection = None
+            if (max_batches is not None and not capture_matches_stage
+                    and self._task_type
                     == TaskType.BINARY_CLASSIFICATION.value):
-                selected_stage_node_ids = _capped_binary_eval_node_ids(
+                selection = _capped_binary_eval_node_ids(
                     self.task_manifest.runtime_manifest_path, stages[0],
                     max_batches * batch_size, self.base_seed)
-            if selected_stage_node_ids is not None:
+            self.eval_class_weights[stages[0]] = None
+            if selection is not None:
+                selected_stage_node_ids, self.eval_class_weights[
+                    stages[0]] = selection
                 num_seeds = len(selected_stage_node_ids)
                 max_batches = None
         stage_batch_targets: dict[str, int] | None = None

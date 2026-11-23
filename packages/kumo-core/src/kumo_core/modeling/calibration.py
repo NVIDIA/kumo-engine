@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+import math
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -42,7 +43,8 @@ class Calibration(torch.nn.Module, ABC):
         r"""Whether the calibrator is already fitted."""
         return self._is_fitted
 
-    def fit(self, logits: Tensor, y: Tensor) -> None:
+    def fit(self, logits: Tensor, y: Tensor,
+            class_weight: tuple[float, float] | None = None) -> None:
         r"""Trains the calibrator.
 
         Args:
@@ -58,6 +60,8 @@ class Calibration(torch.nn.Module, ABC):
 
         perm = torch.randperm(y.size(0), device=y.device)[:self.MAX_EXAMPLES]
         self._fit(logits.detach()[perm], y[perm])
+        if class_weight is not None:
+            self._shift(math.log(class_weight[1] / class_weight[0]))
 
         self._is_fitted = True
 
@@ -140,6 +144,10 @@ class Calibration(torch.nn.Module, ABC):
     @abstractmethod
     def _forward(self, logits: Tensor) -> Tensor:
         pass
+
+    def _shift(self, offset: float) -> None:
+        raise NotImplementedError(f"'{self.__class__.__name__}' does not "
+                                  f"support class weights")
 
     def _loss(self, logits: Tensor, y: Tensor) -> Tensor:
         if self.task_type == TaskType.BINARY_CLASSIFICATION:
@@ -289,3 +297,7 @@ class PlatScaling(Calibration):
         # TODO(dong) optimize the device transfer if it becomes a bottleneck.
         weight, bias = self.weight_and_bias.to(logits.device)
         return weight.clamp(min=1e-3) * logits + bias
+
+    @torch.no_grad()
+    def _shift(self, offset: float) -> None:
+        self.weight_and_bias[1] += offset

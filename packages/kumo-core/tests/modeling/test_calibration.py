@@ -158,6 +158,32 @@ def test_plat_scaling(task_type: TaskType, device: torch.device) -> None:
     assert model.is_fitted
 
 
+@pytest.mark.parametrize('seed', range(4))
+def test_plat_scaling_class_weight_undoes_class_sampling(seed: int) -> None:
+    torch.manual_seed(seed)
+    logits = torch.randn(100_000, 1) * 1.5
+    y = torch.bernoulli(torch.sigmoid(logits - 5.0)).long()
+    rows = torch.cat([(y == 1).nonzero()[:, 0], (y == 0).nonzero()[:2000, 0]])
+    data_share = torch.stack([(y == 0).float().mean(), y.float().mean()])
+    row_share = torch.stack([(y[rows] == 0).float().mean(),
+                             y[rows].float().mean()])
+
+    model = PlatScaling(TaskType.BINARY_CLASSIFICATION)
+    model.fit(logits[rows], y[rows], tuple((data_share / row_share).tolist()))
+
+    assert model.weight_and_bias.view(-1).tolist() == pytest.approx(
+        [1.0, -5.0], abs=0.15)
+
+
+def test_temperature_scaling_rejects_class_weight() -> None:
+    model = TemperatureScaling(TaskType.BINARY_CLASSIFICATION)
+    logits, y = get_logits_and_target(TaskType.BINARY_CLASSIFICATION)
+
+    with pytest.raises(NotImplementedError, match="class weight"):
+        model.fit(logits, y, (1.0, 2.0))
+    assert not model.is_fitted
+
+
 @withCUDA
 def test_reliability_diagram(
     tmp_path: pathlib.Path,

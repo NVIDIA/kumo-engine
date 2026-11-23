@@ -103,7 +103,9 @@ class BaseNodeLightningModule(BaseLightningModule, ABC):
             # TODO(matthias): Refactor code to avoid GPU OOM for evaluation.
             logits = logits.to(device=target.device)
             if not self.calibrator.is_fitted:
-                self.calibrator.fit(logits, target)
+                datamodule = getattr(self.trainer, 'datamodule', None)
+                class_weights = getattr(datamodule, 'eval_class_weights', {})
+                self.calibrator.fit(logits, target, class_weights.get(stage))
                 # Override current checkpoint with calibration parameters.
                 # Optimizer states are preserved (unlike trainer.save_checkpoint,
                 # which would save an empty list during evaluation).

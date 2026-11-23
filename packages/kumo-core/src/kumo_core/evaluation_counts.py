@@ -33,13 +33,17 @@ def evaluation_counts(task_type: TaskType, *, target: Any,
                       prob: Any = None, pred: Any = None,
                       threshold: Optional[float] = None,
                       target_edges: Sequence[float] = (),
-                      horizon: Any = None) -> Optional[Counts]:
+                      horizon: Any = None,
+                      weight: Any = None) -> Optional[Counts]:
     r"""Counts of one test split; ``horizon``: steps per row or per entity."""
     if task_type is TaskType.BINARY_CLASSIFICATION:
         prob = np.asarray(prob)
-        return _in_chunks(lambda p, y: _binary(
-            np.asarray(p, dtype=np.float64), y.reshape(-1) == 1, threshold),
-            prob[:, -1] if prob.ndim == 2 else prob, np.asarray(target))
+        columns = [prob[:, -1] if prob.ndim == 2 else prob, np.asarray(target)]
+        if weight is not None:
+            columns.append(np.asarray(weight, dtype=np.float64).reshape(-1))
+        return _in_chunks(lambda p, y, *w: _binary(
+            np.asarray(p, dtype=np.float64), y.reshape(-1) == 1, threshold,
+            *w), *columns)
     if task_type is TaskType.MULTICLASS_CLASSIFICATION:
         return _in_chunks(lambda p, y: _multiclass(
             np.asarray(p, dtype=np.float64),
@@ -135,23 +139,26 @@ def at_k_summaries(metrics: Mapping[str, float]) -> List[Summary]:
     return summaries
 
 
-def _binary(p: np.ndarray, y: np.ndarray,
-            threshold: Optional[float]) -> Counts:
+def _binary(p: np.ndarray, y: np.ndarray, threshold: Optional[float],
+            w: Optional[np.ndarray] = None) -> Counts:
     counts = Counts({'score': PROBABILITY_EDGES})
-    counts.histogram('True_PROB', 'score', p)
+    counts.histogram('True_PROB', 'score', p, weights=w)
     for label, rows in (('positive', y), ('negative', ~y)):
-        counts.histogram(label, 'score', p[rows])
-        counts.histogram(f'{label}_sum', 'score', p[rows], weights=p[rows])
+        counts.histogram(label, 'score', p[rows],
+                         weights=None if w is None else w[rows])
+        counts.histogram(f'{label}_sum', 'score', p[rows],
+                         weights=p[rows] if w is None else (p * w)[rows])
+    w = np.ones(p.size) if w is None else w
     clipped = np.clip(p, _EPS, 1 - _EPS)
     counts.total('logloss',
-                 -np.where(y, np.log(clipped), np.log1p(-clipped)).sum())
-    counts.total('brier', ((p - y)**2).sum())
-    counts.total('rows', p.size)
+                 -(w * np.where(y, np.log(clipped), np.log1p(-clipped))).sum())
+    counts.total('brier', (w * (p - y)**2).sum())
+    counts.total('rows', w.sum())
     if threshold is not None:
         hit = p > threshold
         for name, rows in (('tp', hit & y), ('fp', hit & ~y),
                            ('fn', ~hit & y), ('tn', ~hit & ~y)):
-            counts.total(name, rows.sum())
+            counts.total(name, w[rows].sum())
     return counts
 
 
