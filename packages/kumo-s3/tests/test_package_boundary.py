@@ -13,9 +13,10 @@ ROOT = Path(__file__).parents[1]
 
 
 def test_the_distribution_imports_no_platform_or_foreign_vendor_module():
-    assert_imports_nothing_foreign(ROOT / "src" / "kumo_s3",
-                                   vendor=("boto3", "botocore"))
+    assert_imports_nothing_foreign(
+        ROOT / 'src' / 'kumo_s3', vendor=('boto3', 'botocore')
+    )
 
 
 def test_a_top_level_import_does_not_load_the_training_stack():
-    assert_top_level_import_is_cheap(ROOT, "kumo_s3", "filesystem")
+    assert_top_level_import_is_cheap(ROOT, 'kumo_s3', 'filesystem')

@@ -13,14 +13,15 @@ class PublicMessage:
     Base class for all user-facing messages (errors, warnings, info).
     Supports string templating via `template`
     """
-    template: str = ""
+
+    template: str = ''
 
     def __init__(self, **kwargs):
         self.kwargs = kwargs
         try:
             self.message = self.template.format(**kwargs)
         except KeyError as e:
-            self.message = f"{self.template} [Missing key: {e.args[0]}]"
+            self.message = f'{self.template} [Missing key: {e.args[0]}]'
 
     def __str__(self):
         return self.message
@@ -43,16 +44,21 @@ class ErrorInfo:
         stop_chain: True when the classified exception is a trust boundary and
             its nested cause must not contribute to the public message.
     """
+
     source: Optional[str]
     exception_msg: Optional[str]
     friendly: Optional[str] = None
     is_raw: bool = False
     stop_chain: bool = False
 
-    def __init__(self, source: Optional[str],
-                 exception_msg: Optional[str] = None,
-                 friendly: Optional[str] = None, is_raw: bool = False,
-                 stop_chain: bool = False):
+    def __init__(
+        self,
+        source: Optional[str],
+        exception_msg: Optional[str] = None,
+        friendly: Optional[str] = None,
+        is_raw: bool = False,
+        stop_chain: bool = False,
+    ):
         self.source = source
         self.exception_msg = exception_msg
         self.friendly = friendly
@@ -60,8 +66,7 @@ class ErrorInfo:
         self.stop_chain = stop_chain
 
 
-Classifier = Tuple[str, Type[Exception], Optional[Callable[[Exception],
-                                                           ErrorInfo]]]
+Classifier = Tuple[str, Type[Exception], Optional[Callable[[Exception], ErrorInfo]]]
 
 
 class PublicException(PublicMessage, Exception):
@@ -81,15 +86,21 @@ class PublicException(PublicMessage, Exception):
 
     Subclasses define CLASSIFIERS; no need to override __init__.
     """
+
     non_retryable: bool = True
     http_code: int = 422
-    template: str = "{message}"
+    template: str = '{message}'
     CLASSIFIERS: List[Classifier] = []
 
-    def __init__(self, message: str = "", error: Optional[Exception] = None,
-                 related_errors: Optional[List[Exception]] = None,
-                 non_retryable: Optional[bool] = None,
-                 suffix_unclassified_error=False, **kwargs):
+    def __init__(
+        self,
+        message: str = '',
+        error: Optional[Exception] = None,
+        related_errors: Optional[List[Exception]] = None,
+        non_retryable: Optional[bool] = None,
+        suffix_unclassified_error=False,
+        **kwargs,
+    ):
         if not message and 'message' in kwargs:
             message = kwargs.pop('message')
 
@@ -112,8 +123,9 @@ class PublicException(PublicMessage, Exception):
                 # Skip builtin Python exceptions (ValueError, TypeError, etc.)
                 # and Temporal framework exceptions (ActivityError, etc.),
                 # and continue walking to find useful errors deeper in chain
-                if (type(current).__module__ == 'builtins'
-                        or isinstance(current, TemporalError)):
+                if type(current).__module__ == 'builtins' or isinstance(
+                    current, TemporalError
+                ):
                     current = getattr(current, '__cause__', None)
                     continue
 
@@ -126,16 +138,17 @@ class PublicException(PublicMessage, Exception):
                         # Classified error (e.g., Snowflake, Databricks)
                         if info.is_raw:
                             collected_messages.append(
-                                f"{info.source} returned an error:")
+                                f'{info.source} returned an error:'
+                            )
                         else:
-                            collected_messages.append(f"{info.source} error:")
+                            collected_messages.append(f'{info.source} error:')
                         collected_messages.append(info.exception_msg)
                     else:
                         # Custom/library exception without classifier
+                        collected_messages.append('The following error occurred:')
                         collected_messages.append(
-                            "The following error occurred:")
-                        collected_messages.append(f"{type(current).__name__}: "
-                                                  f"{info.exception_msg}")
+                            f'{type(current).__name__}: {info.exception_msg}'
+                        )
 
                 if info.friendly:
                     collected_messages.append(info.friendly)
@@ -151,10 +164,12 @@ class PublicException(PublicMessage, Exception):
 
             if is_unclassified and suffix_unclassified_error:
                 # The error could not be classified, so we append a friendlier message
-                message = (f"{message.rstrip(' .')}. Please contact "
-                           "Kumo to investigate and resolve the issue.")
+                message = (
+                    f'{message.rstrip(" .")}. Please contact '
+                    'Kumo to investigate and resolve the issue.'
+                )
             else:
-                message = "\n".join(collected_messages)
+                message = '\n'.join(collected_messages)
 
         # Store message in kwargs for template formatting
         if message:
@@ -174,9 +189,9 @@ class PublicException(PublicMessage, Exception):
         Args:
             indent_level: Internal parameter for recursive indentation
         """
-        indent = "  " * indent_level
+        indent = '  ' * indent_level
         if indent_level > 0:
-            message = f"{indent}{self.message}"
+            message = f'{indent}{self.message}'
         else:
             message = self.message
 
@@ -184,9 +199,10 @@ class PublicException(PublicMessage, Exception):
             return message
 
         # Only include PublicException related errors
-        related_indent = "  " * (indent_level + 1)
+        related_indent = '  ' * (indent_level + 1)
         related_messages = [
-            e.get_user_message(indent_level + 1) for e in self.related_errors
+            e.get_user_message(indent_level + 1)
+            for e in self.related_errors
             if isinstance(e, PublicException)
         ]
 
@@ -194,12 +210,13 @@ class PublicException(PublicMessage, Exception):
             return message
 
         if indent_level == 0:
-            additional = "\n\nRelated errors:\n"
+            additional = '\n\nRelated errors:\n'
         else:
-            additional = "\n"
-        formatted_msgs = "\n".join(f"{related_indent}- {msg.lstrip()}"
-                                   for msg in related_messages)
-        return f"{message}{additional}{formatted_msgs}"
+            additional = '\n'
+        formatted_msgs = '\n'.join(
+            f'{related_indent}- {msg.lstrip()}' for msg in related_messages
+        )
+        return f'{message}{additional}{formatted_msgs}'
 
     def add_related_error(self, error: Exception):
         """
@@ -222,23 +239,17 @@ class PublicException(PublicMessage, Exception):
     def to_dict(self) -> dict:
         """Serialize exception data for Temporal ApplicationError details"""
         return {
-            'type':
-            self.__class__.__name__,
-            'message':
-            self.message,
-            'template':
-            self.template,
-            'kwargs':
-            self.kwargs,
-            'http_code':
-            self.http_code,
-            'non_retryable':
-            self.non_retryable,
-            'related_errors':
-            [
-                e.to_dict() for e in self.related_errors
+            'type': self.__class__.__name__,
+            'message': self.message,
+            'template': self.template,
+            'kwargs': self.kwargs,
+            'http_code': self.http_code,
+            'non_retryable': self.non_retryable,
+            'related_errors': [
+                e.to_dict()
+                for e in self.related_errors
                 if isinstance(e, PublicException)
-            ]
+            ],
         }
 
     @classmethod
@@ -256,7 +267,8 @@ class PublicException(PublicMessage, Exception):
             else:
                 # Standard exception - try to recreate with correct type
                 exc_class = cls._get_standard_exception_class(
-                    error_data['type'], error_data.get('module'))
+                    error_data['type'], error_data.get('module')
+                )
                 related_errors.append(exc_class(error_data['message']))
 
         return exception_class(related_errors=related_errors, **data['kwargs'])
@@ -264,6 +276,7 @@ class PublicException(PublicMessage, Exception):
     @classmethod
     def _get_exception_class(cls, type_name: str):
         """Find exception subclass by name (recursive search)"""
+
         def find_subclass(base_class):
             if base_class.__name__ == type_name:
                 return base_class
@@ -277,8 +290,7 @@ class PublicException(PublicMessage, Exception):
         return result if result else cls  # fallback to base class
 
     @staticmethod
-    def _get_standard_exception_class(type_name: str,
-                                      module: Optional[str] = None):
+    def _get_standard_exception_class(type_name: str, module: Optional[str] = None):
         """Get standard exception class by name and module"""
         # Try builtins first (most common)
         if module == 'builtins' or module is None:
@@ -334,8 +346,11 @@ class PublicException(PublicMessage, Exception):
         for source, exc_type, friendly_fn in cls._all_classifiers():
             if not isinstance(err, exc_type):
                 continue
-            info = friendly_fn(err) if friendly_fn else ErrorInfo(
-                source=None, exception_msg=None, friendly=None)
+            info = (
+                friendly_fn(err)
+                if friendly_fn
+                else ErrorInfo(source=None, exception_msg=None, friendly=None)
+            )
             info_source = info.source or source
             # Respect a friendly_fn that intentionally leaves exception_msg as
             # None; only default to str(err) when no friendly_fn is provided.
@@ -345,12 +360,16 @@ class PublicException(PublicMessage, Exception):
             else:
                 info_exception_msg = str(err)
                 is_raw = True
-            return ErrorInfo(source=info_source,
-                             exception_msg=info_exception_msg,
-                             friendly=info.friendly, is_raw=is_raw,
-                             stop_chain=info.stop_chain)
+            return ErrorInfo(
+                source=info_source,
+                exception_msg=info_exception_msg,
+                friendly=info.friendly,
+                is_raw=is_raw,
+                stop_chain=info.stop_chain,
+            )
 
         # No classifier matched - this is a custom/library exception
         # Expose with raw message (builtins already filtered out)
-        return ErrorInfo(source=None, exception_msg=str(err), friendly=None,
-                         is_raw=True)
+        return ErrorInfo(
+            source=None, exception_msg=str(err), friendly=None, is_raw=True
+        )

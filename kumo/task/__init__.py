@@ -2,9 +2,18 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-from .split import (Split, ApproxDateOffsetSplit, RandomSplit, FixedSplit,
-                    TemporalSplit, DateOffsetSplit, TimeRangeSplit,
-                    ColumnSplit, ManualSplit, RandomLinkSplit)
+from .split import (
+    Split,
+    ApproxDateOffsetSplit,
+    RandomSplit,
+    FixedSplit,
+    TemporalSplit,
+    DateOffsetSplit,
+    TimeRangeSplit,
+    ColumnSplit,
+    ManualSplit,
+    RandomLinkSplit,
+)
 from .task import Task, collect_encoders
 
 __all__ = [

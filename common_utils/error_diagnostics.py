@@ -20,17 +20,21 @@ def _exception_has_restricted_marker(error: BaseException) -> bool:
     # Dedicated Kumo boundary-wrapper types may declare this invariant on the
     # class. This is explicit marker metadata, not a registry keyed by an
     # arbitrary provider exception class or module name.
-    return (getattr(error, RESTRICTED_LOG_MESSAGE_ATTRIBUTE, False) is True
-            or getattr(type(error), RESTRICTED_LOG_MESSAGE_ATTRIBUTE,
-                       False) is True)
+    return (
+        getattr(error, RESTRICTED_LOG_MESSAGE_ATTRIBUTE, False) is True
+        or getattr(type(error), RESTRICTED_LOG_MESSAGE_ATTRIBUTE, False) is True
+    )
 
 
 def _iter_exception_chain(error: BaseException) -> Iterator[BaseException]:
     seen: set[int] = set()
     current: Optional[BaseException] = error
     depth = 0
-    while (current is not None and id(current) not in seen
-           and depth < _MAX_EXCEPTION_CHAIN_DEPTH):
+    while (
+        current is not None
+        and id(current) not in seen
+        and depth < _MAX_EXCEPTION_CHAIN_DEPTH
+    ):
         seen.add(id(current))
         yield current
         cause = current.__cause__
@@ -83,8 +87,7 @@ def exception_message_should_be_logged_at_error(error: BaseException) -> bool:
                 restricted_renderings.append(repr(current))
             except BaseException:
                 pass
-            if any(detail and detail in message
-                   for detail in restricted_renderings):
+            if any(detail and detail in message for detail in restricted_renderings):
                 return False
     return True
 

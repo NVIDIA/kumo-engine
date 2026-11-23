@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Tests for the K8s placement strategy adapter."""
+
 import asyncio
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Sequence
@@ -96,7 +97,8 @@ class FakeManager:
         self.provision_activity_pod_error: Optional[Exception] = None
         self.registered_worker_matches_current_cache_tier_result = True
         self.registered_worker_matches_current_cache_tier_calls: list[
-            tuple[str, PvcSpec]] = []
+            tuple[str, PvcSpec]
+        ] = []
         # uid -> exception to raise from delete_pool_worker for that uid.
         self.delete_pool_worker_errors: dict[str, Exception] = {}
 
@@ -114,16 +116,20 @@ class FakeManager:
     ) -> FakePoolWorkerInfo:
         self.provision_pool_worker_envs.append(env)
         self.provision_pool_worker_require_existing_resources.append(
-            require_existing_resources)
-        self.provision_pool_worker_calls.append({
-            'pool_worker_uid': pool_worker_uid,
-            'pvc_spec': pvc_spec,
-            'timeout': timeout,
-        })
+            require_existing_resources
+        )
+        self.provision_pool_worker_calls.append(
+            {
+                'pool_worker_uid': pool_worker_uid,
+                'pvc_spec': pvc_spec,
+                'timeout': timeout,
+            }
+        )
         if self.provision_pool_worker_error is not None:
             raise self.provision_pool_worker_error
         return FakePoolWorkerInfo(
-            pool_worker_uid=pool_worker_uid or self.next_pool_worker_uid)
+            pool_worker_uid=pool_worker_uid or self.next_pool_worker_uid
+        )
 
     async def registered_worker_matches_current_cache_tier(
         self,
@@ -131,7 +137,8 @@ class FakeManager:
         spec: PvcSpec,
     ) -> bool:
         self.registered_worker_matches_current_cache_tier_calls.append(
-            (worker.pool_worker_uid, spec))
+            (worker.pool_worker_uid, spec)
+        )
         return self.registered_worker_matches_current_cache_tier_result
 
     async def delete_pool_worker(
@@ -142,18 +149,15 @@ class FakeManager:
         pvc_delete_timeout: float = 60,
         force_on_timeout: bool = False,
     ) -> None:
-        self.delete_pool_worker_calls.append({
-            'pool_worker_uid':
-            pool_worker_uid,
-            'grace_period_seconds':
-            grace_period_seconds,
-            'scale_down_timeout':
-            scale_down_timeout,
-            'pvc_delete_timeout':
-            pvc_delete_timeout,
-            'force_on_timeout':
-            force_on_timeout,
-        })
+        self.delete_pool_worker_calls.append(
+            {
+                'pool_worker_uid': pool_worker_uid,
+                'grace_period_seconds': grace_period_seconds,
+                'scale_down_timeout': scale_down_timeout,
+                'pvc_delete_timeout': pvc_delete_timeout,
+                'force_on_timeout': force_on_timeout,
+            }
+        )
         err = self.delete_pool_worker_errors.get(pool_worker_uid)
         if err is not None:
             raise err
@@ -174,22 +178,25 @@ class FakeManager:
         require_existing_resources: bool = False,
     ) -> FakeActivityPodInfo:
         self.provision_activity_pod_require_existing_resources.append(
-            require_existing_resources)
+            require_existing_resources
+        )
         if self.provision_activity_pod_error is not None:
             raise self.provision_activity_pod_error
-        self.provision_activity_pod_calls.append({
-            'pool_worker_uid': pool_worker_uid,
-            'job_id': job_id,
-            'snapshot_id': snapshot_id,
-            'activity': activity,
-            'image': image,
-            'env': env,
-            'command': command,
-            'args': args,
-            'resources': resources,
-            'backoff_limit': backoff_limit,
-            'timeout': timeout,
-        })
+        self.provision_activity_pod_calls.append(
+            {
+                'pool_worker_uid': pool_worker_uid,
+                'job_id': job_id,
+                'snapshot_id': snapshot_id,
+                'activity': activity,
+                'image': image,
+                'env': env,
+                'command': command,
+                'args': args,
+                'resources': resources,
+                'backoff_limit': backoff_limit,
+                'timeout': timeout,
+            }
+        )
         return FakeActivityPodInfo(pod_name=f'pod-{job_id}')
 
     async def provision_ephemeral_activity_pod(
@@ -206,30 +213,21 @@ class FakeManager:
         backoff_limit: int = 2,
         timeout: float = 300,
     ) -> FakeActivityPodInfo:
-        self.provision_ephemeral_activity_pod_calls.append({
-            'job_id':
-            job_id,
-            'snapshot_id':
-            snapshot_id,
-            'activity':
-            activity,
-            'image':
-            image,
-            'env':
-            env,
-            'command':
-            command,
-            'args':
-            args,
-            'resources':
-            resources,
-            'ephemeral_storage_bytes':
-            ephemeral_storage_bytes,
-            'backoff_limit':
-            backoff_limit,
-            'timeout':
-            timeout,
-        })
+        self.provision_ephemeral_activity_pod_calls.append(
+            {
+                'job_id': job_id,
+                'snapshot_id': snapshot_id,
+                'activity': activity,
+                'image': image,
+                'env': env,
+                'command': command,
+                'args': args,
+                'resources': resources,
+                'ephemeral_storage_bytes': ephemeral_storage_bytes,
+                'backoff_limit': backoff_limit,
+                'timeout': timeout,
+            }
+        )
         return FakeActivityPodInfo(pod_name=f'eph-pod-{job_id}')
 
     async def list_pool_workers(self) -> list[FakePoolWorkerInfo]:
@@ -244,13 +242,14 @@ class FakeManager:
         job_name: str,
         timeout: float,
     ) -> FakeActivityPodInfo:
-        self.wait_for_activity_job_pod_running_calls.append({
-            'job_name': job_name,
-            'timeout': timeout,
-        })
+        self.wait_for_activity_job_pod_running_calls.append(
+            {
+                'job_name': job_name,
+                'timeout': timeout,
+            }
+        )
         if self.activity_running_pod_names:
-            return FakeActivityPodInfo(
-                pod_name=self.activity_running_pod_names.pop(0))
+            return FakeActivityPodInfo(pod_name=self.activity_running_pod_names.pop(0))
         return FakeActivityPodInfo(pod_name=f'pod-{job_name}')
 
     async def delete_activity_pods(self, **kwargs: Any) -> None:
@@ -289,8 +288,7 @@ class FakeK8sContext:
     def reserved_size_bytes_for_worker(self, pool_worker_uid: str) -> int:
         return 0
 
-    def capacity_tier_for_worker(
-            self, pool_worker_uid: str) -> Optional[CapacityTier]:
+    def capacity_tier_for_worker(self, pool_worker_uid: str) -> Optional[CapacityTier]:
         return self._capacity_tiers.get(pool_worker_uid)
 
 
@@ -339,8 +337,9 @@ def _request(
 
 
 def _expected_activity_env(
-    pool_worker_uid: str, job_id: str = 'job-1',
-    storage_mode: str = (STORAGE_MODE_ACTIVITY_ON_PVC)
+    pool_worker_uid: str,
+    job_id: str = 'job-1',
+    storage_mode: str = (STORAGE_MODE_ACTIVITY_ON_PVC),
 ) -> dict[str, str]:
     return {
         'POOL_WORKER_UID': pool_worker_uid,
@@ -399,8 +398,7 @@ def test_k8s_strategy_warm_available_worker_uses_durable_activity_pod():
     manager = FakeManager()
     poller_calls: list[tuple[str, str, float]] = []
 
-    async def wait_for_poller(task_queue: str, pod_name: str,
-                              timeout: float) -> None:
+    async def wait_for_poller(task_queue: str, pod_name: str, timeout: float) -> None:
         poller_calls.append((task_queue, pod_name, timeout))
 
     inventory = {'worker-a': _inventory('worker-a', gpu_slots_in_use=0)}
@@ -426,52 +424,50 @@ def test_k8s_strategy_warm_available_worker_uses_durable_activity_pod():
     assert decision.pool_worker_uid == 'worker-a'
     assert handle.task_queue == activity_task_queue('job-1')
     assert handle.pool_worker_uid == 'worker-a'
-    assert manager.provision_pool_worker_calls == [{
-        'pool_worker_uid':
-        'worker-a',
-        'pvc_spec':
-        PvcSpec(size_gib=1750),
-        'timeout':
-        600,
-    }]
-    assert manager.provision_pool_worker_envs == [{
-        'POOL_WORKER_UID':
-        'worker-a',
-        'POOL_TASK_QUEUE':
-        'diskgraph-daemon-worker-a',
-        'POOL_STORAGE_MODE':
-        'daemon-on-pvc',
-        'POOL_GPU_CONCURRENCY':
-        '1',
-        'POOL_MAX_CONCURRENT_ACTIVITIES':
-        '0',
-    }]
+    assert manager.provision_pool_worker_calls == [
+        {
+            'pool_worker_uid': 'worker-a',
+            'pvc_spec': PvcSpec(size_gib=1750),
+            'timeout': 600,
+        }
+    ]
+    assert manager.provision_pool_worker_envs == [
+        {
+            'POOL_WORKER_UID': 'worker-a',
+            'POOL_TASK_QUEUE': 'diskgraph-daemon-worker-a',
+            'POOL_STORAGE_MODE': 'daemon-on-pvc',
+            'POOL_GPU_CONCURRENCY': '1',
+            'POOL_MAX_CONCURRENT_ACTIVITIES': '0',
+        }
+    ]
     assert len(manager.provision_activity_pod_calls) == 1
-    assert manager.provision_activity_pod_calls[0]['pool_worker_uid'] == (
-        'worker-a')
+    assert manager.provision_activity_pod_calls[0]['pool_worker_uid'] == ('worker-a')
     assert manager.provision_activity_pod_calls[0]['activity'] == 'TRAIN'
-    assert '/kumo-backend-gpu:' in manager.provision_activity_pod_calls[0][
-        'image']
-    assert manager.provision_activity_pod_calls[0][
-        'command'] == POOL_ACTIVITY_COMMAND
+    assert '/kumo-backend-gpu:' in manager.provision_activity_pod_calls[0]['image']
+    assert manager.provision_activity_pod_calls[0]['command'] == POOL_ACTIVITY_COMMAND
     assert manager.provision_activity_pod_calls[0]['args'] == POOL_ACTIVITY_ARGS
-    assert manager.provision_activity_pod_calls[0][
-        'env'] == _expected_activity_env('worker-a')
+    assert manager.provision_activity_pod_calls[0]['env'] == _expected_activity_env(
+        'worker-a'
+    )
     assert manager.provision_ephemeral_activity_pod_calls == []
     assert handle.provision_state == 'ready'
     assert manager.wait_for_activity_job_pod_running_calls[0] == {
         'job_name': 'durable-job-1',
         'timeout': ACTIVITY_POD_PROVISION_TIMEOUT_SEC,
     }
-    assert poller_calls == [(
-        activity_task_queue('job-1'),
-        'pod-durable-job-1',
-        1.0,
-    )]
-    assert manager.delete_activity_pods_calls == [{
-        'job_id': 'job-1',
-        'wait_for_deletion': True,
-    }]
+    assert poller_calls == [
+        (
+            activity_task_queue('job-1'),
+            'pod-durable-job-1',
+            1.0,
+        )
+    ]
+    assert manager.delete_activity_pods_calls == [
+        {
+            'job_id': 'job-1',
+            'wait_for_deletion': True,
+        }
+    ]
 
 
 def test_warm_worker_without_inventory_keeps_default_hint():
@@ -486,7 +482,8 @@ def test_warm_worker_without_inventory_keeps_default_hint():
         strategy.route(
             _request(activity=SnapshotActivity.GEN_TT),
             warm_location_uid='worker-unreported',
-        ))
+        )
+    )
 
     assert decision.pool_worker_uid == 'worker-unreported'
     assert not decision.provisioned_new_worker
@@ -498,8 +495,7 @@ def test_k8s_readiness_follows_current_activity_attempt(stale_a_poller):
     manager.activity_running_pod_names = ['pod-a', 'pod-b', 'pod-b']
     poller_pods = []
 
-    async def wait_for_poller(task_queue: str, pod_name: str,
-                              timeout: float) -> None:
+    async def wait_for_poller(task_queue: str, pod_name: str, timeout: float) -> None:
         del task_queue, timeout
         poller_pods.append(pod_name)
         if pod_name == 'pod-a' and not stale_a_poller:
@@ -562,25 +558,28 @@ def test_k8s_strategy_warm_gpu_busy_uses_overflow_with_l2_check():
     assert handle.pool_worker_uid is None
     assert manager.provision_activity_pod_calls == []
     assert len(manager.provision_ephemeral_activity_pod_calls) == 1
-    assert manager.provision_ephemeral_activity_pod_calls[0]['job_id'] == (
-        'job-1')
-    assert manager.provision_ephemeral_activity_pod_calls[0][
-        'snapshot_id'] == 'snap-1'
-    assert manager.provision_ephemeral_activity_pod_calls[0][
-        'activity'] == 'TRAIN'
-    assert manager.provision_ephemeral_activity_pod_calls[0][
-        'command'] == POOL_ACTIVITY_COMMAND
-    assert manager.provision_ephemeral_activity_pod_calls[0][
-        'args'] == POOL_ACTIVITY_ARGS
-    assert manager.provision_ephemeral_activity_pod_calls[0][
-        'ephemeral_storage_bytes'] == 1200
+    assert manager.provision_ephemeral_activity_pod_calls[0]['job_id'] == ('job-1')
+    assert manager.provision_ephemeral_activity_pod_calls[0]['snapshot_id'] == 'snap-1'
+    assert manager.provision_ephemeral_activity_pod_calls[0]['activity'] == 'TRAIN'
+    assert (
+        manager.provision_ephemeral_activity_pod_calls[0]['command']
+        == POOL_ACTIVITY_COMMAND
+    )
+    assert (
+        manager.provision_ephemeral_activity_pod_calls[0]['args'] == POOL_ACTIVITY_ARGS
+    )
+    assert (
+        manager.provision_ephemeral_activity_pod_calls[0]['ephemeral_storage_bytes']
+        == 1200
+    )
     env = manager.provision_ephemeral_activity_pod_calls[0]['env']
     assert env['POOL_WORKER_UID'].startswith(POOL_WORKER_UID_PREFIX_EPHNODE)
     # Deterministic in (snapshot_id, job_id) so a retry of the same
     # workflow reports the same uid via heartbeats and lands on the
     # same K8s Job (paired with the manager's reclaim-always semantics).
     assert env['POOL_WORKER_UID'] == deterministic_ephemeral_pool_worker_uid(
-        snapshot_id='snap-1', job_id='job-1')
+        snapshot_id='snap-1', job_id='job-1'
+    )
     assert env == _expected_activity_env(
         env['POOL_WORKER_UID'],
         storage_mode=STORAGE_MODE_ACTIVITY_ON_EMPTYDIR,
@@ -652,8 +651,7 @@ def test_k8s_strategy_warm_gpu_busy_respects_canary_ephemeral_availability():
         sizes={'snap-1': 1000},
         eph_tier_enabled=True,
     )
-    strategy.restrict_to_available_capacity(
-        {(1750, 1)}, ephemeral_available=True)
+    strategy.restrict_to_available_capacity({(1750, 1)}, ephemeral_available=True)
 
     async def drive():
         req = _request()
@@ -663,10 +661,10 @@ def test_k8s_strategy_warm_gpu_busy_respects_canary_ephemeral_availability():
             overflow_viable=True,
         )
         handle = await strategy.provision(req, overflow_decision)
-        strategy.restrict_to_available_capacity(
-            {(1750, 1)}, ephemeral_available=False)
+        strategy.restrict_to_available_capacity({(1750, 1)}, ephemeral_available=False)
         durable_decision = await strategy.route(
-            req, warm_location_uid='worker-a', overflow_viable=True)
+            req, warm_location_uid='worker-a', overflow_viable=True
+        )
         return overflow_decision, handle, durable_decision
 
     decision, handle, durable_decision = asyncio.run(drive())
@@ -678,7 +676,8 @@ def test_k8s_strategy_warm_gpu_busy_respects_canary_ephemeral_availability():
     assert len(manager.provision_ephemeral_activity_pod_calls) == 1
     assert durable_decision.path == 'durable'
     assert durable_decision.reason == (
-        'ephemeral tier disabled: serialize on warm worker')
+        'ephemeral tier disabled: serialize on warm worker'
+    )
 
 
 def test_canary_availability_blocks_new_tier_but_keeps_existing_reuse():
@@ -707,27 +706,29 @@ def test_canary_availability_blocks_new_tier_but_keeps_existing_reuse():
             compatible_request,
             warm_location_uid=None,
             snapshot_size_estimate_bytes=100,
-        ))
+        )
+    )
     asyncio.run(strategy.provision(compatible_request, compatible_decision))
     assert compatible_decision.provisioned_new_worker is True
     assert compatible_decision.tier_ssd_gib == 800
     assert compatible_decision.tier_gpu_count == 1
     assert manager.provision_pool_worker_calls[0]['pvc_spec'] == PvcSpec(
-        size_gib=800, gpu_count=1)
+        size_gib=800, gpu_count=1
+    )
 
     request = _request(
         activity=SnapshotActivity.GEN_TT,
         min_gpu_slots=4,
     )
 
-    with pytest.raises(DiskgraphCapacityError,
-                       match='min_gpu_slots=4') as exc:
+    with pytest.raises(DiskgraphCapacityError, match='min_gpu_slots=4') as exc:
         asyncio.run(
             strategy.route(
                 request,
                 warm_location_uid=None,
                 snapshot_size_estimate_bytes=100,
-            ))
+            )
+        )
     assert 'configured maximum SSD tier is 3400 GiB' in str(exc.value)
     assert 'currently available maximum is 0 GiB' in str(exc.value)
 
@@ -743,12 +744,14 @@ def test_canary_availability_blocks_new_tier_but_keeps_existing_reuse():
             request,
             warm_location_uid='worker-existing',
             snapshot_size_estimate_bytes=100,
-        ))
+        )
+    )
     asyncio.run(strategy.provision(request, decision))
     assert decision.pool_worker_uid == 'worker-existing'
     assert decision.provisioned_new_worker is False
     assert manager.provision_pool_worker_calls[-1]['pvc_spec'] == PvcSpec(
-        size_gib=3400, gpu_count=4)
+        size_gib=3400, gpu_count=4
+    )
     assert manager.provision_pool_worker_require_existing_resources == [
         False,
         True,
@@ -763,8 +766,7 @@ def test_canary_allows_unknown_size_reuse_of_existing_worker():
     worker_size = 900 * (1 << 30)
     manager = FakeManager()
     inventory = {
-        'worker-small':
-        _inventory(
+        'worker-small': _inventory(
             'worker-small',
             pvc_total_bytes=worker_size,
             pvc_free_bytes=worker_size,
@@ -781,8 +783,7 @@ def test_canary_allows_unknown_size_reuse_of_existing_worker():
             CapacityTier(tier_ssd_gib=1800, tier_gpu_count=4),
         ],
     )
-    strategy.restrict_to_available_capacity(
-        {(900, 4)}, ephemeral_available=True)
+    strategy.restrict_to_available_capacity({(900, 4)}, ephemeral_available=True)
 
     request = _request(
         activity=SnapshotActivity.GEN_TT,
@@ -794,7 +795,8 @@ def test_canary_allows_unknown_size_reuse_of_existing_worker():
             request,
             warm_location_uid=None,
             snapshot_size_estimate_bytes=0,
-        ))
+        )
+    )
 
     assert decision.pool_worker_uid == 'worker-small'
     assert decision.tier_ssd_gib == 900
@@ -811,11 +813,9 @@ def test_canary_restriction_reports_configured_and_available_size_maxima():
             CapacityTier(tier_ssd_gib=1800, tier_gpu_count=4),
         ],
     )
-    strategy.restrict_to_available_capacity(
-        {(900, 4)}, ephemeral_available=True)
+    strategy.restrict_to_available_capacity({(900, 4)}, ephemeral_available=True)
 
-    with pytest.raises(DiskgraphCapacityError,
-                       match='preferred placement') as exc:
+    with pytest.raises(DiskgraphCapacityError, match='preferred placement') as exc:
         asyncio.run(
             strategy.route(
                 _request(
@@ -825,7 +825,8 @@ def test_canary_restriction_reports_configured_and_available_size_maxima():
                 ),
                 warm_location_uid=None,
                 snapshot_size_estimate_bytes=1000 * (1 << 30),
-            ))
+            )
+        )
 
     assert 'configured maximum usable capacity is 1800.0 GiB' in str(exc.value)
     assert 'currently available maximum is 900.0 GiB' in str(exc.value)
@@ -834,8 +835,7 @@ def test_canary_restriction_reports_configured_and_available_size_maxima():
 def test_canary_reuses_existing_worker_at_streaming_minimum():
     gib = 1 << 30
     inventory = {
-        'worker-existing':
-        _inventory(
+        'worker-existing': _inventory(
             'worker-existing',
             pvc_total_bytes=900 * gib,
             pvc_free_bytes=900 * gib,
@@ -861,28 +861,32 @@ def test_canary_reuses_existing_worker_at_streaming_minimum():
             ),
             warm_location_uid=None,
             snapshot_size_estimate_bytes=1500 * gib,
-        ))
+        )
+    )
 
     assert decision.pool_worker_uid == 'worker-existing'
     assert not decision.provisioned_new_worker
     assert decision.snapshot_size_estimate_bytes == 900 * gib
 
 
-@pytest.mark.parametrize('manager_error', [
-    PoolWorkerNotFoundError('PVC disappeared'),
-    PoolWorkerNotReadyError('Deployment is terminating'),
-])
+@pytest.mark.parametrize(
+    'manager_error',
+    [
+        PoolWorkerNotFoundError('PVC disappeared'),
+        PoolWorkerNotReadyError('Deployment is terminating'),
+    ],
+)
 @pytest.mark.parametrize('failure_point', ['pool-worker', 'activity'])
 def test_canary_unavailable_tier_resource_race_fails_actionably(
-        manager_error, failure_point):
+    manager_error, failure_point
+):
     manager = FakeManager()
     if failure_point == 'pool-worker':
         manager.provision_pool_worker_error = manager_error
     else:
         manager.provision_activity_pod_error = manager_error
     inventory = {
-        'worker-unavailable':
-        _inventory(
+        'worker-unavailable': _inventory(
             'worker-unavailable',
             pvc_total_bytes=3400 * (1 << 30),
             pvc_free_bytes=3400 * (1 << 30),
@@ -896,8 +900,7 @@ def test_canary_unavailable_tier_resource_race_fails_actionably(
         sizes={},
         capacity_tiers=[CapacityTier(800, 1), CapacityTier(3400, 4)],
     )
-    strategy.restrict_to_available_capacity(
-        {(800, 1)}, ephemeral_available=True)
+    strategy.restrict_to_available_capacity({(800, 1)}, ephemeral_available=True)
     decision = RouteDecision(
         path='durable',
         pool_worker_uid='worker-unavailable',
@@ -909,32 +912,34 @@ def test_canary_unavailable_tier_resource_race_fails_actionably(
     )
 
     with pytest.raises(
-            ExistingWorkerUnavailableError,
-            match=r'canary-unavailable.*no longer has reusable live resources',
+        ExistingWorkerUnavailableError,
+        match=r'canary-unavailable.*no longer has reusable live resources',
     ) as exc:
         asyncio.run(
             strategy.provision(
                 _request(activity=SnapshotActivity.GEN_TT),
                 decision,
-            ))
+            )
+        )
 
     assert exc.value.__cause__ is manager_error
     assert manager.provision_pool_worker_require_existing_resources == [True]
     assert manager.provision_activity_pod_calls == []
 
     strategy.restrict_to_available_capacity(
-        {(800, 1), (3400, 4)}, ephemeral_available=True)
+        {(800, 1), (3400, 4)}, ephemeral_available=True
+    )
     with pytest.raises(type(manager_error)) as available_exc:
-        asyncio.run(strategy.provision(
-            _request(activity=SnapshotActivity.GEN_TT), decision))
+        asyncio.run(
+            strategy.provision(_request(activity=SnapshotActivity.GEN_TT), decision)
+        )
     assert available_exc.value is manager_error
 
 
 def test_canary_availability_blocks_pinned_ephemeral_retry():
     manager = FakeManager()
     strategy = _strategy(manager, {}, warm={}, sizes={'snap-1': 1000})
-    strategy.restrict_to_available_capacity(
-        {(1750, 1)}, ephemeral_available=False)
+    strategy.restrict_to_available_capacity({(1750, 1)}, ephemeral_available=False)
     decision = RouteDecision(
         path='overflow',
         pool_worker_uid=None,
@@ -958,8 +963,7 @@ def test_canary_availability_blocks_pinned_new_tier_but_not_existing_worker():
         sizes={},
         capacity_tiers=[CapacityTier(800, 1), CapacityTier(3400, 4)],
     )
-    strategy.restrict_to_available_capacity(
-        {(800, 1)}, ephemeral_available=True)
+    strategy.restrict_to_available_capacity({(800, 1)}, ephemeral_available=True)
     decision = RouteDecision(
         path='durable',
         pool_worker_uid='worker-pinned',
@@ -974,12 +978,11 @@ def test_canary_availability_blocks_pinned_new_tier_but_not_existing_worker():
         asyncio.run(strategy.provision(_request(), decision))
     assert manager.provision_pool_worker_calls == []
 
-    inventory['worker-pinned'] = _inventory(
-        'worker-pinned', gpu_slots_total=4)
+    inventory['worker-pinned'] = _inventory('worker-pinned', gpu_slots_total=4)
     manager.registered_worker_matches_current_cache_tier_result = False
     with pytest.raises(
-            ExistingWorkerUnavailableError,
-            match='canary-unavailable',
+        ExistingWorkerUnavailableError,
+        match='canary-unavailable',
     ) as exc:
         asyncio.run(strategy.provision(_request(), decision))
     assert isinstance(exc.value.__cause__, PoolWorkerNotReadyError)
@@ -989,7 +992,8 @@ def test_canary_availability_blocks_pinned_new_tier_but_not_existing_worker():
     manager.registered_worker_matches_current_cache_tier_result = True
     asyncio.run(strategy.provision(_request(), decision))
     assert manager.provision_pool_worker_calls[-1]['pool_worker_uid'] == (
-        'worker-pinned')
+        'worker-pinned'
+    )
     assert manager.registered_worker_matches_current_cache_tier_calls == [
         ('worker-pinned', PvcSpec(size_gib=3400, gpu_count=4)),
         ('worker-pinned', PvcSpec(size_gib=3400, gpu_count=4)),
@@ -1006,8 +1010,7 @@ def test_canary_availability_blocks_pinned_retry_with_unknown_tier():
         sizes={},
         capacity_tiers=[CapacityTier(800, 1), CapacityTier(3400, 4)],
     )
-    strategy.restrict_to_available_capacity(
-        {(800, 1)}, ephemeral_available=True)
+    strategy.restrict_to_available_capacity({(800, 1)}, ephemeral_available=True)
     decision = RouteDecision(
         path='durable',
         pool_worker_uid='worker-legacy-pinned',
@@ -1024,7 +1027,8 @@ def test_canary_availability_blocks_pinned_retry_with_unknown_tier():
     inventory['worker-legacy-pinned'] = _inventory('worker-legacy-pinned')
     asyncio.run(strategy.provision(_request(), decision))
     assert manager.provision_pool_worker_calls[0]['pool_worker_uid'] == (
-        'worker-legacy-pinned')
+        'worker-legacy-pinned'
+    )
 
 
 def test_k8s_strategy_warm_non_gpu_activity_uses_gpu_host_image():
@@ -1036,8 +1040,7 @@ def test_k8s_strategy_warm_non_gpu_activity_uses_gpu_host_image():
             gpu_slots_in_use=4,
         )
     }
-    strategy = _strategy(manager, inventory, warm={'snap-1': 'worker-a'},
-                         sizes={})
+    strategy = _strategy(manager, inventory, warm={'snap-1': 'worker-a'}, sizes={})
 
     async def drive():
         req = _request(activity=SnapshotActivity.GEN_TT)
@@ -1052,8 +1055,7 @@ def test_k8s_strategy_warm_non_gpu_activity_uses_gpu_host_image():
     assert handle.pool_worker_uid == 'worker-a'
     assert len(manager.provision_activity_pod_calls) == 1
     assert manager.provision_activity_pod_calls[0]['activity'] == 'GEN_TT'
-    assert '/kumo-backend-gpu:' in manager.provision_activity_pod_calls[0][
-        'image']
+    assert '/kumo-backend-gpu:' in manager.provision_activity_pod_calls[0]['image']
     assert manager.provision_ephemeral_activity_pod_calls == []
 
 
@@ -1113,8 +1115,7 @@ def test_k8s_strategy_cold_snapshot_uses_best_existing_worker_and_daemon():
     assert decision.pool_worker_uid == 'worker-b'
     assert handle.pool_worker_uid == 'worker-b'
     assert handle.task_queue == activity_task_queue('job-1')
-    assert manager.provision_activity_pod_calls[0]['pool_worker_uid'] == (
-        'worker-b')
+    assert manager.provision_activity_pod_calls[0]['pool_worker_uid'] == ('worker-b')
     assert manager.provision_activity_pod_calls[0]['job_id'] == 'job-1'
     assert manager.provision_activity_pod_calls[0]['snapshot_id'] == 'snap-1'
     assert manager.provision_activity_pod_calls[0]['activity'] == 'GEN_TT'
@@ -1123,28 +1124,24 @@ def test_k8s_strategy_cold_snapshot_uses_best_existing_worker_and_daemon():
 def test_k8s_strategy_cold_routing_excludes_non_ready_workers():
     manager = FakeManager()
     inventory = {
-        'worker-stale':
-        _inventory(
+        'worker-stale': _inventory(
             'worker-stale',
             status=WorkerStatus.STALE,
             pvc_free_bytes=2_000,
         ),
-        'worker-dead':
-        _inventory(
+        'worker-dead': _inventory(
             'worker-dead',
             status=WorkerStatus.DEAD,
             pvc_free_bytes=3_000,
         ),
         # DRAINING worker (scale-down committed) must also be excluded from
         # routing even though it has the most free space (teardown race fix).
-        'worker-draining':
-        _inventory(
+        'worker-draining': _inventory(
             'worker-draining',
             status=WorkerStatus.DRAINING,
             pvc_free_bytes=9_000,
         ),
-        'worker-ready':
-        _inventory('worker-ready', pvc_free_bytes=250),
+        'worker-ready': _inventory('worker-ready', pvc_free_bytes=250),
     }
     strategy = _strategy(manager, inventory, warm={}, sizes={})
 
@@ -1162,23 +1159,22 @@ def test_k8s_strategy_cold_routing_excludes_non_ready_workers():
 
     assert decision.pool_worker_uid == 'worker-ready'
     assert handle.pool_worker_uid == 'worker-ready'
-    assert manager.provision_pool_worker_calls == [{
-        'pool_worker_uid':
-        'worker-ready',
-        'pvc_spec':
-        PvcSpec(size_gib=1750),
-        'timeout':
-        600,
-    }]
+    assert manager.provision_pool_worker_calls == [
+        {
+            'pool_worker_uid': 'worker-ready',
+            'pvc_spec': PvcSpec(size_gib=1750),
+            'timeout': 600,
+        }
+    ]
     assert manager.provision_activity_pod_calls[0]['pool_worker_uid'] == (
-        'worker-ready')
+        'worker-ready'
+    )
 
 
 def test_k8s_strategy_warm_stale_worker_waits_for_fsm():
     manager = FakeManager()
     inventory = {
-        'worker-a':
-        _inventory(
+        'worker-a': _inventory(
             'worker-a',
             status=WorkerStatus.STALE,
             gpu_slots_total=4,
@@ -1246,9 +1242,13 @@ def test_k8s_strategy_in_progress_home_gpu_free_routes_to_home():
 
     async def drive():
         req = _request(activity=SnapshotActivity.PREDICT)
-        return await strategy.route(req, warm_location_uid=None,
-                                    home_worker_uid='worker-home',
-                                    home_gpu_in_use=0, overflow_viable=True)
+        return await strategy.route(
+            req,
+            warm_location_uid=None,
+            home_worker_uid='worker-home',
+            home_gpu_in_use=0,
+            overflow_viable=True,
+        )
 
     decision = asyncio.run(drive())
 
@@ -1265,14 +1265,19 @@ def test_k8s_strategy_in_progress_home_gpu_busy_with_backup_overflows():
     ``POOL_INIT_EPHEMERAL_CANARY_ENABLED``). This is the cold-fanout sibling:
     shard-0 holds the home's GPU, shards 1..N overflow."""
     manager = FakeManager()
-    strategy = _strategy(manager, inventory={}, warm={}, sizes={'snap-1': 1000},
-                         eph_tier_enabled=True)
+    strategy = _strategy(
+        manager, inventory={}, warm={}, sizes={'snap-1': 1000}, eph_tier_enabled=True
+    )
 
     async def drive():
         req = _request(activity=SnapshotActivity.PREDICT)
         decision = await strategy.route(
-            req, warm_location_uid=None, home_worker_uid='worker-home',
-            home_gpu_in_use=1, overflow_viable=True)
+            req,
+            warm_location_uid=None,
+            home_worker_uid='worker-home',
+            home_gpu_in_use=1,
+            overflow_viable=True,
+        )
         handle = await strategy.provision(req, decision)
         return decision, handle
 
@@ -1295,14 +1300,19 @@ def test_k8s_strategy_home_gpu_busy_backup_eph_disabled_serializes_on_home():
     serializes on the home worker, exactly as the no-backup case does, and
     provisions no eph Job."""
     manager = FakeManager()
-    strategy = _strategy(manager, inventory={}, warm={}, sizes={'snap-1': 1000},
-                         eph_tier_enabled=False)
+    strategy = _strategy(
+        manager, inventory={}, warm={}, sizes={'snap-1': 1000}, eph_tier_enabled=False
+    )
 
     async def drive():
         req = _request(activity=SnapshotActivity.PREDICT)
         decision = await strategy.route(
-            req, warm_location_uid=None, home_worker_uid='worker-home',
-            home_gpu_in_use=1, overflow_viable=True)
+            req,
+            warm_location_uid=None,
+            home_worker_uid='worker-home',
+            home_gpu_in_use=1,
+            overflow_viable=True,
+        )
         handle = await strategy.provision(req, decision)
         return decision, handle
 
@@ -1321,14 +1331,19 @@ def test_k8s_strategy_home_gpu_busy_backup_eph_enabled_overflows():
     inputs preserve the original behavior: a GPU consumer with the home GPU
     slot taken and an L2 backup overflows to an eph pod."""
     manager = FakeManager()
-    strategy = _strategy(manager, inventory={}, warm={}, sizes={'snap-1': 1000},
-                         eph_tier_enabled=True)
+    strategy = _strategy(
+        manager, inventory={}, warm={}, sizes={'snap-1': 1000}, eph_tier_enabled=True
+    )
 
     async def drive():
         req = _request(activity=SnapshotActivity.PREDICT)
-        decision = await strategy.route(req, warm_location_uid=None,
-                                        home_worker_uid='worker-home',
-                                        home_gpu_in_use=1, overflow_viable=True)
+        decision = await strategy.route(
+            req,
+            warm_location_uid=None,
+            home_worker_uid='worker-home',
+            home_gpu_in_use=1,
+            overflow_viable=True,
+        )
         handle = await strategy.provision(req, decision)
         return decision, handle
 
@@ -1350,9 +1365,13 @@ def test_k8s_strategy_in_progress_home_gpu_busy_no_backup_serializes_on_home():
 
     async def drive():
         req = _request(activity=SnapshotActivity.PREDICT)
-        return await strategy.route(req, warm_location_uid=None,
-                                    home_worker_uid='worker-home',
-                                    home_gpu_in_use=1, overflow_viable=False)
+        return await strategy.route(
+            req,
+            warm_location_uid=None,
+            home_worker_uid='worker-home',
+            home_gpu_in_use=1,
+            overflow_viable=False,
+        )
 
     decision = asyncio.run(drive())
 
@@ -1371,9 +1390,13 @@ def test_k8s_strategy_in_progress_home_producer_coalesces():
 
     async def drive():
         req = _request(activity=SnapshotActivity.ENSURE_SNAPSHOT)
-        return await strategy.route(req, warm_location_uid=None,
-                                    home_worker_uid='worker-home',
-                                    home_gpu_in_use=1, overflow_viable=True)
+        return await strategy.route(
+            req,
+            warm_location_uid=None,
+            home_worker_uid='worker-home',
+            home_gpu_in_use=1,
+            overflow_viable=True,
+        )
 
     decision = asyncio.run(drive())
 
@@ -1391,14 +1414,17 @@ def test_k8s_strategy_route_stale_home_raises_home_stale_error():
     inventory = {
         'worker-home': _inventory('worker-home', status=WorkerStatus.STALE),
     }
-    strategy = _strategy(manager, inventory=inventory, warm={},
-                         sizes={'snap-1': 1000})
+    strategy = _strategy(manager, inventory=inventory, warm={}, sizes={'snap-1': 1000})
 
     async def drive():
         req = _request(activity=SnapshotActivity.PREDICT)
-        return await strategy.route(req, warm_location_uid=None,
-                                    home_worker_uid='worker-home',
-                                    home_gpu_in_use=0, overflow_viable=True)
+        return await strategy.route(
+            req,
+            warm_location_uid=None,
+            home_worker_uid='worker-home',
+            home_gpu_in_use=0,
+            overflow_viable=True,
+        )
 
     with pytest.raises(HomeStaleError):
         asyncio.run(drive())
@@ -1411,14 +1437,17 @@ def test_k8s_strategy_route_dead_home_mints_fresh_worker():
     inventory = {
         'worker-home': _inventory('worker-home', status=WorkerStatus.DEAD),
     }
-    strategy = _strategy(manager, inventory=inventory, warm={},
-                         sizes={'snap-1': 1000})
+    strategy = _strategy(manager, inventory=inventory, warm={}, sizes={'snap-1': 1000})
 
     async def drive():
         req = _request(activity=SnapshotActivity.PREDICT)
-        return await strategy.route(req, warm_location_uid=None,
-                                    home_worker_uid='worker-home',
-                                    home_gpu_in_use=0, overflow_viable=True)
+        return await strategy.route(
+            req,
+            warm_location_uid=None,
+            home_worker_uid='worker-home',
+            home_gpu_in_use=0,
+            overflow_viable=True,
+        )
 
     decision = asyncio.run(drive())
 
@@ -1434,14 +1463,17 @@ def test_k8s_strategy_route_draining_home_mints_fresh_worker():
     inventory = {
         'worker-home': _inventory('worker-home', status=WorkerStatus.DRAINING),
     }
-    strategy = _strategy(manager, inventory=inventory, warm={},
-                         sizes={'snap-1': 1000})
+    strategy = _strategy(manager, inventory=inventory, warm={}, sizes={'snap-1': 1000})
 
     async def drive():
         req = _request(activity=SnapshotActivity.PREDICT)
-        return await strategy.route(req, warm_location_uid=None,
-                                    home_worker_uid='worker-home',
-                                    home_gpu_in_use=0, overflow_viable=True)
+        return await strategy.route(
+            req,
+            warm_location_uid=None,
+            home_worker_uid='worker-home',
+            home_gpu_in_use=0,
+            overflow_viable=True,
+        )
 
     decision = asyncio.run(drive())
 
@@ -1459,9 +1491,13 @@ def test_k8s_strategy_route_missing_inventory_home_still_co_locates():
 
     async def drive():
         req = _request(activity=SnapshotActivity.PREDICT)
-        return await strategy.route(req, warm_location_uid=None,
-                                    home_worker_uid='worker-home',
-                                    home_gpu_in_use=0, overflow_viable=True)
+        return await strategy.route(
+            req,
+            warm_location_uid=None,
+            home_worker_uid='worker-home',
+            home_gpu_in_use=0,
+            overflow_viable=True,
+        )
 
     decision = asyncio.run(drive())
 
@@ -1473,10 +1509,10 @@ def test_k8s_strategy_route_missing_inventory_home_still_co_locates():
 def test_k8s_strategy_min_reuse_threshold_is_strict():
     manager = FakeManager()
     inventory = {
-        'worker-at-threshold':
-        _inventory('worker-at-threshold', pvc_free_bytes=100),
-        'worker-above-threshold':
-        _inventory('worker-above-threshold', pvc_free_bytes=101),
+        'worker-at-threshold': _inventory('worker-at-threshold', pvc_free_bytes=100),
+        'worker-above-threshold': _inventory(
+            'worker-above-threshold', pvc_free_bytes=101
+        ),
     }
     strategy = _strategy(
         manager,
@@ -1499,28 +1535,25 @@ def test_k8s_strategy_min_reuse_threshold_is_strict():
 
     assert decision.pool_worker_uid == 'worker-above-threshold'
     assert handle.pool_worker_uid == 'worker-above-threshold'
-    assert manager.provision_pool_worker_calls == [{
-        'pool_worker_uid':
-        'worker-above-threshold',
-        'pvc_spec':
-        PvcSpec(size_gib=1750),
-        'timeout':
-        600,
-    }]
+    assert manager.provision_pool_worker_calls == [
+        {
+            'pool_worker_uid': 'worker-above-threshold',
+            'pvc_spec': PvcSpec(size_gib=1750),
+            'timeout': 600,
+        }
+    ]
 
 
 def test_k8s_strategy_cold_gpu_routing_excludes_gpu_full_worker():
     manager = FakeManager()
     inventory = {
-        'worker-big-but-busy':
-        _inventory(
+        'worker-big-but-busy': _inventory(
             'worker-big-but-busy',
             pvc_free_bytes=2_000,
             gpu_slots_total=4,
             gpu_slots_in_use=4,
         ),
-        'worker-smaller-with-gpu':
-        _inventory(
+        'worker-smaller-with-gpu': _inventory(
             'worker-smaller-with-gpu',
             pvc_free_bytes=250,
             gpu_slots_total=4,
@@ -1543,16 +1576,16 @@ def test_k8s_strategy_cold_gpu_routing_excludes_gpu_full_worker():
 
     assert decision.pool_worker_uid == 'worker-smaller-with-gpu'
     assert handle.pool_worker_uid == 'worker-smaller-with-gpu'
-    assert manager.provision_pool_worker_calls == [{
-        'pool_worker_uid':
-        'worker-smaller-with-gpu',
-        'pvc_spec':
-        PvcSpec(size_gib=1750),
-        'timeout':
-        600,
-    }]
+    assert manager.provision_pool_worker_calls == [
+        {
+            'pool_worker_uid': 'worker-smaller-with-gpu',
+            'pvc_spec': PvcSpec(size_gib=1750),
+            'timeout': 600,
+        }
+    ]
     assert manager.provision_activity_pod_calls[0]['pool_worker_uid'] == (
-        'worker-smaller-with-gpu')
+        'worker-smaller-with-gpu'
+    )
 
 
 def test_k8s_strategy_provisions_new_worker_when_no_candidate_exists():
@@ -1598,10 +1631,10 @@ def test_k8s_strategy_provisions_new_worker_when_no_candidate_exists():
     assert call['pool_worker_uid'] == 'worker-new'
     assert isinstance(call['pvc_spec'], PvcSpec)
     assert call['pvc_spec'].size_gib == 1750
-    assert manager.provision_activity_pod_calls[0]['pool_worker_uid'] == (
-        'worker-new')
-    assert manager.provision_activity_pod_calls[0][
-        'env'] == _expected_activity_env('worker-new')
+    assert manager.provision_activity_pod_calls[0]['pool_worker_uid'] == ('worker-new')
+    assert manager.provision_activity_pod_calls[0]['env'] == _expected_activity_env(
+        'worker-new'
+    )
     assert handle.pool_worker_uid == 'worker-new'
     assert handle.task_queue == activity_task_queue('job-1')
 
@@ -1626,26 +1659,22 @@ def test_k8s_strategy_ensure_snapshot_runs_on_daemon_queue():
     assert decision.provisioned_new_worker is True
     assert handle.task_queue == expected_queue
     assert handle.pool_worker_uid == 'worker-new'
-    assert manager.provision_pool_worker_calls == [{
-        'pool_worker_uid':
-        'worker-new',
-        'pvc_spec':
-        PvcSpec(size_gib=1750),
-        'timeout':
-        600,
-    }]
-    assert manager.provision_pool_worker_envs == [{
-        'POOL_WORKER_UID':
-        'worker-new',
-        'POOL_TASK_QUEUE':
-        expected_queue,
-        'POOL_STORAGE_MODE':
-        'daemon-on-pvc',
-        'POOL_GPU_CONCURRENCY':
-        '1',
-        'POOL_MAX_CONCURRENT_ACTIVITIES':
-        '0',
-    }]
+    assert manager.provision_pool_worker_calls == [
+        {
+            'pool_worker_uid': 'worker-new',
+            'pvc_spec': PvcSpec(size_gib=1750),
+            'timeout': 600,
+        }
+    ]
+    assert manager.provision_pool_worker_envs == [
+        {
+            'POOL_WORKER_UID': 'worker-new',
+            'POOL_TASK_QUEUE': expected_queue,
+            'POOL_STORAGE_MODE': 'daemon-on-pvc',
+            'POOL_GPU_CONCURRENCY': '1',
+            'POOL_MAX_CONCURRENT_ACTIVITIES': '0',
+        }
+    ]
     assert manager.provision_activity_pod_calls == []
     assert manager.wait_for_activity_job_pod_running_calls == []
     assert manager.provision_ephemeral_activity_pod_calls == []
@@ -1708,18 +1737,19 @@ def test_k8s_strategy_reclaims_persisted_planned_worker_before_activity():
 
     handle = asyncio.run(strategy.provision(req, decision))
 
-    assert manager.provision_pool_worker_calls == [{
-        'pool_worker_uid':
-        'worker-planned',
-        'pvc_spec':
-        PvcSpec(size_gib=1750),
-        'timeout':
-        600,
-    }]
+    assert manager.provision_pool_worker_calls == [
+        {
+            'pool_worker_uid': 'worker-planned',
+            'pvc_spec': PvcSpec(size_gib=1750),
+            'timeout': 600,
+        }
+    ]
     assert manager.provision_activity_pod_calls[0]['pool_worker_uid'] == (
-        'worker-planned')
-    assert manager.provision_activity_pod_calls[0][
-        'env'] == _expected_activity_env('worker-planned')
+        'worker-planned'
+    )
+    assert manager.provision_activity_pod_calls[0]['env'] == _expected_activity_env(
+        'worker-planned'
+    )
     assert handle.pool_worker_uid == 'worker-planned'
     assert handle.task_queue == activity_task_queue(req.job_id)
 
@@ -1761,7 +1791,8 @@ def test_k8s_strategy_reconcile_reports_live_pool_worker_uids():
     ],
 )
 def test_k8s_strategy_reconcile_classifies_removed_persisted_tier(
-        saved_tier, configured_tiers, expected_incompatible):
+    saved_tier, configured_tiers, expected_incompatible
+):
     manager = FakeManager()
     strategy = _strategy(
         manager,
@@ -1770,9 +1801,13 @@ def test_k8s_strategy_reconcile_classifies_removed_persisted_tier(
         sizes={},
         capacity_tiers=[CapacityTier(*tier) for tier in configured_tiers],
     )
-    state = PoolState(placement_state=K8sPlacementState(pvcs={
-        'worker-a': PvcState('worker-a', *saved_tier),
-    }))
+    state = PoolState(
+        placement_state=K8sPlacementState(
+            pvcs={
+                'worker-a': PvcState('worker-a', *saved_tier),
+            }
+        )
+    )
 
     delta = asyncio.run(strategy.reconcile(state))
 
@@ -1843,20 +1878,21 @@ def test_k8s_strategy_reconcile_retires_when_inventory_dead():
     assert delta.unexpected_uids == set()
 
     manager.live_workers = [FakePoolWorkerInfo('worker-a')]
-    assert asyncio.run(
-        strategy.revalidate_retired_workers(delta.retired_uids)) == set()
+    assert asyncio.run(strategy.revalidate_retired_workers(delta.retired_uids)) == set()
     manager.live_workers = []
 
     # The actual delete happens via delete_workers (called by the
     # controller after flipping the uid non-routable under state_lock).
     asyncio.run(strategy.delete_workers({'worker-a'}))
-    assert manager.delete_pool_worker_calls == [{
-        'pool_worker_uid': 'worker-a',
-        'grace_period_seconds': 30,
-        'scale_down_timeout': 120,
-        'pvc_delete_timeout': 60,
-        'force_on_timeout': True,
-    }]
+    assert manager.delete_pool_worker_calls == [
+        {
+            'pool_worker_uid': 'worker-a',
+            'grace_period_seconds': 30,
+            'scale_down_timeout': 120,
+            'pvc_delete_timeout': 60,
+            'force_on_timeout': True,
+        }
+    ]
 
 
 @pytest.mark.parametrize('pod_status', ['Running', 'Registered'])
@@ -1875,17 +1911,22 @@ def test_k8s_strategy_live_pod_row_always_vetoes_dead_retirement(pod_status):
 
     assert delta.observed_pool_worker_uids == {'worker-a'}
     assert delta.live_pool_worker_uids == (
-        {'worker-a'} if pod_status == 'Registered' else set())
+        {'worker-a'} if pod_status == 'Registered' else set()
+    )
     assert delta.retired_uids == set()
     assert manager.delete_pool_worker_calls == []
 
 
-@pytest.mark.parametrize(('pod_status', 'timestamp_field'), [
-    ('Pending', 'created_at'),
-    ('Terminating', 'deletion_started_at'),
-])
+@pytest.mark.parametrize(
+    ('pod_status', 'timestamp_field'),
+    [
+        ('Pending', 'created_at'),
+        ('Terminating', 'deletion_started_at'),
+    ],
+)
 def test_k8s_strategy_non_live_pod_row_veto_expires(
-        monkeypatch, pod_status, timestamp_field):
+    monkeypatch, pod_status, timestamp_field
+):
     now = 2_000_000_000.0
     monkeypatch.setattr('pool.k8s_strategy.time.time', lambda: now)
     manager = FakeManager()
@@ -1902,20 +1943,24 @@ def test_k8s_strategy_non_live_pod_row_veto_expires(
         'deletion_started_at': now - POOL_WORKER_PROVISION_TIMEOUT_SEC + 1,
     }
     if pod_status == 'Pending':
-        timestamps['created_at'] = (
-            now - POOL_WORKER_PROVISION_TIMEOUT_SEC + 1)
+        timestamps['created_at'] = now - POOL_WORKER_PROVISION_TIMEOUT_SEC + 1
     manager.live_workers = [
         FakePoolWorkerInfo(
-            'worker-a', status=pod_status,
+            'worker-a',
+            status=pod_status,
             created_at=timestamps['created_at'],
-            deletion_started_at=timestamps['deletion_started_at'])
+            deletion_started_at=timestamps['deletion_started_at'],
+        )
     ]
 
     protected = asyncio.run(strategy.reconcile(state))
 
     assert protected.retired_uids == set()
-    setattr(manager.live_workers[0], timestamp_field,
-            now - POOL_WORKER_PROVISION_TIMEOUT_SEC)
+    setattr(
+        manager.live_workers[0],
+        timestamp_field,
+        now - POOL_WORKER_PROVISION_TIMEOUT_SEC,
+    )
 
     expired = asyncio.run(strategy.reconcile(state))
 
@@ -1963,8 +2008,7 @@ def test_k8s_strategy_any_recent_duplicate_vetoes_retirement(monkeypatch):
         FakePoolWorkerInfo(
             'worker-a',
             status='Terminating',
-            deletion_started_at=(
-                now - POOL_WORKER_PROVISION_TIMEOUT_SEC),
+            deletion_started_at=(now - POOL_WORKER_PROVISION_TIMEOUT_SEC),
         ),
         FakePoolWorkerInfo(
             'worker-a',
@@ -2007,15 +2051,14 @@ def test_k8s_strategy_revalidation_vetoes_new_pending_pod(monkeypatch):
         )
     ]
 
-    revalidated = asyncio.run(
-        strategy.revalidate_retired_workers(delta.retired_uids))
+    revalidated = asyncio.run(strategy.revalidate_retired_workers(delta.retired_uids))
 
     assert revalidated == set()
-    manager.live_workers[0].created_at = (
-        now - POOL_WORKER_PROVISION_TIMEOUT_SEC)
+    manager.live_workers[0].created_at = now - POOL_WORKER_PROVISION_TIMEOUT_SEC
 
     revalidated_after_grace = asyncio.run(
-        strategy.revalidate_retired_workers(delta.retired_uids))
+        strategy.revalidate_retired_workers(delta.retired_uids)
+    )
 
     assert revalidated_after_grace == {'worker-a'}
 
@@ -2084,13 +2127,15 @@ def test_k8s_strategy_reconcile_reports_orphan_live_worker_as_unexpected():
     assert delta.retired_uids == set()
 
     asyncio.run(strategy.delete_workers(delta.unexpected_uids))
-    assert manager.delete_pool_worker_calls == [{
-        'pool_worker_uid': 'worker-orphan',
-        'grace_period_seconds': 30,
-        'scale_down_timeout': 120,
-        'pvc_delete_timeout': 60,
-        'force_on_timeout': True,
-    }]
+    assert manager.delete_pool_worker_calls == [
+        {
+            'pool_worker_uid': 'worker-orphan',
+            'grace_period_seconds': 30,
+            'scale_down_timeout': 120,
+            'pvc_delete_timeout': 60,
+            'force_on_timeout': True,
+        }
+    ]
 
 
 def test_k8s_strategy_retries_draining_worker_after_pod_disappears():
@@ -2113,10 +2158,13 @@ def test_k8s_strategy_reconcile_reports_pvc_only_live_worker_as_unexpected():
     manager = FakeManager()
     manager.live_workers = [FakePoolWorkerInfo('worker-pvc-only')]
     strategy = _strategy(manager, inventory={}, warm={}, sizes={})
-    state = PoolState(placement_state=K8sPlacementState(
-        pvcs={
-            'worker-pvc-only': PvcState(pool_worker_uid='worker-pvc-only'),
-        }))
+    state = PoolState(
+        placement_state=K8sPlacementState(
+            pvcs={
+                'worker-pvc-only': PvcState(pool_worker_uid='worker-pvc-only'),
+            }
+        )
+    )
 
     delta = asyncio.run(strategy.reconcile(state))
 
@@ -2154,8 +2202,7 @@ def test_k8s_strategy_delete_workers_is_per_worker_resilient():
     # Should NOT raise despite worker-bad failing; returns only the uids
     # actually torn down so the controller prunes those and retries the bad
     # one on the next tick.
-    torn_down = asyncio.run(
-        strategy.delete_workers(['worker-bad', 'worker-good']))
+    torn_down = asyncio.run(strategy.delete_workers(['worker-bad', 'worker-good']))
 
     attempted = {c['pool_worker_uid'] for c in manager.delete_pool_worker_calls}
     assert attempted == {'worker-bad', 'worker-good'}
@@ -2174,9 +2221,7 @@ def test_k8s_strategy_activity_resources_factory_forwarded_to_durable_pod():
 
     def resources_factory(request):
         seen.append(request.activity)
-        if request.activity in {
-                SnapshotActivity.TRAIN, SnapshotActivity.PREDICT
-        }:
+        if request.activity in {SnapshotActivity.TRAIN, SnapshotActivity.PREDICT}:
             return ResourceSpec(gpu_count=1)
         return None
 
@@ -2198,11 +2243,10 @@ def test_k8s_strategy_activity_resources_factory_forwarded_to_durable_pod():
     assert seen == [SnapshotActivity.TRAIN]
     assert len(manager.provision_activity_pod_calls) == 1
     assert manager.provision_activity_pod_calls[0]['resources'] == (
-        ResourceSpec(gpu_count=1))
-    assert manager.provision_activity_pod_calls[0]['env'][
-        'KUMO_REQUIRE_GPU'] == 'true'
-    assert manager.provision_activity_pod_calls[0]['env'][
-        'KUMO_ACCELERATOR'] == 'gpu'
+        ResourceSpec(gpu_count=1)
+    )
+    assert manager.provision_activity_pod_calls[0]['env']['KUMO_REQUIRE_GPU'] == 'true'
+    assert manager.provision_activity_pod_calls[0]['env']['KUMO_ACCELERATOR'] == 'gpu'
 
 
 def test_k8s_strategy_activity_resources_factory_forwarded_to_overflow_pod():
@@ -2213,8 +2257,7 @@ def test_k8s_strategy_activity_resources_factory_forwarded_to_overflow_pod():
     manager = FakeManager()
     # warm worker is GPU-saturated -> route forces overflow.
     inventory = {
-        'worker-a': _inventory('worker-a', gpu_slots_total=1,
-                               gpu_slots_in_use=1),
+        'worker-a': _inventory('worker-a', gpu_slots_total=1, gpu_slots_in_use=1),
     }
     strategy = _strategy(
         manager,
@@ -2239,11 +2282,16 @@ def test_k8s_strategy_activity_resources_factory_forwarded_to_overflow_pod():
 
     assert len(manager.provision_ephemeral_activity_pod_calls) == 1
     assert manager.provision_ephemeral_activity_pod_calls[0]['resources'] == (
-        ResourceSpec(gpu_count=1))
-    assert manager.provision_ephemeral_activity_pod_calls[0]['env'][
-        'KUMO_REQUIRE_GPU'] == 'true'
-    assert manager.provision_ephemeral_activity_pod_calls[0]['env'][
-        'KUMO_ACCELERATOR'] == 'gpu'
+        ResourceSpec(gpu_count=1)
+    )
+    assert (
+        manager.provision_ephemeral_activity_pod_calls[0]['env']['KUMO_REQUIRE_GPU']
+        == 'true'
+    )
+    assert (
+        manager.provision_ephemeral_activity_pod_calls[0]['env']['KUMO_ACCELERATOR']
+        == 'gpu'
+    )
 
 
 def test_build_k8s_placement_strategy_uses_controller_context_providers():
@@ -2288,9 +2336,12 @@ def test_size_aware_admission_rejects_worker_with_insufficient_free_space():
     strategy = _strategy(manager, inventory, warm={}, sizes={})
 
     async def drive():
-        req = _request(activity=SnapshotActivity.GEN_TT, )
-        return await strategy.route(req, warm_location_uid=None,
-                                    snapshot_size_estimate_bytes=300)
+        req = _request(
+            activity=SnapshotActivity.GEN_TT,
+        )
+        return await strategy.route(
+            req, warm_location_uid=None, snapshot_size_estimate_bytes=300
+        )
 
     decision = asyncio.run(drive())
     assert decision.provisioned_new_worker
@@ -2308,9 +2359,12 @@ def test_size_aware_admission_picks_worker_with_most_available_space():
     strategy = _strategy(manager, inventory, warm={}, sizes={})
 
     async def drive():
-        req = _request(activity=SnapshotActivity.GEN_TT, )
-        return await strategy.route(req, warm_location_uid=None,
-                                    snapshot_size_estimate_bytes=250)
+        req = _request(
+            activity=SnapshotActivity.GEN_TT,
+        )
+        return await strategy.route(
+            req, warm_location_uid=None, snapshot_size_estimate_bytes=250
+        )
 
     decision = asyncio.run(drive())
     assert not decision.provisioned_new_worker
@@ -2328,17 +2382,19 @@ def test_size_aware_admission_accounts_for_reserved_in_flight_bytes():
         worker_inventory=lambda: inventory,
         warm_location=lambda snapshot_id: None,
         snapshot_size_bytes=lambda snapshot_id: None,
-        reserved_size_bytes_for_worker=lambda uid: 300
-        if uid == 'worker-a' else 0,
+        reserved_size_bytes_for_worker=lambda uid: 300 if uid == 'worker-a' else 0,
         capacity_tiers=[CapacityTier(tier_ssd_gib=1750)],
         activity_poller_waiter=_accept_activity_poller,
         pool_worker_uid_factory=lambda: 'worker-new',
     )
 
     async def drive():
-        req = _request(activity=SnapshotActivity.GEN_TT, )
-        return await strategy.route(req, warm_location_uid=None,
-                                    snapshot_size_estimate_bytes=200)
+        req = _request(
+            activity=SnapshotActivity.GEN_TT,
+        )
+        return await strategy.route(
+            req, warm_location_uid=None, snapshot_size_estimate_bytes=200
+        )
 
     decision = asyncio.run(drive())
     assert decision.provisioned_new_worker
@@ -2403,10 +2459,12 @@ def test_tier_selection_picks_smallest_fitting_tier():
     )
 
     async def drive():
-        req = _request(activity=SnapshotActivity.GEN_TT, )
+        req = _request(
+            activity=SnapshotActivity.GEN_TT,
+        )
         decision = await strategy.route(
-            req, warm_location_uid=None,
-            snapshot_size_estimate_bytes=500 * (1 << 30))
+            req, warm_location_uid=None, snapshot_size_estimate_bytes=500 * (1 << 30)
+        )
         handle = await strategy.provision(req, decision)
         return decision, handle
 
@@ -2438,14 +2496,14 @@ def test_tier_selection_prefers_three_times_source_size():
             request,
             warm_location_uid=None,
             snapshot_size_estimate_bytes=1200 * gib,
-        ))
+        )
+    )
 
     assert decision.tier_ssd_gib == 1800
     assert decision.snapshot_size_estimate_bytes == 1200 * gib
 
 
-def test_tier_selection_uses_largest_tier_when_it_meets_only_streaming_minimum(
-):
+def test_tier_selection_uses_largest_tier_when_it_meets_only_streaming_minimum():
     gib = 1 << 30
     strategy = _strategy(
         FakeManager(),
@@ -2467,12 +2525,12 @@ def test_tier_selection_uses_largest_tier_when_it_meets_only_streaming_minimum(
             request,
             warm_location_uid=None,
             snapshot_size_estimate_bytes=1500 * gib,
-        ))
+        )
+    )
 
     assert decision.tier_ssd_gib == 1200
     assert decision.snapshot_size_estimate_bytes == 1200 * gib
-    assert decision.reason == (
-        'largest available tier meets minimum ingest capacity')
+    assert decision.reason == ('largest available tier meets minimum ingest capacity')
 
 
 def test_tier_selection_rejects_tier_below_streaming_minimum():
@@ -2489,14 +2547,14 @@ def test_tier_selection_rejects_tier_below_streaming_minimum():
         source_size_bytes=800 * gib,
     )
 
-    with pytest.raises(DiskgraphCapacityError,
-                       match='at least 1200.0 GiB'):
+    with pytest.raises(DiskgraphCapacityError, match='at least 1200.0 GiB'):
         asyncio.run(
             strategy.route(
                 request,
                 warm_location_uid=None,
                 snapshot_size_estimate_bytes=2400 * gib,
-            ))
+            )
+        )
 
 
 def test_min_ssd_gib_forces_strictly_larger_tier():
@@ -2519,7 +2577,8 @@ def test_min_ssd_gib_forces_strictly_larger_tier():
             ),
             warm_location_uid=None,
             snapshot_size_estimate_bytes=1,
-        ))
+        )
+    )
 
     assert decision.tier_ssd_gib == 1800
 
@@ -2537,7 +2596,8 @@ def test_k8s_strategy_home_too_small_for_estimate_mints_larger_worker():
             req,
             warm_location_uid=None,
             snapshot_size_estimate_bytes=3_000,  # > usable 2_000 × 1.0
-            home_worker_uid='worker-home')
+            home_worker_uid='worker-home',
+        )
 
     decision = asyncio.run(drive())
 
@@ -2559,7 +2619,8 @@ def test_k8s_strategy_home_fits_estimate_still_co_locates():
             req,
             warm_location_uid=None,
             snapshot_size_estimate_bytes=1_500,  # <= usable 2_000 × 1.0
-            home_worker_uid='worker-home')
+            home_worker_uid='worker-home',
+        )
 
     decision = asyncio.run(drive())
 
@@ -2577,9 +2638,12 @@ def test_k8s_strategy_home_without_inventory_still_co_locates():
 
     async def drive():
         req = _request(activity=SnapshotActivity.ENSURE_SNAPSHOT)
-        return await strategy.route(req, warm_location_uid=None,
-                                    snapshot_size_estimate_bytes=3_000,
-                                    home_worker_uid='worker-home')
+        return await strategy.route(
+            req,
+            warm_location_uid=None,
+            snapshot_size_estimate_bytes=3_000,
+            home_worker_uid='worker-home',
+        )
 
     decision = asyncio.run(drive())
 
@@ -2655,10 +2719,12 @@ def test_tier_selection_rejects_when_no_gpu_tier_satisfies_request():
 
 def test_existing_worker_reuse_respects_requested_gpu_slots():
     inventory = {
-        'worker-small':
-        _inventory('worker-small', pvc_free_bytes=2_000, gpu_slots_total=1),
-        'worker-large':
-        _inventory('worker-large', pvc_free_bytes=2_000, gpu_slots_total=4),
+        'worker-small': _inventory(
+            'worker-small', pvc_free_bytes=2_000, gpu_slots_total=1
+        ),
+        'worker-large': _inventory(
+            'worker-large', pvc_free_bytes=2_000, gpu_slots_total=4
+        ),
     }
     strategy = K8sPlacementStrategy(
         FakeManager(),  # type: ignore[arg-type]
@@ -2688,8 +2754,7 @@ def test_existing_worker_reuse_respects_requested_gpu_slots():
 def test_unknown_size_reuses_existing_matching_worker():
     worker_size = 900 * (1 << 30)
     inventory = {
-        'worker-small':
-        _inventory(
+        'worker-small': _inventory(
             'worker-small',
             pvc_total_bytes=worker_size,
             pvc_free_bytes=worker_size,
@@ -2748,7 +2813,8 @@ def test_unknown_size_new_worker_uses_largest_tier():
                 min_gpu_slots=4,
             ),
             warm_location_uid=None,
-        ))
+        )
+    )
 
     assert decision.provisioned_new_worker
     assert decision.tier_ssd_gib == 1800
@@ -2756,8 +2822,7 @@ def test_unknown_size_new_worker_uses_largest_tier():
 
 def test_existing_worker_reuse_returns_capacity_tier_from_inventory():
     inventory = {
-        'worker-large':
-        WorkerInventory(
+        'worker-large': WorkerInventory(
             pool_worker_uid='worker-large',
             status=WorkerStatus.READY,
             last_heartbeat=1.0,
@@ -2797,8 +2862,7 @@ def test_existing_worker_reuse_returns_capacity_tier_from_inventory():
 
 def test_existing_worker_reuse_prefers_persisted_capacity_tier_over_inventory():
     inventory = {
-        'worker-large':
-        WorkerInventory(
+        'worker-large': WorkerInventory(
             pool_worker_uid='worker-large',
             status=WorkerStatus.READY,
             last_heartbeat=1.0,
@@ -2819,10 +2883,14 @@ def test_existing_worker_reuse_prefers_persisted_capacity_tier_over_inventory():
         reserved_size_bytes_for_worker=lambda uid: 0,
         capacity_tiers=[CapacityTier(tier_ssd_gib=1750)],
         activity_poller_waiter=_accept_activity_poller,
-        capacity_tier_for_worker=lambda uid: CapacityTier(
-            tier_ssd_gib=2948,
-            tier_gpu_count=4,
-        ) if uid == 'worker-large' else None,
+        capacity_tier_for_worker=lambda uid: (
+            CapacityTier(
+                tier_ssd_gib=2948,
+                tier_gpu_count=4,
+            )
+            if uid == 'worker-large'
+            else None
+        ),
     )
 
     async def drive():
@@ -2845,8 +2913,7 @@ def test_existing_worker_reuse_prefers_persisted_capacity_tier_over_inventory():
 def test_unknown_size_reuse_uses_persisted_tier_when_inventory_bytes_drift():
     tier_bytes = 2948 * (1 << 30)
     inventory = {
-        'worker-large':
-        WorkerInventory(
+        'worker-large': WorkerInventory(
             pool_worker_uid='worker-large',
             status=WorkerStatus.READY,
             last_heartbeat=1.0,
@@ -2867,10 +2934,14 @@ def test_unknown_size_reuse_uses_persisted_tier_when_inventory_bytes_drift():
         reserved_size_bytes_for_worker=lambda uid: 0,
         capacity_tiers=[CapacityTier(tier_ssd_gib=2948, tier_gpu_count=4)],
         activity_poller_waiter=_accept_activity_poller,
-        capacity_tier_for_worker=lambda uid: CapacityTier(
-            tier_ssd_gib=2948,
-            tier_gpu_count=4,
-        ) if uid == 'worker-large' else None,
+        capacity_tier_for_worker=lambda uid: (
+            CapacityTier(
+                tier_ssd_gib=2948,
+                tier_gpu_count=4,
+            )
+            if uid == 'worker-large'
+            else None
+        ),
         pool_worker_uid_factory=lambda: 'worker-new',
     )
 

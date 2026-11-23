@@ -21,22 +21,18 @@ from kumoapi.train import TrainingStage
 def test_save_eval_output(tmp_path: pathlib.Path):
     temp_path = tmp_path.resolve().as_posix()
     original = EvalOutput(
-        metrics={
-            'a': 1,
-            'b': 2
-        },
-        df=pd.DataFrame({
-            'ID': [1, 2],
-            'TIMESTAMP': [
-                pd.Timestamp('2026-07-21'),
-                pd.Timestamp('2026-07-22'),
-            ],
-            'CLASS': [1, 'two'],
-        }),
-        embedding=pd.DataFrame({
-            'ID': [1],
-            'EMB': [2]
-        }),
+        metrics={'a': 1, 'b': 2},
+        df=pd.DataFrame(
+            {
+                'ID': [1, 2],
+                'TIMESTAMP': [
+                    pd.Timestamp('2026-07-21'),
+                    pd.Timestamp('2026-07-22'),
+                ],
+                'CLASS': [1, 'two'],
+            }
+        ),
+        embedding=pd.DataFrame({'ID': [1], 'EMB': [2]}),
     )
 
     original.save(temp_path, TrainingStage.VAL)
@@ -52,12 +48,11 @@ def test_save_eval_output(tmp_path: pathlib.Path):
 def _spooled(frame: pd.DataFrame, chunk_rows: int) -> EvalFrames:
     frames = EvalFrames()
     for start in range(0, len(frame), chunk_rows):
-        frames.append(frame.iloc[start:start + chunk_rows])
+        frames.append(frame.iloc[start : start + chunk_rows])
     return frames
 
 
-def test_numeric_and_string_class_chunks_save_as_strings(
-        tmp_path: pathlib.Path):
+def test_numeric_and_string_class_chunks_save_as_strings(tmp_path: pathlib.Path):
     frame = pd.DataFrame({'CLASS': [1, 2, 'three', 'four']})
     frames = _spooled(frame.iloc[:2].astype({'CLASS': int}), 2)
     frames.append(frame.iloc[2:])
@@ -77,14 +72,14 @@ def test_iterator_keeps_spool_alive():
 
 
 def test_save_df_keeps_edits_to_materialized_df(tmp_path: pathlib.Path):
-    out = EvalOutput({}, frames=_spooled(pd.DataFrame({'SCORE': [1., 2.]}), 1))
-    out.df['SCORE'] = [3., 4.]
+    out = EvalOutput({}, frames=_spooled(pd.DataFrame({'SCORE': [1.0, 2.0]}), 1))
+    out.df['SCORE'] = [3.0, 4.0]
     out.df['RANK'] = [2, 1]
     out.df.drop(index=0, inplace=True)
     out.save_df(str(tmp_path), TrainingStage.TEST)
 
     saved = pd.read_parquet(tmp_path / 'test_df.parquet')
-    assert saved[['SCORE', 'RANK']].values.tolist() == [[4., 1.]]
+    assert saved[['SCORE', 'RANK']].values.tolist() == [[4.0, 1.0]]
     meta = json.loads((tmp_path / 'test_df_meta.json').read_text())
     assert meta == {'total_rows': 1, 'saved_rows': 1, 'truncated': False}
 
@@ -95,24 +90,23 @@ def test_holdout_keeps_leading_rows_that_fit(tmp_path: pathlib.Path):
     cap = int(frame.memory_usage(deep=True).sum() / 4)
 
     EvalOutput({}, frames=_spooled(frame, 256)).save_df(
-        str(tmp_path), TrainingStage.TEST, max_size=cap)
+        str(tmp_path), TrainingStage.TEST, max_size=cap
+    )
 
     saved = pd.read_parquet(tmp_path / 'test_df.parquet')
     pd.testing.assert_frame_equal(saved, frame.head(len(saved)))
     assert saved.memory_usage(deep=True, index=False).sum() <= cap
     meta = json.loads((tmp_path / 'test_df_meta.json').read_text())
-    assert meta == {
-        'total_rows': 3000,
-        'saved_rows': len(saved),
-        'truncated': True
-    }
+    assert meta == {'total_rows': 3000, 'saved_rows': len(saved), 'truncated': True}
 
 
 def _save_peak(tmp_path: pathlib.Path, num_chunks: int) -> int:
-    chunk = pd.DataFrame({
-        'ENTITY': [f'cust_{i}' for i in range(20_000)],
-        'SCORE': np.random.rand(20_000),
-    })
+    chunk = pd.DataFrame(
+        {
+            'ENTITY': [f'cust_{i}' for i in range(20_000)],
+            'SCORE': np.random.rand(20_000),
+        }
+    )
     frames = EvalFrames()
     for _ in range(num_chunks):
         frames.append(chunk)
@@ -130,8 +124,7 @@ def _save_peak(tmp_path: pathlib.Path, num_chunks: int) -> int:
         pa.set_memory_pool(default_pool)
 
 
-def test_save_memory_does_not_grow_with_rows(tmp_path: pathlib.Path,
-                                             monkeypatch):
+def test_save_memory_does_not_grow_with_rows(tmp_path: pathlib.Path, monkeypatch):
     monkeypatch.setattr(output, '_ROW_GROUP_ROWS', 50_000)
     small = _save_peak(tmp_path / 'small', num_chunks=4)
     large = _save_peak(tmp_path / 'large', num_chunks=40)
@@ -141,11 +134,13 @@ def test_save_memory_does_not_grow_with_rows(tmp_path: pathlib.Path,
 
 def test_regression_stats_match_whole_frame(tmp_path: pathlib.Path):
     rng = np.random.default_rng(0)
-    frame = pd.DataFrame({
-        'ENTITY': np.arange(30_000),
-        'TARGET': rng.normal(size=30_000),
-        'TARGET_PRED': rng.normal(size=30_000),
-    })
+    frame = pd.DataFrame(
+        {
+            'ENTITY': np.arange(30_000),
+            'TARGET': rng.normal(size=30_000),
+            'TARGET_PRED': rng.normal(size=30_000),
+        }
+    )
     distribution = {
         'target_mean': 0.0,
         'histogram': {
@@ -159,7 +154,8 @@ def test_regression_stats_match_whole_frame(tmp_path: pathlib.Path):
     task = SimpleNamespace(
         task_type=TaskType.REGRESSION,
         get_train_table_stats=lambda after_split: SimpleNamespace(
-            get_stage_table_stats=lambda stage: stage_stats),
+            get_stage_table_stats=lambda stage: stage_stats
+        ),
     )
     saved = {}
     for name, out in [
@@ -172,18 +168,18 @@ def test_regression_stats_match_whole_frame(tmp_path: pathlib.Path):
         saved[name] = root
 
     for path in [
-            'test_prediction_histogram_and_stats.json',
-            'test_target_prediction_heatmap/sampled_df.parquet',
-            'test_df.parquet',
+        'test_prediction_histogram_and_stats.json',
+        'test_target_prediction_heatmap/sampled_df.parquet',
+        'test_df.parquet',
     ]:
-        assert ((saved['whole'] / path).read_bytes() == (saved['chunked'] /
-                                                         path).read_bytes())
+        assert (saved['whole'] / path).read_bytes() == (
+            saved['chunked'] / path
+        ).read_bytes()
 
 
 def test_zero_row_holdout_keeps_readable_schema(tmp_path: pathlib.Path):
-    frame = pd.DataFrame({'ENTITY': ['large row'], 'SCORE': [1.]})
-    EvalOutput({}, frame).save_df(str(tmp_path), TrainingStage.TEST,
-                                  max_size=1)
+    frame = pd.DataFrame({'ENTITY': ['large row'], 'SCORE': [1.0]})
+    EvalOutput({}, frame).save_df(str(tmp_path), TrainingStage.TEST, max_size=1)
 
     saved = pd.read_parquet(tmp_path / 'test_df.parquet')
     assert saved.empty
@@ -194,30 +190,37 @@ def test_zero_row_holdout_keeps_readable_schema(tmp_path: pathlib.Path):
 
 
 def test_empty_frames_sample_and_heatmap_keep_schema(tmp_path: pathlib.Path):
-    frame = pd.DataFrame({
-        'TARGET': pd.Series([], dtype=float),
-        'TARGET_PRED': pd.Series([], dtype=float),
-    })
+    frame = pd.DataFrame(
+        {
+            'TARGET': pd.Series([], dtype=float),
+            'TARGET_PRED': pd.Series([], dtype=float),
+        }
+    )
     assert EvalFrames.of(frame).sample(0).dtypes.equals(frame.dtypes)
 
-    stage_stats = SimpleNamespace(target_distribution={
-        'target_mean': 0.0,
-        'histogram': {
-            'bins': [0.0, 1.0],
-            'counts': [1],
-            'bin_width': 1.0,
-            'num_bins': 1,
-        },
-    })
+    stage_stats = SimpleNamespace(
+        target_distribution={
+            'target_mean': 0.0,
+            'histogram': {
+                'bins': [0.0, 1.0],
+                'counts': [1],
+                'bin_width': 1.0,
+                'num_bins': 1,
+            },
+        }
+    )
     task = SimpleNamespace(
         task_type=TaskType.REGRESSION,
         get_train_table_stats=lambda after_split: SimpleNamespace(
-            get_stage_table_stats=lambda stage: stage_stats),
+            get_stage_table_stats=lambda stage: stage_stats
+        ),
     )
-    EvalOutput({}, frame).save_prediction_heatmap(str(tmp_path),
-                                                  TrainingStage.TEST, task)
+    EvalOutput({}, frame).save_prediction_heatmap(
+        str(tmp_path), TrainingStage.TEST, task
+    )
 
-    sampled = pd.read_parquet(tmp_path / 'test_target_prediction_heatmap' /
-                              'sampled_df.parquet')
+    sampled = pd.read_parquet(
+        tmp_path / 'test_target_prediction_heatmap' / 'sampled_df.parquet'
+    )
     assert sampled.empty
     assert list(sampled.columns) == ['TARGET', 'TARGET_PRED']

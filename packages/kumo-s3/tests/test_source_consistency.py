@@ -26,15 +26,29 @@ def endpoint():
     for offset in [0, 1]:
         sink = pa.BufferOutputStream()
         pq.write_table(
-            pa.table({
-                'id': range(offset, 100000 + offset),
-                'unused': range(100000),
-            }), sink, compression='NONE', use_dictionary=False,
-            row_group_size=10000)
+            pa.table(
+                {
+                    'id': range(offset, 100000 + offset),
+                    'unused': range(100000),
+                }
+            ),
+            sink,
+            compression='NONE',
+            use_dictionary=False,
+            row_group_size=10000,
+        )
         versions.append(sink.getvalue().to_pybytes())
     assert len(versions[0]) == len(versions[1])
-    state = SimpleNamespace(version=0, rewrite=False, gets=0, heads=0, bytes=0,
-                            versions=versions, versioned=False, identity=True)
+    state = SimpleNamespace(
+        version=0,
+        rewrite=False,
+        gets=0,
+        heads=0,
+        bytes=0,
+        versions=versions,
+        versioned=False,
+        identity=True,
+    )
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = 'HTTP/1.1'
@@ -60,12 +74,10 @@ def endpoint():
 
         def do_GET(self):
             state.gets += 1
-            start, end = self.headers.get('Range').removeprefix('bytes=').split(
-                '-')
-            payload = versions[state.version][int(start):int(end) + 1]
+            start, end = self.headers.get('Range').removeprefix('bytes=').split('-')
+            payload = versions[state.version][int(start) : int(end) + 1]
             self.send_response(206)
-            self.send_header('Content-Range',
-                             f'bytes {start}-{end}/{len(versions[0])}')
+            self.send_header('Content-Range', f'bytes {start}-{end}/{len(versions[0])}')
             self.response_headers(len(payload))
             self.wfile.write(payload)
             state.bytes += len(payload)
@@ -84,43 +96,61 @@ def endpoint():
 
 def access_for(endpoint):
     return source_access(
-        'bucket', session=boto3.Session(aws_access_key_id='test',
-                                        aws_secret_access_key='test',
-                                        region_name='us-east-1'),
-        endpoint_url=endpoint.url, options={'force_virtual_addressing': False})
+        'bucket',
+        session=boto3.Session(
+            aws_access_key_id='test',
+            aws_secret_access_key='test',
+            region_name='us-east-1',
+        ),
+        endpoint_url=endpoint.url,
+        options={'force_virtual_addressing': False},
+    )
 
 
 @pytest.mark.parametrize('versioned', [False, True])
 @pytest.mark.parametrize('copy', [False, True])
-def test_same_size_same_timestamp_rewrite_is_rejected(endpoint, tmp_path,
-                                                      versioned, copy):
+def test_same_size_same_timestamp_rewrite_is_rejected(
+    endpoint, tmp_path, versioned, copy
+):
     endpoint.versioned = versioned
     endpoint.rewrite = True
     access = access_for(endpoint)
     destination = tmp_path / 'out'
-    reader = ObjectStoreSourceReader(access.filesystem,
-                                     root='bucket/data.parquet',
-                                     file_format='parquet', fetch=access.fetch,
-                                     object_identity=access.object_identity)
+    reader = ObjectStoreSourceReader(
+        access.filesystem,
+        root='bucket/data.parquet',
+        file_format='parquet',
+        fetch=access.fetch,
+        object_identity=access.object_identity,
+    )
     with pytest.raises(TransientSourceError):
-        reader.prepare('', str(destination),
-                       columns=None if copy else {'id': Dtype.int64},
-                       mode=ReadMode.STREAMED)
+        reader.prepare(
+            '',
+            str(destination),
+            columns=None if copy else {'id': Dtype.int64},
+            mode=ReadMode.STREAMED,
+        )
     assert endpoint.gets >= 1
     assert not destination.exists()
 
 
 def test_unchanged_native_projection_does_not_download_unused_columns(
-        endpoint, tmp_path):
+    endpoint, tmp_path
+):
     access = access_for(endpoint)
-    reader = ObjectStoreSourceReader(access.filesystem,
-                                     root='bucket/data.parquet',
-                                     file_format='parquet', fetch=access.fetch,
-                                     object_identity=access.object_identity)
-    result = reader.prepare('', str(tmp_path / 'out'),
-                            columns={'id': Dtype.int64}, mode=ReadMode.STREAMED)
+    reader = ObjectStoreSourceReader(
+        access.filesystem,
+        root='bucket/data.parquet',
+        file_format='parquet',
+        fetch=access.fetch,
+        object_identity=access.object_identity,
+    )
+    result = reader.prepare(
+        '', str(tmp_path / 'out'), columns={'id': Dtype.int64}, mode=ReadMode.STREAMED
+    )
     assert pq.read_table(list(result.paths)).column('id').to_pylist() == list(
-        range(100000))
+        range(100000)
+    )
     assert endpoint.bytes < len(endpoint.versions[0])
 
 

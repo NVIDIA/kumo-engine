@@ -26,13 +26,17 @@ from kumo.engine.connector.base import Connector
 
 
 def _relative(name: str) -> str:
-    if (not isinstance(name, str) or not name or name.startswith('/')
-            or any(char in name for char in ('\\', ':', '?', '#', '\x00'))
-            or any(part in ('', '.', '..')
-                   for part in name.rstrip('/').split('/'))):
+    if (
+        not isinstance(name, str)
+        or not name
+        or name.startswith('/')
+        or any(char in name for char in ('\\', ':', '?', '#', '\x00'))
+        or any(part in ('', '.', '..') for part in name.rstrip('/').split('/'))
+    ):
         raise ValueError(
             'Use a nonempty relative path below root_dir; '
-            'absolute paths, URIs and traversal are not supported.')
+            'absolute paths, URIs and traversal are not supported.'
+        )
     return name.rstrip('/')
 
 
@@ -42,11 +46,9 @@ def _inside(root: Path, name: str) -> Path:
         if candidate == root:
             break
         if candidate.is_symlink() and candidate.is_dir():
-            raise ValueError(
-                'Directory symlinks are not supported by FileConnector.')
+            raise ValueError('Directory symlinks are not supported by FileConnector.')
     if not path.resolve().is_relative_to(root):
-        raise ValueError(
-            'Path escapes FileConnector root_dir through a symlink.')
+        raise ValueError('Path escapes FileConnector root_dir through a symlink.')
     return path
 
 
@@ -64,13 +66,13 @@ def _check_tree(root: Path, path: Path) -> None:
     within the connector root. Callers must not concurrently replace links.
     """
     if not path.resolve().is_relative_to(root):
-        raise ValueError(
-            'Path escapes FileConnector root_dir through a symlink.')
+        raise ValueError('Path escapes FileConnector root_dir through a symlink.')
     for directory, dirs, files in os.walk(path, followlinks=False):
         for name in dirs + files:
             item = Path(directory) / name
-            if item.is_symlink() and (name in dirs or
-                                      not item.resolve().is_relative_to(root)):
+            if item.is_symlink() and (
+                name in dirs or not item.resolve().is_relative_to(root)
+            ):
                 raise ValueError(
                     'Directory or escaping symlinks are not supported by FileConnector.'
                 )
@@ -107,39 +109,41 @@ class _FileSourceBackend(ObjectStoreSourceBackend):
         config = connector.config
         if not isinstance(config, FileConnectorConfig):
             raise TypeError('Local files require a FileConnectorConfig.')
-        return _FileReader(LocalFileSystem(), root=config.root_dir,
-                           source_type=ConnectorType.FILE)
+        return _FileReader(
+            LocalFileSystem(), root=config.root_dir, source_type=ConnectorType.FILE
+        )
 
     def _root_for(self, connector):
         return None
 
-    def get_table_config(self, connector: Union[Connector, SourceConnector],
-                         table_name, project_id=None):
+    def get_table_config(
+        self, connector: Union[Connector, SourceConnector], table_name, project_id=None
+    ):
         reader, name = self._reader(connector, table_name)
         path, kind = reader.resolve(name)
         return _FileTableConfig(
-            LocalFileSourceTable(path=str(Path(path).resolve()),
-                                 file_type=FileType(kind.upper())))
+            LocalFileSourceTable(
+                path=str(Path(path).resolve()), file_type=FileType(kind.upper())
+            )
+        )
 
-    def table_location(self, connector: Union[Connector, SourceConnector],
-                       table_name):
+    def table_location(self, connector: Union[Connector, SourceConnector], table_name):
         reader, name = self._reader(connector, table_name)
         return str(Path(reader.resolve(name)[0]).resolve())
 
     def prepare_ingest(self, connector, table_name, dest_dir, *args, **kwargs):
         _disjoint(Path(connector.config.root_dir), Path(dest_dir))
-        return super().prepare_ingest(connector, table_name, dest_dir, *args,
-                                      **kwargs)
+        return super().prepare_ingest(connector, table_name, dest_dir, *args, **kwargs)
 
-    def get_download_urls(self, connector: Union[Connector, SourceConnector],
-                          table_name, project_id=None):
+    def get_download_urls(
+        self, connector: Union[Connector, SourceConnector], table_name, project_id=None
+    ):
         reader, name = self._reader(connector, table_name)
         return [Path(path).as_uri() for path in reader.object_paths(name)]
 
 
 def _not_a_directory(destination: str) -> NotADirectoryError:
-    return NotADirectoryError(errno.ENOTDIR, os.strerror(errno.ENOTDIR),
-                              destination)
+    return NotADirectoryError(errno.ENOTDIR, os.strerror(errno.ENOTDIR), destination)
 
 
 def _probe_directory(root: Path, destination: str) -> None:
@@ -147,8 +151,7 @@ def _probe_directory(root: Path, destination: str) -> None:
         if root.exists() or root.is_symlink():
             raise _not_a_directory(destination)
         root = root.parent
-    with tempfile.TemporaryDirectory(prefix='.kumo-write-probe-',
-                                     dir=root) as probe:
+    with tempfile.TemporaryDirectory(prefix='.kumo-write-probe-', dir=root) as probe:
         (Path(probe) / 'probe').write_bytes(b'probe')
 
 
@@ -156,16 +159,14 @@ class _FileSinkBackend(ObjectStoreSinkBackend):
     scheme = 'file'
     provider = 'local filesystem'
 
-    def _destination(self, connector: Union[Connector, SourceConnector],
-                     coordinate):
+    def _destination(self, connector: Union[Connector, SourceConnector], coordinate):
         config = connector.config
         if not isinstance(config, FileConnectorConfig):
             raise TypeError('Local files require a FileConnectorConfig.')
         root = Path(config.root_dir)
         path = _inside(root, coordinate)
         _check_tree(root, path)
-        return LocalFileSystem(), str(path) + ('/' if coordinate.endswith('/')
-                                               else '')
+        return LocalFileSystem(), str(path) + ('/' if coordinate.endswith('/') else '')
 
     def preflight_write_files(self, connector, table_name, write_mode=None):
         _, destination = self._destination(connector, table_name)
@@ -180,13 +181,18 @@ class _FileSinkBackend(ObjectStoreSinkBackend):
             _check_tree(Path(connector.config.root_dir), target)
             # An existing target is overwritten in place, which needs write
             # access to the file and not to its directory.
-            roots = ([] if target.is_file() else
-                     [target.parent]) + ([path] if path.is_dir() else [])
+            roots = ([] if target.is_file() else [target.parent]) + (
+                [path] if path.is_dir() else []
+            )
         try:
             if target is None and path.is_file():
                 raise _not_a_directory(destination)
-            if (target is None and write_mode is not WriteMode.OVERWRITE
-                    and path.is_dir() and any(path.iterdir())):
+            if (
+                target is None
+                and write_mode is not WriteMode.OVERWRITE
+                and path.is_dir()
+                and any(path.iterdir())
+            ):
                 raise self._conflict(destination)
             for root in roots:
                 _probe_directory(root, destination)
@@ -202,7 +208,8 @@ class _FileSinkBackend(ObjectStoreSinkBackend):
             table_name += '.parquet'
         uri = super().write_table(connector, table_name, frame, *args, **kwargs)
         return Path(uri.removeprefix('file://')).as_uri() + (
-            '/' if uri.endswith('/') else '')
+            '/' if uri.endswith('/') else ''
+        )
 
     def write_files(self, connector, table_name, files, *args, **kwargs):
         # The shared exporter adds a suffix only for a single-file output.
@@ -210,33 +217,29 @@ class _FileSinkBackend(ObjectStoreSinkBackend):
             kind = layout.file_type(table_name) or layout.PARQUET
             if not table_name.casefold().endswith(f'.{kind}'):
                 table_name += f'.{kind}'
-        return super().write_files(connector, table_name, files, *args,
-                                   **kwargs)
+        return super().write_files(connector, table_name, files, *args, **kwargs)
 
     def publish_model(self, connector, bundle_dir, *, path=None, **kwargs):
         source = Path(bundle_dir).resolve()
-        if not source.is_dir() or not any(item.is_file()
-                                          for item in source.rglob('*')):
+        if not source.is_dir() or not any(item.is_file() for item in source.rglob('*')):
             raise ValueError(
-                'Publishing requires an existing nonempty bundle directory.')
+                'Publishing requires an existing nonempty bundle directory.'
+            )
         if path:
             _, destination = self._destination(connector, path)
             target = Path(destination)
             _disjoint(source, target)
-            if target.exists() and (not target.is_dir()
-                                    or any(target.iterdir())):
+            if target.exists() and (not target.is_dir() or any(target.iterdir())):
                 raise ValueError('Publish to an empty destination directory.')
             # A bundle must be a self-contained independent copy.
             if any(item.is_symlink() for item in source.rglob('*')):
                 raise ValueError('Model bundles must not contain symlinks.')
-        published = super().publish_model(connector, str(source), path=path,
-                                          **kwargs)
+        published = super().publish_model(connector, str(source), path=path, **kwargs)
         return replace(published, uri=Path(published.version).as_uri())
 
     def fetch_model(self, connector, local_dir, *, path=None, **kwargs):
         if path:
-            _disjoint(Path(self._destination(connector, path)[1]),
-                      Path(local_dir))
+            _disjoint(Path(self._destination(connector, path)[1]), Path(local_dir))
         return super().fetch_model(connector, local_dir, path=path, **kwargs)
 
 
@@ -256,11 +259,13 @@ class FileConnector(Connector):
     Model publication copies a bundle to an empty destination and rejects
     symlinks and overlap.
     """
+
     def __init__(self, *, root_dir: str):
         super().__init__()
         if not root_dir or '://' in str(root_dir):
             raise ValueError(
-                'root_dir must be a nonempty filesystem directory, not a URI.')
+                'root_dir must be a nonempty filesystem directory, not a URI.'
+            )
         root = Path(root_dir).expanduser().resolve()
         if root.exists() and not root.is_dir():
             raise ValueError('root_dir must be a directory.')
@@ -283,8 +288,7 @@ class FileConnector(Connector):
         return _FileSinkBackend()
 
     def source_table_for(self, table_name: str) -> LocalFileSourceTable:
-        return self.source_backend.get_table_config(self,
-                                                    table_name).source_table
+        return self.source_backend.get_table_config(self, table_name).source_table
 
     def validate_scratch_dir(self, scratch_dir: Path) -> None:
         _disjoint(Path(self.config.root_dir), scratch_dir)

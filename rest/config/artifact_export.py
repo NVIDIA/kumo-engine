@@ -12,11 +12,15 @@ from uuid import UUID
 from kumo_core.sources.layout import within_root
 from kumo_core.types import PredictionArtifactType
 from kumoapi.jobs import ADLSPredictionOutput as APIADLSPredictionOutput
-from kumoapi.jobs import FileTrainingTableOutputConfig
+from kumoapi.jobs import (
+    FileTrainingTableOutputConfig,
+    NamedTrainingTableOutputConfig,
+    PredictionOutputConfig,
+    TrainingTableArtifactType,
+    TrainingTableOutputConfig,
+)
 from kumoapi.jobs import GCSPredictionOutput as APIGCSPredictionOutput
-from kumoapi.jobs import NamedTrainingTableOutputConfig, PredictionOutputConfig
 from kumoapi.jobs import S3PredictionOutput as APIS3PredictionOutput
-from kumoapi.jobs import TrainingTableArtifactType, TrainingTableOutputConfig
 from kumoapi.jobs import WriteMode as KumoAPIWriteMode
 from kumoapi.typing import _FORBID_EXTRA_CONFIG, compatible_field_validator
 from pydantic.dataclasses import dataclass as pydantic_dataclass
@@ -57,6 +61,7 @@ ARTIFACT_EXPORT_WORKFLOW_EXECUTION_TIMEOUT = timedelta(days=30)
 @pydantic_dataclass(config=_FORBID_EXTRA_CONFIG)
 class HostedArtifactExportRequest:
     """Request for exporting a prediction or training-table artifact."""
+
     request_id: str
     job_id: str
     prediction_output: Optional[PredictionOutputConfig] = None
@@ -77,7 +82,8 @@ class HostedArtifactExportRequest:
         if sum(config is not None for config in configs) != 1:
             raise ValueError(
                 'Exactly one of "prediction_output" or '
-                '"training_table_output" must be set.')
+                '"training_table_output" must be set.'
+            )
 
 
 @dataclass
@@ -96,14 +102,14 @@ class FileOutputConfig:
     Exactly one coordinate representation is populated. ``output_path`` is a
     canonical full URI and ``path`` is connector-relative.
     """
+
     connector: ConnectorExecutionRef
     output_path: str | None = None
     path: str | None = None
     file_type: Optional[FileType] = None
 
     def __post_init__(self) -> None:
-        if sum(value is not None
-               for value in (self.output_path, self.path)) != 1:
+        if sum(value is not None for value in (self.output_path, self.path)) != 1:
             raise ValueError('File output requires exactly one destination')
 
 
@@ -115,8 +121,7 @@ def resolve_file_output_path(
     if output.output_path is not None:
         if isinstance(connector, AnyURIFileConnector):
             return connector._table_path(output.output_path)
-        require_output_path_within_connector(output.output_path,
-                                             connector.root_dir)
+        require_output_path_within_connector(output.output_path, connector.root_dir)
         return output.output_path
     if isinstance(connector, AnyURIFileConnector):
         raise ValueError('Rootless connectors require a full destination')
@@ -137,8 +142,7 @@ def file_output_config(
 ) -> FileOutputConfig:
     """Build the durable form without changing the external string shape."""
     if urlsplit(coordinate).scheme:
-        return FileOutputConfig(connector, output_path=coordinate,
-                                file_type=file_type)
+        return FileOutputConfig(connector, output_path=coordinate, file_type=file_type)
     return FileOutputConfig(connector, path=coordinate, file_type=file_type)
 
 
@@ -159,13 +163,13 @@ class DatabricksManagedVolumeStage:
 @dataclass
 class ArtifactExportInput:
     # For each artifact type, the Kumo-internal path where it is stored.
-    artifact_paths: Dict[Union[PredictionArtifactType,
-                               TrainingTableArtifactType], str]
+    artifact_paths: Dict[Union[PredictionArtifactType, TrainingTableArtifactType], str]
     # For each artifact type, every authorized customer destination describing
     # where and how the shared producer artifact will be written.
-    output_config: Dict[Union[PredictionArtifactType,
-                              TrainingTableArtifactType],
-                        list[Union[FileOutputConfig, NamedOutputConfig]]]
+    output_config: Dict[
+        Union[PredictionArtifactType, TrainingTableArtifactType],
+        list[Union[FileOutputConfig, NamedOutputConfig]],
+    ]
     # Batch-prediction ownership remains a bounded pointer/manifest reference.
     # Activities resolve and validate the exact selected files; workflow
     # histories never duplicate an O(number-of-parts) inventory.
@@ -179,8 +183,9 @@ class ArtifactExportInput:
     @classmethod
     def from_out_config_n_spec(
         cls,
-        artifact_paths: Dict[Union[PredictionArtifactType,
-                                   TrainingTableArtifactType], str],
+        artifact_paths: Dict[
+            Union[PredictionArtifactType, TrainingTableArtifactType], str
+        ],
         output_config: Union[PredictionOutputConfig, TrainingTableOutputConfig],
         connector_spec: ConnectorExecutionRef,
     ) -> Self:
@@ -216,9 +221,14 @@ class ArtifactExportInput:
 
         else:
             artifact_type = cls._map_artifact_type(artifact_type)
-            if isinstance(output_config,
-                          (APIS3PredictionOutput, APIGCSPredictionOutput,
-                           APIADLSPredictionOutput)):
+            if isinstance(
+                output_config,
+                (
+                    APIS3PredictionOutput,
+                    APIGCSPredictionOutput,
+                    APIADLSPredictionOutput,
+                ),
+            ):
                 output_configs[artifact_type] = [
                     file_output_config(
                         connector_spec,
@@ -229,15 +239,17 @@ class ArtifactExportInput:
             else:
                 table_name = output_config.table_name
                 write_mode = output_config.write_mode
-                staging_table_name = getattr(output_config,
-                                             'staging_table_name', None)
+                staging_table_name = getattr(output_config, 'staging_table_name', None)
 
                 output_configs[artifact_type] = [
                     NamedOutputConfig(
-                        connector=connector_spec, out_table=ArtifactOutTable(
+                        connector=connector_spec,
+                        out_table=ArtifactOutTable(
                             table_name=table_name,
                             staging_table_name=staging_table_name,
-                            write_mode=write_mode))
+                            write_mode=write_mode,
+                        ),
+                    )
                 ]
 
         return cls(
@@ -257,8 +269,7 @@ class ArtifactExportInput:
         artifact_paths: Dict[PredictionArtifactType, str],
         *,
         prediction_selection: PredictionSelectionRef | None = None,
-        databricks_stages: Dict[int, DatabricksManagedVolumeStage]
-        | None = None,
+        databricks_stages: Dict[int, DatabricksManagedVolumeStage] | None = None,
         known_artifact_stats: Dict[PredictionArtifactType, OutputArtifactStats]
         | None = None,
     ) -> Self:
@@ -266,21 +277,24 @@ class ArtifactExportInput:
         # connector reference and output configuration. Credentials are never
         # placed in workflow input.
         output_config = {}
-        requested_artifacts = requested_prediction_artifact_types(
-            job_input.config)
+        requested_artifacts = requested_prediction_artifact_types(job_input.config)
         requested_artifact_order = tuple(
             dict.fromkeys(
                 cls._map_artifact_type(output.artifact_type)
-                for output in job_input.config.outputs))
+                for output in job_input.config.outputs
+            )
+        )
         unexpected_artifacts = set(artifact_paths) - requested_artifacts
         if unexpected_artifacts:
             raise ValueError(
                 'Batch prediction produced unrequested artifacts: '
-                f'{sorted(str(value) for value in unexpected_artifacts)}')
+                f'{sorted(str(value) for value in unexpected_artifacts)}'
+            )
         artifact_paths = dict(artifact_paths)
         databricks_stages = databricks_stages or {}
-        selected_artifacts = (requested_artifact_order
-                              if prediction_selection is not None else ())
+        selected_artifacts = (
+            requested_artifact_order if prediction_selection is not None else ()
+        )
 
         for output_index, output_conf in enumerate(job_input.config.outputs):
             artifact_type = cls._map_artifact_type(output_conf.artifact_type)
@@ -290,14 +304,17 @@ class ArtifactExportInput:
                 # do not need a customer connector export workflow.
                 continue
 
-            if isinstance(output_conf, (S3PredictionOutput, GCSPredictionOutput,
-                                        ADLSPredictionOutput)):
+            if isinstance(
+                output_conf,
+                (S3PredictionOutput, GCSPredictionOutput, ADLSPredictionOutput),
+            ):
                 connector_id = ConnectorID(output_conf.connector_id)
                 connector = job_input.output_connectors.get(connector_id)
                 if connector is None:
                     raise ValueError(
                         f"Prediction output with ID '{connector_id}' is "
-                        'missing its authorized connector reference')
+                        'missing its authorized connector reference'
+                    )
                 out_config = file_output_config(
                     connector,
                     output_conf.file_path,
@@ -317,42 +334,46 @@ class ArtifactExportInput:
                 elif isinstance(output_conf, DatabricksPredictionOutput):
                     write_mode = output_conf.write_mode
                 else:
-                    raise ValueError(
-                        f"Unsupported connector type: {type(output_conf)}")
+                    raise ValueError(f'Unsupported connector type: {type(output_conf)}')
 
                 connector = job_input.output_connectors.get(connector_id)
                 out_table = ArtifactOutTable(
                     table_name=output_conf.table_name,
                     staging_table_name=staging_table_name,
-                    write_mode=write_mode)
+                    write_mode=write_mode,
+                )
                 assert connector is not None
-                out_config = NamedOutputConfig(connector=connector,
-                                               out_table=out_table,
-                                               output_index=output_index)
+                out_config = NamedOutputConfig(
+                    connector=connector, out_table=out_table, output_index=output_index
+                )
                 if isinstance(output_conf, DatabricksPredictionOutput):
                     stage = databricks_stages.get(output_index)
                     if stage is None:
                         raise ValueError(
                             'Databricks prediction output is missing its '
-                            'producer-uploaded managed-volume stage')
+                            'producer-uploaded managed-volume stage'
+                        )
                     out_config.managed_volume_stage = stage
                     artifact_paths.setdefault(artifact_type, stage.path)
 
             output_config.setdefault(artifact_type, []).append(out_config)
 
-        missing_artifacts = requested_artifacts - (set(artifact_paths)
-                                                   | set(selected_artifacts))
+        missing_artifacts = requested_artifacts - (
+            set(artifact_paths) | set(selected_artifacts)
+        )
         if missing_artifacts:
             raise ValueError(
                 'Batch prediction is missing requested artifact paths: '
-                f'{sorted(str(value) for value in missing_artifacts)}')
+                f'{sorted(str(value) for value in missing_artifacts)}'
+            )
 
         known_artifact_stats = known_artifact_stats or {}
         unexpected_stats = set(known_artifact_stats) - requested_artifacts
         if unexpected_stats:
             raise ValueError(
                 'Batch prediction has stats for unrequested artifacts: '
-                f'{sorted(str(value) for value in unexpected_stats)}')
+                f'{sorted(str(value) for value in unexpected_stats)}'
+            )
 
         return cls(
             artifact_paths=artifact_paths,
@@ -363,13 +384,15 @@ class ArtifactExportInput:
         )
 
     def __post_init__(self):
-        available_artifacts = (set(self.artifact_paths)
-                               | set(self.prediction_artifact_types))
+        available_artifacts = set(self.artifact_paths) | set(
+            self.prediction_artifact_types
+        )
         for artifact_type in self.output_config:
             if artifact_type not in available_artifacts:
                 raise ValueError(
-                    f"Artifact type {artifact_type} path not found in "
-                    f"the producer contract")
+                    f'Artifact type {artifact_type} path not found in '
+                    f'the producer contract'
+                )
         expected_selected = tuple(dict.fromkeys(self.prediction_artifact_types))
         if expected_selected != self.prediction_artifact_types:
             raise ValueError('Selected prediction artifact set is invalid')
@@ -383,5 +406,5 @@ class ArtifactExportInput:
         self,
     ) -> tuple[Union[PredictionArtifactType, TrainingTableArtifactType], ...]:
         return tuple(
-            dict.fromkeys((*self.artifact_paths,
-                           *self.prediction_artifact_types)))
+            dict.fromkeys((*self.artifact_paths, *self.prediction_artifact_types))
+        )

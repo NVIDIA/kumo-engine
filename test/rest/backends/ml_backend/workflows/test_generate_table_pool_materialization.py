@@ -15,19 +15,22 @@ from rest.backends.ml_backend.workflows import generate_table_workflows as mod
 
 
 @pytest.mark.asyncio
-async def test_generated_table_materialization_uses_durable_ttng_bundle(
-        monkeypatch):
+async def test_generated_table_materialization_uses_durable_ttng_bundle(monkeypatch):
     validation = ValidationResponse()
     execute_activity = AsyncMock(return_value=('materialized', validation))
     monkeypatch.setattr(mod.workflow, 'execute_activity', execute_activity)
 
     workflow = mod.GenerateTrainingTableWorkflow()
-    workflow._job_input = cast(Any, SimpleNamespace(
-        graph_data_compute_input=SimpleNamespace(
-            graph_key='NA-22222222222222222222222222222222'),
-        graph_version_info=SimpleNamespace(graph_data_version='v2'),
-        weight_col_name=None,
-    ))
+    workflow._job_input = cast(
+        Any,
+        SimpleNamespace(
+            graph_data_compute_input=SimpleNamespace(
+                graph_key='NA-22222222222222222222222222222222'
+            ),
+            graph_version_info=SimpleNamespace(graph_data_version='v2'),
+            weight_col_name=None,
+        ),
+    )
     workflow._ml_job_settings = cast(Any, SimpleNamespace())
 
     result = await workflow._materialize_training_table('s3://bucket/tt', True)
@@ -47,13 +50,18 @@ def _registering_job_input(time_col_name=None):
         query_type=QueryType.STATIC,
         list_distinct_target_is_array=False,
         validated_predictive_query=SimpleNamespace(entity_table='users'),
-        graph=SimpleNamespace(tables=[
-            SimpleNamespace(
-                table_name='users',
-                time_col=(None if time_col_name is None else SimpleNamespace(
-                    name=time_col_name)),
-            ),
-        ]),
+        graph=SimpleNamespace(
+            tables=[
+                SimpleNamespace(
+                    table_name='users',
+                    time_col=(
+                        None
+                        if time_col_name is None
+                        else SimpleNamespace(name=time_col_name)
+                    ),
+                ),
+            ]
+        ),
     )
     return SimpleNamespace(
         id='gen-traintable-job-registered',
@@ -73,12 +81,16 @@ def _registering_spec():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(('time_col_name', 'anchored'), [
-    (None, False),
-    ('event_ts', True),
-])
+@pytest.mark.parametrize(
+    ('time_col_name', 'anchored'),
+    [
+        (None, False),
+        ('event_ts', True),
+    ],
+)
 async def test_registering_reads_the_supplied_rows_instead_of_generating(
-        monkeypatch, time_col_name, anchored):
+    monkeypatch, time_col_name, anchored
+):
     r"""A job that records rows reads them, checks them, and generates
     nothing.
 
@@ -94,16 +106,17 @@ async def test_registering_reads_the_supplied_rows_instead_of_generating(
     otherwise -- both are exercised here.
     """
     validation = ValidationResponse()
-    execute_activity = AsyncMock(side_effect=[
-        ('s3://example-bucket/custom_train_table', validation),
-        validation,
-    ])
+    execute_activity = AsyncMock(
+        side_effect=[
+            ('s3://example-bucket/custom_train_table', validation),
+            validation,
+        ]
+    )
     run_pooled = AsyncMock()
     monkeypatch.setattr(mod.workflow, 'execute_activity', execute_activity)
     monkeypatch.setattr(mod, 'run_pooled_activity', run_pooled)
     monkeypatch.setattr(mod, 'deploy_env', SimpleNamespace)
-    monkeypatch.setattr(mod, 'get_job_base_dir',
-                        lambda: 's3://example-bucket/jobs')
+    monkeypatch.setattr(mod, 'get_job_base_dir', lambda: 's3://example-bucket/jobs')
 
     workflow = mod.GenerateTrainingTableWorkflow()
     workflow._job_input = cast(Any, _registering_job_input(time_col_name))
@@ -111,8 +124,9 @@ async def test_registering_reads_the_supplied_rows_instead_of_generating(
     workflow.job_id = 'gen-traintable-job-registered'
     custom_spec = _registering_spec()
 
-    result = await workflow._register_supplied_table(cast(Any, custom_spec),
-                                                     ValidationResponse())
+    result = await workflow._register_supplied_table(
+        cast(Any, custom_spec), ValidationResponse()
+    )
 
     run_pooled.assert_not_awaited()
     assert execute_activity.await_count == 2
@@ -122,7 +136,8 @@ async def test_registering_reads_the_supplied_rows_instead_of_generating(
     # The copy lands under this job's own home directory, not a training
     # job's: the registration owns it.
     assert kwargs['args'][1].startswith(
-        's3://example-bucket/jobs/gen-traintable-job-registered')
+        's3://example-bucket/jobs/gen-traintable-job-registered'
+    )
     assert kwargs['args'][1].endswith('custom_train_table')
     assert kwargs['args'][-1] == time_col_name
     assert kwargs['task_queue'] == mod.DATA_BACKEND_TASK_QUEUE
@@ -136,23 +151,23 @@ async def test_registering_reads_the_supplied_rows_instead_of_generating(
 
     assert result.train_table_path == 's3://example-bucket/custom_train_table'
     assert result.train_table_materialization_path == (
-        's3://example-bucket/custom_train_table')
+        's3://example-bucket/custom_train_table'
+    )
     assert result.validation.ok
 
 
 @pytest.mark.asyncio
-async def test_a_supplied_table_the_platform_cannot_read_fails_the_job(
-        monkeypatch):
+async def test_a_supplied_table_the_platform_cannot_read_fails_the_job(monkeypatch):
     r"""The ingest's own errors are the job's, rather than a path of ''."""
     refused = ValidationResponse()
     refused.errors.append(
-        mod.ValidationError(title='Source table not found',
-                            message='no such table'))
-    monkeypatch.setattr(mod.workflow, 'execute_activity',
-                        AsyncMock(return_value=('', refused)))
+        mod.ValidationError(title='Source table not found', message='no such table')
+    )
+    monkeypatch.setattr(
+        mod.workflow, 'execute_activity', AsyncMock(return_value=('', refused))
+    )
     monkeypatch.setattr(mod, 'deploy_env', SimpleNamespace)
-    monkeypatch.setattr(mod, 'get_job_base_dir',
-                        lambda: 's3://example-bucket/jobs')
+    monkeypatch.setattr(mod, 'get_job_base_dir', lambda: 's3://example-bucket/jobs')
 
     workflow = mod.GenerateTrainingTableWorkflow()
     workflow._job_input = cast(Any, _registering_job_input())
@@ -160,8 +175,8 @@ async def test_a_supplied_table_the_platform_cannot_read_fails_the_job(
     workflow.job_id = 'gen-traintable-job-registered'
 
     result = await workflow._register_supplied_table(
-        cast(Any, SimpleNamespace(source_table=SimpleNamespace())),
-        ValidationResponse())
+        cast(Any, SimpleNamespace(source_table=SimpleNamespace())), ValidationResponse()
+    )
 
     assert not result.validation.ok
     assert result.train_table_path == ''
@@ -177,21 +192,23 @@ async def test_a_registering_job_never_dispatches_generation(monkeypatch):
     to generate, and dispatching it would both cost a snapshot lease and
     overwrite the caller's rows with generated ones.
     """
-    ingested = ('s3://example-bucket/jobs/gen-traintable-job-registered/'
-                'custom_train_table')
+    ingested = (
+        's3://example-bucket/jobs/gen-traintable-job-registered/custom_train_table'
+    )
     execute_activity = AsyncMock(
-        side_effect=[None, (ingested, ValidationResponse()),
-                     ValidationResponse()])
+        side_effect=[None, (ingested, ValidationResponse()), ValidationResponse()]
+    )
     run_pooled = AsyncMock()
     monkeypatch.setattr(mod.workflow, 'execute_activity', execute_activity)
     monkeypatch.setattr(mod, 'run_pooled_activity', run_pooled)
     monkeypatch.setattr(mod, 'deploy_env', SimpleNamespace)
-    monkeypatch.setattr(mod, 'get_job_base_dir',
-                        lambda: 's3://example-bucket/jobs')
-    monkeypatch.setattr(mod, '_apply_graph_version_to_table_configs',
-                        lambda *args: None)
-    monkeypatch.setattr(mod, 'DataBackendContext',
-                        lambda *args, **kwargs: SimpleNamespace())
+    monkeypatch.setattr(mod, 'get_job_base_dir', lambda: 's3://example-bucket/jobs')
+    monkeypatch.setattr(
+        mod, '_apply_graph_version_to_table_configs', lambda *args: None
+    )
+    monkeypatch.setattr(
+        mod, 'DataBackendContext', lambda *args, **kwargs: SimpleNamespace()
+    )
 
     job_input = _registering_job_input()
     job_input.spec.custom_train_table = _registering_spec()

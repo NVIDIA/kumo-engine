@@ -22,8 +22,7 @@ def assert_edge_index_equal(edge_index1: Any, edge_index2: Any):
     r"""Tests whether two :obj:`edge_index` tensors are equivalent."""
     edge_index1 = parse_edge_index(edge_index1)
     edge_index2 = parse_edge_index(edge_index2)
-    assert torch.equal(sort_edge_index(edge_index1),
-                       sort_edge_index(edge_index2))
+    assert torch.equal(sort_edge_index(edge_index1), sort_edge_index(edge_index2))
 
 
 def compare_nested_lists(expected_target: List[Any], target: Iterable):

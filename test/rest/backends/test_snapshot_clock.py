@@ -16,8 +16,7 @@ from kumoapi.typing import TimestampPrecision
 
 from io_utils.json import from_json_dict
 from kumo.diskgraph.service import DiskgraphService
-from rest.backends.data_backend.activities import \
-    data_backend_activities as activities
+from rest.backends.data_backend.activities import data_backend_activities as activities
 from rest.backends.ml_backend.activities.ml_backend_activities import (
     MLBackendActivities,
 )
@@ -30,21 +29,34 @@ CLOCKS = get_args(TimestampPrecision)
 
 
 def _snapshot_version(monkeypatch, clock: str) -> GraphDataVersionInfo:
-    monkeypatch.setattr(activities.DataBackendActivities,
-                        'save_graph_data_version', mock.AsyncMock())
     monkeypatch.setattr(
-        activities, 'data_backend_cache',
-        lambda: SimpleNamespace(graph_cache=SimpleNamespace(
-            save_latest_graph_version=SimpleNamespace(
-                coroutine=mock.AsyncMock()))))
+        activities.DataBackendActivities, 'save_graph_data_version', mock.AsyncMock()
+    )
+    monkeypatch.setattr(
+        activities,
+        'data_backend_cache',
+        lambda: SimpleNamespace(
+            graph_cache=SimpleNamespace(
+                save_latest_graph_version=SimpleNamespace(coroutine=mock.AsyncMock())
+            )
+        ),
+    )
     graph_input = GraphDataComputeInput(
-        'graph', 'graph-key', cast(Any, {'table': None}), {}, {},
-        cast(Any, None), table_aliases=cast(Any, {'table': 'events'}),
+        'graph',
+        'graph-key',
+        cast(Any, {'table': None}),
+        {},
+        {},
+        cast(Any, None),
+        table_aliases=cast(Any, {'table': 'events'}),
         pinned_data_versions=cast(Any, {'table': 'v1'}),
-        timestamp_precision=clock)
+        timestamp_precision=clock,
+    )
     return asyncio.run(
         activities.DataBackendActivities._refresh_graph_data_version(
-            graph_input, {}, None))
+            graph_input, {}, None
+        )
+    )
 
 
 def test_seconds_snapshot_keeps_the_existing_identity(monkeypatch):
@@ -60,10 +72,8 @@ def test_each_clock_has_its_own_snapshot_identity(monkeypatch):
 
 def test_snapshots_recorded_before_clocks_are_seconds():
     version = from_json_dict(
-        {
-            'graph_data_version': 'v1',
-            'table_data_versions': {}
-        }, GraphDataVersionInfo)
+        {'graph_data_version': 'v1', 'table_data_versions': {}}, GraphDataVersionInfo
+    )
     assert version.timestamp_precision == 'seconds'
 
 
@@ -72,23 +82,26 @@ def snapshot_api(monkeypatch):
     driver = mock.AsyncMock()
     driver.create_graph_snapshot.return_value = 'graph@v1'
     recorded = SimpleNamespace(timestamp_precision='seconds')
-    monkeypatch.setattr(data_snapshot, 'get_graph_snapshot_info',
-                        mock.AsyncMock(return_value=(None, recorded)))
-    monkeypatch.setattr(data_snapshot.GraphIDv2, 'from_public',
-                        lambda graph_id: SimpleNamespace(fpid='graph'))
+    monkeypatch.setattr(
+        data_snapshot,
+        'get_graph_snapshot_info',
+        mock.AsyncMock(return_value=(None, recorded)),
+    )
+    monkeypatch.setattr(
+        data_snapshot.GraphIDv2,
+        'from_public',
+        lambda graph_id: SimpleNamespace(fpid='graph'),
+    )
     app = FastAPI()
-    app.include_router(
-        GraphSnapshotRouter(lambda: None, driver, mock.Mock()).router)
-    return SimpleNamespace(client=TestClient(app), driver=driver,
-                           recorded=recorded)
+    app.include_router(GraphSnapshotRouter(lambda: None, driver, mock.Mock()).router)
+    return SimpleNamespace(client=TestClient(app), driver=driver, recorded=recorded)
 
 
 def _create(snapshot_api, **params):
-    return snapshot_api.client.post('/graphsnapshots', params={
-        'graph_id': 'graph',
-        'project_id': 'default',
-        **params
-    })
+    return snapshot_api.client.post(
+        '/graphsnapshots',
+        params={'graph_id': 'graph', 'project_id': 'default', **params},
+    )
 
 
 def test_request_without_a_clock_builds_seconds(snapshot_api):
@@ -113,8 +126,7 @@ def test_snapshot_echoes_the_recorded_clock_not_the_request(snapshot_api):
 
 
 def test_unknown_clock_is_rejected(snapshot_api):
-    assert _create(snapshot_api,
-                   timestamp_precision='months').status_code == 422
+    assert _create(snapshot_api, timestamp_precision='months').status_code == 422
     snapshot_api.driver.create_graph_snapshot.assert_not_awaited()
 
 
@@ -124,28 +136,37 @@ def test_prediction_statistics_use_the_snapshot_clock(monkeypatch):
     binding = mock.Mock(return_value=('{}', '{}'))
     monkeypatch.setattr(diskgraph, 'compute_col_stats_for_parquet', binding)
     DiskgraphService(cast(Any, None)).compute_col_stats_for_parquet(
-        ['predictions.parquet'], [], 'v1', timestamp_precision='hours')
+        ['predictions.parquet'], [], 'v1', timestamp_precision='hours'
+    )
     assert binding.call_args.kwargs['timestamp_unit'] == 'hours'
 
 
 def test_reading_a_snapshot_echoes_its_clock(snapshot_api):
     snapshot_api.driver.get_graph_snapshot.return_value = SimpleNamespace(
-        snapshot_resource=GraphSnapshotResource(id=GraphSnapshotID('graph@v1'),
-                                                table_ids={}),
-        timestamp_precision='milliseconds')
-    response = snapshot_api.client.get('/graphsnapshots/graph@v1',
-                                       params={'project_id': 'default'})
+        snapshot_resource=GraphSnapshotResource(
+            id=GraphSnapshotID('graph@v1'), table_ids={}
+        ),
+        timestamp_precision='milliseconds',
+    )
+    response = snapshot_api.client.get(
+        '/graphsnapshots/graph@v1', params={'project_id': 'default'}
+    )
     assert response.headers['X-Kumo-Timestamp-Precision'] == 'milliseconds'
 
 
 def test_a_reused_prediction_table_in_another_clock_is_refused():
     activity = object.__new__(MLBackendActivities)
     activity._load_project_bound_gen_pred_table_input = mock.AsyncMock(
-        return_value=SimpleNamespace(graph_version_info=SimpleNamespace(
-            timestamp_precision='seconds')))
-    bp_input = SimpleNamespace(graph_data_compute_input=SimpleNamespace(
-        timestamp_precision='milliseconds'))
+        return_value=SimpleNamespace(
+            graph_version_info=SimpleNamespace(timestamp_precision='seconds')
+        )
+    )
+    bp_input = SimpleNamespace(
+        graph_data_compute_input=SimpleNamespace(timestamp_precision='milliseconds')
+    )
     with pytest.raises(ValueError, match='trained on a milliseconds snapshot'):
         asyncio.run(
             activity.load_decoupled_gen_pred_table_input(
-                cast(Any, bp_input), cast(Any, 'gen-job')))
+                cast(Any, bp_input), cast(Any, 'gen-job')
+            )
+        )

@@ -30,4 +30,5 @@ def backend_cache(auto_setup_kumo_backend: bool):
         fsutil.rm(data.get_persist_dir(), ignore_errors=True)
         fsutil.rm(
             kumo.home.HomeDirManager(kumo.home.get_home_dir()).pseudo_time_dir,
-            ignore_errors=True)
+            ignore_errors=True,
+        )

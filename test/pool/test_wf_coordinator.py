@@ -12,6 +12,7 @@ This module imports ``pool.wf_coordinator`` (→ ``pool.activities`` → the kum
 stack), so it needs the full kumo-stack test environment, like
 ``test_provision_terminal_nonretry.py``.
 """
+
 import asyncio
 from datetime import timedelta
 from typing import Any, List
@@ -38,11 +39,14 @@ from pool.task_queues import activity_queue
 
 def test_placement_timeout_layers_cover_cold_k8s_path():
     internal_budget = timedelta(
-        seconds=(timeouts.POOL_WORKER_STARTUP_GRACE_SEC +
-                 timeouts.POOL_WORKER_PROVISION_TIMEOUT_SEC +
-                 timeouts.ACTIVITY_POD_PROVISION_TIMEOUT_SEC +
-                 timeouts.ACTIVITY_POLLER_READY_TIMEOUT_SEC +
-                 timeouts.ACTIVITY_JOB_DELETE_TIMEOUT_SEC))
+        seconds=(
+            timeouts.POOL_WORKER_STARTUP_GRACE_SEC
+            + timeouts.POOL_WORKER_PROVISION_TIMEOUT_SEC
+            + timeouts.ACTIVITY_POD_PROVISION_TIMEOUT_SEC
+            + timeouts.ACTIVITY_POLLER_READY_TIMEOUT_SEC
+            + timeouts.ACTIVITY_JOB_DELETE_TIMEOUT_SEC
+        )
+    )
 
     assert timeouts.PLACE_SNAPSHOT_RPC_TIMEOUT > internal_budget
     assert timeouts.PLACE_START_TO_CLOSE > (timeouts.PLACE_SNAPSHOT_RPC_TIMEOUT)
@@ -54,6 +58,7 @@ class _FakeWorkflow:
     runner uses: ``execute_activity``, ``sleep``, ``info``, ``logger``,
     ``upsert_memo``. ``execute_activity`` dispatches to a per-activity handler
     queue so a test can script success / failure per call."""
+
     def __init__(self, workflow_id: str = 'wf-1') -> None:
         self._workflow_id = workflow_id
         # activity_fn -> list of callables(call_index) returning result or
@@ -87,21 +92,21 @@ class _FakeWorkflow:
 
     async def sleep(self, duration) -> None:
         self.sleeps.append(
-            duration if isinstance(duration, timedelta) else timedelta(
-                seconds=duration))
+            duration if isinstance(duration, timedelta) else timedelta(seconds=duration)
+        )
 
     async def execute_activity(self, activity_fn, *args, **kwargs):
         self.dispatched.append(activity_fn)
         queue = self.handlers.get(activity_fn)
         if not queue:
-            raise AssertionError(
-                f'unexpected execute_activity for {activity_fn}')
+            raise AssertionError(f'unexpected execute_activity for {activity_fn}')
         handler = queue.pop(0)
         return handler()
 
 
-def _result(task_queue='tq-1', worker='worker-a',
-            status=PlacementStatus.WARM) -> PlacementResult:
+def _result(
+    task_queue='tq-1', worker='worker-a', status=PlacementStatus.WARM
+) -> PlacementResult:
     return PlacementResult(
         snapshot_id='snap-1',
         task_queue=task_queue,
@@ -112,14 +117,16 @@ def _result(task_queue='tq-1', worker='worker-a',
 
 
 def _stats(worker: str, health: WorkerStatus) -> PoolStats:
-    return PoolStats(durable_workers=[
-        PoolWorkerStats(
-            pool_worker_uid=worker,
-            health=health,
-            pvc_free_bytes=0,
-            pvc_total_bytes=0,
-        )
-    ])
+    return PoolStats(
+        durable_workers=[
+            PoolWorkerStats(
+                pool_worker_uid=worker,
+                health=health,
+                pvc_free_bytes=0,
+                pvc_total_bytes=0,
+            )
+        ]
+    )
 
 
 def _activity_error(cause: BaseException | None = None) -> Exception:
@@ -127,10 +134,15 @@ def _activity_error(cause: BaseException | None = None) -> Exception:
     # that exact type, so use it directly.
     from temporalio.exceptions import ActivityError
 
-    error = ActivityError(message='boom', scheduled_event_id=1,
-                          started_event_id=1, identity='x',
-                          activity_type='predict', activity_id='a',
-                          retry_state=None)
+    error = ActivityError(
+        message='boom',
+        scheduled_event_id=1,
+        started_event_id=1,
+        identity='x',
+        activity_type='predict',
+        activity_id='a',
+        retry_state=None,
+    )
     error.__cause__ = cause
     return error
 
@@ -139,8 +151,8 @@ def _timeout_activity_error(timeout_type) -> Exception:
     from temporalio.exceptions import TimeoutError
 
     return _activity_error(
-        TimeoutError('activity timed out', type=timeout_type,
-                     last_heartbeat_details=[]))
+        TimeoutError('activity timed out', type=timeout_type, last_heartbeat_details=[])
+    )
 
 
 def _permanent_snapshot_miss_error() -> Exception:
@@ -153,7 +165,8 @@ def _permanent_snapshot_miss_error() -> Exception:
             'snapshot missing',
             type=PERMANENT_SNAPSHOT_MISS_ERROR_TYPE,
             non_retryable=True,
-        ))
+        )
+    )
 
 
 def _cancelled_activity_error() -> Exception:
@@ -222,8 +235,7 @@ def test_await_worker_recovery_gone_returns_replace(fake_workflow):
     assert decision == 'replace'
 
 
-def test_await_worker_recovery_stale_then_ready_waits_then_retries(
-        fake_workflow):
+def test_await_worker_recovery_stale_then_ready_waits_then_retries(fake_workflow):
     fake_workflow.handlers[get_pool_stats_activity] = [
         lambda: _stats('worker-a', WorkerStatus.STALE),
         lambda: _stats('worker-a', WorkerStatus.READY),
@@ -244,16 +256,16 @@ def test_await_worker_recovery_stale_then_dead_replaces(fake_workflow):
     assert fake_workflow.sleeps == [wf_coordinator._STALE_REPOLL_INTERVAL]
 
 
-def test_await_worker_recovery_persistent_stale_bounded_then_replaces(
-        fake_workflow):
+def test_await_worker_recovery_persistent_stale_bounded_then_replaces(fake_workflow):
     # Always STALE → bounded by _STALE_WAIT_CEILING, then replace.
     fake_workflow.handlers[get_pool_stats_activity] = [
         (lambda: _stats('worker-a', WorkerStatus.STALE)) for _ in range(100)
     ]
     decision = _run(wf_coordinator._await_worker_recovery('worker-a'))
     assert decision == 'replace'
-    expected_sleeps = (wf_coordinator._STALE_WAIT_CEILING //
-                       wf_coordinator._STALE_REPOLL_INTERVAL)
+    expected_sleeps = (
+        wf_coordinator._STALE_WAIT_CEILING // wf_coordinator._STALE_REPOLL_INTERVAL
+    )
     assert len(fake_workflow.sleeps) == expected_sleeps
 
 
@@ -272,7 +284,8 @@ def _run_pooled(fake_workflow):
             schedule_to_close_timeout=timedelta(hours=1),
             heartbeat_timeout=timedelta(minutes=5),
             max_attempts=3,
-        ))
+        )
+    )
 
 
 def test_run_pooled_activity_success_first_try(fake_workflow):
@@ -286,8 +299,7 @@ def test_run_pooled_activity_success_first_try(fake_workflow):
     assert fake_workflow.dispatched.count(release_snapshot_activity) == 1
 
 
-def test_run_pooled_activity_stale_then_ready_retries_same_placement(
-        fake_workflow):
+def test_run_pooled_activity_stale_then_ready_retries_same_placement(fake_workflow):
     from temporalio.exceptions import TimeoutType
 
     fake_workflow.handlers[place_snapshot_activity] = [_result]
@@ -321,9 +333,7 @@ def test_run_pooled_activity_dead_worker_re_places(fake_workflow):
     fake_workflow.handlers[get_pool_stats_activity] = [
         lambda: _stats('worker-a', WorkerStatus.DEAD)
     ]
-    fake_workflow.handlers[release_snapshot_activity] = [
-        lambda: None, lambda: None
-    ]
+    fake_workflow.handlers[release_snapshot_activity] = [lambda: None, lambda: None]
 
     assert _run_pooled(fake_workflow) == 'ok'
     # Re-placed (two place calls); the dropped placement + final placement each
@@ -333,7 +343,8 @@ def test_run_pooled_activity_dead_worker_re_places(fake_workflow):
 
 
 def test_run_pooled_activity_exhausted_activity_pod_re_places_without_health(
-        fake_workflow):
+    fake_workflow,
+):
     fake_workflow.handlers[place_snapshot_activity] = [
         lambda: _result(task_queue=activity_queue('wf-1'), worker='worker-a'),
         lambda: _result(task_queue=activity_queue('wf-1'), worker='worker-a'),
@@ -343,9 +354,7 @@ def test_run_pooled_activity_exhausted_activity_pod_re_places_without_health(
         lambda: (_ for _ in ()).throw(err),
         lambda: 'ok',
     ]
-    fake_workflow.handlers[release_snapshot_activity] = [
-        lambda: None, lambda: None
-    ]
+    fake_workflow.handlers[release_snapshot_activity] = [lambda: None, lambda: None]
 
     assert _run_pooled(fake_workflow) == 'ok'
     assert fake_workflow.dispatched.count(place_snapshot_activity) == 2
@@ -354,7 +363,8 @@ def test_run_pooled_activity_exhausted_activity_pod_re_places_without_health(
 
 
 def test_run_pooled_activity_schedule_to_start_timeout_re_places_without_health(
-        fake_workflow):
+    fake_workflow,
+):
     from temporalio.exceptions import TimeoutType
 
     fake_workflow.handlers[place_snapshot_activity] = [
@@ -366,9 +376,7 @@ def test_run_pooled_activity_schedule_to_start_timeout_re_places_without_health(
         lambda: (_ for _ in ()).throw(timeout_error),
         lambda: 'ok',
     ]
-    fake_workflow.handlers[release_snapshot_activity] = [
-        lambda: None, lambda: None
-    ]
+    fake_workflow.handlers[release_snapshot_activity] = [lambda: None, lambda: None]
 
     assert _run_pooled(fake_workflow) == 'ok'
     assert fake_workflow.dispatched.count(place_snapshot_activity) == 2
@@ -387,8 +395,7 @@ def test_failed_release_prevents_poller_replacement(fake_workflow):
         lambda: (_ for _ in ()).throw(timeout_error)
     ]
     fake_workflow.handlers[release_snapshot_activity] = [
-        lambda: (_ for _ in ()).throw(RuntimeError('cleanup failed'))
-        for _ in range(2)
+        lambda: (_ for _ in ()).throw(RuntimeError('cleanup failed')) for _ in range(2)
     ]
 
     with pytest.raises(ApplicationError) as exc_info:
@@ -399,8 +406,7 @@ def test_failed_release_prevents_poller_replacement(fake_workflow):
     assert fake_workflow.dispatched.count(release_snapshot_activity) == 2
 
 
-def test_run_pooled_activity_snapshot_miss_re_places_without_health_poll(
-        fake_workflow):
+def test_run_pooled_activity_snapshot_miss_re_places_without_health_poll(fake_workflow):
     fake_workflow.handlers[place_snapshot_activity] = [
         lambda: _result(worker='worker-a'),
         lambda: _result(worker='worker-a'),
@@ -410,9 +416,7 @@ def test_run_pooled_activity_snapshot_miss_re_places_without_health_poll(
         (lambda: (_ for _ in ()).throw(err)),
         lambda: 'ok',
     ]
-    fake_workflow.handlers[release_snapshot_activity] = [
-        lambda: None, lambda: None
-    ]
+    fake_workflow.handlers[release_snapshot_activity] = [lambda: None, lambda: None]
 
     assert _run_pooled(fake_workflow) == 'ok'
     assert fake_workflow.dispatched.count(place_snapshot_activity) == 2
@@ -425,16 +429,15 @@ def test_run_pooled_activity_exhausts_attempts_and_raises(fake_workflow):
     fake_workflow.handlers[place_snapshot_activity] = [
         lambda: _result(worker='worker-a') for _ in range(3)
     ]
-    fake_workflow.handlers['predict_fn'] = [(lambda: (_ for _ in ()).throw(err))
-                                            for _ in range(3)]
+    fake_workflow.handlers['predict_fn'] = [
+        (lambda: (_ for _ in ()).throw(err)) for _ in range(3)
+    ]
     # Worker stays READY → each failure re-dispatches on the same placement,
     # consuming an attempt; after max_attempts the last error is raised.
     fake_workflow.handlers[get_pool_stats_activity] = [
         (lambda: _stats('worker-a', WorkerStatus.READY)) for _ in range(3)
     ]
-    fake_workflow.handlers[release_snapshot_activity] = [
-        lambda: None for _ in range(3)
-    ]
+    fake_workflow.handlers[release_snapshot_activity] = [lambda: None for _ in range(3)]
 
     with pytest.raises(Exception):
         _run_pooled(fake_workflow)
@@ -446,8 +449,7 @@ def test_exhausted_poller_replacements_raise_nonretryable_error(fake_workflow):
     from temporalio.exceptions import ApplicationError, TimeoutType
 
     fake_workflow.handlers[place_snapshot_activity] = [
-        lambda index=index: _result(worker=f'worker-{index}')
-        for index in range(3)
+        lambda index=index: _result(worker=f'worker-{index}') for index in range(3)
     ]
 
     def raise_schedule_to_start_timeout():
@@ -456,9 +458,7 @@ def test_exhausted_poller_replacements_raise_nonretryable_error(fake_workflow):
     fake_workflow.handlers['predict_fn'] = [
         raise_schedule_to_start_timeout for _ in range(3)
     ]
-    fake_workflow.handlers[release_snapshot_activity] = [
-        lambda: None for _ in range(3)
-    ]
+    fake_workflow.handlers[release_snapshot_activity] = [lambda: None for _ in range(3)]
 
     with pytest.raises(ApplicationError) as exc_info:
         _run_pooled(fake_workflow)
@@ -483,9 +483,7 @@ def test_run_pooled_activity_overflow_failure_re_places(fake_workflow):
         (lambda: (_ for _ in ()).throw(err)),
         lambda: 'ok',
     ]
-    fake_workflow.handlers[release_snapshot_activity] = [
-        lambda: None, lambda: None
-    ]
+    fake_workflow.handlers[release_snapshot_activity] = [lambda: None, lambda: None]
 
     assert _run_pooled(fake_workflow) == 'ok'
     assert fake_workflow.dispatched.count(place_snapshot_activity) == 2
@@ -493,8 +491,7 @@ def test_run_pooled_activity_overflow_failure_re_places(fake_workflow):
     assert get_pool_stats_activity not in fake_workflow.dispatched
 
 
-def test_run_pooled_activity_cancellation_re_raises_without_re_dispatch(
-        fake_workflow):
+def test_run_pooled_activity_cancellation_re_raises_without_re_dispatch(fake_workflow):
     # Regression for kumo#30191: a cancellation surfaces as an ActivityError
     # caused by CancelledError. It must NOT be treated as a recoverable worker
     # failure — the coordinator must re-raise it after exactly one train
@@ -534,6 +531,7 @@ def test_home_stale_error_is_runtime_error():
 
 def _place_request():
     from pool.dataclasses import PlacementRequest, ResourceHint
+
     return PlacementRequest(
         snapshot_id='snap-1',
         job_id='job-1',
@@ -545,9 +543,12 @@ def _place_request():
 
 def _schedule_to_close_timeout():
     from temporalio.exceptions import TimeoutError, TimeoutType
-    return TimeoutError('activity ScheduleToClose exceeded',
-                        type=TimeoutType.SCHEDULE_TO_CLOSE,
-                        last_heartbeat_details=[])
+
+    return TimeoutError(
+        'activity ScheduleToClose exceeded',
+        type=TimeoutType.SCHEDULE_TO_CLOSE,
+        last_heartbeat_details=[],
+    )
 
 
 def _activity_error_from(cause: BaseException):
@@ -557,18 +558,22 @@ def _activity_error_from(cause: BaseException):
     on ``__cause__``, which ``_classify_placement_failure`` walks alongside
     ``.cause``; this exercises the dig-through-ActivityError the fix relies on."""
     from temporalio.exceptions import ActivityError
+
     try:
-        raise ActivityError(message='place_snapshot_activity failed',
-                            scheduled_event_id=1, started_event_id=1,
-                            identity='x',
-                            activity_type='place_snapshot_activity',
-                            activity_id='a', retry_state=None) from cause
+        raise ActivityError(
+            message='place_snapshot_activity failed',
+            scheduled_event_id=1,
+            started_event_id=1,
+            identity='x',
+            activity_type='place_snapshot_activity',
+            activity_id='a',
+            retry_state=None,
+        ) from cause
     except ActivityError as e:
         return e
 
 
-def test_place_snapshot_timeout_without_mapped_cause_raises_pool_error(
-        fake_workflow):
+def test_place_snapshot_timeout_without_mapped_cause_raises_pool_error(fake_workflow):
     """A placement that exhausts its budget with no mapped placement
     PublicException (pool controller unavailable / crash-looping, #29865)
     surfaces an actionable pool-availability error, not the generic
@@ -622,11 +627,12 @@ def test_place_snapshot_mapped_placement_error_is_preserved(fake_workflow):
 
     # The original error is re-raised unchanged - NOT replaced by ours.
     assert excinfo.value is err
-    assert getattr(excinfo.value, 'type',
-                   None) != 'PoolPlacementUnavailableError'
+    assert getattr(excinfo.value, 'type', None) != 'PoolPlacementUnavailableError'
     # The specific mapped PublicException is still reachable on the chain.
-    assert PublicException.from_dict(
-        err.__cause__.details[0]).message == 'bad image tag / missing secret'
+    assert (
+        PublicException.from_dict(err.__cause__.details[0]).message
+        == 'bad image tag / missing secret'
+    )
 
 
 def test_place_snapshot_non_timeout_failure_is_not_translated(fake_workflow):
@@ -640,5 +646,4 @@ def test_place_snapshot_non_timeout_failure_is_not_translated(fake_workflow):
         _run(wf_coordinator._place_snapshot(_place_request()))
 
     assert excinfo.value is err
-    assert getattr(excinfo.value, 'type',
-                   None) != 'PoolPlacementUnavailableError'
+    assert getattr(excinfo.value, 'type', None) != 'PoolPlacementUnavailableError'

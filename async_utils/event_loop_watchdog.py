@@ -26,6 +26,7 @@ Usage::
         watchdog.start()  # daemon thread; survives until process exit
         ...
 """
+
 import asyncio
 import logging
 import os
@@ -46,8 +47,10 @@ _STALL_THRESHOLD_SEC = EnvVar(
     'EVENT_LOOP_WATCHDOG_STALL_THRESHOLD_SEC',
     float,
     default_value=2.0,
-    description=('Seconds the asyncio loop can go without bumping the probe '
-                 'counter before the watchdog declares a stall.'),
+    description=(
+        'Seconds the asyncio loop can go without bumping the probe '
+        'counter before the watchdog declares a stall.'
+    ),
 )
 _PROBE_INTERVAL_SEC = EnvVar(
     'EVENT_LOOP_WATCHDOG_PROBE_INTERVAL_SEC',
@@ -59,10 +62,12 @@ _CHECK_INTERVAL_SEC = EnvVar(
     'EVENT_LOOP_WATCHDOG_CHECK_INTERVAL_SEC',
     float,
     default_value=0.25,
-    description=('How often the watchdog thread evaluates the tick counter. '
-                 'Smaller values narrow the detection edge window at the '
-                 'cost of slightly more wakeups; default ~halves the '
-                 'probe_interval so we never miss a fresh tick.'),
+    description=(
+        'How often the watchdog thread evaluates the tick counter. '
+        'Smaller values narrow the detection edge window at the '
+        'cost of slightly more wakeups; default ~halves the '
+        'probe_interval so we never miss a fresh tick.'
+    ),
 )
 _ENABLED = EnvVar(
     'EVENT_LOOP_WATCHDOG_ENABLED',
@@ -74,8 +79,10 @@ _DUMP_DIR = EnvVar(
     'EVENT_LOOP_WATCHDOG_DUMP_DIR',
     str,
     default_value='/tmp',
-    description=('Directory where per-stall full stack dumps are written. '
-                 'One file per detection event; pod restart clears them.'),
+    description=(
+        'Directory where per-stall full stack dumps are written. '
+        'One file per detection event; pod restart clears them.'
+    ),
 )
 
 
@@ -94,19 +101,17 @@ def _format_all_thread_stacks_verbose(loop_thread_ident: int) -> str:
     # Event loop thread first.
     loop_frame = frames.get(loop_thread_ident)
     if loop_frame is not None:
-        loop_name = name_by_id.get(loop_thread_ident,
-                                   f'<id={loop_thread_ident}>')
+        loop_name = name_by_id.get(loop_thread_ident, f'<id={loop_thread_ident}>')
         loop_stack = ''.join(traceback.format_stack(loop_frame))
         sections.append(
             f'=== EVENT LOOP THREAD {loop_name!r} (id={loop_thread_ident}) '
-            f'===\n{loop_stack}')
+            f'===\n{loop_stack}'
+        )
     else:
-        sections.append(
-            f'=== EVENT LOOP THREAD (id={loop_thread_ident}) not found ===')
+        sections.append(f'=== EVENT LOOP THREAD (id={loop_thread_ident}) not found ===')
 
     # Everyone else in deterministic order (sorted by thread id).
-    others = sorted((tid, fr) for tid, fr in frames.items()
-                    if tid != loop_thread_ident)
+    others = sorted((tid, fr) for tid, fr in frames.items() if tid != loop_thread_ident)
     sections.append(f'=== {len(others)} other thread(s) ===')
     for thread_id, frame in others:
         name = name_by_id.get(thread_id, f'<unknown-{thread_id}>')
@@ -122,14 +127,14 @@ def _generate_event_id() -> str:
     return f'{ts}-{uuid.uuid4().hex[:8]}'
 
 
-def _write_dump_file(dump_dir: str, event_id: str, header: str,
-                     verbose_stacks: str) -> Optional[str]:
+def _write_dump_file(
+    dump_dir: str, event_id: str, header: str, verbose_stacks: str
+) -> Optional[str]:
     """Write the full stack dump for a stall event. Returns the file path,
     or None if the write failed (best-effort)."""
     try:
         os.makedirs(dump_dir, exist_ok=True)
-        file_path = os.path.join(dump_dir,
-                                 f'event-loop-stall-{event_id}.txt')
+        file_path = os.path.join(dump_dir, f'event-loop-stall-{event_id}.txt')
         with open(file_path, 'w', encoding='utf-8') as f:
             f.write(header)
             f.write('\n')
@@ -137,8 +142,8 @@ def _write_dump_file(dump_dir: str, event_id: str, header: str,
         return file_path
     except OSError:
         log.exception(
-            'event-loop watchdog: failed to write stall dump file in %s',
-            dump_dir)
+            'event-loop watchdog: failed to write stall dump file in %s', dump_dir
+        )
         return None
 
 
@@ -159,16 +164,17 @@ def _format_stalled_loop_diagnostics(loop_thread_ident: int) -> str:
     # 1) Event loop thread first — verbose, this is the diagnostic value.
     loop_frame = frames.get(loop_thread_ident)
     if loop_frame is not None:
-        loop_name = name_by_id.get(loop_thread_ident,
-                                   f'<id={loop_thread_ident}>')
+        loop_name = name_by_id.get(loop_thread_ident, f'<id={loop_thread_ident}>')
         loop_stack = ''.join(traceback.format_stack(loop_frame))
         sections.append(
             f'=== EVENT LOOP THREAD {loop_name!r} (id={loop_thread_ident}) '
-            f'===\n{loop_stack}')
+            f'===\n{loop_stack}'
+        )
     else:
         sections.append(
             f'=== EVENT LOOP THREAD (id={loop_thread_ident}) not found in '
-            f'sys._current_frames(); thread may have died ===')
+            f'sys._current_frames(); thread may have died ==='
+        )
 
     # 2) Other threads — dedupe by stack signature.
     groups: Dict[str, List[Tuple[int, str]]] = {}
@@ -183,10 +189,10 @@ def _format_stalled_loop_diagnostics(loop_thread_ident: int) -> str:
         total_others = sum(len(members) for members in groups.values())
         sections.append(
             f'=== {total_others} other thread(s), '
-            f'{len(groups)} unique stack signature(s) ===')
+            f'{len(groups)} unique stack signature(s) ==='
+        )
         # Most-common stacks first; ties broken by stack content for stability.
-        ordered = sorted(groups.items(),
-                         key=lambda kv: (-len(kv[1]), kv[0]))
+        ordered = sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0]))
         for stack, members in ordered:
             count = len(members)
             if count == 1:
@@ -195,8 +201,7 @@ def _format_stalled_loop_diagnostics(loop_thread_ident: int) -> str:
             else:
                 # Show a couple of representative names so the reader can
                 # cross-reference with logs.
-                sample = ', '.join(
-                    f'{n!r} (id={i})' for i, n in members[:3])
+                sample = ', '.join(f'{n!r} (id={i})' for i, n in members[:3])
                 more = '' if count <= 3 else f', +{count - 3} more'
                 header = f'[{count}x] {sample}{more}'
             sections.append(f'{header}\n{stack}')
@@ -213,6 +218,7 @@ class EventLoopWatchdog:
       - The watchdog thread is daemon=True; it dies with the process.
       - ``stop()`` is optional (for tests / clean shutdown).
     """
+
     def __init__(
         self,
         *,
@@ -222,19 +228,23 @@ class EventLoopWatchdog:
         enabled: Optional[bool] = None,
         dump_dir: Optional[str] = None,
     ) -> None:
-        self.stall_threshold_sec = (stall_threshold_sec
-                                    if stall_threshold_sec is not None else
-                                    _STALL_THRESHOLD_SEC.parse_value())
-        self.probe_interval_sec = (probe_interval_sec
-                                   if probe_interval_sec is not None else
-                                   _PROBE_INTERVAL_SEC.parse_value())
-        self.check_interval_sec = (check_interval_sec
-                                   if check_interval_sec is not None else
-                                   _CHECK_INTERVAL_SEC.parse_value())
-        self.enabled = (enabled
-                        if enabled is not None else _ENABLED.parse_value())
-        self.dump_dir = (dump_dir
-                         if dump_dir is not None else _DUMP_DIR.parse_value())
+        self.stall_threshold_sec = (
+            stall_threshold_sec
+            if stall_threshold_sec is not None
+            else _STALL_THRESHOLD_SEC.parse_value()
+        )
+        self.probe_interval_sec = (
+            probe_interval_sec
+            if probe_interval_sec is not None
+            else _PROBE_INTERVAL_SEC.parse_value()
+        )
+        self.check_interval_sec = (
+            check_interval_sec
+            if check_interval_sec is not None
+            else _CHECK_INTERVAL_SEC.parse_value()
+        )
+        self.enabled = enabled if enabled is not None else _ENABLED.parse_value()
+        self.dump_dir = dump_dir if dump_dir is not None else _DUMP_DIR.parse_value()
 
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         # OS-level thread ident of the event loop thread, captured at start().
@@ -329,8 +339,10 @@ class EventLoopWatchdog:
         if loop is None or loop.is_closed():
             return True
         loop_thread_ident = self._loop_thread_ident
-        return (loop_thread_ident is not None
-                and loop_thread_ident not in sys._current_frames())
+        return (
+            loop_thread_ident is not None
+            and loop_thread_ident not in sys._current_frames()
+        )
 
     def _on_stall_start(self, elapsed: float) -> None:
         """Emit one ERROR line with stalled-loop diagnostic.
@@ -354,12 +366,14 @@ class EventLoopWatchdog:
             verbose = summary
             log.exception('event-loop watchdog: stack capture failed')
 
-        header = (f'event_id: {event_id}\n'
-                  f'pid: {os.getpid()}\n'
-                  f'stall_duration_so_far_sec: {elapsed:.2f}\n'
-                  f'stall_threshold_sec: {self.stall_threshold_sec:.2f}\n'
-                  f'detected_at: '
-                  f'{datetime.now(timezone.utc).isoformat()}\n')
+        header = (
+            f'event_id: {event_id}\n'
+            f'pid: {os.getpid()}\n'
+            f'stall_duration_so_far_sec: {elapsed:.2f}\n'
+            f'stall_threshold_sec: {self.stall_threshold_sec:.2f}\n'
+            f'detected_at: '
+            f'{datetime.now(timezone.utc).isoformat()}\n'
+        )
         file_path = _write_dump_file(self.dump_dir, event_id, header, verbose)
 
         log.error(

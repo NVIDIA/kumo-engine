@@ -17,12 +17,12 @@ from statedb.utils.errors import ArtifactExportJobNotFoundError
 class ArtifactExportJobService:
     """Persist immutable request identity; Temporal owns execution state."""
 
-    def __init__(self, state_db: StateDB,
-                 connectors: ConnectorService | None = None) -> None:
+    def __init__(
+        self, state_db: StateDB, connectors: ConnectorService | None = None
+    ) -> None:
         self._state_db = state_db
         self._connectors = connectors
-        self._jobs = JsonRepository('artifact_export_jobs',
-                                    ArtifactExportJobDBEntry)
+        self._jobs = JsonRepository('artifact_export_jobs', ArtifactExportJobDBEntry)
 
     async def create(
         self,
@@ -53,17 +53,19 @@ class ArtifactExportJobService:
             if row is None:
                 raise RuntimeError('Artifact export request insert was lost')
             existing = row.payload
-            if (existing.project_id != project_id
-                    or existing.created_by != created_by
-                    or existing.request_id != request_id
-                    or existing.request_digest != request_digest):
+            if (
+                existing.project_id != project_id
+                or existing.created_by != created_by
+                or existing.request_id != request_id
+                or existing.request_digest != request_digest
+            ):
                 raise ValueError(
                     'Artifact export request_id was already used with a '
-                    'different payload')
+                    'different payload'
+                )
             return existing, inserted
 
-    async def get(self,
-                  id: ArtifactExportJobID) -> ArtifactExportJobDBEntry | None:
+    async def get(self, id: ArtifactExportJobID) -> ArtifactExportJobDBEntry | None:
         async with self._state_db.read_tx() as tx:
             row = await self._jobs.get(tx, str(id))
             return row.payload if row is not None else None
@@ -77,8 +79,7 @@ class ArtifactExportJobService:
         async with self._state_db.write_tx() as tx:
             row = await self._jobs.get(tx, str(id), for_update=True)
             if row is None:
-                raise ArtifactExportJobNotFoundError(
-                    'Artifact export job not found')
+                raise ArtifactExportJobNotFoundError('Artifact export job not found')
             entry = row.payload
             if entry.project_id != project_id:
                 raise ValueError('Artifact export workflow identity mismatch')
@@ -101,8 +102,7 @@ class ArtifactExportJobService:
         async with self._state_db.write_tx() as tx:
             row = await self._jobs.get(tx, str(id), for_update=True)
             if row is None:
-                raise ArtifactExportJobNotFoundError(
-                    'Artifact export job not found')
+                raise ArtifactExportJobNotFoundError('Artifact export job not found')
             entry = row.payload
             if entry.project_id != project_id:
                 raise ValueError('Artifact export workflow identity mismatch')
@@ -129,6 +129,5 @@ class ArtifactExportJobService:
         async with self._state_db.read_tx() as tx:
             row = await self._jobs.get(tx, str(id))
             if row is None or row.payload.project_id != project_id:
-                raise ArtifactExportJobNotFoundError(
-                    'Artifact export job not found')
+                raise ArtifactExportJobNotFoundError('Artifact export job not found')
             return row.payload

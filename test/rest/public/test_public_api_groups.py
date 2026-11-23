@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Tests for public Groups router (GET /v1/groups)."""
+
 from datetime import datetime, timezone
 from http import HTTPStatus
 from unittest.mock import AsyncMock, MagicMock
@@ -46,35 +47,37 @@ def client(groups_driver, auth):
         groups_driver=groups_driver,
         auth=auth,
     )
-    app.include_router(router.router, prefix="/v1")
+    app.include_router(router.router, prefix='/v1')
     with TestClient(app) as c:
         yield c
 
 
 def test_list_user_groups_success(client, groups_driver):
-    gid_1 = GroupID(f"group_{'a' * 32}")
-    gid_2 = GroupID(f"group_{'b' * 32}")
+    gid_1 = GroupID(f'group_{"a" * 32}')
+    gid_2 = GroupID(f'group_{"b" * 32}')
     groups_driver.list_user_groups.return_value = [
-        ListUserKumoGroupsResponse(group_id=gid_1, slug='team-a',
-                                   display_name="team-a"),
-        ListUserKumoGroupsResponse(group_id=gid_2, slug='team-b',
-                                   display_name="team-b"),
+        ListUserKumoGroupsResponse(
+            group_id=gid_1, slug='team-a', display_name='team-a'
+        ),
+        ListUserKumoGroupsResponse(
+            group_id=gid_2, slug='team-b', display_name='team-b'
+        ),
     ]
-    resp = client.get("/v1/groups")
+    resp = client.get('/v1/groups')
     assert resp.status_code == HTTPStatus.OK
     data = resp.json()
     assert len(data) == 2
     assert data[0] == {
-        "id": str(gid_1),
-        "slug": "team-a",
-        "display_name": "team-a",
+        'id': str(gid_1),
+        'slug': 'team-a',
+        'display_name': 'team-a',
     }
-    assert data[0]["display_name"] == "team-a"
-    assert data[1]["id"] == str(gid_2)
+    assert data[0]['display_name'] == 'team-a'
+    assert data[1]['id'] == str(gid_2)
 
 
 def test_get_group_by_slug_success(client, groups_driver):
-    group_id = GroupID(f"group_{'a' * 32}")
+    group_id = GroupID(f'group_{"a" * 32}')
     now = datetime(2026, 1, 1, tzinfo=timezone.utc)
     groups_driver.get_kumo_group_by_slug.return_value = KumoGroupDBEntry(
         id=group_id,
@@ -97,32 +100,32 @@ def test_get_group_by_slug_success(client, groups_driver):
 
 def test_list_user_groups_empty(client, groups_driver):
     groups_driver.list_user_groups.return_value = []
-    resp = client.get("/v1/groups")
+    resp = client.get('/v1/groups')
     assert resp.status_code == HTTPStatus.OK
     assert resp.json() == []
 
 
 def test_list_user_groups_rpc_error_becomes_http_error(client, groups_driver):
     groups_driver.list_user_groups.side_effect = RpcError(
-        rpc_service="GroupsService",
-        rpc_method="list_user_groups",
-        error_type="ValueError",
-        message="something broke",
-        stack_trace="",
+        rpc_service='GroupsService',
+        rpc_method='list_user_groups',
+        error_type='ValueError',
+        message='something broke',
+        stack_trace='',
         non_retryable=True,
     )
-    resp = client.get("/v1/groups")
+    resp = client.get('/v1/groups')
     assert resp.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
 
 
 def test_list_user_groups_rpc_key_error_becomes_404(client, groups_driver):
     groups_driver.list_user_groups.side_effect = RpcError(
-        rpc_service="GroupsService",
-        rpc_method="list_user_groups",
-        error_type="KeyError",
-        message="not found",
-        stack_trace="",
+        rpc_service='GroupsService',
+        rpc_method='list_user_groups',
+        error_type='KeyError',
+        message='not found',
+        stack_trace='',
         non_retryable=True,
     )
-    resp = client.get("/v1/groups")
+    resp = client.get('/v1/groups')
     assert resp.status_code == HTTPStatus.NOT_FOUND

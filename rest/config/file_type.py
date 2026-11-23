@@ -12,8 +12,8 @@ from common_utils.enum import extends_enum
 
 @extends_enum(ApiFileType)
 class FileType(str, Enum):
-    CSV = "CSV"
-    PARQUET = "PARQUET"
+    CSV = 'CSV'
+    PARQUET = 'PARQUET'
 
     @staticmethod
     def parse_extension(fname: str) -> 'FileType':
@@ -22,8 +22,9 @@ class FileType(str, Enum):
             if fname.endswith(extension):
                 return typ
         raise ValueError(
-            f"file path must have one of the following extensions: "
-            f"{FileType.valid_extensions()}")
+            f'file path must have one of the following extensions: '
+            f'{FileType.valid_extensions()}'
+        )
 
     @staticmethod
     def valid_extensions() -> List[str]:

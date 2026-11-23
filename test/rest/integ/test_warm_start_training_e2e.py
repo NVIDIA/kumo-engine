@@ -45,22 +45,25 @@ from statedb.config.job_tag import TAG_KEY_WARM_START_JOB_ID
 # to local keeps the DG coverage without the external-infra dependency -- same
 # scoping as ``test_e2e`` and ``test_e2e_public_api``.
 pytestmark = [
-    pytest.mark.usefixtures("_pool_subprocesses"),
-    pytest.mark.parametrize("storage_backend", ["local"], indirect=True),
+    pytest.mark.usefixtures('_pool_subprocesses'),
+    pytest.mark.parametrize('storage_backend', ['local'], indirect=True),
 ]
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('query,pquery_name', [
-    (
-        "PREDICT COUNT(transactions.*, 0, 20) FOR EACH customers.customer_id",
-        "test_warm_start_regression",
-    ),
-    (
-        "PREDICT customers.age > 30 FOR EACH customers.customer_id",
-        "test_warm_start_binary_classification",
-    ),
-])
+@pytest.mark.parametrize(
+    'query,pquery_name',
+    [
+        (
+            'PREDICT COUNT(transactions.*, 0, 20) FOR EACH customers.customer_id',
+            'test_warm_start_regression',
+        ),
+        (
+            'PREDICT customers.age > 30 FOR EACH customers.customer_id',
+            'test_warm_start_binary_classification',
+        ),
+    ],
+)
 async def test_warm_start_training_e2e(
     public_api_client: TestClient,
     graph_definition_v2: GraphDefinition,
@@ -85,7 +88,7 @@ async def test_warm_start_training_e2e(
     )
     pquery_id = post_and_expect_success(
         public_api_client,
-        "/v1/predictive_queries/",
+        '/v1/predictive_queries/',
         pquery_request,
         IDResponse,
         project_id=default_project_id,
@@ -102,22 +105,19 @@ async def test_warm_start_training_e2e(
         response_type=jobs_api.TrainingTableGenerationPlan,
         project_id=default_project_id,
     )
-    if pquery_name == "test_warm_start_binary_classification":
-        train_table_plan.split = "RandomSplit([0.6, 0.2, 0.2], seed=0)"
+    if pquery_name == 'test_warm_start_binary_classification':
+        train_table_plan.split = 'RandomSplit([0.6, 0.2, 0.2], seed=0)'
     train_table_job_id = post_and_expect_success(
         public_api_client,
         '/v1/gentraintable_jobs',
-        jobs_api.GenerateTrainTableRequest({}, pquery_id, train_table_plan,
-                                           None),
+        jobs_api.GenerateTrainTableRequest({}, pquery_id, train_table_plan, None),
         IDResponse,
         project_id=default_project_id,
     ).id
     status = get_and_expect_success(
         public_api_client,
         f'/v1/gentraintable_jobs/{train_table_job_id}',
-        {
-            'project_id': default_project_id
-        },
+        {'project_id': default_project_id},
         jobs_api.GenerateTrainTableJobResource,
     ).job_status_report.status
     while not status.is_terminal:
@@ -125,9 +125,7 @@ async def test_warm_start_training_e2e(
         status = get_and_expect_success(
             public_api_client,
             f'/v1/gentraintable_jobs/{train_table_job_id}',
-            {
-                'project_id': default_project_id
-            },
+            {'project_id': default_project_id},
             jobs_api.GenerateTrainTableJobResource,
         ).job_status_report.status
     assert status == JobStatus.DONE
@@ -163,15 +161,19 @@ async def test_warm_start_training_e2e(
         project_id=default_project_id,
     ).id
     status = get_and_expect_success(
-        public_api_client, f'/v1/training_jobs/{initial_train_job_id}', {
-            'project_id': default_project_id
-        }, jobs_api.TrainingJobResource).job_status_report.status
+        public_api_client,
+        f'/v1/training_jobs/{initial_train_job_id}',
+        {'project_id': default_project_id},
+        jobs_api.TrainingJobResource,
+    ).job_status_report.status
     while not status.is_terminal:
         await asyncio.sleep(10)
         status = get_and_expect_success(
-            public_api_client, f'/v1/training_jobs/{initial_train_job_id}', {
-                'project_id': default_project_id
-            }, jobs_api.TrainingJobResource).job_status_report.status
+            public_api_client,
+            f'/v1/training_jobs/{initial_train_job_id}',
+            {'project_id': default_project_id},
+            jobs_api.TrainingJobResource,
+        ).job_status_report.status
     assert status == jobs_api.JobStatus.DONE
 
     # Check that warm start validation is working
@@ -181,14 +183,14 @@ async def test_warm_start_training_e2e(
         model_plan,
         None,
         train_table_job_id,
-        warm_start_job_id="non-existent-job-id",  # Set warm start job ID
+        warm_start_job_id='non-existent-job-id',  # Set warm start job ID
     )
     post_and_expect_error(
         public_api_client,
         f'/v1/training_jobs?project_id={default_project_id}',
         warm_start_training_job_config,
         status_code=HTTPStatus.UNPROCESSABLE_ENTITY,
-        error_pattern="Warm start training job.*not found",
+        error_pattern='Warm start training job.*not found',
     )
 
     # Step 3: Start second training job with warm_start_job_id set to the first job
@@ -208,28 +210,37 @@ async def test_warm_start_training_e2e(
         project_id=default_project_id,
     ).id
     status = get_and_expect_success(
-        public_api_client, f'/v1/training_jobs/{warm_start_train_job_id}', {
-            'project_id': default_project_id
-        }, jobs_api.TrainingJobResource).job_status_report.status
+        public_api_client,
+        f'/v1/training_jobs/{warm_start_train_job_id}',
+        {'project_id': default_project_id},
+        jobs_api.TrainingJobResource,
+    ).job_status_report.status
     while not status.is_terminal:
         await asyncio.sleep(10)
         status = get_and_expect_success(
-            public_api_client, f'/v1/training_jobs/{warm_start_train_job_id}', {
-                'project_id': default_project_id
-            }, jobs_api.TrainingJobResource).job_status_report.status
+            public_api_client,
+            f'/v1/training_jobs/{warm_start_train_job_id}',
+            {'project_id': default_project_id},
+            jobs_api.TrainingJobResource,
+        ).job_status_report.status
     assert status == jobs_api.JobStatus.DONE
 
     # Step 4: Verify that warm start related fields are set correctly
     job_response = get_and_expect_success(
-        public_api_client, f'/v1/training_jobs/{warm_start_train_job_id}',
-        {'project_id': default_project_id}, jobs_api.TrainingJobResource)
+        public_api_client,
+        f'/v1/training_jobs/{warm_start_train_job_id}',
+        {'project_id': default_project_id},
+        jobs_api.TrainingJobResource,
+    )
     assert job_response.tags[TAG_KEY_WARM_START_JOB_ID] == initial_train_job_id
     assert job_response.config.warm_start_job_id == initial_train_job_id
 
-    warm_start_job_dir = get_job_dir(get_job_base_dir(),
-                                     TrainingJobID(warm_start_train_job_id))
-    job_config_path = os.path.join(warm_start_job_dir, 'jobs',
-                                   f'{warm_start_train_job_id}.json')
+    warm_start_job_dir = get_job_dir(
+        get_job_base_dir(), TrainingJobID(warm_start_train_job_id)
+    )
+    job_config_path = os.path.join(
+        warm_start_job_dir, 'jobs', f'{warm_start_train_job_id}.json'
+    )
     job_config = load_json(job_config_path, JobConfig)
     assert job_config.warm_start_trainer_dir is not None
     assert initial_train_job_id in job_config.warm_start_trainer_dir

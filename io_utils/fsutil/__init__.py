@@ -79,14 +79,12 @@ logger = logging.getLogger(__name__)
 """
 N.B. importing impl_* is required to pick up singledispatch overloads
 """
-for module_name in ("impl_local", "impl_s3", "impl_gcs", "impl_ucv",
-                    "impl_adls"):
+for module_name in ('impl_local', 'impl_s3', 'impl_gcs', 'impl_ucv', 'impl_adls'):
     try:
-        importlib.import_module(f".{module_name}", package=__name__)
+        importlib.import_module(f'.{module_name}', package=__name__)
         logger.debug('Loaded fsutil implementation module: %s', module_name)
     except ImportError:
-        logger.debug('fsutil implementation module: %s is missing, skip',
-                     module_name)
+        logger.debug('fsutil implementation module: %s is missing, skip', module_name)
 
 __all__ = [
     'PARQUET_ROW_GROUP_SIZE',

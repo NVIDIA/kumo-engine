@@ -16,13 +16,13 @@ class RestrictedDiagnosticError(RuntimeError):
 
     _kumo_restricted_log_message = True
 
-    def __init__(self, original_error_type: str,
-                 safe_message: Optional[str] = None) -> None:
+    def __init__(
+        self, original_error_type: str, safe_message: Optional[str] = None
+    ) -> None:
         self.original_error_type = original_error_type
         if safe_message:
             setattr(self, SAFE_LOG_MESSAGE_ATTRIBUTE, safe_message)
-        super().__init__(safe_message
-                         or 'Restricted integration operation failed')
+        super().__init__(safe_message or 'Restricted integration operation failed')
 
 
 def mark_exception_restricted(

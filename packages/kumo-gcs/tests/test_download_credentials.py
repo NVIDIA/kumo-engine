@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Token renewal at file boundaries, without serializing native transfers."""
+
 import datetime
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -42,9 +43,12 @@ def native(monkeypatch):
             return clock.now if tz else clock.now.replace(tzinfo=None)
 
     monkeypatch.setattr(
-        impl_gcs, 'datetime',
-        SimpleNamespace(datetime=Clock, timedelta=datetime.timedelta,
-                        timezone=datetime.timezone))
+        impl_gcs,
+        'datetime',
+        SimpleNamespace(
+            datetime=Clock, timedelta=datetime.timedelta, timezone=datetime.timezone
+        ),
+    )
     made, copied = [], []
 
     def filesystem(**kwargs):
@@ -54,8 +58,10 @@ def native(monkeypatch):
 
     monkeypatch.setattr(impl_gcs.pafs, 'GcsFileSystem', filesystem)
     monkeypatch.setattr(
-        impl_gcs.pafs, 'copy_files',
-        lambda *args, **kwargs: copied.append(kwargs['source_filesystem']))
+        impl_gcs.pafs,
+        'copy_files',
+        lambda *args, **kwargs: copied.append(kwargs['source_filesystem']),
+    )
     monkeypatch.setattr(impl_gcs, 'gcs_io_threads', lambda: 32)
     monkeypatch.setattr(impl_gcs.pa, 'io_thread_count', lambda: 32)
     return SimpleNamespace(clock=clock, made=made, copied=copied)
@@ -105,8 +111,7 @@ def test_existing_token_keeps_the_full_ten_minute_margin(native):
     assert native.copied[-1].access_token == 'renewed-1'
 
 
-def test_concurrent_files_share_refresh_and_transfer_in_parallel(
-        native, monkeypatch):
+def test_concurrent_files_share_refresh_and_transfer_in_parallel(native, monkeypatch):
     credential = _Credential(native.clock, lifetime=-1)
     downloads = threading.Barrier(2, timeout=5)
 
@@ -118,8 +123,10 @@ def test_concurrent_files_share_refresh_and_transfer_in_parallel(
     downloader = GCSDownloader(credential)
     with ThreadPoolExecutor(2) as pool:
         futures = [
-            pool.submit(downloader._download_native, 'bucket', 'object',
-                        '/unused/native-test') for _ in range(2)
+            pool.submit(
+                downloader._download_native, 'bucket', 'object', '/unused/native-test'
+            )
+            for _ in range(2)
         ]
         for future in futures:
             future.result(timeout=10)
@@ -128,8 +135,7 @@ def test_concurrent_files_share_refresh_and_transfer_in_parallel(
     assert native.copied[0] is native.copied[1]
 
 
-def test_inflight_transfer_keeps_old_filesystem_during_refresh(
-        native, monkeypatch):
+def test_inflight_transfer_keeps_old_filesystem_during_refresh(native, monkeypatch):
     credential = _Credential(native.clock)
     first_started = threading.Event()
     transfers_overlap = threading.Barrier(2, timeout=5)
@@ -143,12 +149,14 @@ def test_inflight_transfer_keeps_old_filesystem_during_refresh(
     monkeypatch.setattr(impl_gcs.pafs, 'copy_files', copy)
     downloader = GCSDownloader(credential)
     with ThreadPoolExecutor(2) as pool:
-        first = pool.submit(downloader._download_native, 'bucket', 'object',
-                            '/unused/native-test')
+        first = pool.submit(
+            downloader._download_native, 'bucket', 'object', '/unused/native-test'
+        )
         assert first_started.wait(timeout=5)
         native.clock.now += datetime.timedelta(minutes=51)
-        second = pool.submit(downloader._download_native, 'bucket', 'object',
-                             '/unused/native-test')
+        second = pool.submit(
+            downloader._download_native, 'bucket', 'object', '/unused/native-test'
+        )
         first.result(timeout=10)
         second.result(timeout=10)
     assert [fs.access_token for fs in native.copied] == ['old', 'renewed-1']
@@ -162,8 +170,11 @@ def test_invalid_refreshed_credentials_never_start_transfer(native, invalid):
     def refresh(request):
         credential.token = None if invalid == 'token' else 'new'
         credential.expiry = (
-            None if invalid == 'expiry' else native.clock.now +
-            datetime.timedelta(minutes=-1 if invalid == 'expired' else 60))
+            None
+            if invalid == 'expiry'
+            else native.clock.now
+            + datetime.timedelta(minutes=-1 if invalid == 'expired' else 60)
+        )
 
     credential.refresh = refresh
     downloader = GCSDownloader(credential)
@@ -192,20 +203,26 @@ def test_refresh_error_never_reuses_expired_filesystem(native):
 def test_token_expiry_preserves_absolute_time(native, offset):
     credential = _Credential(native.clock)
     expected = credential.expiry
-    credential.expiry = (expected.replace(tzinfo=None) if offset is None else
-                         expected.astimezone(datetime.timezone(offset)))
+    credential.expiry = (
+        expected.replace(tzinfo=None)
+        if offset is None
+        else expected.astimezone(datetime.timezone(offset))
+    )
     downloader = GCSDownloader(credential)
     downloader._download_native('bucket', 'object', '/unused/native-test')
     assert native.copied[-1].credential_token_expiration == expected
 
 
-@pytest.mark.parametrize('scopes', [None, ('scope:existing', )])
+@pytest.mark.parametrize('scopes', [None, ('scope:existing',)])
 def test_native_scopes_service_account_once_without_changing_existing_scopes(
-        native, monkeypatch, scopes):
+    native, monkeypatch, scopes
+):
     credential = service_account.Credentials(
         signer=SimpleNamespace(key_id='test'),
         service_account_email='test@test',
-        token_uri='https://oauth2.googleapis.com/token', scopes=scopes)
+        token_uri='https://oauth2.googleapis.com/token',
+        scopes=scopes,
+    )
     refreshed = []
 
     def refresh(scoped, request):

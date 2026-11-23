@@ -7,6 +7,7 @@ We exercise the controller instance directly (bypassing AutoRPC transport).
 Full AutoRPC roundtrip tests require a Temporal dev server and belong with the
 Block E integration tests.
 """
+
 import asyncio
 import time
 from dataclasses import replace
@@ -68,8 +69,9 @@ from pool.k8s_strategy import (
     K8sPlacementStrategy,
     activity_task_queue,
 )
-from pool.k8s_strategy import \
-    build_k8s_placement_strategy as _build_k8s_placement_strategy
+from pool.k8s_strategy import (
+    build_k8s_placement_strategy as _build_k8s_placement_strategy,
+)
 from pool.persistence import PoolStatePersistence
 from pool.service import (
     CONTROLLER_MAINTENANCE_INTERVAL_SECS,
@@ -125,11 +127,15 @@ def build_k8s_placement_strategy(*args, **kwargs):
 
 
 class MockPlacementStrategy:
-    def __init__(self, fail_provision: bool = False,
-                 enqueue_daemon: bool = False,
-                 requires_l2_backup_check: bool = False,
-                 fail_release: bool = False, fail_reconcile: bool = False,
-                 reconcile_delta: Optional[ReconcileDelta] = None) -> None:
+    def __init__(
+        self,
+        fail_provision: bool = False,
+        enqueue_daemon: bool = False,
+        requires_l2_backup_check: bool = False,
+        fail_release: bool = False,
+        fail_reconcile: bool = False,
+        reconcile_delta: Optional[ReconcileDelta] = None,
+    ) -> None:
         self.fail_provision = fail_provision
         self.enqueue_daemon = enqueue_daemon
         self.requires_l2_backup_check = requires_l2_backup_check
@@ -157,22 +163,28 @@ class MockPlacementStrategy:
         # set per-test to exercise the prune path.
         self.delete_workers_returns: set[str] = set()
 
-    async def route(self, request: PlacementRequest,
-                    warm_location_uid: Optional[str],
-                    snapshot_size_estimate_bytes: int = 0, *,
-                    home_worker_uid: Optional[str] = None,
-                    home_gpu_in_use: int = 0,
-                    overflow_viable: bool = False) -> RouteDecision:
+    async def route(
+        self,
+        request: PlacementRequest,
+        warm_location_uid: Optional[str],
+        snapshot_size_estimate_bytes: int = 0,
+        *,
+        home_worker_uid: Optional[str] = None,
+        home_gpu_in_use: int = 0,
+        overflow_viable: bool = False,
+    ) -> RouteDecision:
         self.route_calls.append((request, warm_location_uid))
         self.route_home_calls.append(
-            (home_worker_uid, home_gpu_in_use, overflow_viable))
+            (home_worker_uid, home_gpu_in_use, overflow_viable)
+        )
         # Mirror the real policy (backlog #17): keep siblings on the single
         # home; a GPU consumer overflows only when the home's GPU slot is
         # already taken (gpu_total=1 here) AND a backup exists; never mint a
         # 2nd durable worker.
         if home_worker_uid is not None:
             needs_gpu = request.activity in {
-                SnapshotActivity.TRAIN, SnapshotActivity.PREDICT
+                SnapshotActivity.TRAIN,
+                SnapshotActivity.PREDICT,
             }
             home_can_serve = (not needs_gpu) or home_gpu_in_use < 1
             if home_can_serve or not overflow_viable:
@@ -190,8 +202,9 @@ class MockPlacementStrategy:
             reason='test',
         )
 
-    async def provision(self, request: PlacementRequest,
-                        decision: RouteDecision) -> ProvisionedHandle:
+    async def provision(
+        self, request: PlacementRequest, decision: RouteDecision
+    ) -> ProvisionedHandle:
         self.provision_calls.append((request, decision))
         if self.fail_provision:
             raise RuntimeError('no capacity')
@@ -201,16 +214,18 @@ class MockPlacementStrategy:
             task_queue=f'diskgraph-activity-tq-{request.job_id}',
         )
 
-    async def wait_provision_ready(self, handle: ProvisionedHandle,
-                                   job_id: str) -> ProvisionedHandle:
+    async def wait_provision_ready(
+        self, handle: ProvisionedHandle, job_id: str
+    ) -> ProvisionedHandle:
         del job_id
         self.wait_provision_ready_calls.append(handle)
         if self.wait_provision_ready_error is not None:
             raise self.wait_provision_ready_error
         return handle
 
-    async def release(self, request: PlacementRequest,
-                      handle: Optional[ProvisionedHandle]) -> None:
+    async def release(
+        self, request: PlacementRequest, handle: Optional[ProvisionedHandle]
+    ) -> None:
         del request
         self.release_calls.append(handle)
         if self.fail_release:
@@ -236,8 +251,12 @@ class MockPlacementStrategy:
 
 
 class _FakePoolWorkerInfo:
-    def __init__(self, pool_worker_uid: str, status: str = 'Registered',
-                 extra_tolerations_match: bool = True) -> None:
+    def __init__(
+        self,
+        pool_worker_uid: str,
+        status: str = 'Registered',
+        extra_tolerations_match: bool = True,
+    ) -> None:
         self.pool_worker_uid = pool_worker_uid
         self.status = status
         self.extra_tolerations_match = extra_tolerations_match
@@ -251,26 +270,31 @@ class _FakeActivityPodInfo:
 def test_configured_canary_applies_registered_evidence_and_result(monkeypatch):
     capacity_tiers = [CapacityTier(800, 1), CapacityTier(3400, 4)]
     placement_state = K8sPlacementState()
-    placement_state.pvcs.update({
-        uid: PvcState(uid, ssd_gib, gpu_count)
-        for uid, ssd_gib, gpu_count in [
-            ('worker-valid', 800, 1),
-            ('worker-old-spec', 3400, 4),
-            ('worker-running', 3400, 4),
-            ('worker-unconfigured', 999, 1),
-            ('worker-wrong-gpu', 800, 4),
-            ('worker-incomplete', 800, 0),
-        ]
-    })
-    workers = cast(list[PoolWorkerInfo], [
-        _FakePoolWorkerInfo('worker-valid', 'Registered'),
-        _FakePoolWorkerInfo('worker-old-spec', 'Registered'),
-        _FakePoolWorkerInfo('worker-running', 'Running'),
-        _FakePoolWorkerInfo('worker-unconfigured', 'Registered'),
-        _FakePoolWorkerInfo('worker-wrong-gpu', 'Registered'),
-        _FakePoolWorkerInfo('worker-incomplete', 'Registered'),
-        _FakePoolWorkerInfo('worker-missing-state', 'Registered'),
-    ])
+    placement_state.pvcs.update(
+        {
+            uid: PvcState(uid, ssd_gib, gpu_count)
+            for uid, ssd_gib, gpu_count in [
+                ('worker-valid', 800, 1),
+                ('worker-old-spec', 3400, 4),
+                ('worker-running', 3400, 4),
+                ('worker-unconfigured', 999, 1),
+                ('worker-wrong-gpu', 800, 4),
+                ('worker-incomplete', 800, 0),
+            ]
+        }
+    )
+    workers = cast(
+        list[PoolWorkerInfo],
+        [
+            _FakePoolWorkerInfo('worker-valid', 'Registered'),
+            _FakePoolWorkerInfo('worker-old-spec', 'Registered'),
+            _FakePoolWorkerInfo('worker-running', 'Running'),
+            _FakePoolWorkerInfo('worker-unconfigured', 'Registered'),
+            _FakePoolWorkerInfo('worker-wrong-gpu', 'Registered'),
+            _FakePoolWorkerInfo('worker-incomplete', 'Registered'),
+            _FakePoolWorkerInfo('worker-missing-state', 'Registered'),
+        ],
+    )
 
     async def list_pool_workers():
         return workers
@@ -285,7 +309,8 @@ def test_configured_canary_applies_registered_evidence_and_result(monkeypatch):
     manager = SimpleNamespace(
         list_pool_workers=list_pool_workers,
         registered_worker_matches_current_cache_tier=(
-            registered_worker_matches_current_cache_tier),
+            registered_worker_matches_current_cache_tier
+        ),
     )
     strategy = object.__new__(K8sPlacementStrategy)
     restrictions = []
@@ -293,7 +318,8 @@ def test_configured_canary_applies_registered_evidence_and_result(monkeypatch):
         strategy,
         'restrict_to_available_capacity',
         lambda tiers, *, ephemeral_available: restrictions.append(
-            (tiers, ephemeral_available)),
+            (tiers, ephemeral_available)
+        ),
     )
     controller = cast(
         PoolController,
@@ -303,11 +329,14 @@ def test_configured_canary_applies_registered_evidence_and_result(monkeypatch):
         ),
     )
 
-    async def run_canary(_manager, *, cache_tier_specs, pvc_spec_factory,
-                         prevalidated_cache_tiers):
+    async def run_canary(
+        _manager, *, cache_tier_specs, pvc_spec_factory, prevalidated_cache_tiers
+    ):
         del pvc_spec_factory
-        assert {(spec.size_gib, spec.gpu_count)
-                for spec in cache_tier_specs} == {(800, 1), (3400, 4)}
+        assert {(spec.size_gib, spec.gpu_count) for spec in cache_tier_specs} == {
+            (800, 1),
+            (3400, 4),
+        }
         assert await prevalidated_cache_tiers() == {(800, 1)}
         return canary_mod.InitCanaryResult(
             available_cache_tiers=frozenset({(800, 1)}),
@@ -329,8 +358,7 @@ def test_configured_canary_applies_registered_evidence_and_result(monkeypatch):
     )
     monkeypatch.setattr(canary_mod, 'run_init_canary', run_canary)
 
-    asyncio.run(
-        run_configured_init_canary(cast(DeployEnvConfig, object()), controller))
+    asyncio.run(run_configured_init_canary(cast(DeployEnvConfig, object()), controller))
 
     assert restrictions == [(frozenset({(800, 1)}), False)]
 
@@ -350,8 +378,9 @@ class _FakeK8sManager:
         self.delete_pool_worker_calls: list[dict[str, Any]] = []
         self.delete_activity_pods_calls: list[dict[str, Any]] = []
         self.live_workers: list[_FakePoolWorkerInfo] = []
-        self.on_provision_pool_worker: Optional[Callable[
-            [Optional[str]], Awaitable[None]]] = None
+        self.on_provision_pool_worker: Optional[
+            Callable[[Optional[str]], Awaitable[None]]
+        ] = None
 
     @staticmethod
     def deployment_name_for_uid(pool_worker_uid: str) -> str:
@@ -362,7 +391,8 @@ class _FakeK8sManager:
         return f'{kind}-{job_id}'
 
     async def wait_for_activity_job_pod_running(
-            self, job_name: str, timeout: float) -> '_FakeActivityPodInfo':
+        self, job_name: str, timeout: float
+    ) -> '_FakeActivityPodInfo':
         return _FakeActivityPodInfo(pod_name=f'pod-{job_name}')
 
     async def provision_pool_worker(
@@ -376,18 +406,21 @@ class _FakeK8sManager:
         if self.on_provision_pool_worker is not None:
             await self.on_provision_pool_worker(pool_worker_uid)
         self.provision_pool_worker_envs.append(env)
-        self.provision_pool_worker_calls.append({
-            'pool_worker_uid': pool_worker_uid,
-            'pvc_spec': pvc_spec,
-            'timeout': timeout,
-        })
+        self.provision_pool_worker_calls.append(
+            {
+                'pool_worker_uid': pool_worker_uid,
+                'pvc_spec': pvc_spec,
+                'timeout': timeout,
+            }
+        )
         return _FakePoolWorkerInfo(pool_worker_uid or 'pool-worker-new')
 
     async def provision_activity_pod(self, **kwargs: Any) -> None:
         self.provision_activity_pod_calls.append(kwargs)
 
     async def registered_worker_matches_current_cache_tier(
-            self, info: Any, pvc_spec: Any) -> bool:
+        self, info: Any, pvc_spec: Any
+    ) -> bool:
         return True
 
     async def provision_ephemeral_activity_pod(self, **kwargs: Any) -> None:
@@ -404,34 +437,34 @@ class _FakeK8sManager:
         pvc_delete_timeout: float = 60,
         force_on_timeout: bool = False,
     ) -> None:
-        self.delete_pool_worker_calls.append({
-            'pool_worker_uid':
-            pool_worker_uid,
-            'grace_period_seconds':
-            grace_period_seconds,
-            'scale_down_timeout':
-            scale_down_timeout,
-            'pvc_delete_timeout':
-            pvc_delete_timeout,
-            'force_on_timeout':
-            force_on_timeout,
-        })
+        self.delete_pool_worker_calls.append(
+            {
+                'pool_worker_uid': pool_worker_uid,
+                'grace_period_seconds': grace_period_seconds,
+                'scale_down_timeout': scale_down_timeout,
+                'pvc_delete_timeout': pvc_delete_timeout,
+                'force_on_timeout': force_on_timeout,
+            }
+        )
 
     async def delete_activity_pods(self, **kwargs: Any) -> None:
         self.delete_activity_pods_calls.append(kwargs)
 
 
 class _CreateControllerConfig:
-    def __init__(self, pool_state_path: str,
-                 data_plane_storage_root: Optional[str] = None,
-                 data_compute: Optional[DiskgraphConfig] = None) -> None:
+    def __init__(
+        self,
+        pool_state_path: str,
+        data_plane_storage_root: Optional[str] = None,
+        data_compute: Optional[DiskgraphConfig] = None,
+    ) -> None:
         self.pool_state_path = pool_state_path
-        self.data_plane_storage_root = (data_plane_storage_root
-                                        or str(Path(pool_state_path).parent))
+        self.data_plane_storage_root = data_plane_storage_root or str(
+            Path(pool_state_path).parent
+        )
         # The pool controller only runs for diskgraph deployments, so the
         # config it reads always carries a real ``DiskgraphConfig``.
-        self.data_compute = (DiskgraphConfig()
-                             if data_compute is None else data_compute)
+        self.data_compute = DiskgraphConfig() if data_compute is None else data_compute
 
 
 class _FakeClock:
@@ -553,15 +586,24 @@ def _diskgraph_pool_config(
 
 
 def _poller_waiter(describe, **kwargs):
-    temporal_client = SimpleNamespace(get=AsyncMock(
-        return_value=SimpleNamespace(workflow_service=SimpleNamespace(
-            describe_task_queue=describe))))
-    config = SimpleNamespace(instance_id='dev-1',
-                             temporal_namespace='test-namespace',
-                             task_queue=lambda queue: f'{queue}-dev-1')
-    return build_temporal_activity_poller_waiter(cast(DeployEnvConfig, config),
-                                                 cast(Any, temporal_client),
-                                                 poll_interval_secs=0, **kwargs)
+    temporal_client = SimpleNamespace(
+        get=AsyncMock(
+            return_value=SimpleNamespace(
+                workflow_service=SimpleNamespace(describe_task_queue=describe)
+            )
+        )
+    )
+    config = SimpleNamespace(
+        instance_id='dev-1',
+        temporal_namespace='test-namespace',
+        task_queue=lambda queue: f'{queue}-dev-1',
+    )
+    return build_temporal_activity_poller_waiter(
+        cast(DeployEnvConfig, config),
+        cast(Any, temporal_client),
+        poll_interval_secs=0,
+        **kwargs,
+    )
 
 
 @pytest.mark.asyncio
@@ -570,12 +612,17 @@ async def test_temporal_activity_poller_waiter_requires_selected_pod_identity():
     from temporalio.service import RPCError, RPCStatusCode
 
     expected_identity = activity_worker_identity('activity-pod-new', 'dev-1')
-    describe = AsyncMock(side_effect=[
-        RPCError(message='unavailable', status=RPCStatusCode.UNAVAILABLE,
-                 raw_grpc_status=b''),
-        SimpleNamespace(pollers=[SimpleNamespace(identity='stale-poller')]),
-        SimpleNamespace(pollers=[SimpleNamespace(identity=expected_identity)]),
-    ])
+    describe = AsyncMock(
+        side_effect=[
+            RPCError(
+                message='unavailable',
+                status=RPCStatusCode.UNAVAILABLE,
+                raw_grpc_status=b'',
+            ),
+            SimpleNamespace(pollers=[SimpleNamespace(identity='stale-poller')]),
+            SimpleNamespace(pollers=[SimpleNamespace(identity=expected_identity)]),
+        ]
+    )
     waiter = _poller_waiter(describe)
 
     await waiter('diskgraph-activity-tq-job', 'activity-pod-new', 1)
@@ -590,29 +637,34 @@ async def test_temporal_activity_poller_waiter_requires_selected_pod_identity():
 
 @pytest.mark.asyncio
 async def test_temporal_activity_poller_waiter_times_out_on_stale_poller():
-    describe = AsyncMock(return_value=SimpleNamespace(
-        pollers=[SimpleNamespace(identity='pool-worker-old-pod-dev-1')]))
+    describe = AsyncMock(
+        return_value=SimpleNamespace(
+            pollers=[SimpleNamespace(identity='pool-worker-old-pod-dev-1')]
+        )
+    )
     monotonic_values = iter([0.0, 0.0, 2.0, 2.0])
     waiter = _poller_waiter(
         describe,
         monotonic_fn=lambda: next(monotonic_values),
     )
 
-    with pytest.raises(ProvisionTimeoutError,
-                       match='did not register its Temporal ACTIVITY poller'):
+    with pytest.raises(
+        ProvisionTimeoutError, match='did not register its Temporal ACTIVITY poller'
+    ):
         await waiter('diskgraph-activity-tq-job', 'activity-pod-new', 1)
 
     assert describe.await_count == 1
 
 
 @pytest.mark.asyncio
-async def test_temporal_activity_poller_waiter_propagates_nonretryable_rpc_error(
-):
+async def test_temporal_activity_poller_waiter_propagates_nonretryable_rpc_error():
     from temporalio.service import RPCError, RPCStatusCode
 
     describe = AsyncMock(
-        side_effect=RPCError(message='not found', status=RPCStatusCode.
-                             NOT_FOUND, raw_grpc_status=b''))
+        side_effect=RPCError(
+            message='not found', status=RPCStatusCode.NOT_FOUND, raw_grpc_status=b''
+        )
+    )
     waiter = _poller_waiter(describe)
 
     with pytest.raises(RPCError):
@@ -644,14 +696,14 @@ def test_normalize_state_for_singlehost_drops_k8s_placement_state():
     state = PoolState(
         placement_state=K8sPlacementState(),
         snapshots={
-            'snap-1':
-            SnapshotPlacement(worker='worker-a', state=SnapshotState.READY,
-                              size_bytes=123),
+            'snap-1': SnapshotPlacement(
+                worker='worker-a', state=SnapshotState.READY, size_bytes=123
+            ),
         },
         dataplane_backups={
-            'snap-1':
-            DataplaneBackup(snapshot_id='snap-1',
-                            dataplane_path='s3://b/snap-1'),
+            'snap-1': DataplaneBackup(
+                snapshot_id='snap-1', dataplane_path='s3://b/snap-1'
+            ),
         },
     )
     config = _diskgraph_pool_config(pool_strategy='singlehost')
@@ -698,12 +750,11 @@ def test_scrub_unbacked_k8s_placement_ghosts_is_conservative():
         pool_worker_uid='worker-copy',
         local_state=SnapshotLocalCopyState.WARM,
     )
-    state.local_copies['evicted-only:worker-evicted'] = (
-        SnapshotLocalCopyRecord(
-            snapshot_id='evicted-only',
-            pool_worker_uid='worker-evicted',
-            local_state=SnapshotLocalCopyState.EVICTED,
-        ))
+    state.local_copies['evicted-only:worker-evicted'] = SnapshotLocalCopyRecord(
+        snapshot_id='evicted-only',
+        pool_worker_uid='worker-evicted',
+        local_state=SnapshotLocalCopyState.EVICTED,
+    )
 
     assert _scrub_unbacked_k8s_placement_ghosts(state)
 
@@ -711,39 +762,49 @@ def test_scrub_unbacked_k8s_placement_ghosts_is_conservative():
 
 
 def _make_controller(
-    tmp_path, strategy: Optional[PlacementStrategy] = None,
-    workflow_status_checker=None, dataplane_deleter=None,
-    local_snapshot_deleter=None, data_plane_storage_root=None,
-    lifecycle_policy=None, now_utc_fn=None, time_fn=None,
-    worker_startup_grace_secs: float = POOL_WORKER_STARTUP_GRACE_SEC
+    tmp_path,
+    strategy: Optional[PlacementStrategy] = None,
+    workflow_status_checker=None,
+    dataplane_deleter=None,
+    local_snapshot_deleter=None,
+    data_plane_storage_root=None,
+    lifecycle_policy=None,
+    now_utc_fn=None,
+    time_fn=None,
+    worker_startup_grace_secs: float = POOL_WORKER_STARTUP_GRACE_SEC,
 ) -> PoolController:
     persistence = PoolStatePersistence(
         str(tmp_path / 'pool_state.json'),
-        empty_state_factory=lambda: PoolState(placement_state=K8sPlacementState(
-        )),
+        empty_state_factory=lambda: PoolState(placement_state=K8sPlacementState()),
     )
-    return PoolController(state=PoolState(placement_state=K8sPlacementState()),
-                          persistence=persistence, strategy=strategy,
-                          workflow_status_checker=workflow_status_checker,
-                          dataplane_deleter=dataplane_deleter,
-                          local_snapshot_deleter=local_snapshot_deleter,
-                          data_plane_storage_root=data_plane_storage_root,
-                          lifecycle_policy=lifecycle_policy,
-                          now_utc_fn=now_utc_fn, time_fn=time_fn,
-                          worker_startup_grace_secs=worker_startup_grace_secs)
+    return PoolController(
+        state=PoolState(placement_state=K8sPlacementState()),
+        persistence=persistence,
+        strategy=strategy,
+        workflow_status_checker=workflow_status_checker,
+        dataplane_deleter=dataplane_deleter,
+        local_snapshot_deleter=local_snapshot_deleter,
+        data_plane_storage_root=data_plane_storage_root,
+        lifecycle_policy=lifecycle_policy,
+        now_utc_fn=now_utc_fn,
+        time_fn=time_fn,
+        worker_startup_grace_secs=worker_startup_grace_secs,
+    )
 
 
 def _make_controller_with_state(
-        tmp_path, state: PoolState,
-        strategy: Optional[MockPlacementStrategy] = None,
-        time_fn=None) -> PoolController:
+    tmp_path,
+    state: PoolState,
+    strategy: Optional[MockPlacementStrategy] = None,
+    time_fn=None,
+) -> PoolController:
     persistence = PoolStatePersistence(
         str(tmp_path / 'pool_state.json'),
-        empty_state_factory=lambda: PoolState(placement_state=K8sPlacementState(
-        )),
+        empty_state_factory=lambda: PoolState(placement_state=K8sPlacementState()),
     )
-    return PoolController(state=state, persistence=persistence,
-                          strategy=strategy, time_fn=time_fn)
+    return PoolController(
+        state=state, persistence=persistence, strategy=strategy, time_fn=time_fn
+    )
 
 
 def _state_with_expected_worker(worker: str = 'worker-a') -> PoolState:
@@ -763,8 +824,9 @@ def _state_with_expected_worker(worker: str = 'worker-a') -> PoolState:
     return state
 
 
-def _arm_silent_worker_retirement(controller: PoolController,
-                                  not_before: float) -> None:
+def _arm_silent_worker_retirement(
+    controller: PoolController, not_before: float
+) -> None:
     """Model maintenance having started RPC-serving heartbeat grace."""
     controller._silent_worker_dead_not_before = not_before
 
@@ -773,39 +835,39 @@ def _hist_count(metric, **labels) -> float:
     total = 0.0
     for family in metric.collect():
         for sample in family.samples:
-            if (sample.name.endswith('_count') and all(
-                    sample.labels.get(k) == v for k, v in labels.items())):
+            if sample.name.endswith('_count') and all(
+                sample.labels.get(k) == v for k, v in labels.items()
+            ):
                 total += sample.value
     return total
 
 
-def test_maintenance_tick_updates_state_gauges_and_placement_histogram(
-        tmp_path):
+def test_maintenance_tick_updates_state_gauges_and_placement_histogram(tmp_path):
     controller = _make_controller(tmp_path, strategy=MockPlacementStrategy())
     placement_count_before = _hist_count(metrics.POOL_PLACEMENT_DURATION)
     asyncio.run(
         controller.place_snapshot.coroutine(
-            _request(snapshot_id='snap-wire', job_id='job-wire')))
+            _request(snapshot_id='snap-wire', job_id='job-wire')
+        )
+    )
     asyncio.run(controller._maintenance_once())
 
     # _maintenance_once -> metrics.update_state_gauges
     snapshots_total = sum(
-        metrics.POOL_SNAPSHOTS.labels(state=s.value)._value.get()
-        for s in SnapshotState)
+        metrics.POOL_SNAPSHOTS.labels(state=s.value)._value.get() for s in SnapshotState
+    )
     assert snapshots_total == 1
     assert metrics.POOL_ACTIVE_LEASES._value.get() == 1
 
     # @observe_place_snapshot recorded exactly one placement observation.
-    assert (_hist_count(
-        metrics.POOL_PLACEMENT_DURATION) == placement_count_before + 1)
+    assert _hist_count(metrics.POOL_PLACEMENT_DURATION) == placement_count_before + 1
 
 
 def test_active_activity_metrics_use_persisted_lease_activity_after_restart():
     state = PoolState(
         placement_state=K8sPlacementState(),
         snapshots={
-            'snap-restart':
-            SnapshotPlacement(
+            'snap-restart': SnapshotPlacement(
                 worker='worker-a',
                 leases=['job-1'],
                 lease_paths={'job-1': 'durable'},
@@ -816,10 +878,13 @@ def test_active_activity_metrics_use_persisted_lease_activity_after_restart():
 
     metrics.update_state_gauges(state, {}, {})
 
-    assert metrics.POOL_ACTIVE_ACTIVITIES.labels(
-        pool_worker_uid='worker-a',
-        activity='PREDICT',
-    )._value.get() == 1
+    assert (
+        metrics.POOL_ACTIVE_ACTIVITIES.labels(
+            pool_worker_uid='worker-a',
+            activity='PREDICT',
+        )._value.get()
+        == 1
+    )
 
 
 def test_lifecycle_policy_rejects_max_ssd_above_max_dataplane(tmp_path):
@@ -835,7 +900,7 @@ def test_lifecycle_policy_rejects_max_ssd_above_max_dataplane(tmp_path):
 
 
 ALT_GRAPH_SNAPSHOT_ID = 'NA-11111111111111111111111111111111@v1'
-CANONICAL_GRAPH_SNAPSHOT_ID = ('graph-11111111111111111111111111111111@v1')
+CANONICAL_GRAPH_SNAPSHOT_ID = 'graph-11111111111111111111111111111111@v1'
 
 
 def _request(
@@ -890,15 +955,20 @@ def _open_snapshot(
 
 
 def test_dataplane_snapshot_path_uses_snapshot_prefix_and_safe_segment():
-    assert dataplane_snapshot_path(
-        's3://bucket/env',
-        'snap/with/slash',
-    ) == 's3://bucket/env/snapshots/snap%2Fwith%2Fslash'
+    assert (
+        dataplane_snapshot_path(
+            's3://bucket/env',
+            'snap/with/slash',
+        )
+        == 's3://bucket/env/snapshots/snap%2Fwith%2Fslash'
+    )
 
 
 def test_starting_worker_shared_by_concurrent_different_snapshots(
-        tmp_path, monkeypatch):
+    tmp_path, monkeypatch
+):
     """The second route sees the first reservation before any heartbeat."""
+
     async def run():
         controller = _make_controller(tmp_path)
         manager = _FakeK8sManager()
@@ -930,14 +1000,17 @@ def test_starting_worker_shared_by_concurrent_different_snapshots(
         manager.on_provision_pool_worker = provision
         first = asyncio.create_task(
             controller.place_snapshot.coroutine(
-                replace(_request(), source_size_bytes=10 << 30)))
+                replace(_request(), source_size_bytes=10 << 30)
+            )
+        )
         second = None
         try:
             await asyncio.wait_for(first_provisioning.wait(), 10)
             second = asyncio.create_task(
                 controller.place_snapshot.coroutine(
-                    replace(_request('snap-2', 'job-2'),
-                            source_size_bytes=10 << 30)))
+                    replace(_request('snap-2', 'job-2'), source_size_bytes=10 << 30)
+                )
+            )
             await asyncio.wait_for(second_routed.wait(), 10)
             assert set(_k8s_pvcs(controller)) == {'worker-a'}
             assert 'snap-2' not in controller._state.snapshots
@@ -945,22 +1018,28 @@ def test_starting_worker_shared_by_concurrent_different_snapshots(
             # another placement waits for capacity.
             await asyncio.wait_for(
                 controller.report_status.coroutine(
-                    _report('worker-a', ready_snapshots=[],
-                            in_progress_snapshots=['snap-1'],
-                            pvc_total_bytes=1000 << 30,
-                            pvc_free_bytes=1000 << 30)), 10)
+                    _report(
+                        'worker-a',
+                        ready_snapshots=[],
+                        in_progress_snapshots=['snap-1'],
+                        pvc_total_bytes=1000 << 30,
+                        pvc_free_bytes=1000 << 30,
+                    )
+                ),
+                10,
+            )
             allow_provision.set()
             results = await asyncio.wait_for(asyncio.gather(first, second), 10)
-            assert {result.pool_worker_uid
-                    for result in results} == {'worker-a'}
+            assert {result.pool_worker_uid for result in results} == {'worker-a'}
             assert set(_k8s_pvcs(controller)) == {'worker-a'}
             assert controller._state.snapshots['snap-2'].leases == ['job-2']
         finally:
             for task in [first, second]:
                 if task is not None:
                     task.cancel()
-            await asyncio.gather(*[t for t in [first, second] if t is not None],
-                                 return_exceptions=True)
+            await asyncio.gather(
+                *[t for t in [first, second] if t is not None], return_exceptions=True
+            )
 
     asyncio.run(run())
 
@@ -973,6 +1052,7 @@ def _k8s_pvcs(controller: PoolController) -> dict[str, PvcState]:
 
 class _ObservedCapacityEvent(asyncio.Event):
     """Observe the wait boundary without replacing routing or admission."""
+
     def __init__(self):
         super().__init__()
         self.waiting = asyncio.Event()
@@ -983,10 +1063,16 @@ class _ObservedCapacityEvent(asyncio.Event):
 
 
 def _controller_with_starting_worker(
-        tmp_path, *, grace: float = POOL_WORKER_STARTUP_GRACE_SEC,
-        clock: Optional[_FakeClock] = None):
-    controller = _make_controller(tmp_path, worker_startup_grace_secs=grace,
-                                  now_utc_fn=clock.now_utc if clock else None)
+    tmp_path,
+    *,
+    grace: float = POOL_WORKER_STARTUP_GRACE_SEC,
+    clock: Optional[_FakeClock] = None,
+):
+    controller = _make_controller(
+        tmp_path,
+        worker_startup_grace_secs=grace,
+        now_utc_fn=clock.now_utc if clock else None,
+    )
     manager = _FakeK8sManager()
     uids = (f'worker-new-{i}' for i in count())
     controller._set_placement_strategy(
@@ -996,16 +1082,24 @@ def _controller_with_starting_worker(
             capacity_tiers=[
                 CapacityTier(50, 4),
                 CapacityTier(1000, 1),
-                CapacityTier(1000, 4)
+                CapacityTier(1000, 4),
             ],
-            pool_worker_uid_factory=lambda: next(uids)))
+            pool_worker_uid_factory=lambda: next(uids),
+        )
+    )
     _k8s_pvcs(controller)['worker-starting'] = PvcState(
-        pool_worker_uid='worker-starting', tier_ssd_gib=1000, tier_gpu_count=4,
-        created_at=controller._now_utc())
+        pool_worker_uid='worker-starting',
+        tier_ssd_gib=1000,
+        tier_gpu_count=4,
+        created_at=controller._now_utc(),
+    )
     controller._state.snapshots['snap-starting'] = SnapshotPlacement(
-        worker='worker-starting', size_bytes=100 << 30, leases=['job-starting'],
+        worker='worker-starting',
+        size_bytes=100 << 30,
+        leases=['job-starting'],
         lease_paths={'job-starting': 'durable'},
-        lease_activities={'job-starting': SnapshotActivity.TRAIN})
+        lease_activities={'job-starting': SnapshotActivity.TRAIN},
+    )
     return controller, manager
 
 
@@ -1018,33 +1112,43 @@ def test_starting_worker_heartbeat_before_wait_is_not_lost(tmp_path):
                 # Deliver after capacity was checked and locks released, but
                 # BEFORE awaiting the captured event. A clear() would lose it.
                 await controller.report_status.coroutine(
-                    _report('worker-starting', ready_snapshots=[],
-                            in_progress_snapshots=['snap-starting'],
-                            pvc_total_bytes=1000 << 30,
-                            pvc_free_bytes=1000 << 30))
+                    _report(
+                        'worker-starting',
+                        ready_snapshots=[],
+                        in_progress_snapshots=['snap-starting'],
+                        pvc_total_bytes=1000 << 30,
+                        pvc_free_bytes=1000 << 30,
+                    )
+                )
                 return await super().wait()
 
         controller._worker_capacity_changed = HeartbeatBeforeWait()
         result = await asyncio.wait_for(
             controller.place_snapshot.coroutine(
-                replace(_request(), source_size_bytes=10 << 30)), 10)
+                replace(_request(), source_size_bytes=10 << 30)
+            ),
+            10,
+        )
         assert result.pool_worker_uid == 'worker-starting'
         assert len(_k8s_pvcs(controller)) == 1
 
     asyncio.run(run())
 
 
-@pytest.mark.parametrize('blocker', [
-    'expired',
-    'ssd_reserved',
-    'gpu_reserved',
-    'ssd_hint',
-    'gpu_hint',
-    'stale',
-    'dead',
-    'draining',
-    'incompatible_tier',
-])
+@pytest.mark.parametrize(
+    'blocker',
+    [
+        'expired',
+        'ssd_reserved',
+        'gpu_reserved',
+        'ssd_hint',
+        'gpu_hint',
+        'stale',
+        'dead',
+        'draining',
+        'incompatible_tier',
+    ],
+)
 def test_starting_worker_unsuitable_does_not_delay_scale_out(tmp_path, blocker):
     async def run():
         controller, _ = _controller_with_starting_worker(tmp_path)
@@ -1064,16 +1168,24 @@ def test_starting_worker_unsuitable_does_not_delay_scale_out(tmp_path, blocker):
             pvc.tier_ssd_gib = 900
         else:
             controller._worker_inventory['worker-starting'] = WorkerInventory(
-                pool_worker_uid='worker-starting', state=_snapshot(),
-                status=WorkerStatus(blocker.upper()), last_heartbeat=0)
+                pool_worker_uid='worker-starting',
+                state=_snapshot(),
+                status=WorkerStatus(blocker.upper()),
+                last_heartbeat=0,
+            )
         event = _ObservedCapacityEvent()
         controller._worker_capacity_changed = event
         request = replace(
-            _request(), source_size_bytes=10 << 30, resource_hint=ResourceHint(
+            _request(),
+            source_size_bytes=10 << 30,
+            resource_hint=ResourceHint(
                 min_ssd_gib=100 if blocker == 'ssd_hint' else 0,
-                min_gpu_slots=2 if blocker == 'gpu_hint' else 1))
+                min_gpu_slots=2 if blocker == 'gpu_hint' else 1,
+            ),
+        )
         result = await asyncio.wait_for(
-            controller.place_snapshot.coroutine(request), 10)
+            controller.place_snapshot.coroutine(request), 10
+        )
         assert result.pool_worker_uid != 'worker-starting'
         assert not event.waiting.is_set()
 
@@ -1087,12 +1199,19 @@ def test_starting_worker_wait_can_use_another_ready_worker(tmp_path):
         controller._worker_capacity_changed = event
         task = asyncio.create_task(
             controller.place_snapshot.coroutine(
-                replace(_request(), source_size_bytes=10 << 30)))
+                replace(_request(), source_size_bytes=10 << 30)
+            )
+        )
         try:
             await asyncio.wait_for(event.waiting.wait(), 10)
             await controller.report_status.coroutine(
-                _report('worker-other', ready_snapshots=[],
-                        pvc_total_bytes=1000 << 30, pvc_free_bytes=1000 << 30))
+                _report(
+                    'worker-other',
+                    ready_snapshots=[],
+                    pvc_total_bytes=1000 << 30,
+                    pvc_free_bytes=1000 << 30,
+                )
+            )
             result = await asyncio.wait_for(task, 10)
             assert result.pool_worker_uid == 'worker-other'
             assert 'worker-starting' not in controller._worker_inventory
@@ -1108,8 +1227,7 @@ def test_starting_worker_wait_cancellation_leaves_no_reservation(tmp_path):
         controller, _ = _controller_with_starting_worker(tmp_path)
         event = _ObservedCapacityEvent()
         controller._worker_capacity_changed = event
-        task = asyncio.create_task(
-            controller.place_snapshot.coroutine(_request()))
+        task = asyncio.create_task(controller.place_snapshot.coroutine(_request()))
         await asyncio.wait_for(event.waiting.wait(), 10)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -1125,16 +1243,17 @@ def test_starting_worker_wait_cancellation_leaves_no_reservation(tmp_path):
 
 def test_starting_worker_grace_expires_and_retry_keeps_new_worker(tmp_path):
     async def run():
-        controller, manager = _controller_with_starting_worker(
-            tmp_path, grace=0.05)
+        controller, manager = _controller_with_starting_worker(tmp_path, grace=0.05)
         event = _ObservedCapacityEvent()
         controller._worker_capacity_changed = event
         first = await asyncio.wait_for(
-            controller.place_snapshot.coroutine(_request()), 10)
+            controller.place_snapshot.coroutine(_request()), 10
+        )
         assert event.waiting.is_set()
         assert first.pool_worker_uid != 'worker-starting'
         retry = await asyncio.wait_for(
-            controller.place_snapshot.coroutine(_request()), 10)
+            controller.place_snapshot.coroutine(_request()), 10
+        )
         assert retry.pool_worker_uid == first.pool_worker_uid
         assert len(_k8s_pvcs(controller)) == 2
         assert len(manager.provision_pool_worker_calls) == 1
@@ -1158,19 +1277,27 @@ def test_starting_worker_waiters_recheck_reservations_after_wakeup(tmp_path):
         tasks = [
             asyncio.create_task(
                 controller.place_snapshot.coroutine(
-                    replace(_request(f'snap-{i}', f'job-{i}'),
-                            source_size_bytes=100 << 30))) for i in range(2)
+                    replace(
+                        _request(f'snap-{i}', f'job-{i}'), source_size_bytes=100 << 30
+                    )
+                )
+            )
+            for i in range(2)
         ]
         try:
             for _ in tasks:
                 await asyncio.wait_for(waiting.get(), 10)
             await controller.report_status.coroutine(
-                _report('worker-starting', ready_snapshots=[],
-                        in_progress_snapshots=['snap-starting'],
-                        pvc_total_bytes=1000 << 30, pvc_free_bytes=1000 << 30))
+                _report(
+                    'worker-starting',
+                    ready_snapshots=[],
+                    in_progress_snapshots=['snap-starting'],
+                    pvc_total_bytes=1000 << 30,
+                    pvc_free_bytes=1000 << 30,
+                )
+            )
             results = await asyncio.wait_for(asyncio.gather(*tasks), 10)
-            assert sum(r.pool_worker_uid == 'worker-starting'
-                       for r in results) == 1
+            assert sum(r.pool_worker_uid == 'worker-starting' for r in results) == 1
             assert len(_k8s_pvcs(controller)) == 2
         finally:
             for task in tasks:
@@ -1192,17 +1319,26 @@ def test_starting_worker_wakeups_do_not_reset_request_budget(tmp_path):
                 # Model more fresh startups appearing while unrelated workers
                 # heartbeat. Worker age alone must not extend this request.
                 _k8s_pvcs(controller)[
-                    'worker-starting'].created_at = controller._now_utc()
+                    'worker-starting'
+                ].created_at = controller._now_utc()
                 await controller.report_status.coroutine(
-                    _report('worker-too-small', ready_snapshots=[],
-                            pvc_total_bytes=1, pvc_free_bytes=1))
+                    _report(
+                        'worker-too-small',
+                        ready_snapshots=[],
+                        pvc_total_bytes=1,
+                        pvc_free_bytes=1,
+                    )
+                )
                 controller._worker_capacity_changed = RenewedStartup()
                 return await super().wait()
 
         controller._worker_capacity_changed = RenewedStartup()
         result = await asyncio.wait_for(
             controller.place_snapshot.coroutine(
-                replace(_request(), source_size_bytes=10 << 30)), 10)
+                replace(_request(), source_size_bytes=10 << 30)
+            ),
+            10,
+        )
         assert waits > 1
         assert result.pool_worker_uid != 'worker-starting'
 
@@ -1222,7 +1358,9 @@ def test_starting_worker_age_survives_controller_restart(tmp_path):
             _FakeK8sManager(),  # type: ignore[arg-type]
             PoolControllerPlacementContext(restarted),
             capacity_tiers=[CapacityTier(1000, 4)],
-            pool_worker_uid_factory=lambda: 'worker-new'))
+            pool_worker_uid_factory=lambda: 'worker-new',
+        )
+    )
     event = _ObservedCapacityEvent()
     restarted._worker_capacity_changed = event
     result = asyncio.run(restarted.place_snapshot.coroutine(_request()))
@@ -1234,8 +1372,7 @@ def test_dataplane_snapshot_path_uses_diskgraph_service_layout():
     assert dataplane_snapshot_path(
         's3://bucket/env',
         'graph-1bf8d6a669f6a6caba68a2393f1044e3@v1',
-    ) == ('s3://bucket/env/diskgraph_snapshots/'
-          'NA-1bf8d6a669f6a6caba68a2393f1044e3/v1')
+    ) == ('s3://bucket/env/diskgraph_snapshots/NA-1bf8d6a669f6a6caba68a2393f1044e3/v1')
 
 
 def _snapshot(**overrides: Any) -> WorkerStateSnapshot:
@@ -1255,30 +1392,36 @@ def _snapshot(**overrides: Any) -> WorkerStateSnapshot:
     return WorkerStateSnapshot(**defaults)
 
 
-def _report(pool_worker_uid: str = 'worker-a', event: WorkerEvent | None = None,
-            worker_storage_mode: PoolStorageMode = (
-                PoolStorageMode.DAEMON_ON_PVC),
-            **snapshot_overrides: Any) -> WorkerStatusReport:
-    return WorkerStatusReport(worker_name=pool_worker_uid,
-                              state=_snapshot(**snapshot_overrides),
-                              worker_storage_mode=worker_storage_mode,
-                              event=event)
+def _report(
+    pool_worker_uid: str = 'worker-a',
+    event: WorkerEvent | None = None,
+    worker_storage_mode: PoolStorageMode = (PoolStorageMode.DAEMON_ON_PVC),
+    **snapshot_overrides: Any,
+) -> WorkerStatusReport:
+    return WorkerStatusReport(
+        worker_name=pool_worker_uid,
+        state=_snapshot(**snapshot_overrides),
+        worker_storage_mode=worker_storage_mode,
+        event=event,
+    )
 
 
-def _seed_ready_local_copy(controller: PoolController,
-                           worker: str = 'worker-a') -> None:
+def _seed_ready_local_copy(
+    controller: PoolController, worker: str = 'worker-a'
+) -> None:
     controller.state.snapshots['snap-1'] = SnapshotPlacement(
-        worker=worker, state=SnapshotState.READY)
-    controller.state.local_copies[f'snap-1:{worker}'] = (
-        SnapshotLocalCopyRecord(
-            snapshot_id='snap-1',
-            pool_worker_uid=worker,
-            local_state=SnapshotLocalCopyState.WARM,
-        ))
+        worker=worker, state=SnapshotState.READY
+    )
+    controller.state.local_copies[f'snap-1:{worker}'] = SnapshotLocalCopyRecord(
+        snapshot_id='snap-1',
+        pool_worker_uid=worker,
+        local_state=SnapshotLocalCopyState.WARM,
+    )
 
 
-def _snapshot_ready_event(snapshot_id: str, timestamp,
-                          size_bytes: int = 4096) -> WorkerEvent:
+def _snapshot_ready_event(
+    snapshot_id: str, timestamp, size_bytes: int = 4096
+) -> WorkerEvent:
     return WorkerEvent(
         type=WorkerEventType.SNAPSHOT_READY,
         snapshot_id=snapshot_id,
@@ -1301,6 +1444,7 @@ def stub_dataplane_dirsize(monkeypatch):
     """Stub the dataplane scan in ``_ensure_backup_size`` so unit tests never
     hit real S3. Tests that exercise the scan override this themselves."""
     from io_utils import fsutil
+
     monkeypatch.setattr(fsutil, 'dirsize', lambda path: 0)
 
 
@@ -1328,33 +1472,38 @@ def test_report_status_records_new_node(tmp_path):
 
 
 @pytest.mark.parametrize('ready_source', ['heartbeat', 'event'])
-def test_ready_report_does_not_cancel_committed_eviction(
-        tmp_path, ready_source):
+def test_ready_report_does_not_cancel_committed_eviction(tmp_path, ready_source):
     controller = _make_controller(tmp_path)
     controller.state.snapshots['snap-1'] = SnapshotPlacement(
-        worker='worker-a', state=SnapshotState.READY)
-    controller.state.local_copies['snap-1:worker-a'] = (SnapshotLocalCopyRecord(
+        worker='worker-a', state=SnapshotState.READY
+    )
+    controller.state.local_copies['snap-1:worker-a'] = SnapshotLocalCopyRecord(
         snapshot_id='snap-1',
         pool_worker_uid='worker-a',
         local_state=SnapshotLocalCopyState.EVICTING,
-    ))
+    )
     controller.worker_inventory['worker-a'] = WorkerInventory(
         pool_worker_uid='worker-a',
         state=_snapshot(ready_snapshots=[]),
     )
-    report = (_report(
-        ready_snapshots=['snap-1']) if ready_source == 'heartbeat' else _report(
+    report = (
+        _report(ready_snapshots=['snap-1'])
+        if ready_source == 'heartbeat'
+        else _report(
             ready_snapshots=[],
             event=WorkerEvent(
                 type=WorkerEventType.SNAPSHOT_READY,
                 snapshot_id='snap-1',
             ),
-        ))
+        )
+    )
 
     asyncio.run(controller.report_status.coroutine(report))
 
-    assert controller.state.local_copies[
-        'snap-1:worker-a'].local_state == SnapshotLocalCopyState.EVICTING
+    assert (
+        controller.state.local_copies['snap-1:worker-a'].local_state
+        == SnapshotLocalCopyState.EVICTING
+    )
     assert controller._warm_location_uid('snap-1') is None
 
 
@@ -1362,8 +1511,8 @@ def test_report_status_ready_heartbeat_rebuilds_warm_snapshot_state(tmp_path):
     controller = _make_controller(tmp_path)
 
     asyncio.run(
-        controller.report_status.coroutine(
-            _report(ready_snapshots=['snap-ready'])))
+        controller.report_status.coroutine(_report(ready_snapshots=['snap-ready']))
+    )
 
     placement = controller.state.snapshots['snap-ready']
     local = controller.state.local_copies['snap-ready:worker-a']
@@ -1383,14 +1532,12 @@ def test_report_status_ready_heartbeat_rebuilds_warm_snapshot_state(tmp_path):
     assert loaded.snapshot_compliance['snap-ready'] == compliance
 
 
-def test_report_status_ready_heartbeat_pauses_local_clock_while_leased(
-        tmp_path):
+def test_report_status_ready_heartbeat_pauses_local_clock_while_leased(tmp_path):
     strategy = MockPlacementStrategy()
     controller = _make_controller(tmp_path, strategy=strategy)
     asyncio.run(controller.place_snapshot.coroutine(_request()))
 
-    asyncio.run(
-        controller.report_status.coroutine(_report(ready_snapshots=['snap-1'])))
+    asyncio.run(controller.report_status.coroutine(_report(ready_snapshots=['snap-1'])))
 
     local = controller.state.local_copies['snap-1:worker-a']
     compliance = controller.state.snapshot_compliance['snap-1']
@@ -1416,8 +1563,7 @@ def test_report_status_ready_heartbeat_preserves_known_snapshot_size(tmp_path):
     assert placement.size_bytes == 4096
 
 
-def test_report_status_absent_snapshot_does_not_evict_existing_warm_state(
-        tmp_path):
+def test_report_status_absent_snapshot_does_not_evict_existing_warm_state(tmp_path):
     controller = _make_controller(tmp_path)
     asyncio.run(controller.report_status.coroutine(_report(ready_snapshots=[])))
     controller.state.snapshots['snap-1'] = SnapshotPlacement(
@@ -1425,17 +1571,19 @@ def test_report_status_absent_snapshot_does_not_evict_existing_warm_state(
         state=SnapshotState.READY,
         size_bytes=4096,
     )
-    controller.state.local_copies['snap-1:worker-a'] = (SnapshotLocalCopyRecord(
+    controller.state.local_copies['snap-1:worker-a'] = SnapshotLocalCopyRecord(
         snapshot_id='snap-1',
         pool_worker_uid='worker-a',
         local_state=SnapshotLocalCopyState.WARM,
-    ))
+    )
 
     asyncio.run(controller.report_status.coroutine(_report(ready_snapshots=[])))
 
     assert controller.state.snapshots['snap-1'].state == SnapshotState.READY
-    assert controller.state.local_copies[
-        'snap-1:worker-a'].local_state == SnapshotLocalCopyState.WARM
+    assert (
+        controller.state.local_copies['snap-1:worker-a'].local_state
+        == SnapshotLocalCopyState.WARM
+    )
 
 
 def test_first_report_missing_known_local_copy_marks_evicted(tmp_path):
@@ -1445,15 +1593,17 @@ def test_first_report_missing_known_local_copy_marks_evicted(tmp_path):
         state=SnapshotState.READY,
         size_bytes=4096,
     )
-    controller.state.local_copies['snap-1:worker-a'] = (SnapshotLocalCopyRecord(
+    controller.state.local_copies['snap-1:worker-a'] = SnapshotLocalCopyRecord(
         snapshot_id='snap-1',
         pool_worker_uid='worker-a',
         local_state=SnapshotLocalCopyState.WARM,
-    ))
+    )
 
     asyncio.run(
         controller.report_status.coroutine(
-            _report(ready_snapshots=[], in_progress_snapshots=[])))
+            _report(ready_snapshots=[], in_progress_snapshots=[])
+        )
+    )
 
     assert 'snap-1' not in controller.state.snapshots
     local = controller.state.local_copies['snap-1:worker-a']
@@ -1461,47 +1611,59 @@ def test_first_report_missing_known_local_copy_marks_evicted(tmp_path):
     assert local.evicted_at is not None
 
     loaded = asyncio.run(controller._persistence.load())
-    assert loaded.local_copies[
-        'snap-1:worker-a'].local_state == SnapshotLocalCopyState.EVICTED
+    assert (
+        loaded.local_copies['snap-1:worker-a'].local_state
+        == SnapshotLocalCopyState.EVICTED
+    )
 
 
 def test_first_report_missing_active_local_copy_marks_evicted_without_dispatch(
-        tmp_path):
+    tmp_path,
+):
     controller = _make_controller(tmp_path)
     placement = _open_snapshot(controller)
     placement.size_bytes = 4096
-    controller.state.local_copies['snap-1:worker-a'] = (SnapshotLocalCopyRecord(
+    controller.state.local_copies['snap-1:worker-a'] = SnapshotLocalCopyRecord(
         snapshot_id='snap-1',
         pool_worker_uid='worker-a',
         local_state=SnapshotLocalCopyState.WARM,
-    ))
+    )
 
     asyncio.run(
         controller.report_status.coroutine(
-            _report(ready_snapshots=[], in_progress_snapshots=[])))
+            _report(ready_snapshots=[], in_progress_snapshots=[])
+        )
+    )
 
-    assert controller.state.local_copies[
-        'snap-1:worker-a'].local_state == SnapshotLocalCopyState.EVICTED
+    assert (
+        controller.state.local_copies['snap-1:worker-a'].local_state
+        == SnapshotLocalCopyState.EVICTED
+    )
     placement = controller.state.snapshots['snap-1']
     assert placement.durable_handles['job-1'].task_queue == (
-        'diskgraph-activity-tq-job-1')
+        'diskgraph-activity-tq-job-1'
+    )
     assert placement.leases == ['job-1']
 
 
 def test_first_report_missing_inactive_local_copy_does_not_dispatch(tmp_path):
     controller = _make_controller(tmp_path)
-    controller.state.local_copies['snap-1:worker-a'] = (SnapshotLocalCopyRecord(
+    controller.state.local_copies['snap-1:worker-a'] = SnapshotLocalCopyRecord(
         snapshot_id='snap-1',
         pool_worker_uid='worker-a',
         local_state=SnapshotLocalCopyState.WARM,
-    ))
+    )
 
     asyncio.run(
         controller.report_status.coroutine(
-            _report(ready_snapshots=[], in_progress_snapshots=[])))
+            _report(ready_snapshots=[], in_progress_snapshots=[])
+        )
+    )
 
-    assert controller.state.local_copies[
-        'snap-1:worker-a'].local_state == SnapshotLocalCopyState.EVICTED
+    assert (
+        controller.state.local_copies['snap-1:worker-a'].local_state
+        == SnapshotLocalCopyState.EVICTED
+    )
     assert 'snap-1' not in controller.state.snapshots
 
 
@@ -1511,19 +1673,23 @@ def test_first_report_keeps_known_ready_local_copy(tmp_path):
         worker='worker-a',
         state=SnapshotState.READY,
     )
-    controller.state.local_copies['snap-1:worker-a'] = (SnapshotLocalCopyRecord(
+    controller.state.local_copies['snap-1:worker-a'] = SnapshotLocalCopyRecord(
         snapshot_id='snap-1',
         pool_worker_uid='worker-a',
         local_state=SnapshotLocalCopyState.WARM,
-    ))
+    )
 
     asyncio.run(
         controller.report_status.coroutine(
-            _report(ready_snapshots=['snap-1'], in_progress_snapshots=[])))
+            _report(ready_snapshots=['snap-1'], in_progress_snapshots=[])
+        )
+    )
 
     assert controller.state.snapshots['snap-1'].state == SnapshotState.READY
-    assert controller.state.local_copies[
-        'snap-1:worker-a'].local_state == SnapshotLocalCopyState.WARM
+    assert (
+        controller.state.local_copies['snap-1:worker-a'].local_state
+        == SnapshotLocalCopyState.WARM
+    )
 
 
 def test_first_report_keeps_known_in_progress_local_copy(tmp_path):
@@ -1532,19 +1698,23 @@ def test_first_report_keeps_known_in_progress_local_copy(tmp_path):
         worker='worker-a',
         state=SnapshotState.RESERVED,
     )
-    controller.state.local_copies['snap-1:worker-a'] = (SnapshotLocalCopyRecord(
+    controller.state.local_copies['snap-1:worker-a'] = SnapshotLocalCopyRecord(
         snapshot_id='snap-1',
         pool_worker_uid='worker-a',
         local_state=SnapshotLocalCopyState.WARM,
-    ))
+    )
 
     asyncio.run(
         controller.report_status.coroutine(
-            _report(ready_snapshots=[], in_progress_snapshots=['snap-1'])))
+            _report(ready_snapshots=[], in_progress_snapshots=['snap-1'])
+        )
+    )
 
     assert controller.state.snapshots['snap-1'].state == SnapshotState.RESERVED
-    assert controller.state.local_copies[
-        'snap-1:worker-a'].local_state == SnapshotLocalCopyState.WARM
+    assert (
+        controller.state.local_copies['snap-1:worker-a'].local_state
+        == SnapshotLocalCopyState.WARM
+    )
 
 
 def test_report_status_overwrites_previous_inventory(tmp_path):
@@ -1554,21 +1724,26 @@ def test_report_status_overwrites_previous_inventory(tmp_path):
     controller = _make_controller(tmp_path)
     asyncio.run(
         controller.report_status.coroutine(
-            _report(ready_snapshots=['snap-1', 'snap-2'], pvc_free_bytes=500)))
+            _report(ready_snapshots=['snap-1', 'snap-2'], pvc_free_bytes=500)
+        )
+    )
     asyncio.run(
         controller.report_status.coroutine(
-            _report(ready_snapshots=['snap-2'], pvc_free_bytes=250)))
+            _report(ready_snapshots=['snap-2'], pvc_free_bytes=250)
+        )
+    )
     inv = controller.worker_inventory['worker-a']
     assert inv.state.ready_snapshots == ['snap-2']
     assert inv.state.pvc_free_bytes == 250
 
 
-def test_report_status_activity_scoped_does_not_overwrite_daemon_inventory(
-        tmp_path):
+def test_report_status_activity_scoped_does_not_overwrite_daemon_inventory(tmp_path):
     controller = _make_controller(tmp_path)
     asyncio.run(
         controller.report_status.coroutine(
-            _report(ready_snapshots=['snap-1'], pvc_free_bytes=500)))
+            _report(ready_snapshots=['snap-1'], pvc_free_bytes=500)
+        )
+    )
 
     asyncio.run(
         controller.report_status.coroutine(
@@ -1576,7 +1751,9 @@ def test_report_status_activity_scoped_does_not_overwrite_daemon_inventory(
                 worker_storage_mode=PoolStorageMode.ACTIVITY_ON_PVC,
                 ready_snapshots=[],
                 pvc_free_bytes=0,
-            )))
+            )
+        )
+    )
 
     inv = controller.worker_inventory['worker-a']
     assert inv.state.ready_snapshots == ['snap-1']
@@ -1587,48 +1764,53 @@ def test_report_status_is_independent_across_nodes(tmp_path):
     controller = _make_controller(tmp_path)
     asyncio.run(
         controller.report_status.coroutine(
-            _report(pool_worker_uid='worker-a', ready_snapshots=[])))
+            _report(pool_worker_uid='worker-a', ready_snapshots=[])
+        )
+    )
     asyncio.run(
         controller.report_status.coroutine(
-            _report(pool_worker_uid='worker-b', ready_snapshots=[])))
+            _report(pool_worker_uid='worker-b', ready_snapshots=[])
+        )
+    )
     assert set(controller.worker_inventory) == {'worker-a', 'worker-b'}
 
 
 def test_worker_health_sweep_transitions_ready_stale_dead(tmp_path):
     controller = _make_controller(tmp_path)
     asyncio.run(
-        controller.report_status.coroutine(
-            _report(pool_worker_uid='worker-ready')))
+        controller.report_status.coroutine(_report(pool_worker_uid='worker-ready'))
+    )
     asyncio.run(
-        controller.report_status.coroutine(
-            _report(pool_worker_uid='worker-stale')))
+        controller.report_status.coroutine(_report(pool_worker_uid='worker-stale'))
+    )
     asyncio.run(
-        controller.report_status.coroutine(
-            _report(pool_worker_uid='worker-dead')))
+        controller.report_status.coroutine(_report(pool_worker_uid='worker-dead'))
+    )
 
     now = time.time()
     controller.worker_inventory['worker-ready'].last_heartbeat = (
-        now - WORKER_STALE_THRESHOLD_SECS + 1)
+        now - WORKER_STALE_THRESHOLD_SECS + 1
+    )
     controller.worker_inventory['worker-stale'].last_heartbeat = (
-        now - WORKER_STALE_THRESHOLD_SECS)
+        now - WORKER_STALE_THRESHOLD_SECS
+    )
     controller.worker_inventory['worker-dead'].last_heartbeat = (
-        now - WORKER_DEAD_THRESHOLD_SECS)
+        now - WORKER_DEAD_THRESHOLD_SECS
+    )
 
     controller._sweep_worker_health(now)
 
-    assert controller.worker_inventory[
-        'worker-ready'].status == WorkerStatus.READY
-    assert controller.worker_inventory[
-        'worker-stale'].status == WorkerStatus.STALE
-    assert controller.worker_inventory[
-        'worker-dead'].status == WorkerStatus.DEAD
+    assert controller.worker_inventory['worker-ready'].status == WorkerStatus.READY
+    assert controller.worker_inventory['worker-stale'].status == WorkerStatus.STALE
+    assert controller.worker_inventory['worker-dead'].status == WorkerStatus.DEAD
 
 
 def test_report_status_resets_stale_worker_to_ready(tmp_path):
     controller = _make_controller(tmp_path)
     asyncio.run(controller.report_status.coroutine(_report()))
     controller.worker_inventory['worker-a'].last_heartbeat = (
-        time.time() - WORKER_STALE_THRESHOLD_SECS)
+        time.time() - WORKER_STALE_THRESHOLD_SECS
+    )
     controller._sweep_worker_health()
     assert controller.worker_inventory['worker-a'].status == WorkerStatus.STALE
 
@@ -1639,12 +1821,13 @@ def test_report_status_resets_stale_worker_to_ready(tmp_path):
 
 def test_report_status_local_ready_event_updates_snapshot_progress(tmp_path):
     controller = _make_controller(tmp_path)
-    ready = WorkerEvent(type=WorkerEventType.SNAPSHOT_READY,
-                        snapshot_id='snap-1', size_bytes=2048)
+    ready = WorkerEvent(
+        type=WorkerEventType.SNAPSHOT_READY, snapshot_id='snap-1', size_bytes=2048
+    )
 
     asyncio.run(
-        controller.report_status.coroutine(
-            _report(event=ready, ready_snapshots=[])))
+        controller.report_status.coroutine(_report(event=ready, ready_snapshots=[]))
+    )
     placement = controller.state.snapshots['snap-1']
     assert placement.state == SnapshotState.READY
     assert placement.size_bytes == 2048
@@ -1657,12 +1840,14 @@ def test_report_status_ingest_started_event_transitions_to_ingesting(tmp_path):
     controller.state.snapshots['snap-1'] = SnapshotPlacement(worker='worker-1')
     assert controller.state.snapshots['snap-1'].state == SnapshotState.RESERVED
 
-    event = WorkerEvent(type=WorkerEventType.SNAPSHOT_INGEST_STARTED,
-                        snapshot_id='snap-1')
+    event = WorkerEvent(
+        type=WorkerEventType.SNAPSHOT_INGEST_STARTED, snapshot_id='snap-1'
+    )
     asyncio.run(
         controller.report_status.coroutine(
-            _report(pool_worker_uid='worker-1', event=event,
-                    ready_snapshots=[])))
+            _report(pool_worker_uid='worker-1', event=event, ready_snapshots=[])
+        )
+    )
 
     assert controller.state.snapshots['snap-1'].state == SnapshotState.INGESTING
 
@@ -1678,12 +1863,14 @@ def test_report_status_restore_started_event_transitions_to_restoring(tmp_path):
     )
     controller.state.dataplane_backups['snap-1'] = backup
 
-    event = WorkerEvent(type=WorkerEventType.SNAPSHOT_RESTORE_STARTED,
-                        snapshot_id='snap-1')
+    event = WorkerEvent(
+        type=WorkerEventType.SNAPSHOT_RESTORE_STARTED, snapshot_id='snap-1'
+    )
     asyncio.run(
         controller.report_status.coroutine(
-            _report(pool_worker_uid='worker-1', event=event,
-                    ready_snapshots=[])))
+            _report(pool_worker_uid='worker-1', event=event, ready_snapshots=[])
+        )
+    )
 
     assert controller.state.snapshots['snap-1'].state == SnapshotState.RESTORING
     assert controller.state.dataplane_backups['snap-1'] == backup
@@ -1695,17 +1882,17 @@ def test_report_status_ingest_started_no_placement_is_noop(tmp_path):
     """SNAPSHOT_INGEST_STARTED for an unknown snapshot does not create a placement."""
     controller = _make_controller(tmp_path)
 
-    event = WorkerEvent(type=WorkerEventType.SNAPSHOT_INGEST_STARTED,
-                        snapshot_id='snap-unknown')
+    event = WorkerEvent(
+        type=WorkerEventType.SNAPSHOT_INGEST_STARTED, snapshot_id='snap-unknown'
+    )
     asyncio.run(
-        controller.report_status.coroutine(
-            _report(event=event, ready_snapshots=[])))
+        controller.report_status.coroutine(_report(event=event, ready_snapshots=[]))
+    )
 
     assert 'snap-unknown' not in controller.state.snapshots
 
 
-def test_report_status_local_ready_from_eph_pod_does_not_claim_placement(
-        tmp_path):
+def test_report_status_local_ready_from_eph_pod_does_not_claim_placement(tmp_path):
     """SNAPSHOT_READY from an ACTIVITY_ON_EMPTYDIR (overflow eph) pod must
     not be recorded as a durable local copy. Otherwise the eph pod's UID
     would land in placement.worker / local_copies, and the next reconcile
@@ -1713,8 +1900,9 @@ def test_report_status_local_ready_from_eph_pod_does_not_claim_placement(
     spawned the orphan EH-prefix daemon Deployments on antest-349a2f.
     """
     controller = _make_controller(tmp_path)
-    ready = WorkerEvent(type=WorkerEventType.SNAPSHOT_READY,
-                        snapshot_id='snap-1', size_bytes=2048)
+    ready = WorkerEvent(
+        type=WorkerEventType.SNAPSHOT_READY, snapshot_id='snap-1', size_bytes=2048
+    )
 
     asyncio.run(
         controller.report_status.coroutine(
@@ -1723,18 +1911,24 @@ def test_report_status_local_ready_from_eph_pod_does_not_claim_placement(
                 worker_storage_mode=PoolStorageMode.ACTIVITY_ON_EMPTYDIR,
                 event=ready,
                 ready_snapshots=[],
-            )))
+            )
+        )
+    )
 
     assert controller.state.snapshots == {}
     assert controller.state.local_copies == {}
 
 
-@pytest.mark.parametrize('event_type', [
-    WorkerEventType.SNAPSHOT_INGEST_STARTED,
-    WorkerEventType.SNAPSHOT_RESTORE_STARTED,
-])
+@pytest.mark.parametrize(
+    'event_type',
+    [
+        WorkerEventType.SNAPSHOT_INGEST_STARTED,
+        WorkerEventType.SNAPSHOT_RESTORE_STARTED,
+    ],
+)
 def test_report_status_started_event_from_eph_pod_does_not_dirty_home(
-        tmp_path, event_type):
+    tmp_path, event_type
+):
     controller = _make_controller(tmp_path)
     controller.state.snapshots['snap-1'] = SnapshotPlacement(
         worker='durable-worker',
@@ -1750,7 +1944,9 @@ def test_report_status_started_event_from_eph_pod_does_not_dirty_home(
                 worker_storage_mode=PoolStorageMode.ACTIVITY_ON_EMPTYDIR,
                 event=event,
                 ready_snapshots=[],
-            )))
+            )
+        )
+    )
 
     placement = controller.state.snapshots['snap-1']
     assert placement.worker == 'durable-worker'
@@ -1758,8 +1954,7 @@ def test_report_status_started_event_from_eph_pod_does_not_dirty_home(
     assert placement.size_bytes == 2048
 
 
-def test_report_status_local_ready_from_activity_on_pvc_records_placement(
-        tmp_path):
+def test_report_status_local_ready_from_activity_on_pvc_records_placement(tmp_path):
     """SNAPSHOT_READY from an ACTIVITY_ON_PVC pod (durable cache-pool
     activity sharing the daemon's PVC) still records placement — the
     local copy IS durable, just written by the activity pod rather than
@@ -1769,8 +1964,9 @@ def test_report_status_local_ready_from_activity_on_pvc_records_placement(
     assert isinstance(placement_state, K8sPlacementState)
     placement_state.pvcs['worker-a'] = PvcState(pool_worker_uid='worker-a')
     controller.state.snapshots['snap-1'] = SnapshotPlacement(worker='worker-a')
-    ready = WorkerEvent(type=WorkerEventType.SNAPSHOT_READY,
-                        snapshot_id='snap-1', size_bytes=2048)
+    ready = WorkerEvent(
+        type=WorkerEventType.SNAPSHOT_READY, snapshot_id='snap-1', size_bytes=2048
+    )
 
     asyncio.run(
         controller.report_status.coroutine(
@@ -1778,13 +1974,17 @@ def test_report_status_local_ready_from_activity_on_pvc_records_placement(
                 worker_storage_mode=PoolStorageMode.ACTIVITY_ON_PVC,
                 event=ready,
                 ready_snapshots=[],
-            )))
+            )
+        )
+    )
 
     placement = controller.state.snapshots['snap-1']
     assert placement.state == SnapshotState.READY
     assert placement.worker == 'worker-a'
-    assert controller.state.local_copies[
-        'snap-1:worker-a'].local_state == SnapshotLocalCopyState.WARM
+    assert (
+        controller.state.local_copies['snap-1:worker-a'].local_state
+        == SnapshotLocalCopyState.WARM
+    )
 
 
 def test_activity_on_pvc_ready_without_placement_tracks_physical_copy(tmp_path):
@@ -1798,13 +1998,14 @@ def test_activity_on_pvc_ready_without_placement_tracks_physical_copy(tmp_path):
         dataplane_path='s3://bucket/snap-1',
         size_bytes=0,
     )
-    controller.state.local_copies['snap-1:worker-a'] = (SnapshotLocalCopyRecord(
+    controller.state.local_copies['snap-1:worker-a'] = SnapshotLocalCopyRecord(
         snapshot_id='snap-1',
         pool_worker_uid='worker-a',
         local_state=SnapshotLocalCopyState.EVICTED,
-    ))
-    ready = WorkerEvent(type=WorkerEventType.SNAPSHOT_READY,
-                        snapshot_id='snap-1', size_bytes=4096)
+    )
+    ready = WorkerEvent(
+        type=WorkerEventType.SNAPSHOT_READY, snapshot_id='snap-1', size_bytes=4096
+    )
 
     asyncio.run(
         controller.report_status.coroutine(
@@ -1812,7 +2013,9 @@ def test_activity_on_pvc_ready_without_placement_tracks_physical_copy(tmp_path):
                 worker_storage_mode=PoolStorageMode.ACTIVITY_ON_PVC,
                 event=ready,
                 ready_snapshots=[],
-            )))
+            )
+        )
+    )
 
     assert 'snap-1' not in controller.state.snapshots
     assert controller.state.dataplane_backups['snap-1'].size_bytes == 4096
@@ -1824,20 +2027,21 @@ def test_activity_on_pvc_ready_without_placement_tracks_physical_copy(tmp_path):
 
 
 def test_report_status_ready_from_stale_pvc_worker_does_not_steal_current_home(
-        tmp_path):
+    tmp_path,
+):
     controller = _make_controller(tmp_path)
     placement_state = controller.state.placement_state
     assert isinstance(placement_state, K8sPlacementState)
-    placement_state.pvcs['worker-current'] = PvcState(
-        pool_worker_uid='worker-current')
+    placement_state.pvcs['worker-current'] = PvcState(pool_worker_uid='worker-current')
     placement_state.pvcs['worker-old'] = PvcState(pool_worker_uid='worker-old')
     controller.state.snapshots['snap-1'] = SnapshotPlacement(
         worker='worker-current',
         state=SnapshotState.READY,
         size_bytes=2048,
     )
-    ready = WorkerEvent(type=WorkerEventType.SNAPSHOT_READY,
-                        snapshot_id='snap-1', size_bytes=4096)
+    ready = WorkerEvent(
+        type=WorkerEventType.SNAPSHOT_READY, snapshot_id='snap-1', size_bytes=4096
+    )
 
     asyncio.run(
         controller.report_status.coroutine(
@@ -1846,7 +2050,9 @@ def test_report_status_ready_from_stale_pvc_worker_does_not_steal_current_home(
                 worker_storage_mode=PoolStorageMode.ACTIVITY_ON_PVC,
                 event=ready,
                 ready_snapshots=[],
-            )))
+            )
+        )
+    )
 
     placement = controller.state.snapshots['snap-1']
     assert placement.worker == 'worker-current'
@@ -1857,8 +2063,7 @@ def test_report_status_ready_from_stale_pvc_worker_does_not_steal_current_home(
     assert old_copy.size_bytes == 4096
 
 
-def test_report_status_heartbeat_ready_from_stale_worker_does_not_steal_home(
-        tmp_path):
+def test_report_status_heartbeat_ready_from_stale_worker_does_not_steal_home(tmp_path):
     controller = _make_controller(tmp_path)
     controller.state.snapshots['snap-1'] = SnapshotPlacement(
         worker='worker-current',
@@ -1868,23 +2073,32 @@ def test_report_status_heartbeat_ready_from_stale_worker_does_not_steal_home(
 
     asyncio.run(
         controller.report_status.coroutine(
-            _report(pool_worker_uid='worker-old', event=None,
-                    ready_snapshots=['snap-1'])))
+            _report(
+                pool_worker_uid='worker-old', event=None, ready_snapshots=['snap-1']
+            )
+        )
+    )
 
     placement = controller.state.snapshots['snap-1']
     assert placement.worker == 'worker-current'
     assert placement.state == SnapshotState.READY
     assert placement.size_bytes == 2048
-    assert controller.state.local_copies[
-        'snap-1:worker-old'].local_state == SnapshotLocalCopyState.WARM
+    assert (
+        controller.state.local_copies['snap-1:worker-old'].local_state
+        == SnapshotLocalCopyState.WARM
+    )
 
 
-@pytest.mark.parametrize('event_type', [
-    WorkerEventType.SNAPSHOT_INGEST_STARTED,
-    WorkerEventType.SNAPSHOT_RESTORE_STARTED,
-])
+@pytest.mark.parametrize(
+    'event_type',
+    [
+        WorkerEventType.SNAPSHOT_INGEST_STARTED,
+        WorkerEventType.SNAPSHOT_RESTORE_STARTED,
+    ],
+)
 def test_report_status_started_event_from_stale_pvc_worker_does_not_dirty_home(
-        tmp_path, event_type):
+    tmp_path, event_type
+):
     controller = _make_controller(tmp_path)
     controller.state.snapshots['snap-1'] = SnapshotPlacement(
         worker='worker-current',
@@ -1900,7 +2114,9 @@ def test_report_status_started_event_from_stale_pvc_worker_does_not_dirty_home(
                 worker_storage_mode=PoolStorageMode.ACTIVITY_ON_PVC,
                 event=event,
                 ready_snapshots=[],
-            )))
+            )
+        )
+    )
 
     placement = controller.state.snapshots['snap-1']
     assert placement.worker == 'worker-current'
@@ -1918,8 +2134,8 @@ def test_report_status_dataplane_ready_event_records_dataplane_backup(tmp_path):
     )
 
     asyncio.run(
-        controller.report_status.coroutine(
-            _report(event=event, ready_snapshots=[])))
+        controller.report_status.coroutine(_report(event=event, ready_snapshots=[]))
+    )
 
     backup = controller.state.dataplane_backups['snap-1']
     assert backup.snapshot_id == 'snap-1'
@@ -1933,26 +2149,26 @@ def test_report_status_dataplane_ready_event_records_dataplane_backup(tmp_path):
     assert loaded.dataplane_backups['snap-1'] == backup
 
 
-def test_ssd_corruption_invalidates_current_home_without_losing_active_lease(
-        tmp_path):
+def test_ssd_corruption_invalidates_current_home_without_losing_active_lease(tmp_path):
     """Deleting corrupt L1 must remove WARM routing, not lease coordination."""
     controller = _make_controller(tmp_path)
     corrupted_at = now_utc()
     placement = _open_snapshot(controller)
     placement.size_bytes = 4096
     handle = placement.durable_handles['job-1']
-    controller.state.local_copies['snap-1:worker-a'] = (SnapshotLocalCopyRecord(
+    controller.state.local_copies['snap-1:worker-a'] = SnapshotLocalCopyRecord(
         snapshot_id='snap-1',
         pool_worker_uid='worker-a',
         local_state=SnapshotLocalCopyState.WARM,
         size_bytes=4096,
-    ))
+    )
     controller.state.dataplane_backups['snap-1'] = DataplaneBackup(
         snapshot_id='snap-1',
         dataplane_path='s3://bucket/snap-1',
     )
     controller.worker_inventory['worker-a'] = WorkerInventory(
-        pool_worker_uid='worker-a', state=_snapshot())
+        pool_worker_uid='worker-a', state=_snapshot()
+    )
     event = WorkerEvent(
         type=WorkerEventType.SSD_CACHE_CORRUPTED,
         snapshot_id='snap-1',
@@ -1961,8 +2177,9 @@ def test_ssd_corruption_invalidates_current_home_without_losing_active_lease(
 
     asyncio.run(
         controller.report_status.coroutine(
-            _report(pool_worker_uid='worker-a', event=event,
-                    ready_snapshots=[])))
+            _report(pool_worker_uid='worker-a', event=event, ready_snapshots=[])
+        )
+    )
 
     local = controller.state.local_copies['snap-1:worker-a']
     assert local.local_state == SnapshotLocalCopyState.EVICTED
@@ -1972,8 +2189,7 @@ def test_ssd_corruption_invalidates_current_home_without_losing_active_lease(
     assert placement.leases == ['job-1']
     assert placement.lease_paths == {'job-1': 'durable'}
     assert placement.durable_handles == {'job-1': handle}
-    assert (controller._placement_status('snap-1',
-                                         placement) == PlacementStatus.COLD)
+    assert controller._placement_status('snap-1', placement) == PlacementStatus.COLD
 
     loaded = asyncio.run(controller._persistence.load())
     assert loaded.local_copies['snap-1:worker-a'] == local
@@ -1984,7 +2200,8 @@ def test_unleased_corruption_creates_idempotent_tombstone(tmp_path):
     ready_at = now_utc()
     controller = _make_controller(tmp_path)
     controller.state.snapshots['snap-1'] = SnapshotPlacement(
-        worker='worker-a', state=SnapshotState.READY, size_bytes=4096)
+        worker='worker-a', state=SnapshotState.READY, size_bytes=4096
+    )
     corruption = WorkerEvent(
         type=WorkerEventType.SSD_CACHE_CORRUPTED,
         snapshot_id='snap-1',
@@ -1996,7 +2213,9 @@ def test_unleased_corruption_creates_idempotent_tombstone(tmp_path):
             _report(
                 event=corruption,
                 ready_snapshots=[],
-            )))
+            )
+        )
+    )
 
     local = controller.state.local_copies['snap-1:worker-a']
     assert local.local_state == SnapshotLocalCopyState.EVICTED
@@ -2010,25 +2229,26 @@ def test_unleased_corruption_creates_idempotent_tombstone(tmp_path):
             _report(
                 event=corruption,
                 ready_snapshots=[],
-            )))
+            )
+        )
+    )
     assert to_json(controller.state) == expected_state
 
     loaded = asyncio.run(controller._persistence.load())
     assert to_json(loaded) == expected_state
 
 
-def test_ssd_corruption_from_other_worker_does_not_demote_current_home(
-        tmp_path):
+def test_ssd_corruption_from_other_worker_does_not_demote_current_home(tmp_path):
     controller = _make_controller(tmp_path)
     _seed_ready_local_copy(controller, worker='worker-current')
-    controller.state.local_copies['snap-1:worker-old'] = (
-        SnapshotLocalCopyRecord(
-            snapshot_id='snap-1',
-            pool_worker_uid='worker-old',
-            local_state=SnapshotLocalCopyState.WARM,
-        ))
+    controller.state.local_copies['snap-1:worker-old'] = SnapshotLocalCopyRecord(
+        snapshot_id='snap-1',
+        pool_worker_uid='worker-old',
+        local_state=SnapshotLocalCopyState.WARM,
+    )
     controller.worker_inventory['worker-old'] = WorkerInventory(
-        pool_worker_uid='worker-old', state=_snapshot())
+        pool_worker_uid='worker-old', state=_snapshot()
+    )
     event = WorkerEvent(
         type=WorkerEventType.SSD_CACHE_CORRUPTED,
         snapshot_id='snap-1',
@@ -2036,39 +2256,52 @@ def test_ssd_corruption_from_other_worker_does_not_demote_current_home(
 
     asyncio.run(
         controller.report_status.coroutine(
-            _report(pool_worker_uid='worker-old', event=event,
-                    ready_snapshots=[])))
+            _report(pool_worker_uid='worker-old', event=event, ready_snapshots=[])
+        )
+    )
 
-    assert (controller.state.local_copies['snap-1:worker-old'].local_state ==
-            SnapshotLocalCopyState.EVICTED)
-    assert (controller.state.local_copies['snap-1:worker-current'].local_state
-            == SnapshotLocalCopyState.WARM)
+    assert (
+        controller.state.local_copies['snap-1:worker-old'].local_state
+        == SnapshotLocalCopyState.EVICTED
+    )
+    assert (
+        controller.state.local_copies['snap-1:worker-current'].local_state
+        == SnapshotLocalCopyState.WARM
+    )
     assert controller.state.snapshots['snap-1'].worker == 'worker-current'
     assert controller.state.snapshots['snap-1'].state == SnapshotState.READY
 
 
-@pytest.mark.parametrize(('storage_mode', 'worker_status'), [
-    (PoolStorageMode.ACTIVITY_ON_PVC, None),
-    (PoolStorageMode.ACTIVITY_ON_EMPTYDIR, None),
-    (PoolStorageMode.DAEMON_ON_PVC, WorkerStatus.DRAINING),
-])
+@pytest.mark.parametrize(
+    ('storage_mode', 'worker_status'),
+    [
+        (PoolStorageMode.ACTIVITY_ON_PVC, None),
+        (PoolStorageMode.ACTIVITY_ON_EMPTYDIR, None),
+        (PoolStorageMode.DAEMON_ON_PVC, WorkerStatus.DRAINING),
+    ],
+)
 def test_ssd_corruption_from_non_authoritative_reporter_is_ignored(
-        tmp_path, storage_mode, worker_status):
+    tmp_path, storage_mode, worker_status
+):
     controller = _make_controller(tmp_path)
     _seed_ready_local_copy(controller)
     if worker_status is not None:
         controller.worker_inventory['worker-a'] = WorkerInventory(
-            pool_worker_uid='worker-a', state=_snapshot(), status=worker_status)
+            pool_worker_uid='worker-a', state=_snapshot(), status=worker_status
+        )
     expected_state = to_json(controller.state)
 
     asyncio.run(
         controller.report_status.coroutine(
             _report(
                 worker_storage_mode=storage_mode,
-                event=WorkerEvent(type=WorkerEventType.SSD_CACHE_CORRUPTED,
-                                  snapshot_id='snap-1'),
+                event=WorkerEvent(
+                    type=WorkerEventType.SSD_CACHE_CORRUPTED, snapshot_id='snap-1'
+                ),
                 ready_snapshots=[],
-            )))
+            )
+        )
+    )
 
     assert to_json(controller.state) == expected_state
 
@@ -2078,18 +2311,20 @@ def test_snapshot_size_bytes_falls_back_to_backup_for_cold(tmp_path):
     size falls back to the L2 backup; a live placement size takes precedence."""
     controller = _make_controller(tmp_path)
     controller.state.dataplane_backups['snap-1'] = DataplaneBackup(
-        snapshot_id='snap-1', dataplane_path='s3://bucket/snap-1',
-        size_bytes=4096)
+        snapshot_id='snap-1', dataplane_path='s3://bucket/snap-1', size_bytes=4096
+    )
     assert controller._snapshot_size_bytes('snap-1') == 4096
 
     # A legacy zero-size backup is still treated as absent (fail-fast preserved).
     controller.state.dataplane_backups['snap-2'] = DataplaneBackup(
-        snapshot_id='snap-2', dataplane_path='s3://bucket/snap-2', size_bytes=0)
+        snapshot_id='snap-2', dataplane_path='s3://bucket/snap-2', size_bytes=0
+    )
     assert controller._snapshot_size_bytes('snap-2') is None
 
     # A live placement size takes precedence over the backup.
     controller.state.snapshots['snap-1'] = SnapshotPlacement(
-        worker='worker-a', size_bytes=8192)
+        worker='worker-a', size_bytes=8192
+    )
     assert controller._snapshot_size_bytes('snap-1') == 8192
 
 
@@ -2101,15 +2336,18 @@ def test_snapshot_ready_backfills_existing_backup_size(tmp_path):
     assert isinstance(placement_state, K8sPlacementState)
     placement_state.pvcs['worker-a'] = PvcState(pool_worker_uid='worker-a')
     controller.state.dataplane_backups['snap-1'] = DataplaneBackup(
-        snapshot_id='snap-1', dataplane_path='s3://bucket/snap-1', size_bytes=0)
+        snapshot_id='snap-1', dataplane_path='s3://bucket/snap-1', size_bytes=0
+    )
 
     asyncio.run(
         controller.report_status.coroutine(
             _report(
                 worker_storage_mode=PoolStorageMode.ACTIVITY_ON_PVC,
-                event=_snapshot_ready_event('snap-1', now_utc(),
-                                            size_bytes=2048),
-                ready_snapshots=[])))
+                event=_snapshot_ready_event('snap-1', now_utc(), size_bytes=2048),
+                ready_snapshots=[],
+            )
+        )
+    )
 
     assert controller.state.dataplane_backups['snap-1'].size_bytes == 2048
 
@@ -2118,9 +2356,11 @@ def test_ensure_backup_size_backfills_legacy_cold_backup(tmp_path, monkeypatch):
     """A legacy COLD backup (size 0) gets its size scanned from the dataplane
     on demand and written back."""
     from io_utils import fsutil
+
     controller = _make_controller(tmp_path)
     controller.state.dataplane_backups['snap-1'] = DataplaneBackup(
-        snapshot_id='snap-1', dataplane_path='s3://bucket/snap-1', size_bytes=0)
+        snapshot_id='snap-1', dataplane_path='s3://bucket/snap-1', size_bytes=0
+    )
 
     scanned: list[str] = []
 
@@ -2141,17 +2381,17 @@ def test_ensure_backup_size_noop_when_known_or_no_backup(tmp_path, monkeypatch):
     """No scan when the size is already cached, or when there's no backup to
     scan (a MISSING snapshot) — keeps it off the hot path for the common case."""
     from io_utils import fsutil
+
     controller = _make_controller(tmp_path)
     scanned: list[str] = []
-    monkeypatch.setattr(fsutil, 'dirsize', lambda p:
-                        (scanned.append(p), 999)[1])
+    monkeypatch.setattr(fsutil, 'dirsize', lambda p: (scanned.append(p), 999)[1])
 
     # No backup recorded → nothing to scan.
     asyncio.run(controller._ensure_backup_size('missing-snap'))
     # Backup already carries a size → no scan.
     controller.state.dataplane_backups['snap-1'] = DataplaneBackup(
-        snapshot_id='snap-1', dataplane_path='s3://bucket/snap-1',
-        size_bytes=4096)
+        snapshot_id='snap-1', dataplane_path='s3://bucket/snap-1', size_bytes=4096
+    )
     asyncio.run(controller._ensure_backup_size('snap-1'))
 
     assert scanned == []
@@ -2160,11 +2400,11 @@ def test_ensure_backup_size_noop_when_known_or_no_backup(tmp_path, monkeypatch):
 def test_report_status_dataplane_ready_resets_compliance_tombstone(tmp_path):
     controller = _make_controller(tmp_path)
     deleted_at = now_utc() - timedelta(hours=1)
-    controller.state.snapshot_compliance['snap-1'] = (SnapshotComplianceRecord(
+    controller.state.snapshot_compliance['snap-1'] = SnapshotComplianceRecord(
         snapshot_id='snap-1',
         expired_at=deleted_at,
         deleted_at=deleted_at,
-    ))
+    )
     event = WorkerEvent(
         type=WorkerEventType.SNAPSHOT_PERSIST_UPLOADED,
         snapshot_id='snap-1',
@@ -2172,8 +2412,8 @@ def test_report_status_dataplane_ready_resets_compliance_tombstone(tmp_path):
     )
 
     asyncio.run(
-        controller.report_status.coroutine(
-            _report(event=event, ready_snapshots=[])))
+        controller.report_status.coroutine(_report(event=event, ready_snapshots=[]))
+    )
 
     compliance = controller.state.snapshot_compliance['snap-1']
     assert compliance.expired_at is None
@@ -2182,18 +2422,20 @@ def test_report_status_dataplane_ready_resets_compliance_tombstone(tmp_path):
 
 def test_report_status_dataplane_ready_without_path_is_ignored(tmp_path):
     controller = _make_controller(tmp_path)
-    event = WorkerEvent(type=WorkerEventType.SNAPSHOT_PERSIST_UPLOADED,
-                        snapshot_id='snap-1')
+    event = WorkerEvent(
+        type=WorkerEventType.SNAPSHOT_PERSIST_UPLOADED, snapshot_id='snap-1'
+    )
 
     asyncio.run(
-        controller.report_status.coroutine(
-            _report(event=event, ready_snapshots=[])))
+        controller.report_status.coroutine(_report(event=event, ready_snapshots=[]))
+    )
 
     assert controller.state.dataplane_backups == {}
 
 
 def test_report_status_no_space_event_releases_lease_and_requests_reactive_sweep(
-        tmp_path):
+    tmp_path,
+):
     deleted: list[tuple[str, str]] = []
 
     async def delete_local(snapshot_id: str, pool_worker_uid: str) -> bool:
@@ -2211,11 +2453,11 @@ def test_report_status_no_space_event_releases_lease_and_requests_reactive_sweep
         dataplane_path='s3://bucket/snap-1',
     )
     _open_snapshot(controller)
-    controller.state.local_copies['snap-1:worker-a'] = (SnapshotLocalCopyRecord(
+    controller.state.local_copies['snap-1:worker-a'] = SnapshotLocalCopyRecord(
         snapshot_id='snap-1',
         pool_worker_uid='worker-a',
         local_state=SnapshotLocalCopyState.EVICTION_CANDIDATE,
-    ))
+    )
     event = WorkerEvent(
         type=WorkerEventType.SNAPSHOT_ENSURE_NO_SPACE,
         snapshot_id='snap-1',
@@ -2232,7 +2474,9 @@ def test_report_status_no_space_event_releases_lease_and_requests_reactive_sweep
                 in_progress_snapshots=['snap-1'],
                 ready_snapshots=[],
                 event=event,
-            )))
+            )
+        )
+    )
 
     placement = controller.state.snapshots['snap-1']
     assert placement.leases == []
@@ -2246,12 +2490,14 @@ def test_report_status_no_space_event_releases_lease_and_requests_reactive_sweep
     ]
     assert deleted == []
     assert controller.state.local_copies['snap-1:worker-a'].local_state == (
-        SnapshotLocalCopyState.EVICTION_CANDIDATE)
+        SnapshotLocalCopyState.EVICTION_CANDIDATE
+    )
     assert controller._reactive_eviction_requested_at is not None
 
 
 def test_report_status_no_space_from_emptydir_releases_without_reactive_eviction(
-        tmp_path):
+    tmp_path,
+):
     strategy = MockPlacementStrategy()
     controller = _make_controller(tmp_path, strategy=strategy)
     placement = SnapshotPlacement(
@@ -2260,8 +2506,7 @@ def test_report_status_no_space_from_emptydir_releases_without_reactive_eviction
         leases=['job-overflow'],
         lease_paths={'job-overflow': 'overflow'},
         overflow_handles={
-            'job-overflow':
-            ProvisionedHandle(
+            'job-overflow': ProvisionedHandle(
                 kind='overflow',
                 task_queue='diskgraph-eph-activity-tq-job-overflow',
                 pool_worker_uid='pool-eh-worker-deadbeef',
@@ -2287,7 +2532,9 @@ def test_report_status_no_space_from_emptydir_releases_without_reactive_eviction
                 worker_storage_mode=PoolStorageMode.ACTIVITY_ON_EMPTYDIR,
                 event=event,
                 ready_snapshots=[],
-            )))
+            )
+        )
+    )
 
     placement = controller.state.snapshots['snap-1']
     assert placement.leases == []
@@ -2323,7 +2570,9 @@ def test_report_status_no_space_from_stale_pvc_worker_is_ignored(tmp_path):
                 worker_storage_mode=PoolStorageMode.ACTIVITY_ON_PVC,
                 event=event,
                 ready_snapshots=[],
-            )))
+            )
+        )
+    )
 
     placement = controller.state.snapshots['snap-1']
     assert placement.worker == 'worker-current'
@@ -2362,7 +2611,9 @@ def test_report_status_generic_ensure_failure_releases_lease_only(tmp_path):
                 in_progress_snapshots=['snap-1'],
                 ready_snapshots=[],
                 event=event,
-            )))
+            )
+        )
+    )
 
     assert 'snap-1' not in controller.state.snapshots
     assert strategy.release_calls == [
@@ -2388,23 +2639,26 @@ def test_snapshot_eviction_in_progress_error_is_retryable():
 
 @pytest.mark.parametrize('reuse_existing_handle', [False, True])
 def test_place_snapshot_retries_while_current_copy_is_evicting(
-        tmp_path, reuse_existing_handle):
+    tmp_path, reuse_existing_handle
+):
     strategy = MockPlacementStrategy()
     controller = _make_controller(tmp_path, strategy=strategy)
     controller.state.dataplane_backups['snap-1'] = DataplaneBackup(
-        snapshot_id='snap-1', dataplane_path='s3://bucket/snap-1')
+        snapshot_id='snap-1', dataplane_path='s3://bucket/snap-1'
+    )
     if reuse_existing_handle:
         _open_snapshot(controller)
         request = _request()
     else:
         controller.state.snapshots['snap-1'] = SnapshotPlacement(
-            worker='worker-a', state=SnapshotState.READY)
+            worker='worker-a', state=SnapshotState.READY
+        )
         request = _request(job_id='job-2')
-    controller.state.local_copies['snap-1:worker-a'] = (SnapshotLocalCopyRecord(
+    controller.state.local_copies['snap-1:worker-a'] = SnapshotLocalCopyRecord(
         snapshot_id='snap-1',
         pool_worker_uid='worker-a',
         local_state=SnapshotLocalCopyState.EVICTING,
-    ))
+    )
     expected_leases = ['job-1'] if reuse_existing_handle else []
 
     with pytest.raises(SnapshotEvictionInProgressError):
@@ -2427,7 +2681,8 @@ def test_place_snapshot_provisions_once_and_persists(tmp_path):
     placement = controller.state.snapshots['snap-1']
     assert placement.leases == ['job-1']
     assert placement.durable_handles['job-1'].task_queue == (
-        'diskgraph-activity-tq-job-1')
+        'diskgraph-activity-tq-job-1'
+    )
     compliance = controller.state.snapshot_compliance['snap-1']
     assert compliance.active_consumer_count == 1
     assert compliance.compliance_delete_at is None
@@ -2437,16 +2692,14 @@ def test_place_snapshot_provisions_once_and_persists(tmp_path):
     assert loaded.snapshot_compliance == controller.state.snapshot_compliance
 
 
-def test_place_snapshot_and_release_lease_canonicalize_graph_snapshot_id(
-        tmp_path):
+def test_place_snapshot_and_release_lease_canonicalize_graph_snapshot_id(tmp_path):
     strategy = MockPlacementStrategy()
     controller = _make_controller(tmp_path, strategy=strategy)
 
     asyncio.run(
-        controller.place_snapshot.coroutine(
-            _request(snapshot_id=ALT_GRAPH_SNAPSHOT_ID)))
-    asyncio.run(
-        controller.release_lease.coroutine(ALT_GRAPH_SNAPSHOT_ID, 'job-1'))
+        controller.place_snapshot.coroutine(_request(snapshot_id=ALT_GRAPH_SNAPSHOT_ID))
+    )
+    asyncio.run(controller.release_lease.coroutine(ALT_GRAPH_SNAPSHOT_ID, 'job-1'))
 
     assert strategy.route_calls[0][0].snapshot_id == CANONICAL_GRAPH_SNAPSHOT_ID
     placement = controller.state.snapshots[CANONICAL_GRAPH_SNAPSHOT_ID]
@@ -2459,8 +2712,9 @@ def test_place_snapshot_provisions_outside_state_lock(tmp_path):
     controller: PoolController
 
     class ObservingProvisionStrategy(MockPlacementStrategy):
-        async def provision(self, request: PlacementRequest,
-                            decision: RouteDecision) -> ProvisionedHandle:
+        async def provision(
+            self, request: PlacementRequest, decision: RouteDecision
+        ) -> ProvisionedHandle:
             observed_state_lock.append(controller._state_lock.locked())
             return await super().provision(request, decision)
 
@@ -2500,8 +2754,7 @@ def test_place_snapshot_fast_path_short_circuits_for_ready_worker(tmp_path):
     controller = _make_controller(tmp_path, strategy=strategy)
     asyncio.run(controller.place_snapshot.coroutine(_request()))
     # Worker reports a fresh heartbeat → inventory READY.
-    asyncio.run(
-        controller.report_status.coroutine(_report(pool_worker_uid='worker-a')))
+    asyncio.run(controller.report_status.coroutine(_report(pool_worker_uid='worker-a')))
 
     asyncio.run(controller.place_snapshot.coroutine(_request()))
 
@@ -2515,8 +2768,7 @@ def test_place_snapshot_ready_revalidation_failure_cleans_up(tmp_path):
     strategy = MockPlacementStrategy()
     controller = _make_controller(tmp_path, strategy=strategy)
     asyncio.run(controller.place_snapshot.coroutine(_request()))
-    asyncio.run(
-        controller.report_status.coroutine(_report(pool_worker_uid='worker-a')))
+    asyncio.run(controller.report_status.coroutine(_report(pool_worker_uid='worker-a')))
     strategy.wait_provision_ready_error = ProvisionTimeoutError('Job missing')
 
     with pytest.raises(ProvisionTimeoutError, match='Job missing'):
@@ -2533,12 +2785,16 @@ def test_place_snapshot_fast_path_falls_through_for_dead_worker(tmp_path):
     events = []
 
     class ReplacementStrategy(MockPlacementStrategy):
-        async def route(self, request: PlacementRequest,
-                        warm_location_uid: Optional[str],
-                        snapshot_size_estimate_bytes: int = 0, *,
-                        home_worker_uid: Optional[str] = None,
-                        home_gpu_in_use: int = 0,
-                        overflow_viable: bool = False) -> RouteDecision:
+        async def route(
+            self,
+            request: PlacementRequest,
+            warm_location_uid: Optional[str],
+            snapshot_size_estimate_bytes: int = 0,
+            *,
+            home_worker_uid: Optional[str] = None,
+            home_gpu_in_use: int = 0,
+            overflow_viable: bool = False,
+        ) -> RouteDecision:
             decision = await super().route(
                 request,
                 warm_location_uid,
@@ -2551,25 +2807,26 @@ def test_place_snapshot_fast_path_falls_through_for_dead_worker(tmp_path):
                 decision = replace(decision, pool_worker_uid='worker-b')
             return decision
 
-        async def provision(self, request: PlacementRequest,
-                            decision: RouteDecision) -> ProvisionedHandle:
+        async def provision(
+            self, request: PlacementRequest, decision: RouteDecision
+        ) -> ProvisionedHandle:
             events.append(('provision', decision.pool_worker_uid))
             return await super().provision(request, decision)
 
-        async def release(self, request: PlacementRequest,
-                          handle: Optional[ProvisionedHandle]) -> None:
+        async def release(
+            self, request: PlacementRequest, handle: Optional[ProvisionedHandle]
+        ) -> None:
             await super().release(request, handle)
-            events.append(
-                ('release', handle.pool_worker_uid if handle else None))
+            events.append(('release', handle.pool_worker_uid if handle else None))
 
     strategy = ReplacementStrategy()
     controller = _make_controller(tmp_path, strategy=strategy)
     first = asyncio.run(controller.place_snapshot.coroutine(_request()))
-    asyncio.run(
-        controller.report_status.coroutine(_report(pool_worker_uid='worker-a')))
+    asyncio.run(controller.report_status.coroutine(_report(pool_worker_uid='worker-a')))
     # Age the worker to DEAD.
     controller.worker_inventory['worker-a'].last_heartbeat = (
-        time.time() - WORKER_DEAD_THRESHOLD_SECS)
+        time.time() - WORKER_DEAD_THRESHOLD_SECS
+    )
     controller._sweep_worker_health()
     assert controller.worker_inventory['worker-a'].status == WorkerStatus.DEAD
 
@@ -2578,21 +2835,29 @@ def test_place_snapshot_fast_path_falls_through_for_dead_worker(tmp_path):
     assert first.pool_worker_uid == 'worker-a'
     assert second.pool_worker_uid == 'worker-b'
     assert len(strategy.route_calls) == 2
-    assert events == [('provision', 'worker-a'), ('release', 'worker-a'),
-                      ('provision', 'worker-b')]
+    assert events == [
+        ('provision', 'worker-a'),
+        ('release', 'worker-a'),
+        ('provision', 'worker-b'),
+    ]
 
 
 def test_place_snapshot_retry_after_cancelled_provision_reuses_worker(tmp_path):
     class CancelOnceProvisionStrategy(MockPlacementStrategy):
-        async def route(self, request: PlacementRequest,
-                        warm_location_uid: Optional[str],
-                        snapshot_size_estimate_bytes: int = 0, *,
-                        home_worker_uid: Optional[str] = None,
-                        home_gpu_in_use: int = 0,
-                        overflow_viable: bool = False) -> RouteDecision:
+        async def route(
+            self,
+            request: PlacementRequest,
+            warm_location_uid: Optional[str],
+            snapshot_size_estimate_bytes: int = 0,
+            *,
+            home_worker_uid: Optional[str] = None,
+            home_gpu_in_use: int = 0,
+            overflow_viable: bool = False,
+        ) -> RouteDecision:
             self.route_calls.append((request, warm_location_uid))
             self.route_home_calls.append(
-                (home_worker_uid, home_gpu_in_use, overflow_viable))
+                (home_worker_uid, home_gpu_in_use, overflow_viable)
+            )
             return RouteDecision(
                 path='durable',
                 pool_worker_uid='worker-planned',
@@ -2600,8 +2865,9 @@ def test_place_snapshot_retry_after_cancelled_provision_reuses_worker(tmp_path):
                 reason='test cold durable placement',
             )
 
-        async def provision(self, request: PlacementRequest,
-                            decision: RouteDecision) -> ProvisionedHandle:
+        async def provision(
+            self, request: PlacementRequest, decision: RouteDecision
+        ) -> ProvisionedHandle:
             self.provision_calls.append((request, decision))
             if len(self.provision_calls) == 1:
                 raise asyncio.CancelledError()
@@ -2642,8 +2908,7 @@ def test_place_snapshot_retry_after_cancelled_provision_reuses_worker(tmp_path):
     assert strategy.provision_calls[1][1].reason == 'pinned-on-retry'
     placement = controller.state.snapshots['snap-1']
     assert placement.leases == ['job-1']
-    assert placement.durable_handles['job-1'].pool_worker_uid == (
-        'worker-planned')
+    assert placement.durable_handles['job-1'].pool_worker_uid == ('worker-planned')
 
 
 def test_concurrent_place_snapshot_retry_same_pair_is_idempotent(tmp_path):
@@ -2653,8 +2918,9 @@ def test_concurrent_place_snapshot_retry_same_pair_is_idempotent(tmp_path):
             self.provision_started = asyncio.Event()
             self.allow_provision = asyncio.Event()
 
-        async def provision(self, request: PlacementRequest,
-                            decision: RouteDecision) -> ProvisionedHandle:
+        async def provision(
+            self, request: PlacementRequest, decision: RouteDecision
+        ) -> ProvisionedHandle:
             self.provision_calls.append((request, decision))
             self.provision_started.set()
             await self.allow_provision.wait()
@@ -2664,17 +2930,16 @@ def test_concurrent_place_snapshot_retry_same_pair_is_idempotent(tmp_path):
                 task_queue=f'diskgraph-activity-tq-{request.job_id}',
             )
 
-    async def drive() -> tuple[PoolController, BlockingProvisionStrategy,
-                               list[PlacementResult]]:
+    async def drive() -> tuple[
+        PoolController, BlockingProvisionStrategy, list[PlacementResult]
+    ]:
         strategy = BlockingProvisionStrategy()
         controller = _make_controller(tmp_path, strategy=strategy)
 
-        first = asyncio.create_task(
-            controller.place_snapshot.coroutine(_request()))
+        first = asyncio.create_task(controller.place_snapshot.coroutine(_request()))
         await strategy.provision_started.wait()
 
-        second = asyncio.create_task(
-            controller.place_snapshot.coroutine(_request()))
+        second = asyncio.create_task(controller.place_snapshot.coroutine(_request()))
         await asyncio.sleep(0)
 
         assert len(strategy.route_calls) == 1
@@ -2717,24 +2982,23 @@ def test_concurrent_place_snapshot_distinct_jobs_provision_separately(tmp_path):
     controller = _make_controller(tmp_path, strategy=strategy)
 
     async def drive() -> list[PlacementResult]:
-        return await asyncio.gather(*[
-            controller.place_snapshot.coroutine(_request(job_id=f'job-{i}'))
-            for i in range(5)
-        ])
+        return await asyncio.gather(
+            *[
+                controller.place_snapshot.coroutine(_request(job_id=f'job-{i}'))
+                for i in range(5)
+            ]
+        )
 
     results = asyncio.run(drive())
 
-    assert {r.task_queue
-            for r in results
-            } == {f'diskgraph-activity-tq-job-{i}'
-                  for i in range(5)}
+    assert {r.task_queue for r in results} == {
+        f'diskgraph-activity-tq-job-{i}' for i in range(5)
+    }
     assert len(strategy.provision_calls) == 5
     assert set(controller.state.snapshots['snap-1'].leases) == {
-        f'job-{i}'
-        for i in range(5)
+        f'job-{i}' for i in range(5)
     }
-    assert controller.state.snapshot_compliance[
-        'snap-1'].active_consumer_count == 5
+    assert controller.state.snapshot_compliance['snap-1'].active_consumer_count == 5
 
 
 def test_concurrent_place_snapshot_cold_fanout_overflows_siblings(tmp_path):
@@ -2762,11 +3026,14 @@ def test_concurrent_place_snapshot_cold_fanout_overflows_siblings(tmp_path):
     )
 
     async def drive() -> list[PlacementResult]:
-        return await asyncio.gather(*[
-            controller.place_snapshot.coroutine(
-                _request(job_id=f'job-{i}', activity=SnapshotActivity.PREDICT))
-            for i in range(5)
-        ])
+        return await asyncio.gather(
+            *[
+                controller.place_snapshot.coroutine(
+                    _request(job_id=f'job-{i}', activity=SnapshotActivity.PREDICT)
+                )
+                for i in range(5)
+            ]
+        )
 
     asyncio.run(drive())
 
@@ -2781,8 +3048,7 @@ def test_concurrent_place_snapshot_cold_fanout_overflows_siblings(tmp_path):
     assert sum(1 for home, _, _ in homes if home is None) == 1
     assert sum(1 for home, _, _ in homes if home is not None) == 4
     assert all(viable for _, _, viable in homes)
-    assert all(gpu_in_use >= 1 for home, gpu_in_use, _ in homes
-               if home is not None)
+    assert all(gpu_in_use >= 1 for home, gpu_in_use, _ in homes if home is not None)
 
 
 def test_concurrent_place_snapshot_producer_coalesces_to_one_worker(tmp_path):
@@ -2799,12 +3065,16 @@ def test_concurrent_place_snapshot_producer_coalesces_to_one_worker(tmp_path):
 
     # No L2 backup: X is being produced for the first time.
     async def drive() -> list[PlacementResult]:
-        return await asyncio.gather(*[
-            controller.place_snapshot.coroutine(
-                _request(job_id=f'ingest-{i}',
-                         activity=SnapshotActivity.ENSURE_SNAPSHOT))
-            for i in range(5)
-        ])
+        return await asyncio.gather(
+            *[
+                controller.place_snapshot.coroutine(
+                    _request(
+                        job_id=f'ingest-{i}', activity=SnapshotActivity.ENSURE_SNAPSHOT
+                    )
+                )
+                for i in range(5)
+            ]
+        )
 
     asyncio.run(drive())
 
@@ -2812,8 +3082,7 @@ def test_concurrent_place_snapshot_producer_coalesces_to_one_worker(tmp_path):
     assert paths.count('durable') == 5, paths  # all durable, none overflow
     assert paths.count('overflow') == 0, paths
     durable_workers = {
-        decision.pool_worker_uid
-        for _, decision in strategy.provision_calls
+        decision.pool_worker_uid for _, decision in strategy.provision_calls
     }
     assert len(durable_workers) == 1, durable_workers  # single home, no herd
 
@@ -2826,11 +3095,10 @@ def test_place_snapshot_records_lease_activity(tmp_path):
     controller = _make_controller(tmp_path, strategy=strategy)
 
     asyncio.run(
-        controller.place_snapshot.coroutine(
-            _request(activity=SnapshotActivity.TRAIN)))
+        controller.place_snapshot.coroutine(_request(activity=SnapshotActivity.TRAIN))
+    )
 
-    assert controller._lease_activity[('snap-1',
-                                       'job-1')] == (SnapshotActivity.TRAIN)
+    assert controller._lease_activity[('snap-1', 'job-1')] == (SnapshotActivity.TRAIN)
 
 
 def test_release_lease_clears_lease_activity_entry(tmp_path):
@@ -2843,8 +3111,7 @@ def test_release_lease_clears_lease_activity_entry(tmp_path):
     assert ('snap-1', 'job-1') not in controller._lease_activity
 
 
-def test_gpu_slots_in_use_for_worker_counts_durable_train_predict_only(
-        tmp_path):
+def test_gpu_slots_in_use_for_worker_counts_durable_train_predict_only(tmp_path):
     """Only TRAIN/PREDICT durable leases count toward GPU pressure;
     GEN_TT/MATERIALIZE are CPU-only and overflow leases run on eph nodes."""
     strategy = MockPlacementStrategy()
@@ -2852,16 +3119,27 @@ def test_gpu_slots_in_use_for_worker_counts_durable_train_predict_only(
 
     asyncio.run(
         controller.place_snapshot.coroutine(
-            _request(snapshot_id='snap-1', job_id='train-1',
-                     activity=SnapshotActivity.TRAIN)))
+            _request(
+                snapshot_id='snap-1', job_id='train-1', activity=SnapshotActivity.TRAIN
+            )
+        )
+    )
     asyncio.run(
         controller.place_snapshot.coroutine(
-            _request(snapshot_id='snap-1', job_id='predict-1',
-                     activity=SnapshotActivity.PREDICT)))
+            _request(
+                snapshot_id='snap-1',
+                job_id='predict-1',
+                activity=SnapshotActivity.PREDICT,
+            )
+        )
+    )
     asyncio.run(
         controller.place_snapshot.coroutine(
-            _request(snapshot_id='snap-1', job_id='gentt-1',
-                     activity=SnapshotActivity.GEN_TT)))
+            _request(
+                snapshot_id='snap-1', job_id='gentt-1', activity=SnapshotActivity.GEN_TT
+            )
+        )
+    )
 
     assert controller._gpu_slots_in_use_for_worker('worker-a') == 2
     # Worker that holds no leases reports zero.
@@ -2876,12 +3154,22 @@ def test_gpu_slots_in_use_for_worker_excludes_overflow_leases(tmp_path):
 
     asyncio.run(
         controller.place_snapshot.coroutine(
-            _request(snapshot_id='snap-1', job_id='durable-train',
-                     activity=SnapshotActivity.TRAIN)))
+            _request(
+                snapshot_id='snap-1',
+                job_id='durable-train',
+                activity=SnapshotActivity.TRAIN,
+            )
+        )
+    )
     asyncio.run(
         controller.place_snapshot.coroutine(
-            _request(snapshot_id='snap-1', job_id='overflow-train',
-                     activity=SnapshotActivity.TRAIN)))
+            _request(
+                snapshot_id='snap-1',
+                job_id='overflow-train',
+                activity=SnapshotActivity.TRAIN,
+            )
+        )
+    )
 
     placement = controller.state.snapshots['snap-1']
     # Simulate the overflow path: re-route the second lease to overflow and
@@ -2889,8 +3177,10 @@ def test_gpu_slots_in_use_for_worker_excludes_overflow_leases(tmp_path):
     placement.lease_paths['overflow-train'] = 'overflow'
     placement.durable_handles.pop('overflow-train', None)
     placement.overflow_handles['overflow-train'] = ProvisionedHandle(
-        kind='overflow', pool_worker_uid=None,
-        task_queue='diskgraph-activity-tq-overflow-train')
+        kind='overflow',
+        pool_worker_uid=None,
+        task_queue='diskgraph-activity-tq-overflow-train',
+    )
 
     assert controller._gpu_slots_in_use_for_worker('worker-a') == 1
 
@@ -2919,8 +3209,11 @@ def test_placement_context_synthesizes_gpu_slots_in_use_from_leases(tmp_path):
     # Now place a TRAIN lease against worker-a.
     asyncio.run(
         controller.place_snapshot.coroutine(
-            _request(snapshot_id='snap-1', job_id='train-1',
-                     activity=SnapshotActivity.TRAIN)))
+            _request(
+                snapshot_id='snap-1', job_id='train-1', activity=SnapshotActivity.TRAIN
+            )
+        )
+    )
 
     context = PoolControllerPlacementContext(controller)
     synthesized = context.worker_inventory
@@ -2929,8 +3222,7 @@ def test_placement_context_synthesizes_gpu_slots_in_use_from_leases(tmp_path):
     assert controller._worker_inventory['worker-a'].gpu_slots_in_use == 0
 
 
-def test_place_snapshot_different_jobs_share_snapshot_capacity_reservation(
-        tmp_path):
+def test_place_snapshot_different_jobs_share_snapshot_capacity_reservation(tmp_path):
     strategy = MockPlacementStrategy()
     controller = _make_controller(
         tmp_path,
@@ -2944,7 +3236,9 @@ def test_place_snapshot_different_jobs_share_snapshot_capacity_reservation(
                 dataplane_total_bytes=10_000,
                 dataplane_used_bytes=9_600,
                 dataplane_same_filesystem_as_ssd=False,
-            )))
+            )
+        )
+    )
     # The first 400-byte estimate exactly fills the reported free budget; the
     # second job must get its own lease without charging the snapshot again.
     request = replace(
@@ -2954,7 +3248,8 @@ def test_place_snapshot_different_jobs_share_snapshot_capacity_reservation(
 
     job_1 = asyncio.run(controller.place_snapshot.coroutine(request))
     job_2 = asyncio.run(
-        controller.place_snapshot.coroutine(replace(request, job_id='job-2')))
+        controller.place_snapshot.coroutine(replace(request, job_id='job-2'))
+    )
 
     assert job_1.task_queue == 'diskgraph-activity-tq-job-1'
     assert job_2.task_queue == 'diskgraph-activity-tq-job-2'
@@ -2963,8 +3258,7 @@ def test_place_snapshot_different_jobs_share_snapshot_capacity_reservation(
         'job-1',
         'job-2',
     }
-    assert controller.state.snapshot_compliance[
-        'snap-1'].active_consumer_count == 2
+    assert controller.state.snapshot_compliance['snap-1'].active_consumer_count == 2
     assert len(strategy.provision_calls) == 2
 
 
@@ -2972,11 +3266,11 @@ def test_place_snapshot_resets_compliance_tombstone(tmp_path):
     strategy = MockPlacementStrategy()
     controller = _make_controller(tmp_path, strategy=strategy)
     deleted_at = now_utc() - timedelta(hours=1)
-    controller.state.snapshot_compliance['snap-1'] = (SnapshotComplianceRecord(
+    controller.state.snapshot_compliance['snap-1'] = SnapshotComplianceRecord(
         snapshot_id='snap-1',
         expired_at=deleted_at,
         deleted_at=deleted_at,
-    ))
+    )
 
     asyncio.run(controller.place_snapshot.coroutine(_request()))
 
@@ -2991,7 +3285,8 @@ def test_place_snapshot_passes_warm_location_to_strategy(tmp_path):
     strategy = MockPlacementStrategy()
     controller = _make_controller(tmp_path, strategy=strategy)
     controller.state.snapshots['snap-1'] = SnapshotPlacement(
-        worker='worker-warm', state=SnapshotState.READY)
+        worker='worker-warm', state=SnapshotState.READY
+    )
 
     asyncio.run(controller.place_snapshot.coroutine(_request()))
 
@@ -3040,7 +3335,8 @@ def test_place_snapshot_l2_check_allows_valid_backup(tmp_path):
     )
     # Overflow path only fires when a warm placement already exists.
     controller.state.snapshots['snap-1'] = SnapshotPlacement(
-        worker='worker-warm', )
+        worker='worker-warm',
+    )
 
     result = asyncio.run(controller.place_snapshot.coroutine(_request()))
 
@@ -3106,7 +3402,9 @@ def test_snapshot_lifecycle_timeline_evicts_after_final_release_idle(tmp_path):
 
     asyncio.run(
         controller.place_snapshot.coroutine(
-            _request(snapshot_id='snap-X', job_id='job-1')))
+            _request(snapshot_id='snap-X', job_id='job-1')
+        )
+    )
 
     assert controller.state.snapshots['snap-X'].leases == ['job-1']
     compliance = controller.state.snapshot_compliance['snap-X']
@@ -3119,14 +3417,17 @@ def test_snapshot_lifecycle_timeline_evicts_after_final_release_idle(tmp_path):
             _report(
                 ready_snapshots=[],
                 event=_snapshot_ready_event('snap-X', clock.now_utc()),
-            )))
+            )
+        )
+    )
     asyncio.run(
         controller.report_status.coroutine(
             _report(
                 ready_snapshots=[],
-                event=_snapshot_dataplane_ready_event('snap-X',
-                                                      clock.now_utc()),
-            )))
+                event=_snapshot_dataplane_ready_event('snap-X', clock.now_utc()),
+            )
+        )
+    )
 
     local = controller.state.local_copies['snap-X:worker-a']
     # kumo#29047: bump the live policy AFTER the records were created with the
@@ -3150,12 +3451,13 @@ def test_snapshot_lifecycle_timeline_evicts_after_final_release_idle(tmp_path):
     local = controller.state.local_copies['snap-X:worker-a']
     assert placement.last_lease_released == released_at
     assert compliance.active_consumer_count == 0
-    assert compliance.compliance_delete_at == (released_at +
-                                               timedelta(seconds=10 * 60 * 60))
-    assert local.evictable_under_pressure_at == (released_at +
-                                                 timedelta(seconds=4 * 60 * 60))
-    assert local.force_evict_at == (released_at +
-                                    timedelta(seconds=8 * 60 * 60))
+    assert compliance.compliance_delete_at == (
+        released_at + timedelta(seconds=10 * 60 * 60)
+    )
+    assert local.evictable_under_pressure_at == (
+        released_at + timedelta(seconds=4 * 60 * 60)
+    )
+    assert local.force_evict_at == (released_at + timedelta(seconds=8 * 60 * 60))
 
     clock.advance(9 * 60 * 60)
     asyncio.run(controller._lifecycle_sweeps_once())
@@ -3183,7 +3485,9 @@ def test_lifecycle_policy_stamps_new_snapshot_records(tmp_path):
 
     asyncio.run(
         controller.place_snapshot.coroutine(
-            _request(snapshot_id='snap-policy', job_id='job-policy')))
+            _request(snapshot_id='snap-policy', job_id='job-policy')
+        )
+    )
     asyncio.run(
         controller.report_status.coroutine(
             _report(
@@ -3192,19 +3496,19 @@ def test_lifecycle_policy_stamps_new_snapshot_records(tmp_path):
                     'snap-policy',
                     clock.now_utc(),
                 ),
-            )))
+            )
+        )
+    )
     asyncio.run(controller.release_lease.coroutine('snap-policy', 'job-policy'))
 
     released_at = clock.current
     compliance = controller.state.snapshot_compliance['snap-policy']
     local = controller.state.local_copies['snap-policy:worker-a']
     assert compliance.max_dataplane_retention_secs == 120
-    assert compliance.compliance_delete_at == (released_at +
-                                               timedelta(seconds=120))
+    assert compliance.compliance_delete_at == (released_at + timedelta(seconds=120))
     assert local.min_ssd_idle_secs == 30
     assert local.max_ssd_idle_secs == 90
-    assert local.evictable_under_pressure_at == (released_at +
-                                                 timedelta(seconds=30))
+    assert local.evictable_under_pressure_at == (released_at + timedelta(seconds=30))
     assert local.force_evict_at == (released_at + timedelta(seconds=90))
 
 
@@ -3227,13 +3531,17 @@ def test_lifecycle_policy_bump_applies_to_existing_records(tmp_path):
 
     asyncio.run(
         controller.place_snapshot.coroutine(
-            _request(snapshot_id='snap-bump', job_id='job-bump')))
+            _request(snapshot_id='snap-bump', job_id='job-bump')
+        )
+    )
     asyncio.run(
         controller.report_status.coroutine(
             _report(
                 ready_snapshots=[],
                 event=_snapshot_ready_event('snap-bump', clock.now_utc()),
-            )))
+            )
+        )
+    )
 
     # Records were stamped with the aggressive creation-time policy.
     compliance = controller.state.snapshot_compliance['snap-bump']
@@ -3257,10 +3565,8 @@ def test_lifecycle_policy_bump_applies_to_existing_records(tmp_path):
     compliance = controller.state.snapshot_compliance['snap-bump']
     local = controller.state.local_copies['snap-bump:worker-a']
     # Enforcement clocks reflect the NEW policy, not the stamped values.
-    assert compliance.compliance_delete_at == (released_at +
-                                               timedelta(seconds=259200))
-    assert local.evictable_under_pressure_at == (released_at +
-                                                 timedelta(seconds=600))
+    assert compliance.compliance_delete_at == (released_at + timedelta(seconds=259200))
+    assert local.evictable_under_pressure_at == (released_at + timedelta(seconds=600))
     assert local.force_evict_at == (released_at + timedelta(seconds=3600))
     # The stamped per-record values are untouched (audit-only).
     assert compliance.max_dataplane_retention_secs == 120
@@ -3268,8 +3574,7 @@ def test_lifecycle_policy_bump_applies_to_existing_records(tmp_path):
     assert local.max_ssd_idle_secs == 60
 
 
-def test_overlapping_train_and_gen_tt_start_idle_clock_after_last_release(
-        tmp_path):
+def test_overlapping_train_and_gen_tt_start_idle_clock_after_last_release(tmp_path):
     deleted: list[tuple[str, str]] = []
 
     async def delete_local(snapshot_id: str, pool_worker_uid: str) -> bool:
@@ -3293,18 +3598,19 @@ def test_overlapping_train_and_gen_tt_start_idle_clock_after_last_release(
     async def place_both() -> None:
         await asyncio.gather(
             controller.place_snapshot.coroutine(
-                _request(snapshot_id='snap-X', job_id='job-1')),
+                _request(snapshot_id='snap-X', job_id='job-1')
+            ),
             controller.place_snapshot.coroutine(
                 _request(
                     snapshot_id='snap-X',
                     job_id='job-2',
                     activity=SnapshotActivity.GEN_TT,
-                )),
+                )
+            ),
         )
 
     asyncio.run(place_both())
-    assert controller.state.snapshot_compliance[
-        'snap-X'].active_consumer_count == 2
+    assert controller.state.snapshot_compliance['snap-X'].active_consumer_count == 2
 
     clock.advance(1)
     asyncio.run(
@@ -3312,14 +3618,17 @@ def test_overlapping_train_and_gen_tt_start_idle_clock_after_last_release(
             _report(
                 ready_snapshots=[],
                 event=_snapshot_ready_event('snap-X', clock.now_utc()),
-            )))
+            )
+        )
+    )
     asyncio.run(
         controller.report_status.coroutine(
             _report(
                 ready_snapshots=[],
-                event=_snapshot_dataplane_ready_event('snap-X',
-                                                      clock.now_utc()),
-            )))
+                event=_snapshot_dataplane_ready_event('snap-X', clock.now_utc()),
+            )
+        )
+    )
 
     asyncio.run(controller.release_lease.coroutine('snap-X', 'job-1'))
     compliance = controller.state.snapshot_compliance['snap-X']
@@ -3332,31 +3641,38 @@ def test_overlapping_train_and_gen_tt_start_idle_clock_after_last_release(
     clock.advance(10 * 60)
     asyncio.run(controller._lifecycle_sweeps_once())
     assert deleted == []
-    assert controller.state.local_copies[
-        'snap-X:worker-a'].local_state == SnapshotLocalCopyState.WARM
+    assert (
+        controller.state.local_copies['snap-X:worker-a'].local_state
+        == SnapshotLocalCopyState.WARM
+    )
 
     asyncio.run(controller.release_lease.coroutine('snap-X', 'job-2'))
     final_release_at = clock.current
     compliance = controller.state.snapshot_compliance['snap-X']
     local = controller.state.local_copies['snap-X:worker-a']
     assert compliance.active_consumer_count == 0
-    assert compliance.compliance_delete_at == (final_release_at +
-                                               timedelta(seconds=300))
-    assert local.evictable_under_pressure_at == (final_release_at +
-                                                 timedelta(seconds=60))
+    assert compliance.compliance_delete_at == (
+        final_release_at + timedelta(seconds=300)
+    )
+    assert local.evictable_under_pressure_at == (
+        final_release_at + timedelta(seconds=60)
+    )
     assert local.force_evict_at == (final_release_at + timedelta(seconds=120))
 
     clock.advance(119)
     asyncio.run(controller._lifecycle_sweeps_once())
     assert deleted == []
     assert controller.state.local_copies['snap-X:worker-a'].local_state == (
-        SnapshotLocalCopyState.EVICTION_CANDIDATE)
+        SnapshotLocalCopyState.EVICTION_CANDIDATE
+    )
 
     clock.advance(1)
     asyncio.run(controller._lifecycle_sweeps_once())
     assert deleted == [('snap-X', 'worker-a')]
-    assert controller.state.local_copies[
-        'snap-X:worker-a'].local_state == SnapshotLocalCopyState.EVICTED
+    assert (
+        controller.state.local_copies['snap-X:worker-a'].local_state
+        == SnapshotLocalCopyState.EVICTED
+    )
 
 
 def test_full_flow_warm_gpu_busy_routes_second_gpu_job_to_overflow(tmp_path):
@@ -3367,7 +3683,8 @@ def test_full_flow_warm_gpu_busy_routes_second_gpu_job_to_overflow(tmp_path):
             manager,  # type: ignore[arg-type]
             PoolControllerPlacementContext(controller),
             capacity_tiers=[CapacityTier(tier_ssd_gib=1750)],
-        ))
+        )
+    )
 
     # Controller derives durable GPU usage authoritatively from leases, not
     # daemon-reported heartbeat usage.
@@ -3376,31 +3693,40 @@ def test_full_flow_warm_gpu_busy_routes_second_gpu_job_to_overflow(tmp_path):
             _report(
                 ready_snapshots=['snap-X'],
                 event=_snapshot_ready_event('snap-X', now_utc(), 1000),
-            )))
+            )
+        )
+    )
     asyncio.run(
         controller.report_status.coroutine(
             _report(
                 ready_snapshots=['snap-X'],
                 event=_snapshot_dataplane_ready_event('snap-X', now_utc()),
-            )))
+            )
+        )
+    )
 
     job_1_result = asyncio.run(
         controller.place_snapshot.coroutine(
-            _request(snapshot_id='snap-X', job_id='job-1')))
+            _request(snapshot_id='snap-X', job_id='job-1')
+        )
+    )
 
     assert job_1_result.task_queue == activity_task_queue('job-1')
-    assert manager.provision_pool_worker_calls[0]['pool_worker_uid'] == (
-        'worker-a')
-    assert manager.provision_activity_pod_calls[0]['pool_worker_uid'] == (
-        'worker-a')
+    assert manager.provision_pool_worker_calls[0]['pool_worker_uid'] == ('worker-a')
+    assert manager.provision_activity_pod_calls[0]['pool_worker_uid'] == ('worker-a')
     assert manager.provision_activity_pod_calls[0]['activity'] == 'TRAIN'
     assert manager.provision_activity_pod_calls[0]['env'][
-        'POOL_TASK_QUEUE'] == activity_task_queue('job-1')
+        'POOL_TASK_QUEUE'
+    ] == activity_task_queue('job-1')
     assert manager.provision_ephemeral_activity_pod_calls == []
 
     asyncio.run(
-        controller.report_status.coroutine(_report(ready_snapshots=['snap-X'
-                                                                    ], )))
+        controller.report_status.coroutine(
+            _report(
+                ready_snapshots=['snap-X'],
+            )
+        )
+    )
 
     job_2_result = asyncio.run(
         controller.place_snapshot.coroutine(
@@ -3408,7 +3734,9 @@ def test_full_flow_warm_gpu_busy_routes_second_gpu_job_to_overflow(tmp_path):
                 snapshot_id='snap-X',
                 job_id='job-2',
                 activity=SnapshotActivity.PREDICT,
-            )))
+            )
+        )
+    )
 
     assert job_2_result.task_queue == activity_task_queue('job-2')
     assert len(manager.provision_pool_worker_calls) == 1
@@ -3419,27 +3747,25 @@ def test_full_flow_warm_gpu_busy_routes_second_gpu_job_to_overflow(tmp_path):
     assert overflow_call['snapshot_id'] == 'snap-X'
     assert overflow_call['activity'] == 'PREDICT'
     assert overflow_call['ephemeral_storage_bytes'] == 1200
-    assert overflow_call['env']['POOL_TASK_QUEUE'] == activity_task_queue(
-        'job-2')
+    assert overflow_call['env']['POOL_TASK_QUEUE'] == activity_task_queue('job-2')
 
     placement = controller.state.snapshots['snap-X']
     assert placement.worker == 'worker-a'
     assert 'job-2' in placement.overflow_handles
-    assert controller.state.snapshot_compliance[
-        'snap-X'].active_consumer_count == 2
+    assert controller.state.snapshot_compliance['snap-X'].active_consumer_count == 2
 
 
-@pytest.mark.parametrize('readiness_error',
-                         [ProvisionTimeoutError, asyncio.CancelledError])
+@pytest.mark.parametrize(
+    'readiness_error', [ProvisionTimeoutError, asyncio.CancelledError]
+)
 def test_unready_activity_poller_releases_lease_and_job_before_retry(
-        tmp_path, monkeypatch, readiness_error):
+    tmp_path, monkeypatch, readiness_error
+):
     manager = _FakeK8sManager()
     if readiness_error is ProvisionTimeoutError:
-        monkeypatch.setattr(
-            'pool.k8s_strategy.ACTIVITY_POLLER_READY_TIMEOUT_SEC', 0.01)
+        monkeypatch.setattr('pool.k8s_strategy.ACTIVITY_POLLER_READY_TIMEOUT_SEC', 0.01)
 
-    async def reject_poller(task_queue: str, pod_name: str,
-                            timeout: float) -> None:
+    async def reject_poller(task_queue: str, pod_name: str, timeout: float) -> None:
         del task_queue, pod_name
         if readiness_error is ProvisionTimeoutError:
             await asyncio.sleep(timeout)
@@ -3453,12 +3779,15 @@ def test_unready_activity_poller_releases_lease_and_job_before_retry(
             capacity_tiers=[CapacityTier(tier_ssd_gib=1750)],
             pool_worker_uid_factory=lambda: 'worker-new',
             activity_poller_waiter=reject_poller,
-        ))
+        )
+    )
 
     with pytest.raises(readiness_error):
         asyncio.run(
             controller.place_snapshot.coroutine(
-                _request(snapshot_id='snap-new', job_id='job-new')))
+                _request(snapshot_id='snap-new', job_id='job-new')
+            )
+        )
 
     placement = controller.state.snapshots['snap-new']
     assert 'job-new' not in placement.leases
@@ -3480,7 +3809,8 @@ def test_controller_persists_and_uses_configured_gpu_capacity(tmp_path):
             PoolControllerPlacementContext(controller),
             capacity_tiers=[CapacityTier(tier_ssd_gib=2948, tier_gpu_count=4)],
             pool_worker_uid_factory=lambda: 'worker-a',
-        ))
+        )
+    )
 
     asyncio.run(
         controller.place_snapshot.coroutine(
@@ -3489,7 +3819,9 @@ def test_controller_persists_and_uses_configured_gpu_capacity(tmp_path):
                 job_id='job-1',
                 activity=SnapshotActivity.TRAIN,
                 min_gpu_slots=4,
-            )))
+            )
+        )
+    )
 
     placement_state = controller.state.placement_state
     assert isinstance(placement_state, K8sPlacementState)
@@ -3502,8 +3834,12 @@ def test_controller_persists_and_uses_configured_gpu_capacity(tmp_path):
     )
 
     asyncio.run(
-        controller.report_status.coroutine(_report(
-            pool_worker_uid='worker-a', )))
+        controller.report_status.coroutine(
+            _report(
+                pool_worker_uid='worker-a',
+            )
+        )
+    )
 
     inventory = controller.worker_inventory['worker-a']
     assert inventory.gpu_slots_total == 4
@@ -3523,7 +3859,8 @@ def test_controller_repairs_legacy_pvc_capacity_metadata(tmp_path):
             PoolControllerPlacementContext(controller),
             capacity_tiers=[CapacityTier(tier_ssd_gib=2948, tier_gpu_count=4)],
             pool_worker_uid_factory=lambda: 'worker-a',
-        ))
+        )
+    )
 
     asyncio.run(
         controller.place_snapshot.coroutine(
@@ -3532,7 +3869,9 @@ def test_controller_repairs_legacy_pvc_capacity_metadata(tmp_path):
                 job_id='job-1',
                 activity=SnapshotActivity.PREDICT,
                 min_gpu_slots=4,
-            )))
+            )
+        )
+    )
 
     pvc_state = placement_state.pvcs['worker-a']
     assert pvc_state.tier_ssd_gib == 2948
@@ -3548,7 +3887,8 @@ def test_controller_uses_persisted_gpu_capacity_before_heartbeat(tmp_path):
             PoolControllerPlacementContext(controller),
             capacity_tiers=[CapacityTier(tier_ssd_gib=2948, tier_gpu_count=4)],
             pool_worker_uid_factory=lambda: 'worker-a',
-        ))
+        )
+    )
     controller.state.dataplane_backups['snap-gpu'] = DataplaneBackup(
         snapshot_id='snap-gpu',
         dataplane_path='s3://bucket/snap-gpu',
@@ -3562,7 +3902,8 @@ def test_controller_uses_persisted_gpu_capacity_before_heartbeat(tmp_path):
                 job_id=job_id,
                 activity=SnapshotActivity.PREDICT,
                 min_gpu_slots=4,
-            ))
+            )
+        )
 
     results = [asyncio.run(place(f'job-{idx}')) for idx in range(5)]
 
@@ -3587,7 +3928,9 @@ def test_controller_uses_persisted_gpu_capacity_before_heartbeat(tmp_path):
 
     stats = asyncio.run(
         controller.get_pool_stats.coroutine(
-            PoolStatsFilter(pool_worker_uids=['worker-a'])))
+            PoolStatsFilter(pool_worker_uids=['worker-a'])
+        )
+    )
     assert stats.num_nodes == 1
     assert stats.num_healthy_nodes == 0
     assert len(stats.durable_workers) == 1
@@ -3618,15 +3961,15 @@ def test_fresh_worker_heartbeat_observes_persisted_gpu_capacity(tmp_path):
             PoolControllerPlacementContext(controller),
             capacity_tiers=[CapacityTier(tier_ssd_gib=2948, tier_gpu_count=4)],
             pool_worker_uid_factory=lambda: 'worker-a',
-        ))
+        )
+    )
     controller.state.dataplane_backups['snap-gpu'] = DataplaneBackup(
         snapshot_id='snap-gpu',
         dataplane_path='s3://bucket/snap-gpu',
         size_bytes=1000,
     )
 
-    async def heartbeat_during_provision(
-            pool_worker_uid: Optional[str]) -> None:
+    async def heartbeat_during_provision(pool_worker_uid: Optional[str]) -> None:
         assert pool_worker_uid == 'worker-a'
         placement_state = controller.state.placement_state
         assert isinstance(placement_state, K8sPlacementState)
@@ -3637,7 +3980,8 @@ def test_fresh_worker_heartbeat_observes_persisted_gpu_capacity(tmp_path):
                 ready_snapshots=[],
                 pvc_total_bytes=2948 * (1 << 30),
                 pvc_free_bytes=2948 * (1 << 30),
-            ))
+            )
+        )
 
     manager.on_provision_pool_worker = heartbeat_during_provision
 
@@ -3648,7 +3992,9 @@ def test_fresh_worker_heartbeat_observes_persisted_gpu_capacity(tmp_path):
                 job_id='job-0',
                 activity=SnapshotActivity.PREDICT,
                 min_gpu_slots=4,
-            )))
+            )
+        )
+    )
 
     assert result.pool_worker_uid == 'worker-a'
     assert controller.worker_inventory['worker-a'].gpu_slots_total == 4
@@ -3671,8 +4017,8 @@ def test_release_failure_preserves_lease_for_retry(tmp_path, handleless):
     controller = _make_controller(tmp_path, strategy=strategy)
     if handleless:
         controller.state.snapshots['snap-1'] = SnapshotPlacement(
-            worker='worker-a', leases=['job-1'],
-            lease_paths={'job-1': 'durable'})
+            worker='worker-a', leases=['job-1'], lease_paths={'job-1': 'durable'}
+        )
         asyncio.run(controller._persistence.save(controller.state))
     else:
         asyncio.run(controller.place_snapshot.coroutine(_request()))
@@ -3709,10 +4055,10 @@ def test_release_serializes_same_placement_reprovision(tmp_path):
 
     async def exercise():
         release = asyncio.create_task(
-            controller.release_lease.coroutine('snap-1', 'job-1'))
+            controller.release_lease.coroutine('snap-1', 'job-1')
+        )
         await release_started.wait()
-        replace = asyncio.create_task(
-            controller.place_snapshot.coroutine(_request()))
+        replace = asyncio.create_task(controller.place_snapshot.coroutine(_request()))
         await asyncio.sleep(0)
         assert not replace.done()
         finish_release.set()
@@ -3753,8 +4099,9 @@ def test_place_snapshot_provision_failure_preserves_lease(tmp_path):
 
 def test_place_snapshot_replans_confirmed_unavailable_worker(tmp_path):
     class UnavailableOnceStrategy(MockPlacementStrategy):
-        async def provision(self, request: PlacementRequest,
-                            decision: RouteDecision) -> ProvisionedHandle:
+        async def provision(
+            self, request: PlacementRequest, decision: RouteDecision
+        ) -> ProvisionedHandle:
             self.provision_calls.append((request, decision))
             if decision.pool_worker_uid == 'worker-stale':
                 raise ExistingWorkerUnavailableError('resources disappeared')
@@ -3778,8 +4125,7 @@ def test_place_snapshot_replans_confirmed_unavailable_worker(tmp_path):
     placement_state = state.placement_state
     assert isinstance(placement_state, K8sPlacementState)
     assert 'worker-stale' not in placement_state.pvcs
-    assert controller.worker_inventory['worker-stale'].status == (
-        WorkerStatus.DRAINING)
+    assert controller.worker_inventory['worker-stale'].status == (WorkerStatus.DRAINING)
     loaded = asyncio.run(controller._persistence.load())
     assert 'snap-1' not in loaded.snapshots
 
@@ -3789,15 +4135,15 @@ def test_place_snapshot_replans_confirmed_unavailable_worker(tmp_path):
     assert strategy.provision_calls[1][1].reason == 'test'
 
 
-def test_place_snapshot_replan_requires_no_live_pod_or_fresh_heartbeat(
-        tmp_path):
+def test_place_snapshot_replan_requires_no_live_pod_or_fresh_heartbeat(tmp_path):
     controller: PoolController
 
     class HeartbeatDuringRevalidationStrategy(MockPlacementStrategy):
         revalidation_count = 0
 
-        async def provision(self, request: PlacementRequest,
-                            decision: RouteDecision) -> ProvisionedHandle:
+        async def provision(
+            self, request: PlacementRequest, decision: RouteDecision
+        ) -> ProvisionedHandle:
             raise ExistingWorkerUnavailableError('resources disappeared')
 
         async def revalidate_retired_workers(self, uids) -> set[str]:
@@ -3805,7 +4151,8 @@ def test_place_snapshot_replan_requires_no_live_pod_or_fresh_heartbeat(
             if self.revalidation_count == 2:
                 uid = next(iter(uids))
                 await controller.report_status.coroutine(
-                    _report(pool_worker_uid=uid, ready_snapshots=[]))
+                    _report(pool_worker_uid=uid, ready_snapshots=[])
+                )
             return await super().revalidate_retired_workers(uids)
 
     strategy = HeartbeatDuringRevalidationStrategy()
@@ -3846,8 +4193,7 @@ def test_place_snapshot_records_daemon_queue_without_dispatch(tmp_path):
     assert len(strategy.release_calls) == 0
 
 
-def test_place_snapshot_reuses_existing_provisioned_daemon_queue_placement(
-        tmp_path):
+def test_place_snapshot_reuses_existing_provisioned_daemon_queue_placement(tmp_path):
     strategy = MockPlacementStrategy(enqueue_daemon=True)
     controller = _make_controller(tmp_path, strategy=strategy)
     _open_snapshot(controller)
@@ -3890,8 +4236,9 @@ def test_maintenance_once_returns_noop_without_strategy(tmp_path):
 def test_maintenance_once_calls_strategy_with_state_snapshot(tmp_path):
     # worker-a is reported unexpected (lease-less placement) → controller
     # flips it DRAINING under the lock before delete_workers tears it down.
-    delta = ReconcileDelta(unexpected_uids={'worker-a'},
-                           live_pool_worker_uids={'worker-c'})
+    delta = ReconcileDelta(
+        unexpected_uids={'worker-a'}, live_pool_worker_uids={'worker-c'}
+    )
     strategy = MockPlacementStrategy(reconcile_delta=delta)
     controller = _make_controller(tmp_path, strategy=strategy)
     controller.state.snapshots['snap-1'] = SnapshotPlacement(
@@ -3912,80 +4259,88 @@ def test_maintenance_once_calls_strategy_with_state_snapshot(tmp_path):
     assert 'snap-1' not in controller.state.snapshots
     # delete_workers mock returns nothing torn down, so the DRAINING inventory
     # entry survives the prune and is observable here.
-    assert controller.worker_inventory[
-        'worker-a'].status == WorkerStatus.DRAINING
+    assert controller.worker_inventory['worker-a'].status == WorkerStatus.DRAINING
 
 
-@pytest.mark.parametrize('delta', [
-    ReconcileDelta(retired_uids={'worker-a'}),
-    ReconcileDelta(incompatible_uids={'worker-a'}),
-])
-def test_maintenance_once_scrubs_worker_state_from_reconcile_delta(
-        tmp_path, delta):
+@pytest.mark.parametrize(
+    'delta',
+    [
+        ReconcileDelta(retired_uids={'worker-a'}),
+        ReconcileDelta(incompatible_uids={'worker-a'}),
+    ],
+)
+def test_maintenance_once_scrubs_worker_state_from_reconcile_delta(tmp_path, delta):
     strategy = MockPlacementStrategy(reconcile_delta=delta)
     controller = _make_controller(tmp_path, strategy=strategy)
     placement_state = controller.state.placement_state
     assert isinstance(placement_state, K8sPlacementState)
     placement_state.pvcs['worker-a'] = PvcState(pool_worker_uid='worker-a')
-    asyncio.run(
-        controller.report_status.coroutine(_report(ready_snapshots=['snap-1'])))
+    asyncio.run(controller.report_status.coroutine(_report(ready_snapshots=['snap-1'])))
     asyncio.run(controller.place_snapshot.coroutine(_request()))
-    controller.state.local_copies['snap-1:worker-a'] = (SnapshotLocalCopyRecord(
+    controller.state.local_copies['snap-1:worker-a'] = SnapshotLocalCopyRecord(
         snapshot_id='snap-1',
         pool_worker_uid='worker-a',
         local_state=SnapshotLocalCopyState.EVICTING,
-    ))
+    )
     inventory = controller.worker_inventory['worker-a']
-    inventory.last_heartbeat = (controller._time() - WORKER_DEAD_THRESHOLD_SECS)
+    inventory.last_heartbeat = controller._time() - WORKER_DEAD_THRESHOLD_SECS
     inventory.status = WorkerStatus.DEAD
 
     result = asyncio.run(controller._maintenance_once())
 
     assert result == delta
-    assert controller.worker_inventory[
-        'worker-a'].status == WorkerStatus.DRAINING
+    assert controller.worker_inventory['worker-a'].status == WorkerStatus.DRAINING
     assert 'worker-a' not in placement_state.pvcs
     assert 'snap-1' not in controller.state.snapshots
-    assert controller.state.local_copies[
-        'snap-1:worker-a'].local_state == SnapshotLocalCopyState.EVICTED
-    assert controller.state.snapshot_compliance[
-        'snap-1'].active_consumer_count == 0
-    assert controller.state.snapshot_compliance[
-        'snap-1'].compliance_delete_at is not None
+    assert (
+        controller.state.local_copies['snap-1:worker-a'].local_state
+        == SnapshotLocalCopyState.EVICTED
+    )
+    assert controller.state.snapshot_compliance['snap-1'].active_consumer_count == 0
+    assert (
+        controller.state.snapshot_compliance['snap-1'].compliance_delete_at is not None
+    )
     assert strategy.release_calls == []
 
 
 @pytest.mark.parametrize('reason', ['capacity-tier', 'extra-tolerations'])
 @pytest.mark.parametrize('cleanup_fails', [False, True])
 def test_maintenance_once_replaces_live_incompatible_worker(
-        tmp_path, monkeypatch, reason, cleanup_fails):
+    tmp_path, monkeypatch, reason, cleanup_fails
+):
     manager = _FakeK8sManager()
     manager.live_workers = [
         _FakePoolWorkerInfo(
-            'worker-a', extra_tolerations_match=reason != 'extra-tolerations')
+            'worker-a', extra_tolerations_match=reason != 'extra-tolerations'
+        )
     ]
     state = _state_with_expected_worker()
     placement_state = state.placement_state
     assert isinstance(placement_state, K8sPlacementState)
     placement_state.pvcs['worker-a'].tier_ssd_gib = (
-        400 if reason == 'capacity-tier' else 512)
+        400 if reason == 'capacity-tier' else 512
+    )
     state.dataplane_backups['snap-1'] = DataplaneBackup(
-        snapshot_id='snap-1', dataplane_path='gs://example/snap-1',
-        size_bytes=100 * (1 << 30))
+        snapshot_id='snap-1',
+        dataplane_path='gs://example/snap-1',
+        size_bytes=100 * (1 << 30),
+    )
     backups = dict(state.dataplane_backups)
     if cleanup_fails:
         monkeypatch.setattr(
-            manager, 'delete_pool_worker',
-            AsyncMock(side_effect=RuntimeError('delete failed')))
+            manager,
+            'delete_pool_worker',
+            AsyncMock(side_effect=RuntimeError('delete failed')),
+        )
     controller = _make_controller_with_state(tmp_path, state)
     controller._set_placement_strategy(
         build_k8s_placement_strategy(
             manager,  # type: ignore[arg-type]
             PoolControllerPlacementContext(controller),
-            capacity_tiers=[CapacityTier(512),
-                            CapacityTier(1024)],
+            capacity_tiers=[CapacityTier(512), CapacityTier(1024)],
             pool_worker_uid_factory=lambda: 'worker-new',
-        ))
+        )
+    )
     controller._worker_inventory['worker-a'] = WorkerInventory(
         pool_worker_uid='worker-a',
         status=WorkerStatus.READY,
@@ -3995,45 +4350,45 @@ def test_maintenance_once_replaces_live_incompatible_worker(
 
     asyncio.run(controller._reconcile_once(refresh_silent_workers=False))
 
-    assert controller.worker_inventory[
-        'worker-a'].status == WorkerStatus.DRAINING
+    assert controller.worker_inventory['worker-a'].status == WorkerStatus.DRAINING
     assert 'worker-a' not in placement_state.pvcs
     assert 'snap-1' not in controller.state.snapshots
     if not cleanup_fails:
-        assert manager.delete_pool_worker_calls[0][
-            'pool_worker_uid'] == 'worker-a'
+        assert manager.delete_pool_worker_calls[0]['pool_worker_uid'] == 'worker-a'
     assert controller.state.dataplane_backups == backups
     assert asyncio.run(controller._persistence.load()) == controller.state
 
     # The old pod can keep heartbeating after failed Kubernetes cleanup.
     # Its report must not revive the drained worker or restore a stale home.
-    asyncio.run(
-        controller.report_status.coroutine(_report(ready_snapshots=['snap-1'])))
-    assert controller.worker_inventory[
-        'worker-a'].status == WorkerStatus.DRAINING
+    asyncio.run(controller.report_status.coroutine(_report(ready_snapshots=['snap-1'])))
+    assert controller.worker_inventory['worker-a'].status == WorkerStatus.DRAINING
     assert 'snap-1' not in controller.state.snapshots
 
     asyncio.run(
         controller.place_snapshot.coroutine(
-            replace(_request(), source_size_bytes=100 * (1 << 30))))
+            replace(_request(), source_size_bytes=100 * (1 << 30))
+        )
+    )
 
     assert manager.provision_pool_worker_calls[-1]['pvc_spec'].size_gib == 512
     assert placement_state.pvcs['worker-new'].tier_ssd_gib == 512
 
 
 def test_reconcile_retires_expected_worker_that_never_heartbeats_after_restart(
-        tmp_path):
+    tmp_path,
+):
     clock = [1000.0]
     manager = _FakeK8sManager()
-    controller = _make_controller_with_state(tmp_path,
-                                             _state_with_expected_worker(),
-                                             time_fn=lambda: clock[0])
+    controller = _make_controller_with_state(
+        tmp_path, _state_with_expected_worker(), time_fn=lambda: clock[0]
+    )
     controller._set_placement_strategy(
         build_k8s_placement_strategy(
             manager,  # type: ignore[arg-type]
             PoolControllerPlacementContext(controller),
             capacity_tiers=[CapacityTier(1750)],
-        ))
+        )
+    )
     _arm_silent_worker_retirement(controller, clock[0])
     placement_state = controller.state.placement_state
     assert isinstance(placement_state, K8sPlacementState)
@@ -4053,13 +4408,15 @@ def test_reconcile_retires_expected_worker_that_never_heartbeats_after_restart(
     second_delta = asyncio.run(controller._reconcile_once())
 
     assert second_delta.retired_uids == {'worker-a'}
-    assert manager.delete_pool_worker_calls == [{
-        'pool_worker_uid': 'worker-a',
-        'grace_period_seconds': 30,
-        'scale_down_timeout': 120,
-        'pvc_delete_timeout': 60,
-        'force_on_timeout': True,
-    }]
+    assert manager.delete_pool_worker_calls == [
+        {
+            'pool_worker_uid': 'worker-a',
+            'grace_period_seconds': 30,
+            'scale_down_timeout': 120,
+            'pvc_delete_timeout': 60,
+            'force_on_timeout': True,
+        }
+    ]
     assert 'worker-a' not in placement_state.pvcs
     assert 'worker-a' not in controller.worker_inventory
     assert 'snap-1' not in controller.state.snapshots
@@ -4081,7 +4438,8 @@ def test_silent_worker_registered_in_k8s_is_not_destructively_retired(tmp_path):
             manager,  # type: ignore[arg-type]
             PoolControllerPlacementContext(controller),
             capacity_tiers=[CapacityTier(1750)],
-        ))
+        )
+    )
     _arm_silent_worker_retirement(controller, clock[0])
     placement_state = controller.state.placement_state
     assert isinstance(placement_state, K8sPlacementState)
@@ -4133,8 +4491,7 @@ def test_silent_worker_removed_when_no_longer_expected(tmp_path):
 
     state.snapshots.pop('snap-1')
     asyncio.run(controller._refresh_silent_expected_workers())
-    controller._sweep_worker_health(controller._time() +
-                                    WORKER_DEAD_THRESHOLD_SECS)
+    controller._sweep_worker_health(controller._time() + WORKER_DEAD_THRESHOLD_SECS)
     stats = asyncio.run(controller.get_pool_stats.coroutine())
 
     assert 'worker-a' not in controller.worker_inventory
@@ -4152,8 +4509,7 @@ def test_restart_synthetic_stale_blocks_retry_until_first_heartbeat(tmp_path):
     assert controller.worker_inventory['worker-a'].status == WorkerStatus.STALE
     assert controller._pinned_decision_for_retry(placement, 'job-1') is None
 
-    asyncio.run(
-        controller.report_status.coroutine(_report(ready_snapshots=['snap-1'])))
+    asyncio.run(controller.report_status.coroutine(_report(ready_snapshots=['snap-1'])))
 
     decision = controller._pinned_decision_for_retry(placement, 'job-1')
     assert decision is not None
@@ -4164,14 +4520,16 @@ def test_reconcile_silent_worker_deadline_survives_controller_restart(tmp_path):
     clock = [1000.0]
     state = _state_with_expected_worker()
     manager_1 = _FakeK8sManager()
-    controller_1 = _make_controller_with_state(tmp_path, state,
-                                               time_fn=lambda: clock[0])
+    controller_1 = _make_controller_with_state(
+        tmp_path, state, time_fn=lambda: clock[0]
+    )
     controller_1._set_placement_strategy(
         build_k8s_placement_strategy(
             manager_1,  # type: ignore[arg-type]
             PoolControllerPlacementContext(controller_1),
             capacity_tiers=[CapacityTier(1750)],
-        ))
+        )
+    )
     _arm_silent_worker_retirement(controller_1, clock[0])
     placement_state = state.placement_state
     assert isinstance(placement_state, K8sPlacementState)
@@ -4186,21 +4544,22 @@ def test_reconcile_silent_worker_deadline_survives_controller_restart(tmp_path):
     # instead of restarting the DEAD countdown at the new process start time.
     clock[0] = 1000.0 + WORKER_DEAD_THRESHOLD_SECS
     manager_2 = _FakeK8sManager()
-    controller_2 = _make_controller_with_state(tmp_path, state,
-                                               time_fn=lambda: clock[0])
+    controller_2 = _make_controller_with_state(
+        tmp_path, state, time_fn=lambda: clock[0]
+    )
     controller_2._set_placement_strategy(
         build_k8s_placement_strategy(
             manager_2,  # type: ignore[arg-type]
             PoolControllerPlacementContext(controller_2),
             capacity_tiers=[CapacityTier(1750)],
-        ))
+        )
+    )
     _arm_silent_worker_retirement(controller_2, clock[0])
 
     second_delta = asyncio.run(controller_2._reconcile_once())
 
     assert second_delta.retired_uids == {'worker-a'}
-    assert manager_2.delete_pool_worker_calls[0]['pool_worker_uid'] == (
-        'worker-a')
+    assert manager_2.delete_pool_worker_calls[0]['pool_worker_uid'] == ('worker-a')
     assert 'worker-a' not in placement_state.silent_worker_suspect_since
     assert 'snap-1' not in controller_2.state.snapshots
 
@@ -4214,8 +4573,9 @@ def test_silent_worker_cannot_retire_before_serving_heartbeat_grace(tmp_path):
         # Simulate a persisted deadline that expired while a slow init canary
         # was running and no AutoRPC worker existed to receive heartbeats.
         placement_state.silent_worker_suspect_since['worker-a'] = 0.0
-        strategy = MockPlacementStrategy(reconcile_delta=ReconcileDelta(
-            retired_uids={'worker-a'}))
+        strategy = MockPlacementStrategy(
+            reconcile_delta=ReconcileDelta(retired_uids={'worker-a'})
+        )
         controller = _make_controller_with_state(
             tmp_path,
             state,
@@ -4223,8 +4583,7 @@ def test_silent_worker_cannot_retire_before_serving_heartbeat_grace(tmp_path):
             time_fn=lambda: clock[0],
         )
 
-        startup_delta = await controller._reconcile_once(
-            refresh_silent_workers=False)
+        startup_delta = await controller._reconcile_once(refresh_silent_workers=False)
         assert startup_delta.retired_uids == set()
         assert controller.worker_inventory == {}
         assert strategy.delete_workers_calls == []
@@ -4232,8 +4591,7 @@ def test_silent_worker_cannot_retire_before_serving_heartbeat_grace(tmp_path):
         controller._start_maintenance_loop(interval_secs=3600)
         while len(strategy.reconcile_calls) < 2:
             await asyncio.sleep(0)
-        assert controller.worker_inventory[
-            'worker-a'].status == WorkerStatus.STALE
+        assert controller.worker_inventory['worker-a'].status == WorkerStatus.STALE
         assert strategy.delete_workers_calls == []
         assert 'snap-1' in controller.state.snapshots
 
@@ -4245,8 +4603,7 @@ def test_silent_worker_cannot_retire_before_serving_heartbeat_grace(tmp_path):
 
         clock[0] += POOL_HEARTBEAT_INTERVAL_SECS
         await controller.report_status.coroutine(_report())
-        assert controller.worker_inventory[
-            'worker-a'].status == WorkerStatus.READY
+        assert controller.worker_inventory['worker-a'].status == WorkerStatus.READY
         assert 'worker-a' not in (placement_state.silent_worker_suspect_since)
 
     asyncio.run(drive())
@@ -4282,14 +4639,14 @@ def test_reconcile_retires_worker_expected_only_by_local_copy(tmp_path):
         pool_worker_uid='worker-a',
         local_state=SnapshotLocalCopyState.WARM,
     )
-    controller = _make_controller_with_state(tmp_path, state,
-                                             time_fn=lambda: clock[0])
+    controller = _make_controller_with_state(tmp_path, state, time_fn=lambda: clock[0])
     controller._set_placement_strategy(
         build_k8s_placement_strategy(
             manager,  # type: ignore[arg-type]
             PoolControllerPlacementContext(controller),
             capacity_tiers=[CapacityTier(1750)],
-        ))
+        )
+    )
     _arm_silent_worker_retirement(controller, clock[0])
 
     first_delta = asyncio.run(controller._reconcile_once())
@@ -4305,7 +4662,8 @@ def test_reconcile_retires_worker_expected_only_by_local_copy(tmp_path):
     assert manager.delete_pool_worker_calls[0]['pool_worker_uid'] == 'worker-a'
     assert 'worker-a' not in placement_state.pvcs
     assert state.local_copies['snap-1:worker-a'].local_state == (
-        SnapshotLocalCopyState.EVICTED)
+        SnapshotLocalCopyState.EVICTED
+    )
 
 
 def test_reconcile_retires_legacy_expected_worker_without_pvc_state(tmp_path):
@@ -4325,7 +4683,8 @@ def test_reconcile_retires_legacy_expected_worker_without_pvc_state(tmp_path):
             manager,  # type: ignore[arg-type]
             PoolControllerPlacementContext(controller),
             capacity_tiers=[CapacityTier(1750)],
-        ))
+        )
+    )
     _arm_silent_worker_retirement(controller, clock[0])
 
     asyncio.run(controller._reconcile_once())
@@ -4340,15 +4699,16 @@ def test_reconcile_retires_legacy_expected_worker_without_pvc_state(tmp_path):
 def test_report_status_clears_silent_worker_suspect(tmp_path):
     clock = [2000.0]
     manager = _FakeK8sManager()
-    controller = _make_controller_with_state(tmp_path,
-                                             _state_with_expected_worker(),
-                                             time_fn=lambda: clock[0])
+    controller = _make_controller_with_state(
+        tmp_path, _state_with_expected_worker(), time_fn=lambda: clock[0]
+    )
     controller._set_placement_strategy(
         build_k8s_placement_strategy(
             manager,  # type: ignore[arg-type]
             PoolControllerPlacementContext(controller),
             capacity_tiers=[CapacityTier(1750)],
-        ))
+        )
+    )
     placement_state = controller.state.placement_state
     assert isinstance(placement_state, K8sPlacementState)
 
@@ -4371,7 +4731,8 @@ def test_report_status_clears_silent_worker_suspect(tmp_path):
 
 
 def test_first_heartbeat_after_silent_synthetic_inventory_cleans_missing_local(
-        tmp_path):
+    tmp_path,
+):
     manager = _FakeK8sManager()
     state = PoolState(placement_state=K8sPlacementState())
     placement_state = state.placement_state
@@ -4392,7 +4753,8 @@ def test_first_heartbeat_after_silent_synthetic_inventory_cleans_missing_local(
             manager,  # type: ignore[arg-type]
             PoolControllerPlacementContext(controller),
             capacity_tiers=[CapacityTier(1750)],
-        ))
+        )
+    )
 
     asyncio.run(controller._reconcile_once())
     assert controller.worker_inventory['worker-a'].status == WorkerStatus.STALE
@@ -4400,14 +4762,15 @@ def test_first_heartbeat_after_silent_synthetic_inventory_cleans_missing_local(
     asyncio.run(controller.report_status.coroutine(_report(ready_snapshots=[])))
 
     assert controller.worker_inventory['worker-a'].status == WorkerStatus.READY
-    assert controller.state.local_copies[
-        'snap-1:worker-a'].local_state == SnapshotLocalCopyState.EVICTED
+    assert (
+        controller.state.local_copies['snap-1:worker-a'].local_state
+        == SnapshotLocalCopyState.EVICTED
+    )
     assert 'snap-1' not in controller.state.snapshots
 
 
 def test_retired_worker_late_heartbeat_does_not_resurrect_snapshot(tmp_path):
-    controller = _make_controller_with_state(tmp_path,
-                                             _state_with_expected_worker())
+    controller = _make_controller_with_state(tmp_path, _state_with_expected_worker())
     controller.worker_inventory['worker-a'] = WorkerInventory(
         pool_worker_uid='worker-a',
         state=_snapshot(ready_snapshots=['snap-1']),
@@ -4416,23 +4779,20 @@ def test_retired_worker_late_heartbeat_does_not_resurrect_snapshot(tmp_path):
     )
 
     mutated = controller._apply_reconcile_worker_delta(
-        ReconcileDelta(retired_uids={'worker-a'}))
+        ReconcileDelta(retired_uids={'worker-a'})
+    )
 
     assert mutated
-    assert controller.worker_inventory[
-        'worker-a'].status == WorkerStatus.DRAINING
+    assert controller.worker_inventory['worker-a'].status == WorkerStatus.DRAINING
     assert 'snap-1' not in controller.state.snapshots
 
-    asyncio.run(
-        controller.report_status.coroutine(_report(ready_snapshots=['snap-1'])))
+    asyncio.run(controller.report_status.coroutine(_report(ready_snapshots=['snap-1'])))
 
-    assert controller.worker_inventory[
-        'worker-a'].status == WorkerStatus.DRAINING
+    assert controller.worker_inventory['worker-a'].status == WorkerStatus.DRAINING
     assert 'snap-1' not in controller.state.snapshots
 
 
-def test_reconcile_does_not_suspect_worker_created_after_process_start(
-        tmp_path):
+def test_reconcile_does_not_suspect_worker_created_after_process_start(tmp_path):
     manager = _FakeK8sManager()
     controller = _make_controller(tmp_path)
     controller._set_placement_strategy(
@@ -4440,7 +4800,8 @@ def test_reconcile_does_not_suspect_worker_created_after_process_start(
             manager,  # type: ignore[arg-type]
             PoolControllerPlacementContext(controller),
             capacity_tiers=[CapacityTier(1750)],
-        ))
+        )
+    )
     placement_state = controller.state.placement_state
     assert isinstance(placement_state, K8sPlacementState)
     placement_state.pvcs['worker-a'] = PvcState(pool_worker_uid='worker-a')
@@ -4454,8 +4815,7 @@ def test_reconcile_does_not_suspect_worker_created_after_process_start(
     assert 'snap-1' in controller.state.snapshots
 
 
-def test_maintenance_once_marks_unexpected_worker_draining_before_delete(
-        tmp_path):
+def test_maintenance_once_marks_unexpected_worker_draining_before_delete(tmp_path):
     """Teardown route-race fix: an unexpected worker is flipped to DRAINING
     (non-routable) under state_lock BEFORE delete_workers tears it down, the
     lease-less placement that still points at it is scrubbed (so route()'s
@@ -4481,14 +4841,12 @@ def test_maintenance_once_marks_unexpected_worker_draining_before_delete(
     assert result == delta
     # Non-routable before delete, the home-path placement is scrubbed, and the
     # strategy was asked to delete it.
-    assert controller.worker_inventory[
-        'worker-x'].status == WorkerStatus.DRAINING
+    assert controller.worker_inventory['worker-x'].status == WorkerStatus.DRAINING
     assert 'snap-x' not in controller.state.snapshots
     assert strategy.delete_workers_calls == [['worker-x']]
 
 
-def test_queued_heartbeat_cannot_recreate_state_after_unexpected_scrub(
-        tmp_path):
+def test_queued_heartbeat_cannot_recreate_state_after_unexpected_scrub(tmp_path):
     """Admission is re-checked when the heartbeat finally acquires state_lock.
 
     Model another state write holding the lock while reconcile queues first and
@@ -4496,6 +4854,7 @@ def test_queued_heartbeat_cannot_recreate_state_after_unexpected_scrub(
     in-memory inventory, but its READY snapshot must not be applied after the
     preceding reconcile commits the worker to DRAINING and scrubs its state.
     """
+
     async def drive() -> tuple[PoolController, MockPlacementStrategy]:
         delta = ReconcileDelta(
             unexpected_uids={'worker-x'},
@@ -4512,18 +4871,19 @@ def test_queued_heartbeat_cannot_recreate_state_after_unexpected_scrub(
 
         await controller._state_lock.acquire()
         reconcile_task = asyncio.create_task(
-            controller._reconcile_once(refresh_silent_workers=False))
+            controller._reconcile_once(refresh_silent_workers=False)
+        )
         await asyncio.sleep(0)
         assert not reconcile_task.done()
 
         report_task = asyncio.create_task(
             controller.report_status.coroutine(
-                _report(pool_worker_uid='worker-x',
-                        ready_snapshots=['late-snapshot'])))
+                _report(pool_worker_uid='worker-x', ready_snapshots=['late-snapshot'])
+            )
+        )
         await asyncio.sleep(0)
         assert not report_task.done()
-        assert controller.worker_inventory[
-            'worker-x'].status == WorkerStatus.READY
+        assert controller.worker_inventory['worker-x'].status == WorkerStatus.READY
 
         controller._state_lock.release()
         await asyncio.gather(reconcile_task, report_task)
@@ -4532,14 +4892,12 @@ def test_queued_heartbeat_cannot_recreate_state_after_unexpected_scrub(
     controller, strategy = asyncio.run(drive())
 
     assert strategy.delete_workers_calls == [['worker-x']]
-    assert controller.worker_inventory[
-        'worker-x'].status == WorkerStatus.DRAINING
+    assert controller.worker_inventory['worker-x'].status == WorkerStatus.DRAINING
     assert 'late-snapshot' not in controller.state.snapshots
     assert 'late-snapshot:worker-x' not in controller.state.local_copies
 
 
-def test_deleted_worker_stays_draining_until_followup_observes_absence(
-        tmp_path):
+def test_deleted_worker_stays_draining_until_followup_observes_absence(tmp_path):
     """A teardown return is not proof that a previously observed pod is gone.
     Keep the tombstone through late heartbeats and prune it only after a later
     external observation confirms absence."""
@@ -4560,16 +4918,15 @@ def test_deleted_worker_stays_draining_until_followup_observes_absence(
     asyncio.run(controller._maintenance_once())
 
     assert strategy.delete_workers_calls == [['worker-x']]
-    assert controller.worker_inventory[
-        'worker-x'].status == WorkerStatus.DRAINING
+    assert controller.worker_inventory['worker-x'].status == WorkerStatus.DRAINING
 
     asyncio.run(
         controller.report_status.coroutine(
-            _report(pool_worker_uid='worker-x',
-                    ready_snapshots=['late-snapshot'])))
+            _report(pool_worker_uid='worker-x', ready_snapshots=['late-snapshot'])
+        )
+    )
 
-    assert controller.worker_inventory[
-        'worker-x'].status == WorkerStatus.DRAINING
+    assert controller.worker_inventory['worker-x'].status == WorkerStatus.DRAINING
     assert 'late-snapshot' not in controller.state.snapshots
 
     # The delete already succeeded. As long as Kubernetes still observes the
@@ -4578,8 +4935,7 @@ def test_deleted_worker_stays_draining_until_followup_observes_absence(
 
     assert strategy.delete_workers_calls == [['worker-x']]
     assert 'worker-x' in controller._delete_succeeded_pending_absence
-    assert controller.worker_inventory[
-        'worker-x'].status == WorkerStatus.DRAINING
+    assert controller.worker_inventory['worker-x'].status == WorkerStatus.DRAINING
 
     strategy.reconcile_delta = ReconcileDelta()
     asyncio.run(controller._maintenance_once())
@@ -4589,12 +4945,13 @@ def test_deleted_worker_stays_draining_until_followup_observes_absence(
     assert strategy.delete_workers_calls == [['worker-x']]
 
 
-def test_pending_absence_worker_does_not_block_new_unexpected_teardown(
-        tmp_path):
-    strategy = MockPlacementStrategy(reconcile_delta=ReconcileDelta(
-        unexpected_uids={'worker-x'},
-        observed_pool_worker_uids={'worker-x'},
-    ))
+def test_pending_absence_worker_does_not_block_new_unexpected_teardown(tmp_path):
+    strategy = MockPlacementStrategy(
+        reconcile_delta=ReconcileDelta(
+            unexpected_uids={'worker-x'},
+            observed_pool_worker_uids={'worker-x'},
+        )
+    )
     strategy.delete_workers_returns = {'worker-x'}
     controller = _make_controller(tmp_path, strategy=strategy)
     for uid in ('worker-x', 'worker-y'):
@@ -4615,13 +4972,10 @@ def test_pending_absence_worker_does_not_block_new_unexpected_teardown(
     asyncio.run(controller._reconcile_once(refresh_silent_workers=False))
 
     assert strategy.delete_workers_calls == [['worker-x'], ['worker-y']]
-    assert controller._delete_succeeded_pending_absence == {
-        'worker-x', 'worker-y'
-    }
+    assert controller._delete_succeeded_pending_absence == {'worker-x', 'worker-y'}
 
 
-def test_activity_ready_after_absence_prune_cannot_recreate_phantom_copy(
-        tmp_path):
+def test_activity_ready_after_absence_prune_cannot_recreate_phantom_copy(tmp_path):
     """A delayed activity event needs current PVC ownership after prune.
 
     Activity reports do not create daemon inventory. Once a successful teardown
@@ -4629,10 +4983,12 @@ def test_activity_ready_after_absence_prune_cannot_recreate_phantom_copy(
     gone, a queued SNAPSHOT_READY must not create an expected-but-unreapable
     WARM copy for the deleted worker.
     """
-    strategy = MockPlacementStrategy(reconcile_delta=ReconcileDelta(
-        unexpected_uids={'worker-x'},
-        observed_pool_worker_uids={'worker-x'},
-    ))
+    strategy = MockPlacementStrategy(
+        reconcile_delta=ReconcileDelta(
+            unexpected_uids={'worker-x'},
+            observed_pool_worker_uids={'worker-x'},
+        )
+    )
     strategy.delete_workers_returns = {'worker-x'}
     controller = _make_controller(tmp_path, strategy=strategy)
     placement_state = controller.state.placement_state
@@ -4647,8 +5003,7 @@ def test_activity_ready_after_absence_prune_cannot_recreate_phantom_copy(
 
     asyncio.run(controller._reconcile_once(refresh_silent_workers=False))
 
-    assert controller.worker_inventory[
-        'worker-x'].status == WorkerStatus.DRAINING
+    assert controller.worker_inventory['worker-x'].status == WorkerStatus.DRAINING
     assert 'worker-x' not in placement_state.pvcs
     assert 'worker-x' in controller._delete_succeeded_pending_absence
 
@@ -4670,14 +5025,15 @@ def test_activity_ready_after_absence_prune_cannot_recreate_phantom_copy(
                 worker_storage_mode=PoolStorageMode.ACTIVITY_ON_PVC,
                 event=ready,
                 ready_snapshots=[],
-            )))
+            )
+        )
+    )
 
     assert 'late-snapshot' not in controller.state.snapshots
     assert 'late-snapshot:worker-x' not in controller.state.local_copies
 
 
-def test_observed_unexpected_worker_without_heartbeat_gets_draining_tombstone(
-        tmp_path):
+def test_observed_unexpected_worker_without_heartbeat_gets_draining_tombstone(tmp_path):
     """Startup cleanup must quarantine a leaked pod before its first RPC.
 
     The K8s delete call may return while the pod is still observed. A synthetic
@@ -4695,14 +5051,13 @@ def test_observed_unexpected_worker_without_heartbeat_gets_draining_tombstone(
 
     asyncio.run(controller._reconcile_once(refresh_silent_workers=False))
 
-    assert controller.worker_inventory[
-        'leaked-worker'].status == WorkerStatus.DRAINING
+    assert controller.worker_inventory['leaked-worker'].status == WorkerStatus.DRAINING
     asyncio.run(
         controller.report_status.coroutine(
-            _report(pool_worker_uid='leaked-worker',
-                    ready_snapshots=['late-snapshot'])))
-    assert controller.worker_inventory[
-        'leaked-worker'].status == WorkerStatus.DRAINING
+            _report(pool_worker_uid='leaked-worker', ready_snapshots=['late-snapshot'])
+        )
+    )
+    assert controller.worker_inventory['leaked-worker'].status == WorkerStatus.DRAINING
     assert 'late-snapshot' not in controller.state.snapshots
 
     strategy.reconcile_delta = ReconcileDelta()
@@ -4730,7 +5085,9 @@ def test_failed_worker_teardown_stays_draining_and_retries(tmp_path):
     asyncio.run(controller._maintenance_once())
     asyncio.run(
         controller.report_status.coroutine(
-            _report(pool_worker_uid='worker-x', ready_snapshots=['snap-late'])))
+            _report(pool_worker_uid='worker-x', ready_snapshots=['snap-late'])
+        )
+    )
     strategy.reconcile_delta = ReconcileDelta(
         unexpected_uids={'worker-x'},
         observed_pool_worker_uids={'worker-x'},
@@ -4738,8 +5095,7 @@ def test_failed_worker_teardown_stays_draining_and_retries(tmp_path):
     asyncio.run(controller._maintenance_once())
 
     assert strategy.delete_workers_calls == [['worker-x'], ['worker-x']]
-    assert controller.worker_inventory[
-        'worker-x'].status == WorkerStatus.DRAINING
+    assert controller.worker_inventory['worker-x'].status == WorkerStatus.DRAINING
     assert 'snap-late' not in controller.state.snapshots
 
 
@@ -4762,14 +5118,14 @@ def test_maintenance_once_drops_freshly_leased_unexpected_worker(tmp_path):
     asyncio.run(controller._maintenance_once())
 
     # Re-check kept it alive: not deleted, still routable (READY).
-    assert strategy.delete_workers_calls == [] or 'worker-a' not in (
-        strategy.delete_workers_calls[0])
-    assert controller.worker_inventory[
-        'worker-a'].status != WorkerStatus.DRAINING
+    assert (
+        strategy.delete_workers_calls == []
+        or 'worker-a' not in (strategy.delete_workers_calls[0])
+    )
+    assert controller.worker_inventory['worker-a'].status != WorkerStatus.DRAINING
 
 
-def test_maintenance_once_drops_retirement_when_worker_recovers_before_apply(
-        tmp_path):
+def test_maintenance_once_drops_retirement_when_worker_recovers_before_apply(tmp_path):
     deleted_snapshots: list[tuple[str, str]] = []
 
     async def delete_local(snapshot_id: str, pool_worker_uid: str) -> bool:
@@ -4786,10 +5142,9 @@ def test_maintenance_once_drops_retirement_when_worker_recovers_before_apply(
         strategy=strategy,
         local_snapshot_deleter=delete_local,
     )
-    asyncio.run(
-        controller.report_status.coroutine(_report(ready_snapshots=['snap-1'])))
+    asyncio.run(controller.report_status.coroutine(_report(ready_snapshots=['snap-1'])))
     inventory = controller.worker_inventory['worker-a']
-    inventory.last_heartbeat = (controller._time() - WORKER_DEAD_THRESHOLD_SECS)
+    inventory.last_heartbeat = controller._time() - WORKER_DEAD_THRESHOLD_SECS
     inventory.status = WorkerStatus.DEAD
 
     def recover_before_apply() -> None:
@@ -4806,21 +5161,26 @@ def test_maintenance_once_drops_retirement_when_worker_recovers_before_apply(
     assert deleted_snapshots == []
     assert controller.worker_inventory['worker-a'].status == WorkerStatus.READY
     assert controller.state.snapshots['snap-1'].worker == 'worker-a'
-    assert controller.state.local_copies[
-        'snap-1:worker-a'].local_state == SnapshotLocalCopyState.WARM
+    assert (
+        controller.state.local_copies['snap-1:worker-a'].local_state
+        == SnapshotLocalCopyState.WARM
+    )
 
 
-def test_maintenance_once_preserves_worker_when_k8s_revalidation_vetoes(
-        tmp_path):
-    strategy = MockPlacementStrategy(reconcile_delta=ReconcileDelta(
-        retired_uids={'worker-a'}))
+def test_maintenance_once_preserves_worker_when_k8s_revalidation_vetoes(tmp_path):
+    strategy = MockPlacementStrategy(
+        reconcile_delta=ReconcileDelta(retired_uids={'worker-a'})
+    )
     strategy.revalidated_retired_workers = set()
-    controller = _make_controller_with_state(tmp_path,
-                                             _state_with_expected_worker(),
-                                             strategy=strategy)
+    controller = _make_controller_with_state(
+        tmp_path, _state_with_expected_worker(), strategy=strategy
+    )
     controller.worker_inventory['worker-a'] = WorkerInventory(
-        pool_worker_uid='worker-a', status=WorkerStatus.DEAD,
-        last_heartbeat=1.0, state=_snapshot())
+        pool_worker_uid='worker-a',
+        status=WorkerStatus.DEAD,
+        last_heartbeat=1.0,
+        state=_snapshot(),
+    )
 
     result = asyncio.run(controller._maintenance_once())
 
@@ -4832,26 +5192,23 @@ def test_maintenance_once_preserves_worker_when_k8s_revalidation_vetoes(
     assert controller.state.snapshots['snap-1'].leases == ['job-1']
 
 
-def test_maintenance_once_deletes_retired_worker_even_with_stale_lease(
-        tmp_path):
+def test_maintenance_once_deletes_retired_worker_even_with_stale_lease(tmp_path):
     """Rebind-timeout retired workers are NOT subject to the freshly-leased
     re-check: the daemon is gone and any lease is dangling, so the worker is
     still retired (DRAINING + state cleared) and handed to delete_workers."""
     delta = ReconcileDelta(retired_uids={'worker-a'})
     strategy = MockPlacementStrategy(reconcile_delta=delta)
     controller = _make_controller(tmp_path, strategy=strategy)
-    asyncio.run(
-        controller.report_status.coroutine(_report(ready_snapshots=['snap-1'])))
+    asyncio.run(controller.report_status.coroutine(_report(ready_snapshots=['snap-1'])))
     # Open lease on worker-a → it would look "expected", but retired wins.
     asyncio.run(controller.place_snapshot.coroutine(_request()))
     inventory = controller.worker_inventory['worker-a']
-    inventory.last_heartbeat = (controller._time() - WORKER_DEAD_THRESHOLD_SECS)
+    inventory.last_heartbeat = controller._time() - WORKER_DEAD_THRESHOLD_SECS
     inventory.status = WorkerStatus.DEAD
 
     asyncio.run(controller._maintenance_once())
 
-    assert controller.worker_inventory[
-        'worker-a'].status == WorkerStatus.DRAINING
+    assert controller.worker_inventory['worker-a'].status == WorkerStatus.DRAINING
     assert strategy.delete_workers_calls == [['worker-a']]
     assert 'snap-1' not in controller.state.snapshots
 
@@ -4869,8 +5226,7 @@ def test_sweep_worker_health_does_not_resurrect_draining(tmp_path):
 
     controller._sweep_worker_health(time.time())
 
-    assert controller.worker_inventory[
-        'worker-a'].status == WorkerStatus.DRAINING
+    assert controller.worker_inventory['worker-a'].status == WorkerStatus.DRAINING
 
 
 def test_report_status_does_not_resurrect_draining_worker(tmp_path):
@@ -4883,8 +5239,7 @@ def test_report_status_does_not_resurrect_draining_worker(tmp_path):
 
     asyncio.run(controller.report_status.coroutine(_report()))
 
-    assert controller.worker_inventory[
-        'worker-a'].status == WorkerStatus.DRAINING
+    assert controller.worker_inventory['worker-a'].status == WorkerStatus.DRAINING
 
 
 def test_draining_worker_still_records_completed_dataplane_upload(tmp_path):
@@ -4903,8 +5258,7 @@ def test_draining_worker_still_records_completed_dataplane_upload(tmp_path):
     backup = controller.state.dataplane_backups['snap-1']
     assert backup.dataplane_path == 's3://bucket/snap-1'
     assert backup.size_bytes == 4096
-    assert controller.worker_inventory[
-        'worker-a'].status == WorkerStatus.DRAINING
+    assert controller.worker_inventory['worker-a'].status == WorkerStatus.DRAINING
 
 
 def test_late_activity_ready_does_not_recreate_scrubbed_worker_state(tmp_path):
@@ -4914,8 +5268,7 @@ def test_late_activity_ready_does_not_recreate_scrubbed_worker_state(tmp_path):
         worker='worker-a',
         state=SnapshotState.READY,
     )
-    controller._apply_reconcile_worker_delta(
-        ReconcileDelta(retired_uids={'worker-a'}))
+    controller._apply_reconcile_worker_delta(ReconcileDelta(retired_uids={'worker-a'}))
     ready = WorkerEvent(
         type=WorkerEventType.SNAPSHOT_READY,
         snapshot_id='snap-1',
@@ -4928,13 +5281,16 @@ def test_late_activity_ready_does_not_recreate_scrubbed_worker_state(tmp_path):
                 worker_storage_mode=PoolStorageMode.ACTIVITY_ON_PVC,
                 event=ready,
                 ready_snapshots=['snap-1'],
-            )))
+            )
+        )
+    )
 
     assert controller.state.snapshots == {}
-    assert controller.state.local_copies[
-        'snap-1:worker-a'].local_state == SnapshotLocalCopyState.EVICTED
-    assert controller.worker_inventory[
-        'worker-a'].status == WorkerStatus.DRAINING
+    assert (
+        controller.state.local_copies['snap-1:worker-a'].local_state
+        == SnapshotLocalCopyState.EVICTED
+    )
+    assert controller.worker_inventory['worker-a'].status == WorkerStatus.DRAINING
 
 
 def test_maintenance_once_cleans_orphan_snapshot_from_reconcile_delta(tmp_path):
@@ -4955,24 +5311,24 @@ def test_maintenance_once_cleans_orphan_snapshot_from_reconcile_delta(tmp_path):
         worker='worker-c',
         state=SnapshotState.READY,
     )
-    controller.state.local_copies['snap-orphan:worker-c'] = (
-        SnapshotLocalCopyRecord(
-            snapshot_id='snap-orphan',
-            pool_worker_uid='worker-c',
-            local_state=SnapshotLocalCopyState.WARM,
-        ))
+    controller.state.local_copies['snap-orphan:worker-c'] = SnapshotLocalCopyRecord(
+        snapshot_id='snap-orphan',
+        pool_worker_uid='worker-c',
+        local_state=SnapshotLocalCopyState.WARM,
+    )
 
     result = asyncio.run(controller._maintenance_once())
 
     assert result == delta
     assert deleted == [('snap-orphan', 'worker-c')]
     assert 'snap-orphan' not in controller.state.snapshots
-    assert controller.state.local_copies[
-        'snap-orphan:worker-c'].local_state == SnapshotLocalCopyState.EVICTED
+    assert (
+        controller.state.local_copies['snap-orphan:worker-c'].local_state
+        == SnapshotLocalCopyState.EVICTED
+    )
 
 
-def test_maintenance_once_retries_orphan_snapshot_after_delete_failure(
-        tmp_path):
+def test_maintenance_once_retries_orphan_snapshot_after_delete_failure(tmp_path):
     attempts: list[tuple[str, str]] = []
 
     async def delete_local(snapshot_id: str, pool_worker_uid: str) -> bool:
@@ -4990,21 +5346,21 @@ def test_maintenance_once_retries_orphan_snapshot_after_delete_failure(
         worker='worker-c',
         state=SnapshotState.READY,
     )
-    controller.state.local_copies['snap-orphan:worker-c'] = (
-        SnapshotLocalCopyRecord(
-            snapshot_id='snap-orphan',
-            pool_worker_uid='worker-c',
-            local_state=SnapshotLocalCopyState.WARM,
-        ))
+    controller.state.local_copies['snap-orphan:worker-c'] = SnapshotLocalCopyRecord(
+        snapshot_id='snap-orphan',
+        pool_worker_uid='worker-c',
+        local_state=SnapshotLocalCopyState.WARM,
+    )
 
     result = asyncio.run(controller._maintenance_once())
 
     assert result == delta
     assert attempts == [('snap-orphan', 'worker-c')]
-    assert controller.state.snapshots['snap-orphan'].state == (
-        SnapshotState.READY)
-    assert controller.state.local_copies[
-        'snap-orphan:worker-c'].local_state == SnapshotLocalCopyState.WARM
+    assert controller.state.snapshots['snap-orphan'].state == (SnapshotState.READY)
+    assert (
+        controller.state.local_copies['snap-orphan:worker-c'].local_state
+        == SnapshotLocalCopyState.WARM
+    )
 
 
 def test_maintenance_once_skips_orphan_snapshot_with_active_lease(tmp_path):
@@ -5022,19 +5378,21 @@ def test_maintenance_once_skips_orphan_snapshot_with_active_lease(tmp_path):
         local_snapshot_deleter=delete_local,
     )
     _open_snapshot(controller)
-    controller.state.local_copies['snap-1:worker-a'] = (SnapshotLocalCopyRecord(
+    controller.state.local_copies['snap-1:worker-a'] = SnapshotLocalCopyRecord(
         snapshot_id='snap-1',
         pool_worker_uid='worker-a',
         local_state=SnapshotLocalCopyState.WARM,
-    ))
+    )
 
     result = asyncio.run(controller._maintenance_once())
 
     assert result == delta
     assert deleted == []
     assert controller.state.snapshots['snap-1'].state == SnapshotState.READY
-    assert controller.state.local_copies[
-        'snap-1:worker-a'].local_state == SnapshotLocalCopyState.WARM
+    assert (
+        controller.state.local_copies['snap-1:worker-a'].local_state
+        == SnapshotLocalCopyState.WARM
+    )
 
 
 def test_maintenance_once_orphan_delete_does_not_hold_state_lock(tmp_path):
@@ -5064,19 +5422,21 @@ def test_maintenance_once_orphan_delete_does_not_hold_state_lock(tmp_path):
         worker='worker-a',
         state=SnapshotState.READY,
     )
-    controller.state.local_copies['snap-1:worker-a'] = (SnapshotLocalCopyRecord(
+    controller.state.local_copies['snap-1:worker-a'] = SnapshotLocalCopyRecord(
         snapshot_id='snap-1',
         pool_worker_uid='worker-a',
         local_state=SnapshotLocalCopyState.WARM,
-    ))
+    )
 
     result = asyncio.run(asyncio.wait_for(controller._maintenance_once(), 1))
 
     assert result == delta
     assert observed_state_lock == [False]
     assert deleted == [('snap-1', 'worker-a')]
-    assert controller.state.local_copies[
-        'snap-1:worker-a'].local_state == SnapshotLocalCopyState.WARM
+    assert (
+        controller.state.local_copies['snap-1:worker-a'].local_state
+        == SnapshotLocalCopyState.WARM
+    )
 
 
 def test_dangling_lease_sweep_keeps_running_workflow_lease(tmp_path):
@@ -5115,7 +5475,9 @@ def test_dangling_lease_sweep_continues_after_release_failure(tmp_path):
     asyncio.run(controller.place_snapshot.coroutine(_request()))
     asyncio.run(
         controller.place_snapshot.coroutine(
-            _request(snapshot_id='snap-2', job_id='job-2')))
+            _request(snapshot_id='snap-2', job_id='job-2')
+        )
+    )
 
     original_release = strategy.release
 
@@ -5133,8 +5495,7 @@ def test_dangling_lease_sweep_continues_after_release_failure(tmp_path):
     assert controller.state.snapshots['snap-1'].leases == ['job-1']
     assert controller.state.snapshots['snap-2'].leases == []
     assert controller.state.snapshots['snap-2'].last_lease_released is not None
-    assert controller.state.snapshot_compliance[
-        'snap-2'].active_consumer_count == 0
+    assert controller.state.snapshot_compliance['snap-2'].active_consumer_count == 0
     assert len(strategy.release_calls) == 2
 
 
@@ -5176,11 +5537,16 @@ def test_dangling_lease_sweep_groups_sharded_leases_by_workflow_id(tmp_path):
     )
     asyncio.run(
         controller.place_snapshot.coroutine(
-            _request(job_id='wf-abc#shard-0', workflow_id='wf-abc')))
+            _request(job_id='wf-abc#shard-0', workflow_id='wf-abc')
+        )
+    )
     asyncio.run(
         controller.place_snapshot.coroutine(
-            _request(snapshot_id='snap-2', job_id='wf-abc#shard-1',
-                     workflow_id='wf-abc')))
+            _request(
+                snapshot_id='snap-2', job_id='wf-abc#shard-1', workflow_id='wf-abc'
+            )
+        )
+    )
 
     released = asyncio.run(controller._dangling_lease_sweep_once())
 
@@ -5188,10 +5554,14 @@ def test_dangling_lease_sweep_groups_sharded_leases_by_workflow_id(tmp_path):
     # Both shards roll up to one ``wf-abc`` status check (batched sweep).
     assert seen == ['wf-abc']
     # Both leases carry the parent workflow_id on the placement record.
-    assert (controller.state.snapshots['snap-1'].
-            lease_workflow_ids['wf-abc#shard-0'] == 'wf-abc')
-    assert (controller.state.snapshots['snap-2'].
-            lease_workflow_ids['wf-abc#shard-1'] == 'wf-abc')
+    assert (
+        controller.state.snapshots['snap-1'].lease_workflow_ids['wf-abc#shard-0']
+        == 'wf-abc'
+    )
+    assert (
+        controller.state.snapshots['snap-2'].lease_workflow_ids['wf-abc#shard-1']
+        == 'wf-abc'
+    )
 
 
 def test_dangling_lease_sweep_keeps_lease_open_on_status_error(tmp_path):
@@ -5232,7 +5602,8 @@ def test_maintenance_once_runs_dangling_sweep_on_cadence(tmp_path):
     assert controller.state.snapshots['snap-1'].leases == ['job-1']
 
     controller._last_dangling_lease_sweep_at = (
-        time.time() - LEASE_DEFENSIVE_SWEEP_INTERVAL_SECS)
+        time.time() - LEASE_DEFENSIVE_SWEEP_INTERVAL_SECS
+    )
     asyncio.run(controller._maintenance_once())
     assert controller.state.snapshots['snap-1'].leases == []
 
@@ -5240,17 +5611,17 @@ def test_maintenance_once_runs_dangling_sweep_on_cadence(tmp_path):
 def test_lifecycle_sweeps_keep_l2_active_while_l1_live(tmp_path):
     controller = _make_controller(tmp_path)
     past = now_utc() - timedelta(seconds=1)
-    controller.state.snapshot_compliance['snap-1'] = (SnapshotComplianceRecord(
+    controller.state.snapshot_compliance['snap-1'] = SnapshotComplianceRecord(
         snapshot_id='snap-1',
         active_consumer_count=0,
         compliance_delete_at=past,
-    ))
-    controller.state.local_copies['snap-1:worker-a'] = (SnapshotLocalCopyRecord(
+    )
+    controller.state.local_copies['snap-1:worker-a'] = SnapshotLocalCopyRecord(
         snapshot_id='snap-1',
         pool_worker_uid='worker-a',
         local_state=SnapshotLocalCopyState.WARM,
         evictable_under_pressure_at=past,
-    ))
+    )
 
     asyncio.run(controller._lifecycle_sweeps_once())
 
@@ -5258,7 +5629,8 @@ def test_lifecycle_sweeps_keep_l2_active_while_l1_live(tmp_path):
     assert compliance.expired_at is None
     assert compliance.deleted_at is None
     assert controller.state.local_copies['snap-1:worker-a'].local_state == (
-        SnapshotLocalCopyState.EVICTION_CANDIDATE)
+        SnapshotLocalCopyState.EVICTION_CANDIDATE
+    )
     loaded = asyncio.run(controller._persistence.load())
     assert loaded.snapshot_compliance == controller.state.snapshot_compliance
     assert loaded.local_copies == controller.state.local_copies
@@ -5277,16 +5649,16 @@ def test_compliance_sweep_expires_only_after_l1_evicted(tmp_path):
         dataplane_path='s3://bucket/snap-1',
     )
     controller.state.dataplane_backups['snap-1'] = backup
-    controller.state.snapshot_compliance['snap-1'] = (SnapshotComplianceRecord(
+    controller.state.snapshot_compliance['snap-1'] = SnapshotComplianceRecord(
         snapshot_id='snap-1',
         active_consumer_count=0,
         compliance_delete_at=past,
-    ))
-    controller.state.local_copies['snap-1:worker-a'] = (SnapshotLocalCopyRecord(
+    )
+    controller.state.local_copies['snap-1:worker-a'] = SnapshotLocalCopyRecord(
         snapshot_id='snap-1',
         pool_worker_uid='worker-a',
         local_state=SnapshotLocalCopyState.EVICTED,
-    ))
+    )
 
     asyncio.run(controller._lifecycle_sweeps_once())
 
@@ -5311,12 +5683,12 @@ def test_compliance_sweep_deletes_dataplane_backup_when_l1_clear(tmp_path):
         dataplane_path='s3://bucket/snap-1',
     )
     controller.state.dataplane_backups['snap-1'] = backup
-    controller.state.snapshot_compliance['snap-1'] = (SnapshotComplianceRecord(
+    controller.state.snapshot_compliance['snap-1'] = SnapshotComplianceRecord(
         snapshot_id='snap-1',
         active_consumer_count=0,
         compliance_delete_at=past,
         expired_at=past,
-    ))
+    )
 
     asyncio.run(controller._lifecycle_sweeps_once())
 
@@ -5336,12 +5708,12 @@ def test_compliance_sweep_keeps_expired_when_dataplane_delete_fails(tmp_path):
         snapshot_id='snap-1',
         dataplane_path='s3://bucket/snap-1',
     )
-    controller.state.snapshot_compliance['snap-1'] = (SnapshotComplianceRecord(
+    controller.state.snapshot_compliance['snap-1'] = SnapshotComplianceRecord(
         snapshot_id='snap-1',
         active_consumer_count=0,
         compliance_delete_at=past,
         expired_at=past,
-    ))
+    )
 
     asyncio.run(controller._lifecycle_sweeps_once())
 
@@ -5360,8 +5732,8 @@ def test_local_retention_sweep_dispatches_daemon_delete_on_force(tmp_path):
         assert not controller._state_lock.locked()
         assert controller._warm_location_uid(snapshot_id) is None
         assert controller.state.local_copies[
-            f'{snapshot_id}:{pool_worker_uid}'].local_state == (
-                SnapshotLocalCopyState.EVICTING)
+            f'{snapshot_id}:{pool_worker_uid}'
+        ].local_state == (SnapshotLocalCopyState.EVICTING)
         deleted.append((snapshot_id, pool_worker_uid))
         return True
 
@@ -5376,12 +5748,12 @@ def test_local_retention_sweep_dispatches_daemon_delete_on_force(tmp_path):
         worker='worker-a',
         state=SnapshotState.READY,
     )
-    controller.state.local_copies['snap-1:worker-a'] = (SnapshotLocalCopyRecord(
+    controller.state.local_copies['snap-1:worker-a'] = SnapshotLocalCopyRecord(
         snapshot_id='snap-1',
         pool_worker_uid='worker-a',
         local_state=SnapshotLocalCopyState.EVICTION_CANDIDATE,
         force_evict_at=past,
-    ))
+    )
 
     asyncio.run(controller._lifecycle_sweeps_once())
 
@@ -5392,8 +5764,7 @@ def test_local_retention_sweep_dispatches_daemon_delete_on_force(tmp_path):
     assert local.evicted_at is not None
 
 
-def test_local_retention_sweep_does_not_delete_candidate_without_pressure(
-        tmp_path):
+def test_local_retention_sweep_does_not_delete_candidate_without_pressure(tmp_path):
     deleted: list[tuple[str, str]] = []
 
     async def delete_local(snapshot_id: str, pool_worker_uid: str) -> bool:
@@ -5405,17 +5776,18 @@ def test_local_retention_sweep_does_not_delete_candidate_without_pressure(
         snapshot_id='snap-1',
         dataplane_path='s3://bucket/snap-1',
     )
-    controller.state.local_copies['snap-1:worker-a'] = (SnapshotLocalCopyRecord(
+    controller.state.local_copies['snap-1:worker-a'] = SnapshotLocalCopyRecord(
         snapshot_id='snap-1',
         pool_worker_uid='worker-a',
         local_state=SnapshotLocalCopyState.EVICTION_CANDIDATE,
-    ))
+    )
 
     asyncio.run(controller._lifecycle_sweeps_once())
 
     assert deleted == []
     assert controller.state.local_copies['snap-1:worker-a'].local_state == (
-        SnapshotLocalCopyState.EVICTION_CANDIDATE)
+        SnapshotLocalCopyState.EVICTION_CANDIDATE
+    )
 
 
 def test_local_retention_sweep_reactive_trigger_deletes_candidate(tmp_path):
@@ -5430,23 +5802,24 @@ def test_local_retention_sweep_reactive_trigger_deletes_candidate(tmp_path):
         snapshot_id='snap-1',
         dataplane_path='s3://bucket/snap-1',
     )
-    controller.state.local_copies['snap-1:worker-a'] = (SnapshotLocalCopyRecord(
+    controller.state.local_copies['snap-1:worker-a'] = SnapshotLocalCopyRecord(
         snapshot_id='snap-1',
         pool_worker_uid='worker-a',
         local_state=SnapshotLocalCopyState.EVICTION_CANDIDATE,
-    ))
+    )
 
     controller._request_reactive_eviction()
     asyncio.run(controller._lifecycle_sweeps_once())
 
     assert deleted == [('snap-1', 'worker-a')]
-    assert controller.state.local_copies[
-        'snap-1:worker-a'].local_state == SnapshotLocalCopyState.EVICTED
+    assert (
+        controller.state.local_copies['snap-1:worker-a'].local_state
+        == SnapshotLocalCopyState.EVICTED
+    )
     assert controller._reactive_eviction_requested_at is None
 
 
-def test_local_retention_sweep_expired_reactive_trigger_does_not_delete(
-        tmp_path):
+def test_local_retention_sweep_expired_reactive_trigger_does_not_delete(tmp_path):
     deleted: list[tuple[str, str]] = []
 
     async def delete_local(snapshot_id: str, pool_worker_uid: str) -> bool:
@@ -5458,19 +5831,21 @@ def test_local_retention_sweep_expired_reactive_trigger_does_not_delete(
         snapshot_id='snap-1',
         dataplane_path='s3://bucket/snap-1',
     )
-    controller.state.local_copies['snap-1:worker-a'] = (SnapshotLocalCopyRecord(
+    controller.state.local_copies['snap-1:worker-a'] = SnapshotLocalCopyRecord(
         snapshot_id='snap-1',
         pool_worker_uid='worker-a',
         local_state=SnapshotLocalCopyState.EVICTION_CANDIDATE,
-    ))
+    )
     controller._reactive_eviction_requested_at = (
-        time.time() - REACTIVE_EVICTION_WINDOW_SECS - 1)
+        time.time() - REACTIVE_EVICTION_WINDOW_SECS - 1
+    )
 
     asyncio.run(controller._lifecycle_sweeps_once())
 
     assert deleted == []
     assert controller.state.local_copies['snap-1:worker-a'].local_state == (
-        SnapshotLocalCopyState.EVICTION_CANDIDATE)
+        SnapshotLocalCopyState.EVICTION_CANDIDATE
+    )
     assert controller._reactive_eviction_requested_at is None
 
 
@@ -5487,18 +5862,19 @@ def test_local_retention_sweep_reactive_trigger_respects_active_lease(tmp_path):
         dataplane_path='s3://bucket/snap-1',
     )
     _open_snapshot(controller)
-    controller.state.local_copies['snap-1:worker-a'] = (SnapshotLocalCopyRecord(
+    controller.state.local_copies['snap-1:worker-a'] = SnapshotLocalCopyRecord(
         snapshot_id='snap-1',
         pool_worker_uid='worker-a',
         local_state=SnapshotLocalCopyState.EVICTION_CANDIDATE,
-    ))
+    )
 
     controller._request_reactive_eviction()
     asyncio.run(controller._lifecycle_sweeps_once())
 
     assert deleted == []
     assert controller.state.local_copies['snap-1:worker-a'].local_state == (
-        SnapshotLocalCopyState.EVICTION_CANDIDATE)
+        SnapshotLocalCopyState.EVICTION_CANDIDATE
+    )
     assert controller._reactive_eviction_requested_at is None
 
 
@@ -5521,22 +5897,23 @@ def test_local_retention_sweep_keeps_barrier_on_daemon_delete_failure(tmp_path):
         dataplane_path='s3://bucket/snap-1',
     )
     controller.state.snapshots['snap-1'] = SnapshotPlacement(
-        worker='worker-a', state=SnapshotState.READY)
-    controller.state.local_copies['snap-1:worker-a'] = (SnapshotLocalCopyRecord(
+        worker='worker-a', state=SnapshotState.READY
+    )
+    controller.state.local_copies['snap-1:worker-a'] = SnapshotLocalCopyRecord(
         snapshot_id='snap-1',
         pool_worker_uid='worker-a',
         local_state=SnapshotLocalCopyState.EVICTION_CANDIDATE,
         force_evict_at=past,
-    ))
+    )
 
     asyncio.run(controller._lifecycle_sweeps_once())
 
     assert attempts == [('snap-1', 'worker-a')]
     assert controller.state.local_copies['snap-1:worker-a'].local_state == (
-        SnapshotLocalCopyState.EVICTING)
+        SnapshotLocalCopyState.EVICTING
+    )
     with pytest.raises(SnapshotEvictionInProgressError):
-        asyncio.run(
-            controller.place_snapshot.coroutine(_request(job_id='job-2')))
+        asyncio.run(controller.place_snapshot.coroutine(_request(job_id='job-2')))
     assert strategy.route_calls == []
 
 
@@ -5559,16 +5936,17 @@ def test_placement_waits_for_inflight_eviction_then_retries_cold(tmp_path):
         )
         past = now_utc() - timedelta(seconds=1)
         controller.state.dataplane_backups['snap-1'] = DataplaneBackup(
-            snapshot_id='snap-1', dataplane_path='s3://bucket/snap-1')
+            snapshot_id='snap-1', dataplane_path='s3://bucket/snap-1'
+        )
         controller.state.snapshots['snap-1'] = SnapshotPlacement(
-            worker='worker-a', state=SnapshotState.READY)
-        controller.state.local_copies['snap-1:worker-a'] = (
-            SnapshotLocalCopyRecord(
-                snapshot_id='snap-1',
-                pool_worker_uid='worker-a',
-                local_state=SnapshotLocalCopyState.EVICTION_CANDIDATE,
-                force_evict_at=past,
-            ))
+            worker='worker-a', state=SnapshotState.READY
+        )
+        controller.state.local_copies['snap-1:worker-a'] = SnapshotLocalCopyRecord(
+            snapshot_id='snap-1',
+            pool_worker_uid='worker-a',
+            local_state=SnapshotLocalCopyState.EVICTION_CANDIDATE,
+            force_evict_at=past,
+        )
 
         sweep = asyncio.create_task(controller._lifecycle_sweeps_once())
         await delete_started.wait()
@@ -5580,10 +5958,11 @@ def test_placement_waits_for_inflight_eviction_then_retries_cold(tmp_path):
         allow_delete.set()
         await sweep
 
-        assert controller.state.local_copies[
-            'snap-1:worker-a'].local_state == SnapshotLocalCopyState.EVICTED
-        result = await controller.place_snapshot.coroutine(
-            _request(job_id='job-2'))
+        assert (
+            controller.state.local_copies['snap-1:worker-a'].local_state
+            == SnapshotLocalCopyState.EVICTED
+        )
+        result = await controller.place_snapshot.coroutine(_request(job_id='job-2'))
         assert result.status == PlacementStatus.COLD
         assert len(strategy.route_calls) == 1
 
@@ -5602,17 +5981,19 @@ def test_local_retention_sweep_retries_persisted_evicting_state(tmp_path):
         snapshot_id='snap-1',
         dataplane_path='s3://bucket/snap-1',
     )
-    controller.state.local_copies['snap-1:worker-a'] = (SnapshotLocalCopyRecord(
+    controller.state.local_copies['snap-1:worker-a'] = SnapshotLocalCopyRecord(
         snapshot_id='snap-1',
         pool_worker_uid='worker-a',
         local_state=SnapshotLocalCopyState.EVICTING,
-    ))
+    )
 
     asyncio.run(controller._lifecycle_sweeps_once())
 
     assert deleted == [('snap-1', 'worker-a')]
-    assert controller.state.local_copies[
-        'snap-1:worker-a'].local_state == SnapshotLocalCopyState.EVICTED
+    assert (
+        controller.state.local_copies['snap-1:worker-a'].local_state
+        == SnapshotLocalCopyState.EVICTED
+    )
 
 
 def test_start_maintenance_loop_runs_periodic_tick(tmp_path):
@@ -5639,11 +6020,13 @@ def test_create_pool_controller_runs_startup_reconcile_before_return(tmp_path):
         deleted.append((snapshot_id, pool_worker_uid))
         return True
 
-    async def drive(
-    ) -> tuple[PoolController, MockPlacementStrategy, PlacementResult]:
-        strategy = MockPlacementStrategy(reconcile_delta=ReconcileDelta(
-            unexpected_uids={'leaked-worker'},
-            orphan_snapshots={'snap-orphan': 'worker-a'}))
+    async def drive() -> tuple[PoolController, MockPlacementStrategy, PlacementResult]:
+        strategy = MockPlacementStrategy(
+            reconcile_delta=ReconcileDelta(
+                unexpected_uids={'leaked-worker'},
+                orphan_snapshots={'snap-orphan': 'worker-a'},
+            )
+        )
 
         def factory(controller: PoolController) -> MockPlacementStrategy:
             context = PoolControllerPlacementContext(controller)
@@ -5654,7 +6037,8 @@ def test_create_pool_controller_runs_startup_reconcile_before_return(tmp_path):
 
         controller = await create_pool_controller(
             _CreateControllerConfig(  # type: ignore[arg-type]
-                str(tmp_path / 'pool_state.json')),
+                str(tmp_path / 'pool_state.json')
+            ),
             strategy_factory=factory,
             local_snapshot_deleter=delete_local,
             start_maintenance_loop=False,
@@ -5666,8 +6050,10 @@ def test_create_pool_controller_runs_startup_reconcile_before_return(tmp_path):
 
     assert controller._maintenance_task is None
     assert deleted == [('snap-orphan', 'worker-a')]
-    assert controller.state.local_copies[
-        'snap-orphan:worker-a'].local_state == SnapshotLocalCopyState.EVICTED
+    assert (
+        controller.state.local_copies['snap-orphan:worker-a'].local_state
+        == SnapshotLocalCopyState.EVICTED
+    )
     assert len(strategy.reconcile_calls) == 1
     assert strategy.delete_workers_calls == [['leaked-worker']]
     assert result.task_queue == 'diskgraph-activity-tq-job-1'
@@ -5709,7 +6095,8 @@ def test_configured_lifecycle_policy_clamps_implicit_min_to_max(tmp_path):
         _CreateControllerConfig(  # type: ignore[arg-type]
             str(tmp_path / 'pool_state.json'),
             data_compute=DiskgraphConfig(pool_max_ssd_idle_secs=3600),
-        ))
+        )
+    )
 
     assert policy.min_ssd_idle_secs == 3600
     assert policy.max_ssd_idle_secs == 3600
@@ -5727,8 +6114,7 @@ def test_k8s_pool_storage_class_uses_env_override(monkeypatch):
     assert _k8s_pool_storage_class() == 'custom-local-ssd'
 
 
-def test_pool_worker_service_account_preserves_non_chart_inheritance(
-        monkeypatch):
+def test_pool_worker_service_account_preserves_non_chart_inheritance(monkeypatch):
     monkeypatch.delenv('POOL_WORKER_SERVICE_ACCOUNT', raising=False)
 
     assert _configured_pool_worker_service_account() is None
@@ -5748,21 +6134,25 @@ def test_pool_worker_fs_group_supports_platform_assignment(monkeypatch):
 
 def test_configured_manager_uses_worker_service_account(monkeypatch):
     manager_type = Mock()
-    monkeypatch.setattr('pool.worker_manager.K8sPoolWorkerManager',
-                        manager_type)
+    monkeypatch.setattr('pool.worker_manager.K8sPoolWorkerManager', manager_type)
     monkeypatch.setenv('POOL_WORKER_SERVICE_ACCOUNT', 'kumo-worker')
-    monkeypatch.setenv('POOL_WORKER_GCP_APPLICATION_CREDENTIALS_SECRET',
-                       ' gcp-application-credentials ')
-    monkeypatch.setenv('GOOGLE_APPLICATION_CREDENTIALS',
-                       ' /customer/adc/runtime-key.json ')
-    monkeypatch.setenv('POOL_WORKER_GCP_APPLICATION_CREDENTIALS_KEY',
-                       ' credentials.json ')
+    monkeypatch.setenv(
+        'POOL_WORKER_GCP_APPLICATION_CREDENTIALS_SECRET',
+        ' gcp-application-credentials ',
+    )
+    monkeypatch.setenv(
+        'GOOGLE_APPLICATION_CREDENTIALS', ' /customer/adc/runtime-key.json '
+    )
+    monkeypatch.setenv(
+        'POOL_WORKER_GCP_APPLICATION_CREDENTIALS_KEY', ' credentials.json '
+    )
     diskgraph = DiskgraphConfig(
         pool_strategy='k8s',
         k8s_pool=K8sPoolStrategyConfig(
             pool_diskgraph_node_types={
                 'test-node': DiskgraphNodeType(ssd_gib=256, gpu_count=1),
-            }),
+            }
+        ),
     )
     config = DeployEnvConfig(
         deploy_mode=DeployStage.DEV,
@@ -5775,12 +6165,18 @@ def test_configured_manager_uses_worker_service_account(monkeypatch):
     assert manager is manager_type.return_value
     assert manager_type.call_args.kwargs['service_account'] == 'kumo-worker'
     assert manager_type.call_args.kwargs['runtime_fs_group'] == 999
-    assert manager_type.call_args.kwargs[
-        'gcp_application_credentials_secret'] == 'gcp-application-credentials'
-    assert manager_type.call_args.kwargs[
-        'gcp_application_credentials_secret_key'] == 'credentials.json'
-    assert manager_type.call_args.kwargs[
-        'gcp_application_credentials_path'] == '/customer/adc/runtime-key.json'
+    assert (
+        manager_type.call_args.kwargs['gcp_application_credentials_secret']
+        == 'gcp-application-credentials'
+    )
+    assert (
+        manager_type.call_args.kwargs['gcp_application_credentials_secret_key']
+        == 'credentials.json'
+    )
+    assert (
+        manager_type.call_args.kwargs['gcp_application_credentials_path']
+        == '/customer/adc/runtime-key.json'
+    )
 
 
 def test_create_pool_controller_tolerates_startup_reconcile_failure(tmp_path):
@@ -5788,13 +6184,13 @@ def test_create_pool_controller_tolerates_startup_reconcile_failure(tmp_path):
         del snapshot_id, pool_worker_uid
         return True
 
-    async def drive(
-    ) -> tuple[PoolController, MockPlacementStrategy, PlacementResult]:
+    async def drive() -> tuple[PoolController, MockPlacementStrategy, PlacementResult]:
         strategy = MockPlacementStrategy(fail_reconcile=True)
 
         controller = await create_pool_controller(
             _CreateControllerConfig(  # type: ignore[arg-type]
-                str(tmp_path / 'pool_state.json')),
+                str(tmp_path / 'pool_state.json')
+            ),
             strategy_factory=lambda _: strategy,
             local_snapshot_deleter=delete_local,
             start_maintenance_loop=False,
@@ -5839,13 +6235,14 @@ def test_get_pool_stats_defaults_to_aggregate_only(tmp_path):
 def test_get_pool_stats_does_not_mutate_worker_health(tmp_path):
     controller = _make_controller(tmp_path)
     asyncio.run(
-        controller.report_status.coroutine(
-            _report(pool_worker_uid='worker-ready')))
+        controller.report_status.coroutine(_report(pool_worker_uid='worker-ready'))
+    )
     asyncio.run(
-        controller.report_status.coroutine(
-            _report(pool_worker_uid='worker-dead')))
+        controller.report_status.coroutine(_report(pool_worker_uid='worker-dead'))
+    )
     controller.worker_inventory['worker-dead'].last_heartbeat = (
-        time.time() - WORKER_DEAD_THRESHOLD_SECS)
+        time.time() - WORKER_DEAD_THRESHOLD_SECS
+    )
 
     stats = asyncio.run(controller.get_pool_stats.coroutine())
 
@@ -5855,8 +6252,7 @@ def test_get_pool_stats_does_not_mutate_worker_health(tmp_path):
         WorkerStatus.READY,
         WorkerStatus.READY,
     ]
-    assert controller.worker_inventory[
-        'worker-dead'].status == WorkerStatus.READY
+    assert controller.worker_inventory['worker-dead'].status == WorkerStatus.READY
 
 
 def test_get_pool_stats_counts_active_leases(tmp_path):
@@ -5880,20 +6276,20 @@ def test_get_pool_stats_returns_snapshot_debug_when_requested(tmp_path):
         state=SnapshotState.READY,
         size_bytes=2048,
     )
-    controller.state.local_copies['snap-1:worker-a'] = (SnapshotLocalCopyRecord(
+    controller.state.local_copies['snap-1:worker-a'] = SnapshotLocalCopyRecord(
         snapshot_id='snap-1',
         pool_worker_uid='worker-a',
         local_state=SnapshotLocalCopyState.WARM,
         size_bytes=2048,
-    ))
-    controller.state.snapshot_compliance['snap-1'] = (SnapshotComplianceRecord(
+    )
+    controller.state.snapshot_compliance['snap-1'] = SnapshotComplianceRecord(
         snapshot_id='snap-1',
         active_consumer_count=1,
-    ))
+    )
 
     stats = asyncio.run(
-        controller.get_pool_stats.coroutine(
-            PoolStatsFilter(include_snapshots=True)))
+        controller.get_pool_stats.coroutine(PoolStatsFilter(include_snapshots=True))
+    )
 
     assert stats.snapshots == [
         SnapshotPlacement(
@@ -5922,9 +6318,11 @@ def test_get_pool_stats_filters_by_pool_worker_uid(tmp_path):
     strategy = MockPlacementStrategy()
     controller = _make_controller(tmp_path, strategy=strategy)
     controller.state.snapshots['snap-on-a'] = SnapshotPlacement(
-        worker='worker-a', state=SnapshotState.READY)
+        worker='worker-a', state=SnapshotState.READY
+    )
     controller.state.snapshots['snap-on-b'] = SnapshotPlacement(
-        worker='worker-b', state=SnapshotState.READY)
+        worker='worker-b', state=SnapshotState.READY
+    )
     controller.state.dataplane_backups['snap-on-a'] = DataplaneBackup(
         snapshot_id='snap-on-a',
         dataplane_path='s3://bucket/snap-on-a',
@@ -5935,10 +6333,14 @@ def test_get_pool_stats_filters_by_pool_worker_uid(tmp_path):
     )
     asyncio.run(
         controller.report_status.coroutine(
-            _report(pool_worker_uid='worker-a', ready_snapshots=[])))
+            _report(pool_worker_uid='worker-a', ready_snapshots=[])
+        )
+    )
     asyncio.run(
         controller.report_status.coroutine(
-            _report(pool_worker_uid='worker-b', ready_snapshots=[])))
+            _report(pool_worker_uid='worker-b', ready_snapshots=[])
+        )
+    )
     asyncio.run(controller.place_snapshot.coroutine(_request()))
 
     stats = asyncio.run(
@@ -5948,7 +6350,9 @@ def test_get_pool_stats_filters_by_pool_worker_uid(tmp_path):
                 include_snapshots=True,
                 include_leases=True,
                 include_placements=True,
-            )))
+            )
+        )
+    )
 
     assert stats.num_nodes == 1
     assert stats.num_snapshots == 1
@@ -5978,27 +6382,31 @@ def test_get_pool_stats_filters_by_pool_worker_uid(tmp_path):
 
 def test_get_pool_stats_filter_scopes_local_copy_debug_rows(tmp_path):
     controller = _make_controller(tmp_path)
-    controller.state.local_copies['snap-a:worker-a'] = (SnapshotLocalCopyRecord(
+    controller.state.local_copies['snap-a:worker-a'] = SnapshotLocalCopyRecord(
         snapshot_id='snap-a',
         pool_worker_uid='worker-a',
         local_state=SnapshotLocalCopyState.WARM,
-    ))
-    controller.state.local_copies['snap-b:worker-b'] = (SnapshotLocalCopyRecord(
+    )
+    controller.state.local_copies['snap-b:worker-b'] = SnapshotLocalCopyRecord(
         snapshot_id='snap-b',
         pool_worker_uid='worker-b',
         local_state=SnapshotLocalCopyState.EVICTION_CANDIDATE,
-    ))
-    controller.state.snapshot_compliance['snap-a'] = (SnapshotComplianceRecord(
-        snapshot_id='snap-a'))
-    controller.state.snapshot_compliance['snap-b'] = (SnapshotComplianceRecord(
-        snapshot_id='snap-b'))
+    )
+    controller.state.snapshot_compliance['snap-a'] = SnapshotComplianceRecord(
+        snapshot_id='snap-a'
+    )
+    controller.state.snapshot_compliance['snap-b'] = SnapshotComplianceRecord(
+        snapshot_id='snap-b'
+    )
 
     stats = asyncio.run(
         controller.get_pool_stats.coroutine(
             PoolStatsFilter(
                 pool_worker_uids=['worker-b'],
                 include_snapshots=True,
-            )))
+            )
+        )
+    )
 
     assert stats.snapshots == []
     assert stats.local_copies == [
@@ -6008,9 +6416,7 @@ def test_get_pool_stats_filter_scopes_local_copy_debug_rows(tmp_path):
             local_state=SnapshotLocalCopyState.EVICTION_CANDIDATE,
         )
     ]
-    assert stats.snapshot_compliance == [
-        SnapshotComplianceRecord(snapshot_id='snap-b')
-    ]
+    assert stats.snapshot_compliance == [SnapshotComplianceRecord(snapshot_id='snap-b')]
 
 
 def test_report_status_does_not_persist_worker_inventory(tmp_path):
@@ -6019,6 +6425,7 @@ def test_report_status_does_not_persist_worker_inventory(tmp_path):
     stays empty after a report_status.
     """
     import os
+
     controller = _make_controller(tmp_path)
     asyncio.run(controller.report_status.coroutine(_report(ready_snapshots=[])))
     assert not os.path.exists(str(tmp_path / 'pool_state.json'))
@@ -6032,7 +6439,8 @@ def test_mutate_and_persist_helper(tmp_path):
 
     def mutate(state: PoolState) -> None:
         state.dataplane_backups['snap-1'] = DataplaneBackup(
-            snapshot_id='snap-1', dataplane_path='s3://b/snap-1')
+            snapshot_id='snap-1', dataplane_path='s3://b/snap-1'
+        )
 
     asyncio.run(controller._mutate_and_persist('snap-1', mutate))
     assert 'snap-1' in controller.state.dataplane_backups
@@ -6043,34 +6451,33 @@ def test_mutate_and_persist_helper(tmp_path):
 
 def _gc_controller(tmp_path, grace_secs=900):
     clock = _FakeClock()
-    controller = _make_controller(tmp_path, now_utc_fn=clock.now_utc,
-                                  time_fn=clock.time)
+    controller = _make_controller(
+        tmp_path, now_utc_fn=clock.now_utc, time_fn=clock.time
+    )
     controller._tombstone_gc_grace_secs = grace_secs
     return controller, clock
 
 
 def test_gc_prunes_evicted_local_copy_past_grace(tmp_path):
     controller, clock = _gc_controller(tmp_path, grace_secs=900)
-    controller.state.local_copies[
-        'snap-old:worker-a'] = SnapshotLocalCopyRecord(
-            snapshot_id='snap-old',
-            pool_worker_uid='worker-a',
-            local_state=SnapshotLocalCopyState.EVICTED,
-            evicted_at=clock.now_utc() - timedelta(seconds=901),
-        )
+    controller.state.local_copies['snap-old:worker-a'] = SnapshotLocalCopyRecord(
+        snapshot_id='snap-old',
+        pool_worker_uid='worker-a',
+        local_state=SnapshotLocalCopyState.EVICTED,
+        evicted_at=clock.now_utc() - timedelta(seconds=901),
+    )
     assert controller._gc_tombstone_records(clock.now_utc()) is True
     assert 'snap-old:worker-a' not in controller.state.local_copies
 
 
 def test_gc_retains_evicted_local_copy_within_grace(tmp_path):
     controller, clock = _gc_controller(tmp_path, grace_secs=900)
-    controller.state.local_copies['snap-recent:worker-a'] = (
-        SnapshotLocalCopyRecord(
-            snapshot_id='snap-recent',
-            pool_worker_uid='worker-a',
-            local_state=SnapshotLocalCopyState.EVICTED,
-            evicted_at=clock.now_utc() - timedelta(seconds=300),
-        ))
+    controller.state.local_copies['snap-recent:worker-a'] = SnapshotLocalCopyRecord(
+        snapshot_id='snap-recent',
+        pool_worker_uid='worker-a',
+        local_state=SnapshotLocalCopyState.EVICTED,
+        evicted_at=clock.now_utc() - timedelta(seconds=300),
+    )
     assert controller._gc_tombstone_records(clock.now_utc()) is False
     assert 'snap-recent:worker-a' in controller.state.local_copies
 
@@ -6078,12 +6485,11 @@ def test_gc_retains_evicted_local_copy_within_grace(tmp_path):
 def test_gc_retains_active_local_copy(tmp_path):
     controller, clock = _gc_controller(tmp_path, grace_secs=900)
     # WARM copy with no evicted_at is never a tombstone, regardless of age.
-    controller.state.local_copies[
-        'snap-warm:worker-a'] = SnapshotLocalCopyRecord(
-            snapshot_id='snap-warm',
-            pool_worker_uid='worker-a',
-            local_state=SnapshotLocalCopyState.WARM,
-        )
+    controller.state.local_copies['snap-warm:worker-a'] = SnapshotLocalCopyRecord(
+        snapshot_id='snap-warm',
+        pool_worker_uid='worker-a',
+        local_state=SnapshotLocalCopyState.WARM,
+    )
     assert controller._gc_tombstone_records(clock.now_utc()) is False
     assert 'snap-warm:worker-a' in controller.state.local_copies
 
@@ -6117,13 +6523,12 @@ def test_gc_retains_deleted_compliance_with_live_local_copy(tmp_path):
 
 def test_lifecycle_sweep_runs_tombstone_gc(tmp_path):
     controller, clock = _gc_controller(tmp_path, grace_secs=900)
-    controller.state.local_copies[
-        'snap-old:worker-a'] = SnapshotLocalCopyRecord(
-            snapshot_id='snap-old',
-            pool_worker_uid='worker-a',
-            local_state=SnapshotLocalCopyState.EVICTED,
-            evicted_at=clock.now_utc() - timedelta(seconds=901),
-        )
+    controller.state.local_copies['snap-old:worker-a'] = SnapshotLocalCopyRecord(
+        snapshot_id='snap-old',
+        pool_worker_uid='worker-a',
+        local_state=SnapshotLocalCopyState.EVICTED,
+        evicted_at=clock.now_utc() - timedelta(seconds=901),
+    )
     asyncio.run(controller._lifecycle_sweeps_once())
     assert 'snap-old:worker-a' not in controller.state.local_copies
 
@@ -6141,8 +6546,7 @@ def test_gc_backfills_evicted_local_copy_without_evicted_at(tmp_path):
 
     # First pass backfills evicted_at (does not delete yet).
     assert controller._gc_tombstone_records(clock.now_utc()) is True
-    assert (controller.state.local_copies['snap-legacy:w'].evicted_at ==
-            clock.now_utc())
+    assert controller.state.local_copies['snap-legacy:w'].evicted_at == clock.now_utc()
 
     # Once the grace window elapses from the backfilled stamp, it's GC'd.
     clock.advance(901)
@@ -6160,21 +6564,31 @@ def test_ssd_pressure_bonds_to_configured_max_utilization(tmp_path):
     # ssd_max_utilization=0.85 ⇒ a worker is "under pressure" once free drops
     # below 15% of physical total.
     controller = _make_controller(
-        tmp_path,
-        lifecycle_policy=SnapshotLifecyclePolicy(ssd_max_utilization=0.85))
+        tmp_path, lifecycle_policy=SnapshotLifecyclePolicy(ssd_max_utilization=0.85)
+    )
 
     # 20% free (> 15% floor) → not under pressure.
     asyncio.run(
         controller.report_status.coroutine(
-            _report(pool_worker_uid='worker-a', pvc_total_bytes=1_000_000,
-                    pvc_free_bytes=200_000)))
+            _report(
+                pool_worker_uid='worker-a',
+                pvc_total_bytes=1_000_000,
+                pvc_free_bytes=200_000,
+            )
+        )
+    )
     assert controller._worker_under_ssd_pressure('worker-a') is False
 
     # 12% free (< 15% floor) → under pressure. (Re-report overwrites inventory.)
     asyncio.run(
         controller.report_status.coroutine(
-            _report(pool_worker_uid='worker-a', pvc_total_bytes=1_000_000,
-                    pvc_free_bytes=120_000)))
+            _report(
+                pool_worker_uid='worker-a',
+                pvc_total_bytes=1_000_000,
+                pvc_free_bytes=120_000,
+            )
+        )
+    )
     assert controller._worker_under_ssd_pressure('worker-a') is True
 
 
@@ -6184,12 +6598,17 @@ def test_ssd_pressure_threshold_is_configurable(tmp_path):
     # (under the old hardcoded 10%-free constant this worker was never
     # under pressure regardless).
     controller = _make_controller(
-        tmp_path,
-        lifecycle_policy=SnapshotLifecyclePolicy(ssd_max_utilization=0.95))
+        tmp_path, lifecycle_policy=SnapshotLifecyclePolicy(ssd_max_utilization=0.95)
+    )
     asyncio.run(
         controller.report_status.coroutine(
-            _report(pool_worker_uid='worker-a', pvc_total_bytes=1_000_000,
-                    pvc_free_bytes=120_000)))
+            _report(
+                pool_worker_uid='worker-a',
+                pvc_total_bytes=1_000_000,
+                pvc_free_bytes=120_000,
+            )
+        )
+    )
     assert controller._worker_under_ssd_pressure('worker-a') is False
 
 
@@ -6197,8 +6616,9 @@ def test_ssd_max_utilization_out_of_range_rejected(tmp_path):
     for bad in (0.0, -0.1, 1.5):
         with pytest.raises(ValueError, match='ssd_max_utilization'):
             _make_controller(
-                tmp_path, lifecycle_policy=SnapshotLifecyclePolicy(
-                    ssd_max_utilization=bad))
+                tmp_path,
+                lifecycle_policy=SnapshotLifecyclePolicy(ssd_max_utilization=bad),
+            )
 
 
 def test_reject_if_exceeds_disk_capacity_noop_when_capacity_unknown(tmp_path):
@@ -6212,7 +6632,9 @@ def test_reject_if_exceeds_disk_capacity_boundary(tmp_path):
     controller = _make_controller(tmp_path)
     asyncio.run(
         controller.report_status.coroutine(
-            _report(pool_worker_uid='worker-a', pvc_total_bytes=3_000_000)))
+            _report(pool_worker_uid='worker-a', pvc_total_bytes=3_000_000)
+        )
+    )
     # A 2,000,000-byte source needs exactly 3,000,000 bytes at the 1.5x floor.
     controller._reject_if_exceeds_disk_capacity(2_000_000)  # == limit: ok
     with pytest.raises(DiskgraphError, match='streaming DiskGraph ingest'):
@@ -6224,11 +6646,12 @@ def test_place_snapshot_fails_fast_when_estimate_exceeds_disk(tmp_path):
     # ensure_diskgraph_space, so the disk-capacity guard must fire here, before
     # routing/ingest. The guard is single-host only (k8s has its own ceiling),
     # so this uses the singlehost strategy.
-    controller = _make_controller(tmp_path,
-                                  strategy=SinglehostPlacementStrategy())
+    controller = _make_controller(tmp_path, strategy=SinglehostPlacementStrategy())
     asyncio.run(
         controller.report_status.coroutine(
-            _report(pool_worker_uid='worker-a', pvc_total_bytes=3_000_000)))
+            _report(pool_worker_uid='worker-a', pvc_total_bytes=3_000_000)
+        )
+    )
     # A source just over 2,000,000 bytes needs more than the host's 3,000,000
     # bytes at the 1.5x streaming floor.
     req = replace(
@@ -6239,8 +6662,7 @@ def test_place_snapshot_fails_fast_when_estimate_exceeds_disk(tmp_path):
         asyncio.run(controller.place_snapshot.coroutine(req))
 
 
-def test_place_snapshot_reuses_ready_snapshot_despite_oversized_estimate(
-        tmp_path):
+def test_place_snapshot_reuses_ready_snapshot_despite_oversized_estimate(tmp_path):
     # A READY snapshot already sits on the singlehost disk (WARM reuse — no
     # new disk or dataplane demand), so capacity admission must not reject it.
     # Matches the PlacementRequest contract: WARM/COLD
@@ -6259,7 +6681,9 @@ def test_place_snapshot_reuses_ready_snapshot_despite_oversized_estimate(
                 dataplane_total_bytes=10_000,
                 dataplane_used_bytes=10_000,
                 dataplane_same_filesystem_as_ssd=False,
-            )))
+            )
+        )
+    )
     controller.state.snapshots['snap-warm'] = SnapshotPlacement(
         worker=SINGLEHOST_WORKER_UID,
         state=SnapshotState.READY,
@@ -6270,7 +6694,8 @@ def test_place_snapshot_reuses_ready_snapshot_despite_oversized_estimate(
             snapshot_id='snap-warm',
             pool_worker_uid=SINGLEHOST_WORKER_UID,
             local_state=SnapshotLocalCopyState.WARM,
-        ))
+        )
+    )
     # Same over-limit numbers as above: estimate 1_200_000 > limit 1_000_000.
     req = replace(
         _request(snapshot_id='snap-warm', job_id='job-new'),
@@ -6284,7 +6709,8 @@ def test_place_snapshot_reuses_ready_snapshot_despite_oversized_estimate(
 
 
 def test_place_snapshot_restores_cold_snapshot_despite_oversized_estimate(
-        tmp_path, monkeypatch):
+    tmp_path, monkeypatch
+):
     # COLD: the local copy was evicted (placement record removed) but an L2
     # backup exists. Restore demand is the snapshot's actual size — it fit
     # before — so fresh-ingest disk and dataplane admission must not reject it.
@@ -6312,10 +6738,12 @@ def test_place_snapshot_restores_cold_snapshot_despite_oversized_estimate(
                 dataplane_total_bytes=10_000,
                 dataplane_used_bytes=10_000,
                 dataplane_same_filesystem_as_ssd=False,
-            )))
+            )
+        )
+    )
     controller.state.dataplane_backups['snap-cold'] = DataplaneBackup(
-        snapshot_id='snap-cold', dataplane_path='s3://b/snap-cold',
-        size_bytes=4096)
+        snapshot_id='snap-cold', dataplane_path='s3://b/snap-cold', size_bytes=4096
+    )
     req = replace(
         _request(snapshot_id='snap-cold', job_id='job-cold'),
         source_size_bytes=300_000,
@@ -6328,16 +6756,19 @@ def test_place_snapshot_restores_cold_snapshot_despite_oversized_estimate(
     assert controller.state.snapshots['snap-cold'].size_bytes == 4096
 
 
-def test_place_snapshot_fails_fast_when_placement_exists_but_not_ready(
-        tmp_path):
+def test_place_snapshot_fails_fast_when_placement_exists_but_not_ready(tmp_path):
     # A prior placement that never reached READY is still a fresh ingest and
     # remains subject to the fixed host's 1.5x minimum.
-    controller = _make_controller(tmp_path,
-                                  strategy=SinglehostPlacementStrategy())
+    controller = _make_controller(tmp_path, strategy=SinglehostPlacementStrategy())
     asyncio.run(
         controller.report_status.coroutine(
-            _report(pool_worker_uid=SINGLEHOST_WORKER_UID,
-                    pvc_total_bytes=3_000_000, ready_snapshots=[])))
+            _report(
+                pool_worker_uid=SINGLEHOST_WORKER_UID,
+                pvc_total_bytes=3_000_000,
+                ready_snapshots=[],
+            )
+        )
+    )
     controller.state.snapshots['snap-retry'] = SnapshotPlacement(
         worker=SINGLEHOST_WORKER_UID,
         state=SnapshotState.INGESTING,
@@ -6351,8 +6782,7 @@ def test_place_snapshot_fails_fast_when_placement_exists_but_not_ready(
         asyncio.run(controller.place_snapshot.coroutine(req))
 
 
-def test_local_dataplane_admission_rejects_missing_snapshot_before_provision(
-        tmp_path):
+def test_local_dataplane_admission_rejects_missing_snapshot_before_provision(tmp_path):
     controller = _make_controller(
         tmp_path,
         strategy=SinglehostPlacementStrategy(),
@@ -6366,7 +6796,9 @@ def test_local_dataplane_admission_rejects_missing_snapshot_before_provision(
                 dataplane_total_bytes=10_000,
                 dataplane_used_bytes=9_701,
                 dataplane_same_filesystem_as_ssd=False,
-            )))
+            )
+        )
+    )
     # 100 source bytes * default 4x = 400 bytes.
     request = replace(
         _request(snapshot_id='snap-dataplane-full', job_id='job-dataplane'),
@@ -6376,8 +6808,7 @@ def test_local_dataplane_admission_rejects_missing_snapshot_before_provision(
     with pytest.raises(DiskgraphError) as exc_info:
         asyncio.run(controller.place_snapshot.coroutine(request))
 
-    assert type(
-        exc_info.value).__name__ == ('InsufficientDataplaneCapacityError')
+    assert type(exc_info.value).__name__ == ('InsufficientDataplaneCapacityError')
     assert exc_info.value.non_retryable is True
     assert '/local/dataplane' in str(exc_info.value)
     assert '400 bytes' in str(exc_info.value)
@@ -6385,8 +6816,7 @@ def test_local_dataplane_admission_rejects_missing_snapshot_before_provision(
     assert 'snap-dataplane-full' not in controller.state.snapshots
 
 
-def test_local_dataplane_admission_counts_active_missing_snapshots_once(
-        tmp_path):
+def test_local_dataplane_admission_counts_active_missing_snapshots_once(tmp_path):
     strategy = MockPlacementStrategy()
     controller = _make_controller(
         tmp_path,
@@ -6401,7 +6831,9 @@ def test_local_dataplane_admission_counts_active_missing_snapshots_once(
                 dataplane_total_bytes=10_000,
                 dataplane_used_bytes=9_201,
                 dataplane_same_filesystem_as_ssd=False,
-            )))
+            )
+        )
+    )
 
     first = replace(
         _request(snapshot_id='snap-first', job_id='job-first'),
@@ -6417,13 +6849,13 @@ def test_local_dataplane_admission_counts_active_missing_snapshots_once(
 
     with pytest.raises(DiskgraphError) as exc_info:
         asyncio.run(controller.place_snapshot.coroutine(second))
-    assert type(
-        exc_info.value).__name__ == ('InsufficientDataplaneCapacityError')
+    assert type(exc_info.value).__name__ == ('InsufficientDataplaneCapacityError')
     assert len(strategy.provision_calls) == 1
 
     controller.state.snapshots['snap-first'].leases.clear()
     controller.state.snapshots['snap-other-worker'] = SnapshotPlacement(
-        worker='worker-b', leases=['job-other'], size_bytes=10_000)
+        worker='worker-b', leases=['job-other'], size_bytes=10_000
+    )
     result = asyncio.run(controller.place_snapshot.coroutine(second))
     assert result.status == PlacementStatus.MISSING
     assert len(strategy.provision_calls) == 2
@@ -6434,12 +6866,16 @@ class _ReplacementWorkerStrategy(MockPlacementStrategy):
         super().__init__()
         self.route_estimate_bytes = route_estimate_bytes
 
-    async def route(self, request: PlacementRequest,
-                    warm_location_uid: Optional[str],
-                    snapshot_size_estimate_bytes: int = 0, *,
-                    home_worker_uid: Optional[str] = None,
-                    home_gpu_in_use: int = 0,
-                    overflow_viable: bool = False) -> RouteDecision:
+    async def route(
+        self,
+        request: PlacementRequest,
+        warm_location_uid: Optional[str],
+        snapshot_size_estimate_bytes: int = 0,
+        *,
+        home_worker_uid: Optional[str] = None,
+        home_gpu_in_use: int = 0,
+        overflow_viable: bool = False,
+    ) -> RouteDecision:
         del snapshot_size_estimate_bytes, home_gpu_in_use, overflow_viable
         self.route_calls.append((request, warm_location_uid))
         self.route_home_calls.append((home_worker_uid, 0, False))
@@ -6453,15 +6889,17 @@ class _ReplacementWorkerStrategy(MockPlacementStrategy):
 
 
 async def _cross_worker_reroute_controller(
-        tmp_path, strategy: MockPlacementStrategy,
-        replacement_used_bytes: int) -> PoolController:
+    tmp_path, strategy: MockPlacementStrategy, replacement_used_bytes: int
+) -> PoolController:
     controller = _make_controller(
         tmp_path,
         strategy=strategy,
         data_plane_storage_root='/local/dataplane',
     )
-    for worker, used_bytes in (('worker-a', 9_000), ('worker-b',
-                                                     replacement_used_bytes)):
+    for worker, used_bytes in (
+        ('worker-a', 9_000),
+        ('worker-b', replacement_used_bytes),
+    ):
         await controller.report_status.coroutine(
             _report(
                 pool_worker_uid=worker,
@@ -6469,7 +6907,8 @@ async def _cross_worker_reroute_controller(
                 dataplane_total_bytes=10_000,
                 dataplane_used_bytes=used_bytes,
                 dataplane_same_filesystem_as_ssd=False,
-            ))
+            )
+        )
     controller.worker_inventory['worker-a'].status = WorkerStatus.DEAD
     controller.state.snapshots['snap-reroute'] = SnapshotPlacement(
         worker='worker-a',
@@ -6482,7 +6921,8 @@ async def _cross_worker_reroute_controller(
 def test_local_dataplane_admission_checks_leased_cross_worker_reroute(tmp_path):
     strategy = _ReplacementWorkerStrategy()
     controller = asyncio.run(
-        _cross_worker_reroute_controller(tmp_path, strategy, 9_601))
+        _cross_worker_reroute_controller(tmp_path, strategy, 9_601)
+    )
 
     request = replace(
         _request(snapshot_id='snap-reroute', job_id='job-new'),
@@ -6492,8 +6932,7 @@ def test_local_dataplane_admission_checks_leased_cross_worker_reroute(tmp_path):
     with pytest.raises(DiskgraphError) as exc_info:
         asyncio.run(controller.place_snapshot.coroutine(request))
 
-    assert type(
-        exc_info.value).__name__ == ('InsufficientDataplaneCapacityError')
+    assert type(exc_info.value).__name__ == ('InsufficientDataplaneCapacityError')
     assert strategy.route_home_calls == [('worker-a', 0, False)]
     assert strategy.provision_calls == []
 
@@ -6513,7 +6952,9 @@ def test_local_dataplane_admission_checks_larger_same_worker_retry(tmp_path):
                 dataplane_total_bytes=10_000,
                 dataplane_used_bytes=9_551,
                 dataplane_same_filesystem_as_ssd=False,
-            )))
+            )
+        )
+    )
     controller.state.snapshots['snap-retry'] = SnapshotPlacement(
         worker='worker-a',
         leases=['job-retry'],
@@ -6528,23 +6969,24 @@ def test_local_dataplane_admission_checks_larger_same_worker_retry(tmp_path):
     with pytest.raises(DiskgraphError) as exc_info:
         asyncio.run(controller.place_snapshot.coroutine(request))
 
-    assert type(
-        exc_info.value).__name__ == ('InsufficientDataplaneCapacityError')
+    assert type(exc_info.value).__name__ == ('InsufficientDataplaneCapacityError')
     assert controller.state.snapshots['snap-retry'].size_bytes == 400
     assert strategy.route_calls == []
     assert strategy.provision_calls == []
 
 
 def test_local_dataplane_admission_reserves_cross_worker_reroute_before_provision(
-        tmp_path):
+    tmp_path,
+):
     class BlockingReplacementWorkerStrategy(_ReplacementWorkerStrategy):
         def __init__(self) -> None:
             super().__init__(route_estimate_bytes=400)
             self.provision_started = asyncio.Event()
             self.allow_provision = asyncio.Event()
 
-        async def provision(self, request: PlacementRequest,
-                            decision: RouteDecision) -> ProvisionedHandle:
+        async def provision(
+            self, request: PlacementRequest, decision: RouteDecision
+        ) -> ProvisionedHandle:
             self.provision_calls.append((request, decision))
             if request.snapshot_id == 'snap-reroute':
                 self.provision_started.set()
@@ -6557,8 +6999,7 @@ def test_local_dataplane_admission_reserves_cross_worker_reroute_before_provisio
 
     async def drive() -> None:
         strategy = BlockingReplacementWorkerStrategy()
-        controller = await _cross_worker_reroute_controller(
-            tmp_path, strategy, 8_501)
+        controller = await _cross_worker_reroute_controller(tmp_path, strategy, 8_501)
         reroute = replace(
             _request(snapshot_id='snap-reroute', job_id='job-reroute'),
             source_size_bytes=200,
@@ -6568,16 +7009,15 @@ def test_local_dataplane_admission_reserves_cross_worker_reroute_before_provisio
             source_size_bytes=300,
         )
 
-        first_task = asyncio.create_task(
-            controller.place_snapshot.coroutine(reroute))
+        first_task = asyncio.create_task(controller.place_snapshot.coroutine(reroute))
         await strategy.provision_started.wait()
         try:
             with pytest.raises(DiskgraphError) as exc_info:
                 await controller.place_snapshot.coroutine(second)
             assert type(exc_info.value).__name__ == (
-                'InsufficientDataplaneCapacityError')
-            assert controller.state.snapshots['snap-reroute'].worker == (
-                'worker-b')
+                'InsufficientDataplaneCapacityError'
+            )
+            assert controller.state.snapshots['snap-reroute'].worker == ('worker-b')
             assert controller.state.snapshots['snap-reroute'].size_bytes == 800
             loaded = await controller._persistence.load()
             assert loaded.snapshots['snap-reroute'].worker == 'worker-b'
@@ -6591,12 +7031,16 @@ def test_local_dataplane_admission_reserves_cross_worker_reroute_before_provisio
     asyncio.run(drive())
 
 
-@pytest.mark.parametrize(('used_bytes', 'admitted'), [
-    (9_201, False),
-    (9_200, True),
-])
+@pytest.mark.parametrize(
+    ('used_bytes', 'admitted'),
+    [
+        (9_201, False),
+        (9_200, True),
+    ],
+)
 def test_local_dataplane_admission_combines_shared_filesystem_demand(
-        tmp_path, used_bytes, admitted):
+    tmp_path, used_bytes, admitted
+):
     strategy = MockPlacementStrategy()
     controller = _make_controller(
         tmp_path,
@@ -6613,7 +7057,9 @@ def test_local_dataplane_admission_combines_shared_filesystem_demand(
                 dataplane_total_bytes=10_000,
                 dataplane_used_bytes=used_bytes,
                 dataplane_same_filesystem_as_ssd=True,
-            )))
+            )
+        )
+    )
     request = replace(
         _request(snapshot_id='snap-shared-fs', job_id='job-shared-fs'),
         source_size_bytes=100,
@@ -6626,34 +7072,45 @@ def test_local_dataplane_admission_combines_shared_filesystem_demand(
     else:
         with pytest.raises(DiskgraphError) as exc_info:
             asyncio.run(controller.place_snapshot.coroutine(request))
-        assert type(
-            exc_info.value).__name__ == ('InsufficientDataplaneCapacityError')
+        assert type(exc_info.value).__name__ == ('InsufficientDataplaneCapacityError')
         assert strategy.provision_calls == []
 
 
 @pytest.mark.parametrize(
     ('data_plane_storage_root', 'snapshot_overrides', 'source_size_bytes'),
     [
-        ('s3://bucket/dataplane', {
-            'dataplane_total_bytes': 10_000,
-            'dataplane_used_bytes': 10_000,
-            'dataplane_same_filesystem_as_ssd': False,
-        }, 100),
-        ('/local/dataplane', {
-            'dataplane_total_bytes': 0,
-            'dataplane_used_bytes': 0,
-            'dataplane_same_filesystem_as_ssd': None,
-        }, 100),
-        ('/local/dataplane', {
-            'dataplane_total_bytes': 10_000,
-            'dataplane_used_bytes': 10_000,
-            'dataplane_same_filesystem_as_ssd': False,
-        }, 0),
+        (
+            's3://bucket/dataplane',
+            {
+                'dataplane_total_bytes': 10_000,
+                'dataplane_used_bytes': 10_000,
+                'dataplane_same_filesystem_as_ssd': False,
+            },
+            100,
+        ),
+        (
+            '/local/dataplane',
+            {
+                'dataplane_total_bytes': 0,
+                'dataplane_used_bytes': 0,
+                'dataplane_same_filesystem_as_ssd': None,
+            },
+            100,
+        ),
+        (
+            '/local/dataplane',
+            {
+                'dataplane_total_bytes': 10_000,
+                'dataplane_used_bytes': 10_000,
+                'dataplane_same_filesystem_as_ssd': False,
+            },
+            0,
+        ),
     ],
 )
 def test_local_dataplane_admission_bypasses_object_or_unknown_inputs(
-        tmp_path, data_plane_storage_root, snapshot_overrides,
-        source_size_bytes):
+    tmp_path, data_plane_storage_root, snapshot_overrides, source_size_bytes
+):
     strategy = MockPlacementStrategy()
     controller = _make_controller(
         tmp_path,
@@ -6662,8 +7119,11 @@ def test_local_dataplane_admission_bypasses_object_or_unknown_inputs(
     )
     asyncio.run(
         controller.report_status.coroutine(
-            _report(pool_worker_uid='worker-a', ready_snapshots=[],
-                    **snapshot_overrides)))
+            _report(
+                pool_worker_uid='worker-a', ready_snapshots=[], **snapshot_overrides
+            )
+        )
+    )
     request = replace(
         _request(snapshot_id='snap-bypass', job_id='job-dataplane'),
         source_size_bytes=source_size_bytes,

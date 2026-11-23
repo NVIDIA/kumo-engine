@@ -58,8 +58,8 @@ class _NormalizedFilterSQL:
     args: list[Any]
 
 
-_EMPTY_TAG_ROW_KEY = ""
-_EMPTY_TAG_ROW_VALUE = ""
+_EMPTY_TAG_ROW_KEY = ''
+_EMPTY_TAG_ROW_VALUE = ''
 
 
 def coerce_job_type(job_type: JobType | str) -> JobType:
@@ -67,7 +67,7 @@ def coerce_job_type(job_type: JobType | str) -> JobType:
 
 
 def job_tags_row_id(job_type: JobType | str, job_id: JobID) -> str:
-    return f"{coerce_job_type(job_type).value}:{job_id}"
+    return f'{coerce_job_type(job_type).value}:{job_id}'
 
 
 def job_tag_row_id(
@@ -75,13 +75,13 @@ def job_tag_row_id(
     job_id: JobID,
     key: JobTagKey | str,
 ) -> str:
-    return f"{job_tags_row_id(job_type, job_id)}:{JobTagKey(str(key))}"
+    return f'{job_tags_row_id(job_type, job_id)}:{JobTagKey(str(key))}'
 
 
 def _json_value_from(tx: StateTx, alias: str, field_name: str) -> str:
     validate_identifier(alias)
     validate_identifier(field_name)
-    if tx.backend == "postgres":
+    if tx.backend == 'postgres':
         return f"{alias}.payload->>'{field_name}'"
     return f"json_extract({alias}.payload, '$.{field_name}')"
 
@@ -93,48 +93,48 @@ def _json_job_tag_value(
     alias: str | None = None,
 ) -> str:
     JobTagKey(key)
-    payload = "payload" if alias is None else f"{alias}.payload"
-    if tx.backend == "postgres":
+    payload = 'payload' if alias is None else f'{alias}.payload'
+    if tx.backend == 'postgres':
         return f"{payload} #>> '{{tags,tags,{key}}}'"
-    return f"json_extract({payload}, '$.tags.tags.\"{key}\"')"
+    return f'json_extract({payload}, \'$.tags.tags."{key}"\')'
 
 
 def _timestamps_from_normalized_payload(
     payload: Mapping[str, object],
     row: object,
 ) -> ResourceTimestamps:
-    raw_timestamps = payload.get("timestamps")
+    raw_timestamps = payload.get('timestamps')
     if isinstance(raw_timestamps, Mapping):
-        created_at = raw_timestamps.get("created_at")
-        updated_at = raw_timestamps.get("updated_at")
+        created_at = raw_timestamps.get('created_at')
+        updated_at = raw_timestamps.get('updated_at')
         if created_at is not None and updated_at is not None:
             return ResourceTimestamps(
                 created_at=coerce_datetime(created_at),
                 updated_at=coerce_datetime(updated_at),
             )
     return ResourceTimestamps(
-        created_at=coerce_datetime(row_field(row, "created_at", 2)),
-        updated_at=coerce_datetime(row_field(row, "updated_at", 3)),
+        created_at=coerce_datetime(row_field(row, 'created_at', 2)),
+        updated_at=coerce_datetime(row_field(row, 'updated_at', 3)),
     )
 
 
 def _normalized_row_from_list_row(row: object) -> _ParsedNormalizedJobTagRecord:
-    payload = json.loads(str(row_field(row, "payload", 1)))
+    payload = json.loads(str(row_field(row, 'payload', 1)))
     if not isinstance(payload, dict):
-        raise ValueError("Normalized job tag payload must be an object")
-    key = str(payload["key"])
+        raise ValueError('Normalized job tag payload must be an object')
+    key = str(payload['key'])
     timestamps = _timestamps_from_normalized_payload(payload, row)
     if key == _EMPTY_TAG_ROW_KEY:
         return _ParsedNormalizedJobTagRecord(
-            job_id=JobID(str(payload["job_id"])),
+            job_id=JobID(str(payload['job_id'])),
             key=None,
             value=None,
             timestamps=timestamps,
         )
     return _ParsedNormalizedJobTagRecord(
-        job_id=JobID(str(payload["job_id"])),
+        job_id=JobID(str(payload['job_id'])),
         key=JobTagKey(key),
-        value=JobTagValue(str(payload["value"])),
+        value=JobTagValue(str(payload['value'])),
         timestamps=timestamps,
     )
 
@@ -154,9 +154,8 @@ class JobTagsRepository:
         self,
         rows: JsonRepository[JobTagsRecord] | None = None,
     ) -> None:
-        self._rows = rows or JsonRepository("job_tags", JobTagsRecord)
-        self._normalized_rows = JsonRepository("job_tags",
-                                               NormalizedJobTagRecord)
+        self._rows = rows or JsonRepository('job_tags', JobTagsRecord)
+        self._normalized_rows = JsonRepository('job_tags', NormalizedJobTagRecord)
 
     async def get(
         self,
@@ -183,12 +182,16 @@ class JobTagsRepository:
     ) -> bool:
         job_type = coerce_job_type(job_type)
         current_tags = await self.get(tx, job_type, job_id)
-        job_tags = deepcopy(current_tags) if current_tags is not None else (
-            JobTags(timestamps=get_current_timestamps()))
+        job_tags = (
+            deepcopy(current_tags)
+            if current_tags is not None
+            else (JobTags(timestamps=get_current_timestamps()))
+        )
         tags_updated = job_tags.update_tags(tags)
         should_normalize_legacy = (
             current_tags is not None
-            and await self._get_normalized(tx, job_type, job_id) is None)
+            and await self._get_normalized(tx, job_type, job_id) is None
+        )
         if tags_updated:
             job_tags.timestamps = update_timestamps(job_tags.timestamps)
         if tags_updated or should_normalize_legacy:
@@ -234,9 +237,9 @@ class JobTagsRepository:
     ) -> dict[JobID, JobTags]:
         job_type = coerce_job_type(job_type)
         normalized_matches = await self._list_normalized_by_filters(
-            tx, job_type, filters)
-        aggregate_matches = await self._list_aggregate_by_filters(
-            tx, job_type, filters)
+            tx, job_type, filters
+        )
+        aggregate_matches = await self._list_aggregate_by_filters(tx, job_type, filters)
         return aggregate_matches | normalized_matches
 
     async def list_by_ids(
@@ -252,7 +255,7 @@ class JobTagsRepository:
 
         args: list[object] = [job_type.value]
         job_id_clause = _in_predicate(
-            tx, _json_value(tx, "job_id"), job_id_values, args
+            tx, _json_value(tx, 'job_id'), job_id_values, args
         )
         aggregate_rows = await tx.fetch(
             f"""
@@ -267,9 +270,7 @@ class JobTagsRepository:
         )
         aggregate_tags = {
             row.payload.job_id: deepcopy(row.payload.tags)
-            for row in (
-                self._rows._row_from_list_row(row) for row in aggregate_rows
-            )
+            for row in (self._rows._row_from_list_row(row) for row in aggregate_rows)
         }
 
         normalized_rows = await tx.fetch(
@@ -298,7 +299,7 @@ class JobTagsRepository:
             return
         args: list[object] = [job_type.value]
         job_id_clause = _in_predicate(
-            tx, _json_value(tx, "job_id"), job_id_values, args
+            tx, _json_value(tx, 'job_id'), job_id_values, args
         )
         await tx.execute(
             f"""
@@ -317,32 +318,30 @@ class JobTagsRepository:
     ) -> dict[JobID, JobTags]:
         job_type = coerce_job_type(job_type)
         where_clauses = [
-            f"{_json_value_from(tx, 'legacy', 'job_type')} = "
-            f"{_placeholder(tx, 1)}",
-            f"{_json_value_from(tx, 'legacy', 'key')} IS NULL",
+            f'{_json_value_from(tx, "legacy", "job_type")} = {_placeholder(tx, 1)}',
+            f'{_json_value_from(tx, "legacy", "key")} IS NULL',
         ]
         args: list[Any] = [job_type.value]
         for raw_key, raw_value in filters.items():
-            tag_value_expr = _json_job_tag_value(
-                tx, raw_key, alias="legacy")
+            tag_value_expr = _json_job_tag_value(tx, raw_key, alias='legacy')
             if JobTagValue.null_or_empty(raw_value):
-                where_clauses.append(f"{tag_value_expr} IS NULL")
+                where_clauses.append(f'{tag_value_expr} IS NULL')
                 continue
             args.append(str(raw_value))
-            where_clauses.append(
-                f"{tag_value_expr} = {_placeholder(tx, len(args))}")
+            where_clauses.append(f'{tag_value_expr} = {_placeholder(tx, len(args))}')
         where_clauses.append(
             self._normalized_absence_clause(
                 tx,
                 outer_job_id_expr=_json_value_from(tx, 'legacy', 'job_id'),
                 job_type_arg_position=len(args) + 1,
-            ))
+            )
+        )
         args.append(job_type.value)
         rows = await tx.fetch(
             f"""
             SELECT id, payload, created_at, updated_at
             FROM {self._rows._table_name} legacy
-            WHERE {" AND ".join(where_clauses)}
+            WHERE {' AND '.join(where_clauses)}
             ORDER BY id
             """,
             *args,
@@ -382,8 +381,8 @@ class JobTagsRepository:
         job_type = coerce_job_type(job_type)
         filter_sql = self._normalized_filter_sql(tx, filters)
         where_clauses = [
-            f"{_json_value_from(tx, 'base', 'job_type')} = {_placeholder(tx, 1)}",
-            f"{_json_value_from(tx, 'base', 'key')} IS NOT NULL",
+            f'{_json_value_from(tx, "base", "job_type")} = {_placeholder(tx, 1)}',
+            f'{_json_value_from(tx, "base", "key")} IS NOT NULL',
         ]
         if filter_sql.clause:
             where_clauses.append(filter_sql.clause)
@@ -391,7 +390,7 @@ class JobTagsRepository:
             f"""
             SELECT id, payload, created_at, updated_at
             FROM {self._rows._table_name} base
-            WHERE {" AND ".join(where_clauses)}
+            WHERE {' AND '.join(where_clauses)}
             ORDER BY id
             """,
             job_type.value,
@@ -411,7 +410,7 @@ class JobTagsRepository:
         if not job_tags.tags:
             await self._normalized_rows.upsert(
                 tx,
-                f"{job_tags_row_id(job_type, job_id)}:",
+                f'{job_tags_row_id(job_type, job_id)}:',
                 NormalizedJobTagRecord(
                     job_type=job_type,
                     job_id=job_id,
@@ -478,7 +477,7 @@ class JobTagsRepository:
         clauses: list[str] = []
         args: list[Any] = []
         for index, (raw_key, raw_value) in enumerate(filters.items()):
-            alias = f"filter_{index}"
+            alias = f'filter_{index}'
             key = JobTagKey(raw_key)
             args.append(str(key))
             key_placeholder = _placeholder(tx, len(args) + 1)
@@ -490,7 +489,8 @@ class JobTagsRepository:
                         key_placeholder,
                         None,
                         negate=True,
-                    ))
+                    )
+                )
                 continue
             value = JobTagValue(str(raw_value))
             args.append(str(value))
@@ -502,8 +502,9 @@ class JobTagsRepository:
                     key_placeholder,
                     value_placeholder,
                     negate=False,
-                ))
-        return _NormalizedFilterSQL(" AND ".join(clauses), args)
+                )
+            )
+        return _NormalizedFilterSQL(' AND '.join(clauses), args)
 
     def _normalized_filter_exists_clause(
         self,
@@ -515,9 +516,10 @@ class JobTagsRepository:
         negate: bool,
     ) -> str:
         value_clause = (
-            ""
-            if value_placeholder is None else
-            f"AND {_json_value_from(tx, alias, 'value')} = {value_placeholder}")
+            ''
+            if value_placeholder is None
+            else f'AND {_json_value_from(tx, alias, "value")} = {value_placeholder}'
+        )
         exists_sql = f"""
             EXISTS (
                 SELECT 1
@@ -530,7 +532,7 @@ class JobTagsRepository:
                   {value_clause}
             )
         """
-        return f"NOT {exists_sql}" if negate else exists_sql
+        return f'NOT {exists_sql}' if negate else exists_sql
 
     def _job_tags_from_normalized_rows(
         self,
@@ -540,7 +542,7 @@ class JobTagsRepository:
         if not rows_by_job_id:
             return None
         if len(rows_by_job_id) > 1:
-            raise ValueError("Expected normalized rows for one job")
+            raise ValueError('Expected normalized rows for one job')
         return next(iter(rows_by_job_id.values()))
 
     def _normalized_rows_by_job_id(
@@ -562,7 +564,4 @@ class JobTagsRepository:
                 job_tags.timestamps,
                 tag_row.timestamps,
             )
-        return {
-            job_id: deepcopy(tags)
-            for job_id, tags in tags_by_job_id.items()
-        }
+        return {job_id: deepcopy(tags) for job_id, tags in tags_by_job_id.items()}

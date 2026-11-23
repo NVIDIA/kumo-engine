@@ -8,12 +8,12 @@ NOT terminalize cancellation as FAILED.
 
 Drives run() directly with a stubbed _run rather than a full Temporal test env.
 """
+
 from unittest import mock
 
 import pytest
-from temporalio.exceptions import ApplicationError, CancelledError
+from temporalio.exceptions import ApplicationError, CancelledError, TimeoutType
 from temporalio.exceptions import TimeoutError as TemporalTimeoutError
-from temporalio.exceptions import TimeoutType
 
 from common_utils.error import PublicException
 from rest.backends.ml_backend.validation import (
@@ -35,6 +35,7 @@ class _RaisingWorkflow(BaseTrainingWorkflow):
     needs the Temporal workflow sandbox); we only exercise run()'s
     terminalization contract.
     """
+
     def __init__(self, exc: BaseException):
         super().__init__()
         self._exc = exc
@@ -59,11 +60,12 @@ async def test_run_terminalizes_raised_failure_without_public_internal_text():
 
     exit_cleanup = mock.AsyncMock(return_value=ValidationResponse())
 
-    with mock.patch.object(wf, '_exit_cleanup', exit_cleanup), \
-            mock.patch.object(btw, 'dequeue_job',
-                              new=mock.AsyncMock()) as dequeue, \
-            mock.patch.object(btw, 'get_job_base_dir', return_value='/base'), \
-            mock.patch.object(btw, 'get_job_dir', return_value='/base/job'):
+    with (
+        mock.patch.object(wf, '_exit_cleanup', exit_cleanup),
+        mock.patch.object(btw, 'dequeue_job', new=mock.AsyncMock()) as dequeue,
+        mock.patch.object(btw, 'get_job_base_dir', return_value='/base'),
+        mock.patch.object(btw, 'get_job_dir', return_value='/base/job'),
+    ):
         with pytest.raises(RuntimeError, match='materialize blew up'):
             await wf.run(job_input, mock.Mock())
 
@@ -88,12 +90,14 @@ def _child_workflow_failure_chain() -> ApplicationError:
     """A nested temporalio failure chain like the one a failed child workflow
     produces: ChildWorkflowError(wrapper) -> ActivityError(wrapper) ->
     ApplicationError(real cause)."""
-    real = ApplicationError('KeyError: pred_abc/train_seeds', type='KeyError',
-                            non_retryable=True)
+    real = ApplicationError(
+        'KeyError: pred_abc/train_seeds', type='KeyError', non_retryable=True
+    )
     activity = ApplicationError('Activity task failed', type='ActivityError')
     activity.__cause__ = real
-    child = ApplicationError('Child Workflow execution failed',
-                             type='ChildWorkflowError')
+    child = ApplicationError(
+        'Child Workflow execution failed', type='ChildWorkflowError'
+    )
     child.__cause__ = activity
     return child
 
@@ -108,8 +112,9 @@ def test_root_cause_message_unwraps_child_workflow_error():
 
 def test_root_cause_message_falls_back_to_str_for_plain_exception():
     """A plain Python exception (no temporalio layer) falls back to str."""
-    assert root_cause_message(
-        RuntimeError('materialize blew up')) == 'materialize blew up'
+    assert (
+        root_cause_message(RuntimeError('materialize blew up')) == 'materialize blew up'
+    )
 
 
 @pytest.mark.asyncio
@@ -124,7 +129,8 @@ async def test_exit_cleanup_populates_stacktrace_from_exception():
         ValidationError(
             title='Training failed',
             message='An internal error occurred. Please contact Kumo support.',
-        ))
+        )
+    )
 
     saved = []
 
@@ -134,14 +140,18 @@ async def test_exit_cleanup_populates_stacktrace_from_exception():
     try:
         raise RuntimeError('materialize blew up')
     except RuntimeError as boom:
-        with mock.patch.object(btw, 'save_validation_response',
-                               new=mock.AsyncMock()), \
-                mock.patch.object(wf, '_save_output', new=save_output):
-            await wf._exit_cleanup(validation_response,
-                                   TrainingJobID('train-job-123'), '/base/job',
-                                   exception=boom)
+        with (
+            mock.patch.object(btw, 'save_validation_response', new=mock.AsyncMock()),
+            mock.patch.object(wf, '_save_output', new=save_output),
+        ):
+            await wf._exit_cleanup(
+                validation_response,
+                TrainingJobID('train-job-123'),
+                '/base/job',
+                exception=boom,
+            )
 
-    (job_output, ) = saved
+    (job_output,) = saved
     assert job_output.failure_info is not None
     assert 'Training failed' in job_output.failure_info.message
     assert 'materialize blew up' not in job_output.failure_info.message
@@ -158,20 +168,23 @@ async def test_exit_cleanup_without_exception_keeps_empty_stacktrace():
     wf = _RaisingWorkflow(RuntimeError('unused'))
     validation_response = ValidationResponse()
     validation_response.errors.append(
-        ValidationError(title='Bad input', message='column missing'))
+        ValidationError(title='Bad input', message='column missing')
+    )
 
     saved = []
 
     async def save_output(job_output):
         saved.append(job_output)
 
-    with mock.patch.object(btw, 'save_validation_response',
-                           new=mock.AsyncMock()), \
-            mock.patch.object(wf, '_save_output', new=save_output):
-        await wf._exit_cleanup(validation_response,
-                               TrainingJobID('train-job-123'), '/base/job')
+    with (
+        mock.patch.object(btw, 'save_validation_response', new=mock.AsyncMock()),
+        mock.patch.object(wf, '_save_output', new=save_output),
+    ):
+        await wf._exit_cleanup(
+            validation_response, TrainingJobID('train-job-123'), '/base/job'
+        )
 
-    (job_output, ) = saved
+    (job_output,) = saved
     assert job_output.failure_info is not None
     assert 'Bad input' in job_output.failure_info.message
     assert job_output.failure_info.stacktrace == ''
@@ -185,11 +198,12 @@ async def test_run_redacts_non_public_child_workflow_root_cause():
 
     exit_cleanup = mock.AsyncMock(return_value=ValidationResponse())
 
-    with mock.patch.object(wf, '_exit_cleanup', exit_cleanup), \
-            mock.patch.object(btw, 'dequeue_job',
-                              new=mock.AsyncMock()), \
-            mock.patch.object(btw, 'get_job_base_dir', return_value='/base'), \
-            mock.patch.object(btw, 'get_job_dir', return_value='/base/job'):
+    with (
+        mock.patch.object(wf, '_exit_cleanup', exit_cleanup),
+        mock.patch.object(btw, 'dequeue_job', new=mock.AsyncMock()),
+        mock.patch.object(btw, 'get_job_base_dir', return_value='/base'),
+        mock.patch.object(btw, 'get_job_dir', return_value='/base/job'),
+    ):
         with pytest.raises(ApplicationError):
             await wf.run(job_input, mock.Mock())
 
@@ -197,11 +211,13 @@ async def test_run_redacts_non_public_child_workflow_root_cause():
     validation_response, _job_id, _home_dir = exit_cleanup.call_args[0]
     assert 'pred_abc/train_seeds' not in validation_response.error_message()
     assert 'Child Workflow execution failed' not in (
-        validation_response.error_message())
+        validation_response.error_message()
+    )
     assert 'internal error' in validation_response.error_message()
-    assert root_cause_message(
-        exit_cleanup.call_args.kwargs['exception']
-    ) == 'KeyError: pred_abc/train_seeds'
+    assert (
+        root_cause_message(exit_cleanup.call_args.kwargs['exception'])
+        == 'KeyError: pred_abc/train_seeds'
+    )
 
 
 @pytest.mark.asyncio
@@ -213,11 +229,12 @@ async def test_run_does_not_terminalize_cancellation():
 
     exit_cleanup = mock.AsyncMock(return_value=ValidationResponse())
 
-    with mock.patch.object(wf, '_exit_cleanup', exit_cleanup), \
-            mock.patch.object(btw, 'dequeue_job',
-                              new=mock.AsyncMock()) as dequeue, \
-            mock.patch.object(btw, 'get_job_base_dir', return_value='/base'), \
-            mock.patch.object(btw, 'get_job_dir', return_value='/base/job'):
+    with (
+        mock.patch.object(wf, '_exit_cleanup', exit_cleanup),
+        mock.patch.object(btw, 'dequeue_job', new=mock.AsyncMock()) as dequeue,
+        mock.patch.object(btw, 'get_job_base_dir', return_value='/base'),
+        mock.patch.object(btw, 'get_job_dir', return_value='/base/job'),
+    ):
         with pytest.raises(CancelledError):
             await wf.run(job_input, mock.Mock())
 
@@ -235,14 +252,14 @@ async def test_run_terminalize_failure_does_not_swallow_original():
     wf = _RaisingWorkflow(boom)
     job_input = _job_input()
 
-    exit_cleanup = mock.AsyncMock(
-        side_effect=RuntimeError('terminalize failed'))
+    exit_cleanup = mock.AsyncMock(side_effect=RuntimeError('terminalize failed'))
 
-    with mock.patch.object(wf, '_exit_cleanup', exit_cleanup), \
-            mock.patch.object(btw, 'dequeue_job',
-                              new=mock.AsyncMock()), \
-            mock.patch.object(btw, 'get_job_base_dir', return_value='/base'), \
-            mock.patch.object(btw, 'get_job_dir', return_value='/base/job'):
+    with (
+        mock.patch.object(wf, '_exit_cleanup', exit_cleanup),
+        mock.patch.object(btw, 'dequeue_job', new=mock.AsyncMock()),
+        mock.patch.object(btw, 'get_job_base_dir', return_value='/base'),
+        mock.patch.object(btw, 'get_job_dir', return_value='/base/job'),
+    ):
         with pytest.raises(RuntimeError, match='original failure'):
             await wf.run(job_input, mock.Mock())
 
@@ -255,20 +272,26 @@ def _incident_placement_timeout_chain() -> ApplicationError:
     PublicException anywhere. Wrapper layers use ApplicationError stand-ins
     (like _child_workflow_failure_chain); the timeouts are REAL Temporal
     TimeoutErrors, which is what the public-error machinery keys on."""
-    heartbeat = TemporalTimeoutError('activity Heartbeat timeout',
-                                     type=TimeoutType.HEARTBEAT,
-                                     last_heartbeat_details=[])
-    s2c = TemporalTimeoutError('activity ScheduleToClose timeout',
-                               type=TimeoutType.SCHEDULE_TO_CLOSE,
-                               last_heartbeat_details=[])
+    heartbeat = TemporalTimeoutError(
+        'activity Heartbeat timeout',
+        type=TimeoutType.HEARTBEAT,
+        last_heartbeat_details=[],
+    )
+    s2c = TemporalTimeoutError(
+        'activity ScheduleToClose timeout',
+        type=TimeoutType.SCHEDULE_TO_CLOSE,
+        last_heartbeat_details=[],
+    )
     s2c.__cause__ = heartbeat
     activity = ApplicationError('Activity task timed out', type='ActivityError')
     activity.__cause__ = s2c
-    dg_ingest = ApplicationError('Child Workflow execution failed',
-                                 type='ChildWorkflowError')
+    dg_ingest = ApplicationError(
+        'Child Workflow execution failed', type='ChildWorkflowError'
+    )
     dg_ingest.__cause__ = activity
-    graph_refresh = ApplicationError('Child Workflow execution failed',
-                                     type='ChildWorkflowError')
+    graph_refresh = ApplicationError(
+        'Child Workflow execution failed', type='ChildWorkflowError'
+    )
     graph_refresh.__cause__ = dg_ingest
     return graph_refresh
 
@@ -284,11 +307,12 @@ async def test_run_timeout_only_chain_composes_actionable_message():
 
     exit_cleanup = mock.AsyncMock(return_value=ValidationResponse())
 
-    with mock.patch.object(wf, '_exit_cleanup', exit_cleanup), \
-            mock.patch.object(btw, 'dequeue_job',
-                              new=mock.AsyncMock()), \
-            mock.patch.object(btw, 'get_job_base_dir', return_value='/base'), \
-            mock.patch.object(btw, 'get_job_dir', return_value='/base/job'):
+    with (
+        mock.patch.object(wf, '_exit_cleanup', exit_cleanup),
+        mock.patch.object(btw, 'dequeue_job', new=mock.AsyncMock()),
+        mock.patch.object(btw, 'get_job_base_dir', return_value='/base'),
+        mock.patch.object(btw, 'get_job_dir', return_value='/base/job'),
+    ):
         with pytest.raises(ApplicationError):
             await wf.run(job_input, mock.Mock())
 
@@ -309,9 +333,11 @@ async def test_run_attached_public_exception_wins_over_timeout_text():
     PoolPlacementUnavailableError ApplicationError of PR kumo-ai/kumo#29874)
     is surfaced as the user message, beating both the raw internals and the
     generic timeout translation."""
-    public_message = ('The platform compute pool could not place your job. '
-                      'This is a platform issue, not a problem with your '
-                      'data. Please contact Kumo support.')
+    public_message = (
+        'The platform compute pool could not place your job. '
+        'This is a platform issue, not a problem with your '
+        'data. Please contact Kumo support.'
+    )
     chain = _incident_placement_timeout_chain()
     # dg-ingest's ActivityError leg, as re-raised by _place_snapshot with the
     # curated PublicException carried in ApplicationError details.
@@ -332,11 +358,12 @@ async def test_run_attached_public_exception_wins_over_timeout_text():
 
     exit_cleanup = mock.AsyncMock(return_value=ValidationResponse())
 
-    with mock.patch.object(wf, '_exit_cleanup', exit_cleanup), \
-            mock.patch.object(btw, 'dequeue_job',
-                              new=mock.AsyncMock()), \
-            mock.patch.object(btw, 'get_job_base_dir', return_value='/base'), \
-            mock.patch.object(btw, 'get_job_dir', return_value='/base/job'):
+    with (
+        mock.patch.object(wf, '_exit_cleanup', exit_cleanup),
+        mock.patch.object(btw, 'dequeue_job', new=mock.AsyncMock()),
+        mock.patch.object(btw, 'get_job_base_dir', return_value='/base'),
+        mock.patch.object(btw, 'get_job_dir', return_value='/base/job'),
+    ):
         with pytest.raises(ApplicationError):
             await wf.run(job_input, mock.Mock())
 
@@ -354,20 +381,23 @@ async def test_run_direct_public_exception_message_reaches_user():
     """A PublicException raised directly by _run surfaces its own public
     message."""
     wf = _RaisingWorkflow(
-        PublicException(message='Column xyz is missing from table abc.'))
+        PublicException(message='Column xyz is missing from table abc.')
+    )
     job_input = _job_input()
 
     exit_cleanup = mock.AsyncMock(return_value=ValidationResponse())
 
-    with mock.patch.object(wf, '_exit_cleanup', exit_cleanup), \
-            mock.patch.object(btw, 'dequeue_job',
-                              new=mock.AsyncMock()), \
-            mock.patch.object(btw, 'get_job_base_dir', return_value='/base'), \
-            mock.patch.object(btw, 'get_job_dir', return_value='/base/job'):
+    with (
+        mock.patch.object(wf, '_exit_cleanup', exit_cleanup),
+        mock.patch.object(btw, 'dequeue_job', new=mock.AsyncMock()),
+        mock.patch.object(btw, 'get_job_base_dir', return_value='/base'),
+        mock.patch.object(btw, 'get_job_dir', return_value='/base/job'),
+    ):
         with pytest.raises(PublicException):
             await wf.run(job_input, mock.Mock())
 
     exit_cleanup.assert_awaited_once()
     validation_response, _job_id, _home_dir = exit_cleanup.call_args[0]
-    assert ('Column xyz is missing from table abc.'
-            in validation_response.error_message())
+    assert (
+        'Column xyz is missing from table abc.' in validation_response.error_message()
+    )

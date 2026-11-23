@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Geometry invariants for notebook layout alternatives."""
+
 import copy
 import math
 import re
@@ -20,9 +21,13 @@ def _edge(source, target, port=90):
 
 
 def _standard(cards):
-    return dict(width=888, height=3200,
-                positions={c['name']: [c['x'], c['y']] for c in cards},
-                paths=[], handles=[])
+    return dict(
+        width=888,
+        height=3200,
+        positions={c['name']: [c['x'], c['y']] for c in cards},
+        paths=[],
+        handles=[],
+    )
 
 
 def _samples(path):
@@ -45,9 +50,10 @@ def _samples(path):
             t = step / max(2, math.ceil(length / 5))
             work = points[:]
             while len(work) > 1:
-                work = [((1 - t) * a[0] + t * b[0],
-                         (1 - t) * a[1] + t * b[1])
-                        for a, b in zip(work, work[1:])]
+                work = [
+                    ((1 - t) * a[0] + t * b[0], (1 - t) * a[1] + t * b[1])
+                    for a, b in zip(work, work[1:])
+                ]
             yield work[0]
         current = points[-1]
 
@@ -59,8 +65,10 @@ def _assert_geometry(cards, edges, geometry):
         rect = (x, y, x + card['width'], y + card['height'])
         assert 0 <= x < rect[2] <= geometry['width']
         assert 0 <= y < rect[3] <= geometry['height']
-        assert all(rect[2] <= r[0] or rect[0] >= r[2]
-                   or rect[3] <= r[1] or rect[1] >= r[3] for r in rectangles)
+        assert all(
+            rect[2] <= r[0] or rect[0] >= r[2] or rect[3] <= r[1] or rect[1] >= r[3]
+            for r in rectangles
+        )
         rectangles.append(rect)
     lookup = {c['name']: c for c in cards}
     assert len(geometry['paths']) == len(edges)
@@ -69,15 +77,16 @@ def _assert_geometry(cards, edges, geometry):
         sx, sy = geometry['positions'][edge['source']]
         tx, ty = geometry['positions'][edge['target']]
         assert points[0] == pytest.approx(
-            (sx + lookup[edge['source']]['width'], sy + edge['source_port']),
-            abs=.001)
-        assert points[-1] == pytest.approx((tx, ty + edge['target_port']),
-                                           abs=.001)
+            (sx + lookup[edge['source']]['width'], sy + edge['source_port']), abs=0.001
+        )
+        assert points[-1] == pytest.approx((tx, ty + edge['target_port']), abs=0.001)
         for x, y in points:
-            assert -.001 <= x <= geometry['width'] + .001
-            assert -.001 <= y <= geometry['height'] + .001
-            assert not any(a + .01 < x < c - .01 and b + .01 < y < d - .01
-                           for a, b, c, d in rectangles)
+            assert -0.001 <= x <= geometry['width'] + 0.001
+            assert -0.001 <= y <= geometry['height'] + 0.001
+            assert not any(
+                a + 0.01 < x < c - 0.01 and b + 0.01 < y < d - 0.01
+                for a, b, c, d in rectangles
+            )
 
 
 def test_standard_geometry_is_preserved_without_mutating_inputs():
@@ -93,8 +102,7 @@ def test_standard_geometry_is_preserved_without_mutating_inputs():
 
 def test_ring_uses_standard_default_and_has_valid_compact_alternative():
     names = ['zeta', 'alpha', 'omega', 'beta', 'theta', 'gamma', 'rho', 'eta']
-    cards = [_card(name, rank=i, height=118 + i * 40)
-             for i, name in enumerate(names)]
+    cards = [_card(name, rank=i, height=118 + i * 40) for i, name in enumerate(names)]
     edges = [_edge(a, b) for a, b in zip(names, names[1:] + names[:1])]
     layouts = build_layouts(cards, edges, _standard(cards))
     assert set(layouts) == {'standard', 'compact'}
@@ -104,10 +112,15 @@ def test_ring_uses_standard_default_and_has_valid_compact_alternative():
 
 def test_crowded_sparse_rank_splits_into_only_one_extra_column():
     cards = [_card('hub-a', height=118), _card('hub-b', height=342, y=300)]
-    cards += [_card(f'branch-{i}', 1, height=396 if i % 2 else 182,
-                    x=504, y=i * 350) for i in range(7)]
-    edges = [_edge(hub, f'branch-{i}', 90 if hub == 'hub-a' else 120)
-             for i in range(7) for hub in ('hub-a', 'hub-b')]
+    cards += [
+        _card(f'branch-{i}', 1, height=396 if i % 2 else 182, x=504, y=i * 350)
+        for i in range(7)
+    ]
+    edges = [
+        _edge(hub, f'branch-{i}', 90 if hub == 'hub-a' else 120)
+        for i in range(7)
+        for hub in ('hub-a', 'hub-b')
+    ]
     layouts = build_layouts(cards, edges, _standard(cards))
     compact = layouts['compact']
     assert len({p[0] for p in compact['positions'].values()}) == 3
@@ -124,8 +137,7 @@ def test_crowded_sparse_rank_splits_into_only_one_extra_column():
                 spans[a[1]] = (min(low, a[0], b[0]), max(high, a[0], b[0]))
         for other in horizontal:
             for y in spans.keys() & other.keys():
-                overlap = min(spans[y][1], other[y][1]) - max(
-                    spans[y][0], other[y][0])
+                overlap = min(spans[y][1], other[y][1]) - max(spans[y][0], other[y][0])
                 # Shared key ports may share a short horizontal stem.
                 assert overlap < 64
         horizontal.append(spans)
@@ -145,17 +157,30 @@ def test_layout_and_routes_do_not_depend_on_input_order():
 
 @pytest.mark.parametrize('shape', ['mesh', 'disconnected', 'many-to-many'])
 def test_routes_avoid_cards_across_difficult_shapes(shape):
-    cards = [_card(f'table-{i}', rank=i // 4, height=150 + 40 * (i % 4),
-                   x=80 + (i // 4) * 424, y=80 + (i % 4) * 400)
-             for i in range(12)]
+    cards = [
+        _card(
+            f'table-{i}',
+            rank=i // 4,
+            height=150 + 40 * (i % 4),
+            x=80 + (i // 4) * 424,
+            y=80 + (i % 4) * 400,
+        )
+        for i in range(12)
+    ]
     if shape == 'mesh':
-        edges = [_edge(a['name'], b['name'], 90 + 4 * i)
-                 for i, a in enumerate(cards) for b in cards if a != b]
+        edges = [
+            _edge(a['name'], b['name'], 90 + 4 * i)
+            for i, a in enumerate(cards)
+            for b in cards
+            if a != b
+        ]
     elif shape == 'disconnected':
-        edges = [_edge(f'table-{i}', f'table-{i + 1}')
-                 for i in (0, 1, 4, 5, 6, 8)]
+        edges = [_edge(f'table-{i}', f'table-{i + 1}') for i in (0, 1, 4, 5, 6, 8)]
     else:
-        edges = [_edge(f'table-{i}', f'table-{j}', 90 + 4 * i)
-                 for i in range(4) for j in range(4, 12)]
+        edges = [
+            _edge(f'table-{i}', f'table-{j}', 90 + 4 * i)
+            for i in range(4)
+            for j in range(4, 12)
+        ]
     layouts = build_layouts(cards, edges, _standard(cards))
     _assert_geometry(cards, edges, layouts['compact'])

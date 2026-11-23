@@ -20,40 +20,40 @@ from sklearn.model_selection import train_test_split
 
 parser = argparse.ArgumentParser()
 parser.add_argument(
-    "--model",
-    choices=("kumo-small", "tabiclv2"),
-    default="tabiclv2",
+    '--model',
+    choices=('kumo-small', 'tabiclv2'),
+    default='tabiclv2',
 )
 parser.add_argument(
-    "--task",
-    choices=("classification", "regression"),
-    default="classification",
+    '--task',
+    choices=('classification', 'regression'),
+    default='classification',
 )
 # Optimal values for the hyperparameters below depend on the model and
 # dataset. Select them based on validation performance.
-parser.add_argument("--max-epochs", type=int, default=10)
-parser.add_argument("--steps-per-epoch", type=int, default=30)
-parser.add_argument("--context-size", type=int, default=256)
-parser.add_argument("--query-size", type=int, default=128)
-parser.add_argument("--lr", type=float, default=1e-5)
-parser.add_argument("--num-estimators", type=int, default=8)
-parser.add_argument("--seed", type=int, default=0)
+parser.add_argument('--max-epochs', type=int, default=10)
+parser.add_argument('--steps-per-epoch', type=int, default=30)
+parser.add_argument('--context-size', type=int, default=256)
+parser.add_argument('--query-size', type=int, default=128)
+parser.add_argument('--lr', type=float, default=1e-5)
+parser.add_argument('--num-estimators', type=int, default=8)
+parser.add_argument('--seed', type=int, default=0)
 args = parser.parse_args()
 
 torch.manual_seed(args.seed)
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 generate = runpy.run_path(
-    str(Path(__file__).resolve().parents[4] /
-        "synthetic-data/sdm/generate.py"))["generate"]
+    str(Path(__file__).resolve().parents[4] / 'synthetic-data/sdm/generate.py')
+)['generate']
 
-if args.task == "classification":
-    df = generate("classification", Path("synthetic_data") / "classification")
-    target = "target"
-    stypes = sdm.infer_stypes(df, overrides={target: "categorical"})
+if args.task == 'classification':
+    df = generate('classification', Path('synthetic_data') / 'classification')
+    target = 'target'
+    stypes = sdm.infer_stypes(df, overrides={target: 'categorical'})
 else:
-    df = generate("regression", Path("synthetic_data") / "regression")
-    target = "MedHouseVal"
+    df = generate('regression', Path('synthetic_data') / 'regression')
+    target = 'MedHouseVal'
     stypes = sdm.infer_stypes(df)
 
 table = sdm.TableTensor.from_pandas(df, stypes=stypes, device=device)
@@ -63,21 +63,20 @@ train_index, rest_index = train_test_split(
     torch.arange(len(df)).numpy(),
     test_size=0.4,
     random_state=args.seed,
-    stratify=df[target] if args.task == "classification" else None,
+    stratify=df[target] if args.task == 'classification' else None,
 )
 val_index, test_index = train_test_split(
     rest_index,
     test_size=0.5,
     random_state=args.seed,
-    stratify=df[target].iloc[rest_index]
-    if args.task == "classification" else None,
+    stratify=df[target].iloc[rest_index] if args.task == 'classification' else None,
 )
 train_table = table[torch.from_numpy(train_index).to(device)]
 val_table = table[torch.from_numpy(val_index).to(device)]
 test_table = table[torch.from_numpy(test_index).to(device)]
 
-if args.model == "kumo-small":
-    model = sdm.models.KumoTabular(task=args.task, size="small", device=device)
+if args.model == 'kumo-small':
+    model = sdm.models.KumoTabular(task=args.task, size='small', device=device)
 else:
     model = sdm.models.TabICLv2(task=args.task, device=device)
 
@@ -85,7 +84,7 @@ train_recipe = model.default_recipe()
 train_recipe.target = sp.StypeDispatch(  # No target flipping.
     categorical=[
         sp.AlignCategories(),
-        sp.ShuffleCategories(method="shift"),
+        sp.ShuffleCategories(method='shift'),
     ],
     numerical=sp.Standardize(),
 )
@@ -100,9 +99,8 @@ def evaluate(context: sdm.TableTensor, query: sdm.TableTensor) -> float:
         x_query=query.drop_columns(target),
         num_estimators=args.num_estimators,
     )
-    if args.task == "classification":
-        prob, y = sdm.evaluation.to_class_indices(out, query[target],
-                                                  missing_score=0.0)
+    if args.task == 'classification':
+        prob, y = sdm.evaluation.to_class_indices(out, query[target], missing_score=0.0)
         return float((prob.argmax(dim=-1) == y).float().mean())
 
     pred = out.numerical.mean(dim=-1)
@@ -111,12 +109,12 @@ def evaluate(context: sdm.TableTensor, query: sdm.TableTensor) -> float:
 
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
-higher_is_better = args.task == "classification"
-metric_name = "acc" if args.task == "classification" else "rmse"
-ckpt_path = Path(f"ckpt-{args.model}-{args.task}.pt")
+higher_is_better = args.task == 'classification'
+metric_name = 'acc' if args.task == 'classification' else 'rmse'
+ckpt_path = Path(f'ckpt-{args.model}-{args.task}.pt')
 
 val_metric = evaluate(context=train_table, query=val_table)
-print(f"epoch=0/{args.max_epochs} val_{metric_name}={val_metric:.4f}")
+print(f'epoch=0/{args.max_epochs} val_{metric_name}={val_metric:.4f}')
 torch.save(model.state_dict(), ckpt_path)
 
 for epoch in range(1, args.max_epochs + 1):
@@ -124,9 +122,9 @@ for epoch in range(1, args.max_epochs + 1):
     total_loss = 0.0
     for _ in range(args.steps_per_epoch):
         index = torch.randperm(train_table.size(0), device=device)
-        index = index[:args.context_size + args.query_size]
-        context = train_table[index[:args.context_size]]
-        query = train_table[index[args.context_size:]]
+        index = index[: args.context_size + args.query_size]
+        context = train_table[index[: args.context_size]]
+        query = train_table[index[args.context_size :]]
 
         optimizer.zero_grad()
         out = model(
@@ -135,9 +133,10 @@ for epoch in range(1, args.max_epochs + 1):
             x_query=query.drop_columns(target),
             recipe=train_recipe,
         )[0]
-        if args.task == "classification":
+        if args.task == 'classification':
             logits, y = sdm.evaluation.to_class_indices(
-                out, query[target], missing_score=-torch.inf)
+                out, query[target], missing_score=-torch.inf
+            )
             loss = F.cross_entropy(logits, y)
         else:  # Pinball loss over the model's 999 fixed quantile levels:
             diff = query[target].numerical - out.numerical
@@ -148,9 +147,11 @@ for epoch in range(1, args.max_epochs + 1):
         total_loss += float(loss.detach())
 
     metric = evaluate(context=train_table, query=val_table)
-    print(f"epoch={epoch}/{args.max_epochs} "
-          f"val_{metric_name}={metric:.4f} "
-          f"train_loss={total_loss / args.steps_per_epoch:.4f}")
+    print(
+        f'epoch={epoch}/{args.max_epochs} '
+        f'val_{metric_name}={metric:.4f} '
+        f'train_loss={total_loss / args.steps_per_epoch:.4f}'
+    )
     if metric > val_metric if higher_is_better else metric < val_metric:
         val_metric = metric
         torch.save(model.state_dict(), ckpt_path)
@@ -158,7 +159,7 @@ for epoch in range(1, args.max_epochs + 1):
 best_state = torch.load(ckpt_path, map_location=device, weights_only=True)
 model.load_state_dict(best_state)
 test_metric = evaluate(context=train_table, query=test_table)
-print(f"test_{metric_name}={test_metric:.4f}")
+print(f'test_{metric_name}={test_metric:.4f}')
 
 # Batch predictions
 # Score test features only; the test labels are used solely for evaluation above.
@@ -170,14 +171,15 @@ with torch.inference_mode():
         x_query=test_table.drop_columns(target),
         num_estimators=args.num_estimators,
     )
-if args.task == "classification":
-    results = pd.DataFrame(out.numerical.cpu().numpy(),
-                           columns=out.columns[sdm.Stype.numerical])
+if args.task == 'classification':
+    results = pd.DataFrame(
+        out.numerical.cpu().numpy(), columns=out.columns[sdm.Stype.numerical]
+    )
 else:
-    results = pd.DataFrame({"prediction": out.numerical.mean(-1).cpu().numpy()})
+    results = pd.DataFrame({'prediction': out.numerical.mean(-1).cpu().numpy()})
 if len(results) != len(test_index) or len(results) < 2:
-    raise ValueError("Expected one prediction per test row")
-results.insert(0, "source_row", df.index[test_index])
+    raise ValueError('Expected one prediction per test row')
+results.insert(0, 'source_row', df.index[test_index])
 print(results.head(10).to_string(index=False))
-results.to_csv(f"{args.model}_{args.task}_predictions.csv", index=False)
+results.to_csv(f'{args.model}_{args.task}_predictions.csv', index=False)
 # Classification columns are class probabilities; regression is a quantile mean.

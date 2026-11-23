@@ -28,7 +28,7 @@ class PQueryAliasRecord:
 
 
 def _literal_regex_prefix(pattern: str) -> str:
-    if pattern.startswith("^"):
+    if pattern.startswith('^'):
         pattern = pattern[1:]
     prefix: list[str] = []
     escaped = False
@@ -37,22 +37,22 @@ def _literal_regex_prefix(pattern: str) -> str:
             prefix.append(char)
             escaped = False
             continue
-        if char == "\\":
+        if char == '\\':
             escaped = True
             continue
-        if char in ".^$*+?{}[]|()":
+        if char in '.^$*+?{}[]|()':
             break
         prefix.append(char)
-    return "".join(prefix)
+    return ''.join(prefix)
 
 
 class StateDBPQueryRepository:
     def __init__(self) -> None:
         self._definitions = JsonRepository(
-            "pquery_definitions",
+            'pquery_definitions',
             PQueryDefinition,
         )
-        self._aliases = JsonRepository("pquery_aliases", PQueryAliasRecord)
+        self._aliases = JsonRepository('pquery_aliases', PQueryAliasRecord)
 
     async def get_definition(
         self,
@@ -68,7 +68,7 @@ class StateDBPQueryRepository:
     ) -> PQueryDefinition:
         definition = await self.get_definition(tx, fpid)
         if definition is None:
-            raise KeyError(f"PQueryDefinition id={fpid} is not found in DB.")
+            raise KeyError(f'PQueryDefinition id={fpid} is not found in DB.')
         return definition
 
     async def get_definitions(
@@ -91,10 +91,7 @@ class StateDBPQueryRepository:
         this spans projects. A graph fingerprint is content-addressed, so a
         match in another project can only over-retain, never under-retain.
         """
-        return {
-            definition.graph_fpid
-            for definition in await self.list_definitions(tx)
-        }
+        return {definition.graph_fpid for definition in await self.list_definitions(tx)}
 
     async def add_definition(
         self,
@@ -117,7 +114,7 @@ class StateDBPQueryRepository:
         tx: StateTx,
         name: str,
     ) -> FPID | None:
-        rows = await self._definitions.list_by_field(tx, "pquery_name", name)
+        rows = await self._definitions.list_by_field(tx, 'pquery_name', name)
         if len(rows) == 1:
             return FPID(rows[0].id)
         return None
@@ -141,31 +138,30 @@ class StateDBPQueryRepository:
         args: list[object] = []
         definition_rows = await self._definitions.list_where_sql(
             tx,
-            _in_predicate(tx, _json_value(tx, "pquery_name"), unique_names,
-                          args),
+            _in_predicate(tx, _json_value(tx, 'pquery_name'), unique_names, args),
             args,
         )
         definition_fpids_by_name: dict[str, list[FPID]] = {}
         for row in definition_rows:
             if row.payload.pquery_name is not None:
-                definition_fpids_by_name.setdefault(row.payload.pquery_name,
-                                                    []).append(FPID(row.id))
+                definition_fpids_by_name.setdefault(row.payload.pquery_name, []).append(
+                    FPID(row.id)
+                )
         aliases_by_name = {
             name: fpids[0]
             for name, fpids in definition_fpids_by_name.items()
             if len(fpids) == 1
         }
 
-        missing_names = [
-            name for name in unique_names if name not in aliases_by_name
-        ]
+        missing_names = [name for name in unique_names if name not in aliases_by_name]
         alias_rows = await self._aliases.list_by_ids(tx, missing_names)
         aliases_by_name.update(
-            {row.payload.name: FPID(row.payload.fpid)
-             for row in alias_rows})
+            {row.payload.name: FPID(row.payload.fpid) for row in alias_rows}
+        )
         return {
             name: aliases_by_name[name]
-            for name in unique_names if name in aliases_by_name
+            for name in unique_names
+            if name in aliases_by_name
         }
 
     async def list_aliases(self, tx: StateTx) -> list[str]:
@@ -174,10 +170,7 @@ class StateDBPQueryRepository:
             for row in await self._definitions.list_all(tx)
             if row.payload.pquery_name is not None
         }
-        alias_names = {
-            row.payload.name
-            for row in await self._aliases.list_all(tx)
-        }
+        alias_names = {row.payload.name for row in await self._aliases.list_all(tx)}
         return sorted(definition_names | alias_names)
 
     async def list_aliases_matching(
@@ -191,27 +184,26 @@ class StateDBPQueryRepository:
             placeholder = _placeholder(tx, 1)
             definition_rows = await self._definitions.list_where_sql(
                 tx,
-                f"{_json_value(tx, 'pquery_name')} LIKE {placeholder}",
-                [f"{prefix}%"],
+                f'{_json_value(tx, "pquery_name")} LIKE {placeholder}',
+                [f'{prefix}%'],
             )
             alias_rows = await self._aliases.list_where_sql(
                 tx,
-                f"id LIKE {placeholder}",
-                [f"{prefix}%"],
+                f'id LIKE {placeholder}',
+                [f'{prefix}%'],
             )
         else:
             definition_rows = await self._definitions.list_all(tx)
             alias_rows = await self._aliases.list_all(tx)
         names = {
             row.payload.pquery_name
-            for row in definition_rows if row.payload.pquery_name is not None
-        } | {row.payload.name
-             for row in alias_rows}
+            for row in definition_rows
+            if row.payload.pquery_name is not None
+        } | {row.payload.name for row in alias_rows}
         return sorted(name for name in names if pattern.match(name))
 
     async def set_alias(self, tx: StateTx, name: str, fpid: FPID) -> None:
-        await self._aliases.upsert(tx, name,
-                                   PQueryAliasRecord(name=name, fpid=fpid))
+        await self._aliases.upsert(tx, name, PQueryAliasRecord(name=name, fpid=fpid))
 
     async def delete_alias(self, tx: StateTx, name: str) -> None:
         await self._aliases.delete(tx, name)
@@ -241,8 +233,7 @@ class StateDBPQueryRepository:
             else:
                 alias_ids.append(pquery_id)
 
-        aliases = await self.get_aliases(tx,
-                                         [str(pq_id) for pq_id in alias_ids])
+        aliases = await self.get_aliases(tx, [str(pq_id) for pq_id in alias_ids])
         for pquery_id in alias_ids:
             fpid = aliases.get(str(pquery_id))
             if fpid is not None:
@@ -263,8 +254,7 @@ class StateDBPQueryRepository:
         pquery_ids: Iterable[PredictiveQueryID],
     ) -> dict[PredictiveQueryID, PQueryDefinition]:
         pquery_id_to_fpid = await self.resolve_fpids(tx, pquery_ids)
-        definitions_by_fpid = await self.get_definitions(
-            tx, pquery_id_to_fpid.values())
+        definitions_by_fpid = await self.get_definitions(tx, pquery_id_to_fpid.values())
         return {
             pquery_id: definitions_by_fpid[fpid]
             for pquery_id, fpid in pquery_id_to_fpid.items()

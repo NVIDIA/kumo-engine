@@ -57,8 +57,8 @@ async def _save_table_definition_in_tx(
     alias: str | None = None,
     force_rename: bool = False,
     increment_ref_count: bool = True,
-    created_by: str = "",
-    created_by_name: str = "",
+    created_by: str = '',
+    created_by_name: str = '',
 ) -> TableDBEntryV2:
     from rest.config.table_v2 import TableDBEntryV2
     from rest.utils.driver_common import get_current_timestamps
@@ -71,9 +71,10 @@ async def _save_table_definition_in_tx(
         if entry.alias and alias and entry.alias != alias:
             if not force_rename:
                 raise TableDefinitionAlreadyExists(
-                    f"This table definition already exists with name "
-                    f"{entry.alias}, and cannot be created under a different "
-                    "name.")
+                    f'This table definition already exists with name '
+                    f'{entry.alias}, and cannot be created under a different '
+                    'name.'
+                )
         if force_rename:
             entry.alias = alias
         else:
@@ -87,10 +88,7 @@ async def _save_table_definition_in_tx(
         await tables.upsert(tx, fpid, entry, force_rename=force_rename)
         return entry
 
-    col_dtypes = {
-        col.name: col.dtype
-        for col in table_definition.cols if col.dtype
-    }
+    col_dtypes = {col.name: col.dtype for col in table_definition.cols if col.dtype}
     entry = TableDBEntryV2(
         id=fpid,
         project_id=project_id,
@@ -123,7 +121,7 @@ class TableService:
     async def get_table_entry(
         self,
         project_id: ProjectID,
-        fpid: "FPID | str",
+        fpid: 'FPID | str',
     ) -> TableDBEntryV2 | None:
         from kumo_core.types.schema import FPID
 
@@ -133,7 +131,7 @@ class TableService:
     async def get_table_entry_by_alias(
         self,
         project_id: ProjectID,
-        alias: "TableName | str",
+        alias: 'TableName | str',
     ) -> TableDBEntryV2 | None:
         async with self._state_db.read_tx() as tx:
             return await self._tables.get_by_alias(tx, project_id, alias)
@@ -141,7 +139,7 @@ class TableService:
     async def get_table_entries_by_aliases(
         self,
         project_id: ProjectID,
-        aliases: "Iterable[TableName | str]",
+        aliases: 'Iterable[TableName | str]',
     ) -> dict[TableName | str, TableDBEntryV2]:
         async with self._state_db.read_tx() as tx:
             return await self._tables.get_many_by_alias(tx, project_id, aliases)
@@ -149,18 +147,19 @@ class TableService:
     async def get_table_entries(
         self,
         project_id: ProjectID,
-        fpids: "Iterable[FPID | str]",
+        fpids: 'Iterable[FPID | str]',
     ) -> dict[FPID, TableDBEntryV2]:
         from kumo_core.types.schema import FPID
 
         async with self._state_db.read_tx() as tx:
             return await self._tables.get_many(
-                tx, project_id, [FPID(str(fpid)) for fpid in fpids])
+                tx, project_id, [FPID(str(fpid)) for fpid in fpids]
+            )
 
     async def get_table_definition(
         self,
         project_id: ProjectID,
-        fpid: "FPID | str",
+        fpid: 'FPID | str',
     ) -> TableDefinition | None:
         entry = await self.get_table_entry(project_id, fpid)
         return entry.config if entry is not None else None
@@ -168,13 +167,14 @@ class TableService:
     async def list_tables(
         self,
         project_id: ProjectID,
-        connector_id: "ConnectorID | None" = None,
+        connector_id: 'ConnectorID | None' = None,
     ) -> list[TableDBEntryV2]:
         async with self._state_db.read_tx() as tx:
             if connector_id is None:
                 return await self._tables.list(tx, project_id)
             return await self._tables.list_by_connector_id(
-                tx, project_id, str(connector_id))
+                tx, project_id, str(connector_id)
+            )
 
     async def list_named_tables(
         self,
@@ -186,7 +186,7 @@ class TableService:
     async def table_alias_exists(
         self,
         project_id: ProjectID,
-        alias: "TableName | str",
+        alias: 'TableName | str',
     ) -> bool:
         async with self._state_db.read_tx() as tx:
             return await self._tables.alias_exists(tx, project_id, alias)
@@ -194,20 +194,22 @@ class TableService:
     @staticmethod
     def _table_uses_connector_id(
         table: TableDBEntryV2,
-        connector_id: "ConnectorID",
+        connector_id: 'ConnectorID',
     ) -> bool:
-        if table.alias is None or table.alias == "":
+        if table.alias is None or table.alias == '':
             return False
         source_table = table.config.source_table
         for field_name in (
-                "connector_id",
-                "bigquery_connector_id",
-                "snowflake_connector_id",
-                "databricks_connector_id",
+            'connector_id',
+            'bigquery_connector_id',
+            'snowflake_connector_id',
+            'databricks_connector_id',
         ):
             table_connector_id = getattr(source_table, field_name, None)
-            if (table_connector_id
-                    and ConnectorID(str(table_connector_id)) == connector_id):
+            if (
+                table_connector_id
+                and ConnectorID(str(table_connector_id)) == connector_id
+            ):
                 return True
         return False
 
@@ -233,8 +235,8 @@ class TableService:
         alias: str | None = None,
         force_rename: bool = False,
         increment_ref_count: bool = True,
-        created_by: str = "",
-        created_by_name: str = "",
+        created_by: str = '',
+        created_by_name: str = '',
     ) -> TableDBEntryV2:
         async with self._state_db.write_tx() as tx:
             return await _save_table_definition_in_tx(
@@ -252,7 +254,7 @@ class TableService:
     async def clear_table_alias(
         self,
         project_id: ProjectID,
-        alias: "TableName | str",
+        alias: 'TableName | str',
     ) -> TableDBEntryV2 | None:
         async with self._state_db.write_tx() as tx:
             entry = await self._tables.get_by_alias(tx, project_id, alias)
@@ -270,7 +272,7 @@ class TableService:
     async def delete_table_entry(
         self,
         project_id: ProjectID,
-        fpid: "FPID | str",
+        fpid: 'FPID | str',
     ) -> TableDBEntryV2 | None:
         from kumo_core.types.schema import FPID
 
@@ -280,20 +282,21 @@ class TableService:
     async def decrement_or_delete_table_entry(
         self,
         project_id: ProjectID,
-        fpid: "FPID | str",
+        fpid: 'FPID | str',
     ) -> bool:
         from kumo_core.types.schema import FPID
 
         async with self._state_db.write_tx() as tx:
             return await self._tables.decrement_or_delete(
-                tx, project_id, FPID(str(fpid)))
+                tx, project_id, FPID(str(fpid))
+            )
 
 
 class GraphService:
     def __init__(
         self,
         state_db: StateDB,
-        connector_service: "ConnectorService",
+        connector_service: 'ConnectorService',
     ) -> None:
         self._state_db = state_db
         self._connectors = connector_service
@@ -304,7 +307,7 @@ class GraphService:
     async def get_graph_entry(
         self,
         project_id: ProjectID,
-        fpid: "FPID | str",
+        fpid: 'FPID | str',
     ) -> GraphDBEntryV2 | None:
         from kumo_core.types.schema import FPID
 
@@ -322,18 +325,19 @@ class GraphService:
     async def get_graph_entries(
         self,
         project_id: ProjectID,
-        fpids: "Iterable[FPID | str]",
+        fpids: 'Iterable[FPID | str]',
     ) -> dict[FPID, GraphDBEntryV2]:
         from kumo_core.types.schema import FPID
 
         async with self._state_db.read_tx() as tx:
             return await self._graphs.get_many(
-                tx, project_id, [FPID(str(fpid)) for fpid in fpids])
+                tx, project_id, [FPID(str(fpid)) for fpid in fpids]
+            )
 
     async def get_graph_definition(
         self,
         project_id: ProjectID,
-        fpid: "FPID | str",
+        fpid: 'FPID | str',
     ) -> GraphDefinition | None:
         from kumo_core.types.schema import FPID
 
@@ -344,9 +348,12 @@ class GraphService:
             if entry is None:
                 return None
             table_entries = await self._tables.get_many(
-                tx, project_id, entry.table_name_to_dbid.values())
-            if any(table_fpid not in table_entries
-                   for table_fpid in entry.table_name_to_dbid.values()):
+                tx, project_id, entry.table_name_to_dbid.values()
+            )
+            if any(
+                table_fpid not in table_entries
+                for table_fpid in entry.table_name_to_dbid.values()
+            ):
                 return None
         tables = {
             table_name: table_entries[table_fpid].config
@@ -357,7 +364,7 @@ class GraphService:
     async def get_graph_definitions(
         self,
         project_id: ProjectID,
-        fpids: "Iterable[FPID | str]",
+        fpids: 'Iterable[FPID | str]',
     ) -> dict[FPID, GraphDefinition]:
         from kumo_core.types.schema import FPID
 
@@ -367,31 +374,29 @@ class GraphService:
         if not graph_fpids:
             return {}
         async with self._state_db.read_tx() as tx:
-            graph_entries = await self._graphs.get_many(tx, project_id,
-                                                        graph_fpids)
+            graph_entries = await self._graphs.get_many(tx, project_id, graph_fpids)
             table_fpids = {
                 table_fpid
                 for graph_entry in graph_entries.values()
                 for table_fpid in graph_entry.table_name_to_dbid.values()
             }
-            table_entries = await self._tables.get_many(tx, project_id,
-                                                        table_fpids)
+            table_entries = await self._tables.get_many(tx, project_id, table_fpids)
 
         definitions: dict[FPID, GraphDefinition] = {}
         for graph_fpid in graph_fpids:
             graph_entry = graph_entries.get(graph_fpid)
             if graph_entry is None:
                 continue
-            if any(table_fpid not in table_entries
-                   for table_fpid in graph_entry.table_name_to_dbid.values()):
+            if any(
+                table_fpid not in table_entries
+                for table_fpid in graph_entry.table_name_to_dbid.values()
+            ):
                 continue
             tables = {
                 table_name: table_entries[table_fpid].config
-                for table_name, table_fpid in
-                graph_entry.table_name_to_dbid.items()
+                for table_name, table_fpid in graph_entry.table_name_to_dbid.items()
             }
-            definitions[graph_fpid] = GraphDefinition(tables,
-                                                      graph_entry.col_groups)
+            definitions[graph_fpid] = GraphDefinition(tables, graph_entry.col_groups)
         return definitions
 
     async def get_many_graph_data_compute_inputs(
@@ -419,36 +424,37 @@ class GraphService:
             if graph_fpid is not None:
                 graph_fpids_by_id[graph_id] = graph_fpid
             elif pquery_id is not None:
-                graph_ids_by_pquery_id.setdefault(pquery_id,
-                                                  []).append(graph_id)
+                graph_ids_by_pquery_id.setdefault(pquery_id, []).append(graph_id)
 
         async with self._state_db.read_tx() as tx:
             if graph_ids_by_pquery_id:
                 pquery_definitions = await self._pqueries.get_definitions_by_ids(
-                    tx, graph_ids_by_pquery_id)
-                for pquery_id, pquery_graph_ids in (
-                        graph_ids_by_pquery_id.items()):
+                    tx, graph_ids_by_pquery_id
+                )
+                for pquery_id, pquery_graph_ids in graph_ids_by_pquery_id.items():
                     definition = pquery_definitions.get(pquery_id)
                     if definition is not None:
                         for graph_id in pquery_graph_ids:
                             graph_fpids_by_id[graph_id] = definition.graph_fpid
 
             graph_entries = await self._graphs.get_many(
-                tx, project_id, graph_fpids_by_id.values())
+                tx, project_id, graph_fpids_by_id.values()
+            )
             table_fpids = {
                 table_fpid
                 for graph_entry in graph_entries.values()
                 for table_fpid in graph_entry.table_name_to_dbid.values()
             }
-            table_entries = await self._tables.get_many(tx, project_id,
-                                                        table_fpids)
+            table_entries = await self._tables.get_many(tx, project_id, table_fpids)
 
-            pending: list[tuple[GraphDataComputeInput, set[ConnectorID]]
-                          | Exception] = []
+            pending: list[
+                tuple[GraphDataComputeInput, set[ConnectorID]] | Exception
+            ] = []
             for graph_id in graph_ids:
                 graph_fpid = graph_fpids_by_id.get(graph_id)
-                graph_entry = (graph_entries.get(graph_fpid)
-                               if graph_fpid is not None else None)
+                graph_entry = (
+                    graph_entries.get(graph_fpid) if graph_fpid is not None else None
+                )
                 if graph_entry is None:
                     pending.append(GraphDoesNotExistError(graph_id))
                     continue
@@ -459,10 +465,10 @@ class GraphService:
                 table_aliases: dict[TableID, TableName] = {}
                 tables_by_name: dict[TableName, TableDefinition] = {}
                 missing_table = None
-                for table_name, table_id in (
-                        canonical_entry.table_name_to_id.items()):
+                for table_name, table_id in canonical_entry.table_name_to_id.items():
                     table_entry = table_entries.get(
-                        graph_entry.table_name_to_dbid[table_name])
+                        graph_entry.table_name_to_dbid[table_name]
+                    )
                     if table_entry is None:
                         missing_table = TableDoesNotExistError(table_id)
                         break
@@ -478,19 +484,22 @@ class GraphService:
                     col_groups=canonical_entry.col_groups,
                 )
                 connector_ids = self._connectors.connector_ids_for_graph(
-                    graph_definition)
-                pending.append((
-                    GraphDataComputeInput(
-                        graph_display_name=canonical_entry.display_name,
-                        graph_key=canonical_entry.dedup_key,
-                        tables=tables,
-                        base_tables={},
-                        connectors={},
-                        graph_definition=graph_definition,
-                        table_aliases=table_aliases,
-                    ),
-                    connector_ids,
-                ))
+                    graph_definition
+                )
+                pending.append(
+                    (
+                        GraphDataComputeInput(
+                            graph_display_name=canonical_entry.display_name,
+                            graph_key=canonical_entry.dedup_key,
+                            tables=tables,
+                            base_tables={},
+                            connectors={},
+                            graph_definition=graph_definition,
+                            table_aliases=table_aliases,
+                        ),
+                        connector_ids,
+                    )
+                )
 
         result: list[GraphDataComputeInput | Exception] = []
         execution_refs: dict[ConnectorID, ConnectorExecutionRef] = {}
@@ -502,23 +511,28 @@ class GraphService:
             compute_input, connector_ids = item
             try:
                 for connector_id in connector_ids:
-                    if (connector_id in execution_refs
-                            or connector_id in execution_ref_errors):
+                    if (
+                        connector_id in execution_refs
+                        or connector_id in execution_ref_errors
+                    ):
                         continue
                     try:
-                        execution_refs[connector_id] = await (
-                            self._connectors.execution_ref_for_project(
-                                user_authorization,
-                                project_id,
-                                connector_id,
-                                CONNECTOR_GRAPH_ACTIONS,
-                            ))
+                        execution_refs[
+                            connector_id
+                        ] = await self._connectors.execution_ref_for_project(
+                            user_authorization,
+                            project_id,
+                            connector_id,
+                            CONNECTOR_GRAPH_ACTIONS,
+                        )
                     except Exception as error:
                         execution_ref_errors[connector_id] = error
                 connector_error = next(
-                    (execution_ref_errors[connector_id]
-                     for connector_id in connector_ids
-                     if connector_id in execution_ref_errors),
+                    (
+                        execution_ref_errors[connector_id]
+                        for connector_id in connector_ids
+                        if connector_id in execution_ref_errors
+                    ),
                     None,
                 )
                 if connector_error is not None:
@@ -543,11 +557,13 @@ class GraphService:
     ) -> GraphDataComputeInput:
         from rest.config.graph_v2 import GraphDataComputeInput
 
-        result = (await self.get_many_graph_data_compute_inputs(
-            [graph_id],
-            project_id=project_id,
-            user_authorization=user_authorization,
-        ))[0]
+        result = (
+            await self.get_many_graph_data_compute_inputs(
+                [graph_id],
+                project_id=project_id,
+                user_authorization=user_authorization,
+            )
+        )[0]
         if isinstance(result, GraphDataComputeInput):
             return result
         raise result
@@ -571,15 +587,13 @@ class GraphService:
         pquery_id, graph_fpid = GraphIDv2.parse(graph_id)
         if graph_fpid is None and pquery_id is not None:
             async with self._state_db.read_tx() as tx:
-                pquery = await self._pqueries.get_definition_by_id(
-                    tx, pquery_id)
+                pquery = await self._pqueries.get_definition_by_id(tx, pquery_id)
             graph_fpid = pquery.graph_fpid if pquery is not None else None
         if graph_fpid is None:
             raise GraphDoesNotExistError(graph_id)
 
         graph_entry = await self.get_graph_entry(project_id, graph_fpid)
-        graph_definition = await self.get_graph_definition(
-            project_id, graph_fpid)
+        graph_definition = await self.get_graph_definition(project_id, graph_fpid)
         if graph_entry is None or graph_definition is None:
             raise GraphDoesNotExistError(graph_id)
         canonical_entry = graph_entry.as_canonical_entry(pquery_id)
@@ -589,8 +603,7 @@ class GraphService:
         }
         table_aliases = {
             table_id: TableName(table_name)
-            for table_name, table_id in
-            canonical_entry.table_name_to_id.items()
+            for table_name, table_id in canonical_entry.table_name_to_id.items()
         }
         return GraphDataComputeInput(
             graph_display_name=canonical_entry.display_name,
@@ -611,11 +624,13 @@ class GraphService:
     ) -> GraphDataComputeInput:
         from rest.config.graph_v2 import GraphDataComputeInput
 
-        result = (await self.get_many_graph_data_compute_inputs(
-            [graph_id],
-            project_id=project_id,
-            user_authorization=user_authorization,
-        ))[0]
+        result = (
+            await self.get_many_graph_data_compute_inputs(
+                [graph_id],
+                project_id=project_id,
+                user_authorization=user_authorization,
+            )
+        )[0]
         if isinstance(result, GraphDataComputeInput):
             return result
         raise result
@@ -656,8 +671,8 @@ class GraphService:
         alias: str | None = None,
         force_rename: bool = False,
         increment_ref_count: bool = True,
-        created_by: str = "",
-        created_by_name: str = "",
+        created_by: str = '',
+        created_by_name: str = '',
     ) -> GraphDBEntryV2:
         from rest.config.graph_v2 import GraphDBEntryV2
         from rest.driver.error_constants import GRAPH_RENAME_MESSAGE
@@ -673,7 +688,8 @@ class GraphService:
                 if entry.alias and alias and entry.alias != alias:
                     if not force_rename:
                         raise GraphDefinitionAlreadyExists(
-                            GRAPH_RENAME_MESSAGE.format(entry.alias))
+                            GRAPH_RENAME_MESSAGE.format(entry.alias)
+                        )
                 if force_rename:
                     entry.alias = alias
                 else:
@@ -738,7 +754,7 @@ class GraphService:
     async def clear_graph_alias_by_id(
         self,
         project_id: ProjectID,
-        fpid: "FPID | str",
+        fpid: 'FPID | str',
     ) -> GraphDBEntryV2 | None:
         """Atomically clear an alias by fingerprint, or return ``None`` if
         the graph is missing or already has no alias.
@@ -755,7 +771,7 @@ class GraphService:
     async def delete_graph_entry(
         self,
         project_id: ProjectID,
-        fpid: "FPID | str",
+        fpid: 'FPID | str',
     ) -> GraphDBEntryV2 | None:
         from kumo_core.types.schema import FPID
 
@@ -765,18 +781,19 @@ class GraphService:
     async def decrement_or_delete_graph_entry(
         self,
         project_id: ProjectID,
-        fpid: "FPID | str",
+        fpid: 'FPID | str',
     ) -> bool:
         from kumo_core.types.schema import FPID
 
         async with self._state_db.write_tx() as tx:
             return await self._graphs.decrement_or_delete(
-                tx, project_id, FPID(str(fpid)))
+                tx, project_id, FPID(str(fpid))
+            )
 
     async def decrement_or_delete_graph_definition(
         self,
         project_id: ProjectID,
-        fpid: "FPID | str",
+        fpid: 'FPID | str',
     ) -> bool:
         from kumo_core.types.schema import FPID
 
@@ -790,8 +807,7 @@ class GraphService:
                 await self._graphs.upsert(tx, entry.id, entry)
                 return True
             for table_fpid in entry.table_name_to_dbid.values():
-                await self._tables.decrement_or_delete(tx, project_id,
-                                                       table_fpid)
+                await self._tables.decrement_or_delete(tx, project_id, table_fpid)
             await self._graphs.delete(tx, project_id, entry.id)
             return True
 
@@ -902,7 +918,7 @@ class PQueryService:
 
     async def get_definitions(
         self,
-        fpids: "Iterable[FPID]",
+        fpids: 'Iterable[FPID]',
     ) -> dict[FPID, PQueryDefinition]:
         async with self._state_db.read_tx() as tx:
             return await self._repository.get_definitions(tx, fpids)
@@ -923,13 +939,13 @@ class PQueryService:
         async with self._state_db.read_tx() as tx:
             return await self._repository.get_alias(tx, name)
 
-    async def get_aliases(self, names: "Iterable[str]") -> dict[str, FPID]:
+    async def get_aliases(self, names: 'Iterable[str]') -> dict[str, FPID]:
         async with self._state_db.read_tx() as tx:
             return await self._repository.get_aliases(tx, names)
 
     async def resolve_fpids(
         self,
-        pquery_ids: "Iterable[PredictiveQueryID]",
+        pquery_ids: 'Iterable[PredictiveQueryID]',
     ) -> dict[PredictiveQueryID, FPID]:
         async with self._state_db.read_tx() as tx:
             return await self._repository.resolve_fpids(tx, pquery_ids)
@@ -938,8 +954,7 @@ class PQueryService:
         async with self._state_db.read_tx() as tx:
             if name_pattern is None:
                 return await self._repository.list_aliases(tx)
-            return await self._repository.list_aliases_matching(
-                tx, name_pattern)
+            return await self._repository.list_aliases_matching(tx, name_pattern)
 
     async def set_alias(self, name: str, fpid: FPID) -> None:
         async with self._state_db.write_tx() as tx:
@@ -958,7 +973,7 @@ class PQueryService:
 
     async def get_definitions_by_ids(
         self,
-        pquery_ids: "Iterable[PredictiveQueryID]",
+        pquery_ids: 'Iterable[PredictiveQueryID]',
     ) -> dict[PredictiveQueryID, PQueryDefinition]:
         async with self._state_db.read_tx() as tx:
             return await self._repository.get_definitions_by_ids(tx, pquery_ids)
@@ -967,14 +982,14 @@ class PQueryService:
 class ProjectService:
     def __init__(self, state_db: StateDB) -> None:
         self._state_db = state_db
-        self._projects = JsonRepository("projects", ProjectDBEntry)
-        self._groups = JsonRepository("groups", KumoGroupDBEntry)
+        self._projects = JsonRepository('projects', ProjectDBEntry)
+        self._groups = JsonRepository('groups', KumoGroupDBEntry)
 
     @staticmethod
-    def _require_principal(
-            user_authorization: AuthPrincipal | None) -> AuthPrincipal:
+    def _require_principal(user_authorization: AuthPrincipal | None) -> AuthPrincipal:
         if user_authorization is None:
             from statedb.utils.errors import ProjectForbiddenError
+
             raise ProjectForbiddenError('Authenticated principal is required')
         return user_authorization
 
@@ -985,14 +1000,17 @@ class ProjectService:
     ) -> None:
         from statedb.utils.errors import ProjectForbiddenError
 
-        if (not user_authorization.is_admin
-                and group_id not in user_authorization.kumo_group_ids):
-            if getattr(user_authorization, "external_membership_unavailable",
-                       False):
+        if (
+            not user_authorization.is_admin
+            and group_id not in user_authorization.kumo_group_ids
+        ):
+            if getattr(user_authorization, 'external_membership_unavailable', False):
                 from statedb.utils import errors as statedb_errors
+
                 raise statedb_errors.ExternalMembershipUnavailableError(
-                    "External group membership is unavailable; please retry")
-            raise ProjectForbiddenError("Not a member of this group")
+                    'External group membership is unavailable; please retry'
+                )
+            raise ProjectForbiddenError('Not a member of this group')
 
     @staticmethod
     def _require_mutation_access(
@@ -1001,18 +1019,20 @@ class ProjectService:
     ) -> None:
         from statedb.utils.errors import ProjectForbiddenError
 
-        if not ProjectService._project_visible_to_auth(project,
-                                                       user_authorization):
-            membership_could_authorize = (not project.is_private
-                                          or project.created_by == str(
-                                              user_authorization.user_id))
-            if (membership_could_authorize
-                    and getattr(user_authorization,
-                                "external_membership_unavailable", False)):
+        if not ProjectService._project_visible_to_auth(project, user_authorization):
+            membership_could_authorize = (
+                not project.is_private
+                or project.created_by == str(user_authorization.user_id)
+            )
+            if membership_could_authorize and getattr(
+                user_authorization, 'external_membership_unavailable', False
+            ):
                 from statedb.utils import errors as statedb_errors
+
                 raise statedb_errors.ExternalMembershipUnavailableError(
-                    "External group membership is unavailable; please retry")
-            raise ProjectForbiddenError("Project mutation access denied")
+                    'External group membership is unavailable; please retry'
+                )
+            raise ProjectForbiddenError('Project mutation access denied')
 
     @staticmethod
     def _require_owner_or_admin(
@@ -1022,11 +1042,13 @@ class ProjectService:
         from statedb.utils.errors import ProjectForbiddenError
 
         ProjectService._require_mutation_access(project, user_authorization)
-        if (not user_authorization.is_admin
-                and project.created_by != str(user_authorization.user_id)):
+        if not user_authorization.is_admin and project.created_by != str(
+            user_authorization.user_id
+        ):
             raise ProjectForbiddenError(
-                "Only the project owner or an administrator may change "
-                "project administration settings")
+                'Only the project owner or an administrator may change '
+                'project administration settings'
+            )
 
     @staticmethod
     def _existing_project(
@@ -1045,7 +1067,8 @@ class ProjectService:
 
         if project.status != ProjectStatus.ACTIVE:
             raise ProjectNotAvailableError(
-                f"Project '{project.id}' is archived and cannot be mutated")
+                f"Project '{project.id}' is archived and cannot be mutated"
+            )
 
     @staticmethod
     def _current_user_id(user_authorization: AuthPrincipal) -> str:
@@ -1064,10 +1087,7 @@ class ProjectService:
         return cls._project_visible_to_user(
             project,
             user_id=str(user_authorization.user_id),
-            group_ids={
-                str(group_id)
-                for group_id in user_authorization.kumo_group_ids
-            },
+            group_ids={str(group_id) for group_id in user_authorization.kumo_group_ids},
             is_admin=user_authorization.is_admin,
         )
 
@@ -1085,19 +1105,20 @@ class ProjectService:
         args: list[object] = []
         if group_id is not None:
             args.append(group_id)
-            clauses.append(f"{_json_value(tx, 'group_id')} = "
-                           f"{_placeholder(tx, len(args))}")
+            clauses.append(
+                f'{_json_value(tx, "group_id")} = {_placeholder(tx, len(args))}'
+            )
         if display_name is not None:
             args.append(display_name)
-            clauses.append(f"{_json_value(tx, 'display_name')} = "
-                           f"{_placeholder(tx, len(args))}")
+            clauses.append(
+                f'{_json_value(tx, "display_name")} = {_placeholder(tx, len(args))}'
+            )
         if slug is not None:
             args.append(slug)
-            clauses.append(f"{_json_value(tx, 'slug')} = "
-                           f"{_placeholder(tx, len(args))}")
+            clauses.append(f'{_json_value(tx, "slug")} = {_placeholder(tx, len(args))}')
         if exclude_project_id is not None:
             args.append(exclude_project_id)
-            clauses.append(f"id <> {_placeholder(tx, len(args))}")
+            clauses.append(f'id <> {_placeholder(tx, len(args))}')
 
         if not user_authorization.is_admin:
             group_ids = [
@@ -1108,18 +1129,20 @@ class ProjectService:
                 for user_group_id in group_ids:
                     args.append(user_group_id)
                     placeholders.append(_placeholder(tx, len(args)))
-                clauses.append(f"{_json_value(tx, 'group_id')} IN "
-                               f"({', '.join(placeholders)})")
+                clauses.append(
+                    f'{_json_value(tx, "group_id")} IN ({", ".join(placeholders)})'
+                )
             else:
                 clauses.append('1 = 0')
 
         rows = await self._projects.list_where_sql(
             tx,
-            " AND ".join(clauses) if clauses else "1 = 1",
+            ' AND '.join(clauses) if clauses else '1 = 1',
             args,
         )
         return [
-            row.payload for row in rows
+            row.payload
+            for row in rows
             if self._project_visible_to_auth(row.payload, user_authorization)
         ]
 
@@ -1134,8 +1157,7 @@ class ProjectService:
         from statedb.utils.errors import ProjectNotFoundError
 
         row = await self._projects.get(tx, str(project_id))
-        project = self._existing_project(row.payload if row else None,
-                                         str(project_id))
+        project = self._existing_project(row.payload if row else None, str(project_id))
         if not self._project_visible_to_auth(project, user_authorization):
             raise ProjectNotFoundError(f"Project '{project_id}' not found")
         if require_active:
@@ -1147,8 +1169,10 @@ class ProjectService:
         user_authorization: AuthPrincipal,
     ) -> list[str]:
         return [
-            str(project.id) for project in await
-            self._list_visible_projects_allow_partial(user_authorization)
+            str(project.id)
+            for project in await self._list_visible_projects_allow_partial(
+                user_authorization
+            )
         ]
 
     async def _list_visible_projects_allow_partial(
@@ -1156,8 +1180,7 @@ class ProjectService:
         user_authorization: AuthPrincipal,
     ) -> list[ProjectDBEntry]:
         async with self._state_db.read_tx() as tx:
-            return await self._list_visible_projects_in_tx(
-                tx, user_authorization)
+            return await self._list_visible_projects_in_tx(tx, user_authorization)
 
     async def create_project(
         self,
@@ -1165,7 +1188,7 @@ class ProjectService:
         name: str,
         group_id: str,
         slug: str | None = None,
-        description: str = "",
+        description: str = '',
         is_private: bool = False,
         user_authorization: AuthPrincipal | None,
     ) -> ProjectDBEntry:
@@ -1186,26 +1209,30 @@ class ProjectService:
             raise ValueError('Project name cannot be empty')
         if len(display_name) > 64:
             raise ValueError('Project name cannot exceed 64 characters')
-        resource_slug = (validate_resource_slug(slug) if slug is not None else
-                         derive_resource_slug(display_name))
+        resource_slug = (
+            validate_resource_slug(slug)
+            if slug is not None
+            else derive_resource_slug(display_name)
+        )
         try:
             async with self._state_db.write_tx() as tx:
                 await lock_group_relations(tx, [group_id])
                 group_row = await self._groups.get(tx, str(group_id))
-                if (group_row is None
-                        or group_row.payload.status != GroupStatus.ACTIVE):
-                    raise GroupNotFoundError("Group not found.")
+                if group_row is None or group_row.payload.status != GroupStatus.ACTIVE:
+                    raise GroupNotFoundError('Group not found.')
                 self._require_group_membership(group_id, user_authorization)
                 if await self._projects.exists_by_fields(
-                        tx, {'normalized_display_name': normalized_name}):
+                    tx, {'normalized_display_name': normalized_name}
+                ):
+                    raise ProjectNameConflictError('Project name is not available')
+                if await self._projects.exists_by_fields(
+                    tx, {'normalized_display_name': resource_slug}
+                ) or await self._projects.exists_by_fields(
+                    tx, {'slug': normalized_name}
+                ):
                     raise ProjectNameConflictError(
-                        'Project name is not available')
-                if (await self._projects.exists_by_fields(
-                        tx, {'normalized_display_name': resource_slug})
-                        or await self._projects.exists_by_fields(
-                            tx, {'slug': normalized_name})):
-                    raise ProjectNameConflictError(
-                        'Project name conflicts with an existing slug')
+                        'Project name conflicts with an existing slug'
+                    )
                 project_id = ProjectID.generate()
                 entry = ProjectDBEntry(
                     id=project_id,
@@ -1223,13 +1250,11 @@ class ProjectService:
                 await self._projects.upsert(tx, str(project_id), entry)
         except (sqlite3.IntegrityError, asyncpg.UniqueViolationError) as error:
             async with self._state_db.read_tx() as tx:
-                if await self._projects.exists_by_fields(
-                        tx, {'slug': resource_slug}):
+                if await self._projects.exists_by_fields(tx, {'slug': resource_slug}):
                     raise ResourceSlugConflictError(
                         f"Project slug '{resource_slug}' is already in use."
                     ) from error
-            raise ProjectNameConflictError(
-                'Project name is not available') from error
+            raise ProjectNameConflictError('Project name is not available') from error
         return entry
 
     async def list_visible_projects(
@@ -1238,8 +1263,7 @@ class ProjectService:
     ) -> list[ProjectDBEntry]:
         user_authorization = self._require_principal(user_authorization)
         async with self._state_db.read_tx() as tx:
-            return await self._list_visible_projects_in_tx(
-                tx, user_authorization)
+            return await self._list_visible_projects_in_tx(tx, user_authorization)
 
     async def list_projects_in_group(
         self,
@@ -1253,11 +1277,12 @@ class ProjectService:
         self._require_group_membership(group_id, user_authorization)
         async with self._state_db.read_tx() as tx:
             return await self._list_visible_projects_in_tx(
-                tx, user_authorization, group_id=str(group_id))
+                tx, user_authorization, group_id=str(group_id)
+            )
 
     async def get_project(
         self,
-        project_id: "ProjectID | str",
+        project_id: 'ProjectID | str',
         user_authorization: AuthPrincipal | None,
     ) -> ProjectDBEntry:
         from statedb.utils.errors import ProjectNotFoundError
@@ -1265,16 +1290,12 @@ class ProjectService:
         user_authorization = self._require_principal(user_authorization)
         async with self._state_db.read_tx() as tx:
             row = await self._projects.get(tx, str(project_id))
-        project = self._existing_project(row.payload if row else None,
-                                         str(project_id))
+        project = self._existing_project(row.payload if row else None, str(project_id))
         if not self._project_visible_to_user(
-                project,
-                user_id=str(user_authorization.user_id),
-                group_ids={
-                    str(group_id)
-                    for group_id in user_authorization.kumo_group_ids
-                },
-                is_admin=user_authorization.is_admin,
+            project,
+            user_id=str(user_authorization.user_id),
+            group_ids={str(group_id) for group_id in user_authorization.kumo_group_ids},
+            is_admin=user_authorization.is_admin,
         ):
             raise ProjectNotFoundError(f"Project '{project_id}' not found")
         return project
@@ -1291,14 +1312,15 @@ class ProjectService:
         slug = validate_resource_slug(slug, allow_reserved=True)
         async with self._state_db.read_tx() as tx:
             projects = await self._list_visible_projects_in_tx(
-                tx, user_authorization, slug=slug)
+                tx, user_authorization, slug=slug
+            )
         if not projects:
             raise ProjectNotFoundError('Project not found')
         return projects[0]
 
     async def archive_project(
         self,
-        project_id: "ProjectID | str",
+        project_id: 'ProjectID | str',
         user_authorization: AuthPrincipal | None,
     ) -> ProjectDBEntry:
         from kumoapi.data_source import DEFAULT_PROJECT_ID
@@ -1310,15 +1332,17 @@ class ProjectService:
             raise ValueError('The canonical Default project cannot be archived')
         async with self._state_db.write_tx() as tx:
             row = await self._projects.get(tx, str(project_id))
-            project = self._existing_project(row.payload if row else None,
-                                             str(project_id))
+            project = self._existing_project(
+                row.payload if row else None, str(project_id)
+            )
             # Connector creation locks the owning group's relations around
             # its final active-project/binding recheck and insert. Taking the
             # same lock prevents archival from racing that final decision.
             await lock_group_relations(tx, [project.group_id])
             row = await self._projects.get(tx, str(project_id))
-            project = self._existing_project(row.payload if row else None,
-                                             str(project_id))
+            project = self._existing_project(
+                row.payload if row else None, str(project_id)
+            )
             self._require_owner_or_admin(project, user_authorization)
             self._require_active_project(project)
             project.status = ProjectStatus.ARCHIVED
@@ -1328,7 +1352,7 @@ class ProjectService:
 
     async def update_project(
         self,
-        project_id: "ProjectID | str",
+        project_id: 'ProjectID | str',
         *,
         name: str | None = None,
         description: str | None = None,
@@ -1344,16 +1368,15 @@ class ProjectService:
         user_authorization = self._require_principal(user_authorization)
         if str(project_id) == DEFAULT_PROJECT_ID:
             if name is not None and name.strip() != 'Default':
-                raise ValueError(
-                    'The canonical Default project cannot be renamed')
+                raise ValueError('The canonical Default project cannot be renamed')
             if is_private:
-                raise ValueError(
-                    'The canonical Default project must remain shared')
+                raise ValueError('The canonical Default project must remain shared')
         try:
             async with self._state_db.write_tx() as tx:
                 row = await self._projects.get(tx, str(project_id))
-                project = self._existing_project(row.payload if row else None,
-                                                 str(project_id))
+                project = self._existing_project(
+                    row.payload if row else None, str(project_id)
+                )
                 if name is not None or is_private is not None:
                     self._require_owner_or_admin(project, user_authorization)
                 else:
@@ -1365,18 +1388,19 @@ class ProjectService:
                     if not normalized_name:
                         raise ValueError('Project name cannot be empty')
                     if len(display_name) > 64:
-                        raise ValueError(
-                            'Project name cannot exceed 64 characters')
+                        raise ValueError('Project name cannot exceed 64 characters')
                     if await self._projects.exists_by_fields(
-                            tx, {'normalized_display_name': normalized_name},
-                            exclude_id=str(project.id)):
-                        raise ProjectNameConflictError(
-                            'Project name is not available')
+                        tx,
+                        {'normalized_display_name': normalized_name},
+                        exclude_id=str(project.id),
+                    ):
+                        raise ProjectNameConflictError('Project name is not available')
                     if await self._projects.exists_by_fields(
-                            tx, {'slug': normalized_name},
-                            exclude_id=str(project.id)):
+                        tx, {'slug': normalized_name}, exclude_id=str(project.id)
+                    ):
                         raise ProjectNameConflictError(
-                            'Project name conflicts with an existing slug')
+                            'Project name conflicts with an existing slug'
+                        )
                     project.display_name = display_name
                     project.normalized_display_name = normalized_name
                 if description is not None:
@@ -1386,13 +1410,12 @@ class ProjectService:
                 project.timestamps = update_timestamps(project.timestamps)
                 await self._projects.upsert(tx, str(project.id), project)
         except (sqlite3.IntegrityError, asyncpg.UniqueViolationError) as error:
-            raise ProjectNameConflictError(
-                'Project name is not available') from error
+            raise ProjectNameConflictError('Project name is not available') from error
         return project
 
     async def validate_project_for_creation(
         self,
-        project_id: "ProjectID | str",
+        project_id: 'ProjectID | str',
         user_authorization: AuthPrincipal | None,
     ) -> ProjectDBEntry:
         from statedb.utils.errors import ProjectNotAvailableError
@@ -1400,8 +1423,8 @@ class ProjectService:
         project = await self.get_project(project_id, user_authorization)
         if project.status == ProjectStatus.ARCHIVED:
             raise ProjectNotAvailableError(
-                f"Project '{project_id}' is archived "
-                "and cannot accept new resources.")
+                f"Project '{project_id}' is archived and cannot accept new resources."
+            )
         return project
 
     async def validate_project_name(
@@ -1416,13 +1439,13 @@ class ProjectService:
         if not name or not name.strip():
             return ValidateNameResponse(
                 is_valid=False,
-                error_msg="Project name cannot be empty.",
+                error_msg='Project name cannot be empty.',
             )
 
         if len(name.strip()) > 64:
             return ValidateNameResponse(
                 is_valid=False,
-                error_msg="Project name cannot exceed 64 characters.",
+                error_msg='Project name cannot exceed 64 characters.',
             )
 
         self._require_principal(user_authorization)
@@ -1438,7 +1461,8 @@ class ProjectService:
             )
         if matching:
             return ValidateNameResponse(
-                is_valid=False, error_msg='Project name is not available.')
+                is_valid=False, error_msg='Project name is not available.'
+            )
 
         return ValidateNameResponse(is_valid=True, error_msg=None)
 
@@ -1479,14 +1503,13 @@ class StateServices:
         self.status = StateDBStatusService(state_db)
         self.api_keys = APIKeyService(state_db)
         from statedb.db import connector_authorizations
+
         self.connector_authorizations = (
-            connector_authorizations.ConnectorAuthorizationService(state_db))
-        self.connectors = ConnectorService(state_db,
-                                           self.connector_authorizations)
-        self.artifact_exports = ArtifactExportJobService(
-            state_db, self.connectors)
-        self.identities = IdentityService(state_db,
-                                          self.connector_authorizations)
+            connector_authorizations.ConnectorAuthorizationService(state_db)
+        )
+        self.connectors = ConnectorService(state_db, self.connector_authorizations)
+        self.artifact_exports = ArtifactExportJobService(state_db, self.connectors)
+        self.identities = IdentityService(state_db, self.connector_authorizations)
         self.direct_connect_auth = DirectConnectAuthService(state_db)
         self.groups = GroupService(state_db)
         self.graphs = GraphService(state_db, self.connectors)

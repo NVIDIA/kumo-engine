@@ -34,10 +34,10 @@ class BatchPredictionJobReporter:
 
         log.info(
             'Initializing Batch Prediction Job reporter reading from %s',
-            os.path.join(self._log_dir, PredictionProgressLogger.FILE_NAME))
+            os.path.join(self._log_dir, PredictionProgressLogger.FILE_NAME),
+        )
 
-    def get_batch_prediction_job_progress(
-            self) -> BatchPredictionJobProgress | None:
+    def get_batch_prediction_job_progress(self) -> BatchPredictionJobProgress | None:
         r"""
         Returns :obj:`None` if there is no progress information available.
         """
@@ -45,8 +45,7 @@ class BatchPredictionJobReporter:
         if not progress:
             return None
         iterations_completed = progress.completed_iterations
-        iterations_remaining = (progress.total_iterations -
-                                iterations_completed)
+        iterations_remaining = progress.total_iterations - iterations_completed
         start_time = progress.start_time
         elapsed_time = progress.elapsed_prediction_time
         # Progress file is first written before job actually starts
@@ -55,8 +54,11 @@ class BatchPredictionJobReporter:
         else:
             return None
         estimated_remaining_time = progress.estimated_prediction_time
-        estimated_end_time = start_time + elapsed_time + (
-            estimated_remaining_time or timedelta(seconds=0))
+        estimated_end_time = (
+            start_time
+            + elapsed_time
+            + (estimated_remaining_time or timedelta(seconds=0))
+        )
         self._progress = BatchPredictionJobProgress(
             iterations_completed,
             iterations_remaining,
@@ -83,7 +85,7 @@ class TrainingJobReporter:
             metric (str): Metric to report
             metric_mode (str): How to optimize the metric in question
         """
-        assert metric_mode in {"min", "max"}
+        assert metric_mode in {'min', 'max'}
 
         self._log_dir = log_dir
         self._metric = metric
@@ -95,10 +97,10 @@ class TrainingJobReporter:
     def readable_metric_name(metric: str):
         # A mapping of metric to user-friendly names
         METRIC_NAME_MAPPING = {
-            "acc": "Accuracy",
-            "auroc": "AUROC",
-            "auprc": "AUPRC",
-            "loss": "Loss",
+            'acc': 'Accuracy',
+            'auroc': 'AUROC',
+            'auprc': 'AUPRC',
+            'loss': 'Loss',
         }
         if metric in METRIC_NAME_MAPPING:
             return METRIC_NAME_MAPPING[metric]
@@ -114,12 +116,13 @@ class TrainingJobReporter:
         Returns the best metric across all the epochs. If there are no metrics
         with the given name or stage, returns None
         """
-        assert stage in {"train", "val"}, "stage must be one of {train, val}"
+        assert stage in {'train', 'val'}, 'stage must be one of {train, val}'
 
-        key = "_".join([stage, self._metric])
-        if stage == "train":
+        key = '_'.join([stage, self._metric])
+        if stage == 'train':
             metric_values = [
-                m.train_metrics[key] for m in progress.metrics.values()
+                m.train_metrics[key]
+                for m in progress.metrics.values()
                 if key in m.train_metrics
             ]
         else:
@@ -127,11 +130,12 @@ class TrainingJobReporter:
                 return progress.final_validation_metrics[key]
 
             metric_values = [
-                m.validation_metrics[key] for m in progress.metrics.values()
+                m.validation_metrics[key]
+                for m in progress.metrics.values()
                 if key in m.validation_metrics
             ]
 
-        if self._metric_mode == "max":
+        if self._metric_mode == 'max':
             return max(metric_values) if metric_values else None
         else:
             return min(metric_values) if metric_values else None
@@ -150,19 +154,18 @@ class TrainingJobReporter:
             # In some cases even when the epoch has started, we might not be
             # guaranteed to have both train and validation metrics. In that
             # case, get_best_metric would return None.
-            best_train_metric_value = self.get_best_metric(
-                progress, stage="train")
+            best_train_metric_value = self.get_best_metric(progress, stage='train')
             if best_train_metric_value is not None:
                 trial_progress.best_train_metric = Metric(
-                    self.readable_metric_name(self._metric),
-                    best_train_metric_value)
+                    self.readable_metric_name(self._metric), best_train_metric_value
+                )
 
-            best_validation_metric_value = self.get_best_metric(
-                progress, stage="val")
+            best_validation_metric_value = self.get_best_metric(progress, stage='val')
             if best_validation_metric_value is not None:
                 trial_progress.best_validation_metric = Metric(
                     self.readable_metric_name(self._metric),
-                    best_validation_metric_value)
+                    best_validation_metric_value,
+                )
 
         return trial_progress
 
@@ -174,16 +177,13 @@ class TrainingJobReporter:
         if not auto_trainer_progress:
             return None
         iterations_completed = auto_trainer_progress.completed_trials
-        iterations_remaining = (auto_trainer_progress.total_trials -
-                                iterations_completed)
+        iterations_remaining = auto_trainer_progress.total_trials - iterations_completed
         start_time = auto_trainer_progress.start_time
         assert start_time is not None
-        elapsed_time = timedelta(
-            seconds=auto_trainer_progress.elapsed_training_time)
+        elapsed_time = timedelta(seconds=auto_trainer_progress.elapsed_training_time)
         estimated_end_time = auto_trainer_progress.estimated_training_time
         if estimated_end_time is not None:
-            estimated_end_time = start_time + timedelta(
-                seconds=estimated_end_time)
+            estimated_end_time = start_time + timedelta(seconds=estimated_end_time)
 
         trial_progress: list[TrialProgress] = []
         for trial_id, progress in auto_trainer_progress.trial_progress.items():

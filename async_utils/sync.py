@@ -31,7 +31,7 @@ P = ParamSpec('P')
 # pylint: disable=typevar-name-incorrect-variance
 T = TypeVar('T', covariant=True)
 
-SelfType = TypeVar("SelfType")
+SelfType = TypeVar('SelfType')
 
 SyncMethod = Callable[Concatenate[SelfType, P], T]
 
@@ -42,6 +42,7 @@ class FutureDedupeOption(str, Enum):
     invocation of a @blocking_method from multiple threads in threadpool
     executor.
     """
+
     # [Default] concurrent && redundant calls on the same instance method
     # would be deduped and executed once, with result shared by callers.
     BY_INSTANCE_ID = 'BY_INSTANCE_ID'
@@ -58,29 +59,38 @@ class FutureDedupeOption(str, Enum):
 
 
 class RpcFuncSync(Generic[P, T]):
-    def __init__(self, handler_func: Callable[P, T],
-                 require_sync_call_from_thread: bool = False,
-                 executor: Optional[ThreadPoolExecutor] = None,
-                 tracing_options: Optional[tracing.TraceOptions] = None,
-                 instance_hash: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        handler_func: Callable[P, T],
+        require_sync_call_from_thread: bool = False,
+        executor: Optional[ThreadPoolExecutor] = None,
+        tracing_options: Optional[tracing.TraceOptions] = None,
+        instance_hash: Optional[str] = None,
+    ) -> None:
         self._tracing_options = tracing_options
         self._tracing_options_coro = deepcopy(tracing_options)
         if self._tracing_options_coro:
-            threadpool_name = (executor._thread_name_prefix
-                               if executor else 'DefaultThreadPool')
-            self._tracing_options_coro.span_name_suffix = \
+            threadpool_name = (
+                executor._thread_name_prefix if executor else 'DefaultThreadPool'
+            )
+            self._tracing_options_coro.span_name_suffix = (
                 f'-coroutine({threadpool_name})'
+            )
             # No need to track param or return values since this is just
             # sync func to async coroutine wrapper
             self._tracing_options_coro.trace_params = False
             self._tracing_options_coro.trace_return_value = False
-        self._handler_func = (handler_func if not tracing_options else
-                              tracing.trace(tracing_options)(handler_func))
+        self._handler_func = (
+            handler_func
+            if not tracing_options
+            else tracing.trace(tracing_options)(handler_func)
+        )
         self._require_sync_call_from_thread = require_sync_call_from_thread
         self._executor = executor
-        self._debug_mode = EnvVar('DEBUG_BLOCKING_IO', bool,
-                                  default_value=False).parse_value()
-        self._is_prod = (_DEPLOY_STAGE.parse_value() == DeployStage.PROD)
+        self._debug_mode = EnvVar(
+            'DEBUG_BLOCKING_IO', bool, default_value=False
+        ).parse_value()
+        self._is_prod = _DEPLOY_STAGE.parse_value() == DeployStage.PROD
         self._instance_hash = instance_hash
 
     @property
@@ -91,11 +101,11 @@ class RpcFuncSync(Generic[P, T]):
 
     @property
     def coroutine(self) -> Callable[P, Awaitable[T]]:
-        coro = SyncToAsync(self._handler_func, thread_sensitive=False,
-                           executor=self._executor)
+        coro = SyncToAsync(
+            self._handler_func, thread_sensitive=False, executor=self._executor
+        )
         if self._instance_hash != FutureDedupeOption.DISABLED:
-            coro = reuse_inflight_future(
-                instance_hash=self._instance_hash)(coro)
+            coro = reuse_inflight_future(instance_hash=self._instance_hash)(coro)
 
         if self._tracing_options_coro:
             coro = tracing.trace(self._tracing_options_coro)(coro)
@@ -118,11 +128,13 @@ class RpcFuncSync(Generic[P, T]):
             error_msg = (
                 'Not allowed to call a blocking function: '
                 f'{self._handler_func.__qualname__} directly on asyncio event '
-                'loop, please change to await func.coroutine(params) instead')
+                'loop, please change to await func.coroutine(params) instead'
+            )
             if self._debug_mode or self._is_prod:
                 stack: traceback.StackSummary = traceback.extract_stack()
                 error_msg = '{}\nCallstack:\n{}'.format(
-                    error_msg, '\n'.join(stack.format()))
+                    error_msg, '\n'.join(stack.format())
+                )
                 log.critical(error_msg)
                 _notify_kumo_if_prod(error_msg)
             else:
@@ -136,8 +148,7 @@ class RpcMethodSync(Generic[SelfType, P, T]):
         require_sync_call_from_thread: bool = False,
         executor: Optional[ThreadPoolExecutor] = None,
         tracing_options: Optional[tracing.TraceOptions] = None,
-        fut_dedupe_option: FutureDedupeOption = FutureDedupeOption.
-        BY_INSTANCE_ID,
+        fut_dedupe_option: FutureDedupeOption = FutureDedupeOption.BY_INSTANCE_ID,
     ) -> None:
         self._handler_func = handler_func
         self._require_sync_call_from_thread = require_sync_call_from_thread
@@ -156,8 +167,7 @@ class RpcMethodSync(Generic[SelfType, P, T]):
             serialized = pickle.dumps(instance)
             return md5(serialized).hexdigest()
         except BaseException:
-            log.warning('Unable to pickle %s, using id() for caching key',
-                        instance)
+            log.warning('Unable to pickle %s, using id() for caching key', instance)
             return str(id(instance))
 
     def __get__(self, instance, owner):
@@ -166,10 +176,13 @@ class RpcMethodSync(Generic[SelfType, P, T]):
         # or a class method.
         if instance is not None:
             instance_hash = self._get_instance_hash(instance)
-            return RpcFuncSync[P, T](self._handler_func.__get__(instance, None),
-                                     self._require_sync_call_from_thread,
-                                     self._executor, self._tracing_options,
-                                     instance_hash)
+            return RpcFuncSync[P, T](
+                self._handler_func.__get__(instance, None),
+                self._require_sync_call_from_thread,
+                self._executor,
+                self._tracing_options,
+                instance_hash,
+            )
         return self
 
     @property
@@ -198,15 +211,13 @@ def _blocking_func(
     tracing_options: Optional[tracing.TraceOptions] = None,
 ) -> RpcFuncSync[P, T]:
     if _is_instance_method(func) or inspect.iscoroutinefunction(func):
-        raise Exception(
-            f'@blocking_func() cannot be applied to {func.__qualname__}')
+        raise Exception(f'@blocking_func() cannot be applied to {func.__qualname__}')
     return RpcFuncSync[P, T](func, True, executor, tracing_options)
 
 
 def blocking_func(
-        executor: Optional[ThreadPoolExecutor] = None,
-        tracing_options: Optional[
-            tracing.TraceOptions] = tracing.TraceOptions(),
+    executor: Optional[ThreadPoolExecutor] = None,
+    tracing_options: Optional[tracing.TraceOptions] = tracing.TraceOptions(),
 ):
     """Decorator intended for any function (or static method) that performs
     blocking/IO operation.
@@ -216,8 +227,9 @@ def blocking_func(
         executor to run the decorated blocking func. Defaults to None, in which
         case the default executor of asyncio event loop will be used.
     """
-    return functools.partial(_blocking_func, executor=executor,
-                             tracing_options=tracing_options)
+    return functools.partial(
+        _blocking_func, executor=executor, tracing_options=tracing_options
+    )
 
 
 def _blocking_method(
@@ -229,9 +241,11 @@ def _blocking_method(
 ) -> RpcMethodSync[SelfType, P, T]:
     if not _is_instance_method(method) or inspect.iscoroutinefunction(method):
         raise Exception(
-            f'@blocking_method() cannot be applied to {method.__qualname__}')
-    return RpcMethodSync[SelfType, P, T](method, True, executor,
-                                         tracing_options, fut_dedupe_option)
+            f'@blocking_method() cannot be applied to {method.__qualname__}'
+        )
+    return RpcMethodSync[SelfType, P, T](
+        method, True, executor, tracing_options, fut_dedupe_option
+    )
 
 
 def blocking_method(

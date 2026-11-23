@@ -25,6 +25,7 @@ When the gate is False the plan JSON must be returned byte-for-byte unchanged
 (the exploded path stays untouched), and no ``KUMO_LP_DELIVERY`` / ``list_fk``
 machinery may appear.
 """
+
 from __future__ import annotations
 
 import json
@@ -39,24 +40,26 @@ try:
         _apply_lp_resolution_plan,
     )
 except Exception as exc:  # pragma: no cover - env dependent
-    pytest.skip(f"kumo import unavailable ({exc!r})", allow_module_level=True)
+    pytest.skip(f'kumo import unavailable ({exc!r})', allow_module_level=True)
 
 
 def _lp_plan_json(*, explode: bool) -> str:
     """A minimal LP plan JSON shaped like the diskgraph compiler output."""
-    return json.dumps({
-        'entity': {
-            'table': 'users',
-            'column': 'user_id',
-            'output_time_col_name': 'TIMESTAMP',
-        },
-        'prediction_type': {
-            'link': {
-                'explode': explode,
-                'include_frequency': True,
+    return json.dumps(
+        {
+            'entity': {
+                'table': 'users',
+                'column': 'user_id',
+                'output_time_col_name': 'TIMESTAMP',
             },
-        },
-    })
+            'prediction_type': {
+                'link': {
+                    'explode': explode,
+                    'include_frequency': True,
+                },
+            },
+        }
+    )
 
 
 def test_resolution_plan_emits_two_specs_with_exact_serde_shape() -> None:
@@ -165,13 +168,16 @@ def test_link_resolution_requires_rhs_table() -> None:
 def test_gate_off_non_lp_returns_plan_byte_for_byte_unchanged() -> None:
     # Not link prediction (array flag irrelevant): plan returned unchanged.
     src = _lp_plan_json(explode=True)
-    assert _apply_lp_resolution_plan(
-        src,
-        list_distinct_target_is_array=True,
-        is_link_pred=False,
-        entity_table='users',
-        lp_rhs_entity_table='products',
-    ) == src
+    assert (
+        _apply_lp_resolution_plan(
+            src,
+            list_distinct_target_is_array=True,
+            is_link_pred=False,
+            entity_table='users',
+            lp_rhs_entity_table='products',
+        )
+        == src
+    )
     # Does not emit an lp_resolution / leave the toggle behind.
     assert 'lp_resolution' not in src
 
@@ -182,13 +188,16 @@ def test_lp_flag_off_returns_plan_unchanged() -> None:
     # honors the passed value: with the flag OFF (non-TT-NG, non-array) it is a
     # no-op and returns the plan byte-for-byte unchanged.
     src = _lp_plan_json(explode=True)
-    assert _apply_lp_resolution_plan(
-        src,
-        list_distinct_target_is_array=False,
-        is_link_pred=True,
-        entity_table='users',
-        lp_rhs_entity_table='products',
-    ) == src
+    assert (
+        _apply_lp_resolution_plan(
+            src,
+            list_distinct_target_is_array=False,
+            is_link_pred=True,
+            entity_table='users',
+            lp_rhs_entity_table='products',
+        )
+        == src
+    )
     assert 'lp_resolution' not in src
 
 

@@ -8,6 +8,7 @@ Covers ``pool/k8s_strategy.py`` helpers:
 - ``_loki_selector``
 - ``_build_loki_explore_url`` (cluster allow-list + URL shape)
 """
+
 import json
 import urllib.parse
 
@@ -30,8 +31,9 @@ def test_loki_selector_with_multiple_matchers():
         'example-cluster',
         ['service_name="pod-x"', 'container="activity"'],
     )
-    assert out == ('{cluster="example-cluster", service_name="pod-x", '
-                   'container="activity"}')
+    assert out == (
+        '{cluster="example-cluster", service_name="pod-x", container="activity"}'
+    )
 
 
 def test_loki_selector_with_no_extra_matchers():
@@ -41,24 +43,32 @@ def test_loki_selector_with_no_extra_matchers():
 
 def test_build_loki_explore_url_returns_none_for_unknown_cluster():
     # Outside the allow-list — caller omits the URL from debug_info.
-    assert _build_loki_explore_url(
-        cluster='preprod-uw4',
-        extra_matchers=['service_name="x"'],
-    ) is None
+    assert (
+        _build_loki_explore_url(
+            cluster='preprod-uw4',
+            extra_matchers=['service_name="x"'],
+        )
+        is None
+    )
 
 
-def test_build_loki_explore_url_returns_none_without_configuration(
-        monkeypatch):
+def test_build_loki_explore_url_returns_none_without_configuration(monkeypatch):
     monkeypatch.setattr(k8s_strategy, '_GRAFANA_BASE', '')
 
-    assert _build_loki_explore_url(
-        cluster=next(iter(_LOKI_EXPLORE_CLUSTERS)),
-        extra_matchers=['service_name="x"'],
-    ) is None
-    assert _build_loki_explore_url(
-        cluster=None,
-        extra_matchers=['service_name="x"'],
-    ) is None
+    assert (
+        _build_loki_explore_url(
+            cluster=next(iter(_LOKI_EXPLORE_CLUSTERS)),
+            extra_matchers=['service_name="x"'],
+        )
+        is None
+    )
+    assert (
+        _build_loki_explore_url(
+            cluster=None,
+            extra_matchers=['service_name="x"'],
+        )
+        is None
+    )
 
 
 def test_build_loki_explore_url_for_allow_listed_cluster(monkeypatch):
@@ -80,7 +90,8 @@ def test_build_loki_explore_url_for_allow_listed_cluster(monkeypatch):
     payload = json.loads(left)
     assert payload['datasource'] == _GRAFANA_LOKI_DATASOURCE
     assert payload['queries'][0]['expr'] == (
-        f'{{cluster="{cluster}", service_name="pod-x"}}')
+        f'{{cluster="{cluster}", service_name="pod-x"}}'
+    )
     # Time range covers the run + a margin, expressed in Grafana's
     # relative shorthand so the link doesn't go stale.
     assert payload['range']['from'].startswith('now-')
@@ -88,8 +99,7 @@ def test_build_loki_explore_url_for_allow_listed_cluster(monkeypatch):
 
 
 def test_build_loki_explore_url_url_encodes_special_chars(monkeypatch):
-    monkeypatch.setattr(k8s_strategy, '_GRAFANA_BASE',
-                        'https://grafana.example.test')
+    monkeypatch.setattr(k8s_strategy, '_GRAFANA_BASE', 'https://grafana.example.test')
     cluster = next(iter(_LOKI_EXPLORE_CLUSTERS))
     url = _build_loki_explore_url(
         cluster=cluster,
@@ -108,4 +118,5 @@ def test_daemon_pod_name_prefix_fits_under_k8s_truncation():
     # must stay well under 57 chars so it matches every restart of
     # the deployment regardless of where k8s truncated the name.
     from pool.k8s_strategy import _DAEMON_POD_NAME_PREFIX_LEN
+
     assert _DAEMON_POD_NAME_PREFIX_LEN <= 57 - 8  # leave 8 chars of margin

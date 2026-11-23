@@ -46,12 +46,9 @@ _MAX_SAMPLE_REQ_CACHE_ITEMS = 8
 _CACHE_TTL_SECONDS = 300  # 300 seconds
 
 # In memory cache for fetching table sample async.
-_IN_PROGRESS_GET_SAMPLE_ROWS = TTLCache(_MAX_SAMPLE_REQ_CACHE_ITEMS,
-                                        _CACHE_TTL_SECONDS)
-_GET_SAMPLE_ROWS_CACHE = TTLCache(_MAX_SAMPLE_REQ_CACHE_ITEMS,
-                                  _CACHE_TTL_SECONDS)
-_GET_SAMPLE_ROWS_ERROR_CACHE = TTLCache(_MAX_SAMPLE_REQ_CACHE_ITEMS,
-                                        _CACHE_TTL_SECONDS)
+_IN_PROGRESS_GET_SAMPLE_ROWS = TTLCache(_MAX_SAMPLE_REQ_CACHE_ITEMS, _CACHE_TTL_SECONDS)
+_GET_SAMPLE_ROWS_CACHE = TTLCache(_MAX_SAMPLE_REQ_CACHE_ITEMS, _CACHE_TTL_SECONDS)
+_GET_SAMPLE_ROWS_ERROR_CACHE = TTLCache(_MAX_SAMPLE_REQ_CACHE_ITEMS, _CACHE_TTL_SECONDS)
 
 
 # TODO(dong) unify the usage of `get_sample_rows_raw` and `get_sample_rows`.
@@ -66,21 +63,21 @@ def get_sample_rows_raw(
 ) -> pandas.DataFrame:
     r"""Get a list of sample data rows from the table
 
-        Args:
-            connector (Connector): Connector where the table is stored
-            source_table_name (str): Name of the table from which to fetch the
-                sample
-            cols: (List[BaseColumnConfig]): The columns to get sample rows for
-                which should include pkey if you want stats for pkey
-            num_rows: How many rows to fetch
-            skip_cache: Whether to skip the cache and read from connector
+    Args:
+        connector (Connector): Connector where the table is stored
+        source_table_name (str): Name of the table from which to fetch the
+            sample
+        cols: (List[BaseColumnConfig]): The columns to get sample rows for
+            which should include pkey if you want stats for pkey
+        num_rows: How many rows to fetch
+        skip_cache: Whether to skip the cache and read from connector
 
-        Returns:
-            sample_rows: pandas dataframe of data columns + primary key if it
-            exists.
-        """
+    Returns:
+        sample_rows: pandas dataframe of data columns + primary key if it
+        exists.
+    """
     log.info(
-        "Getting raw sample rows (num_rows=%s skip_cache=%s)",
+        'Getting raw sample rows (num_rows=%s skip_cache=%s)',
         num_rows,
         skip_cache,
     )
@@ -109,39 +106,42 @@ def get_sample_rows(
 ) -> SampleRowsResponse:
     r"""Get a list of sample data rows from the table
 
-        Args:
-            connector (Connector): Connector where the table is stored
-            source_table_name (str): Name of the table from which to fetch the
-                sample
-            cols (List[BaseColumnConfig]): The columns to get sample rows for
-                which should include pkey if you want stats for pkey
-            num_rows (int): How many rows to fetch
-            source_table_name (str): The source table name used to get meta
-                table if meta table is None
-            skip_cache: Whether to skip the cache and read from connector
-            response_token (str): A response token for async request to read
-                data later.
+    Args:
+        connector (Connector): Connector where the table is stored
+        source_table_name (str): Name of the table from which to fetch the
+            sample
+        cols (List[BaseColumnConfig]): The columns to get sample rows for
+            which should include pkey if you want stats for pkey
+        num_rows (int): How many rows to fetch
+        source_table_name (str): The source table name used to get meta
+            table if meta table is None
+        skip_cache: Whether to skip the cache and read from connector
+        response_token (str): A response token for async request to read
+            data later.
 
-        Returns:
-            sample_rows: an array of length M, where M is the number of data
-                columns + primary key if it exists. Each item in the array is
-                of length N where N is the number of samples that will be
-                returned. Sample rows are returned in the order of cols.
-        """
+    Returns:
+        sample_rows: an array of length M, where M is the number of data
+            columns + primary key if it exists. Each item in the array is
+            of length N where N is the number of samples that will be
+            returned. Sample rows are returned in the order of cols.
+    """
     if meta_table is None:
         connector.open()
         meta_table = connector.get_table_metadata(
-            table_names=[source_table_name], skip_cache=skip_cache)[0]
+            table_names=[source_table_name], skip_cache=skip_cache
+        )[0]
 
     ret = SampleRowsResponse()
     try:
         if mock_error:
             raise mock_error
 
-        table = Table.from_source_config(meta_config=meta_table,
-                                         name="placeholder_name",
-                                         data_source=meta_table.data_source,
-                                         connector=connector)
+        table = Table.from_source_config(
+            meta_config=meta_table,
+            name='placeholder_name',
+            data_source=meta_table.data_source,
+            connector=connector,
+        )
 
         # If `skip_cache` is True, then we always infer the stypes from the
         # stats of latest data. The samples will also be fetched from the
@@ -153,14 +153,12 @@ def get_sample_rows(
             ).metadata_config()
         else:
             meta_table = table.infer_stypes(
-                skip_cache=skip_cache, ).metadata_config()
+                skip_cache=skip_cache,
+            ).metadata_config()
     except Exception as e:
-        error_msg = (
-            "Unable to prepare sample rows from the configured data provider.")
-        log.error("get_sample_rows metadata failed (error_type=%s)",
-                  type(e).__name__)
-        if (response_token != ''
-                and response_token in _IN_PROGRESS_GET_SAMPLE_ROWS):
+        error_msg = 'Unable to prepare sample rows from the configured data provider.'
+        log.error('get_sample_rows metadata failed (error_type=%s)', type(e).__name__)
+        if response_token != '' and response_token in _IN_PROGRESS_GET_SAMPLE_ROWS:
             _GET_SAMPLE_ROWS_ERROR_CACHE[response_token] = error_msg
             _IN_PROGRESS_GET_SAMPLE_ROWS.pop(response_token)
         return ret
@@ -173,34 +171,37 @@ def get_sample_rows(
                 stype=col.stype,
                 dtype=col.dtype,
                 multicategorical_delimiter=(col.multicategorical_delimiter),
-            ) for col in columns
+            )
+            for col in columns
         ]
 
         ret = SampleRowsResponse(columns)
         if num_rows > 0:
             rows_df = get_sample_rows_raw(
-                connector=connector, source_table_name=meta_table.source_name,
-                cols=base_cols_to_sample, num_rows=num_rows,
-                skip_cache=skip_cache)
+                connector=connector,
+                source_table_name=meta_table.source_name,
+                cols=base_cols_to_sample,
+                num_rows=num_rows,
+                skip_cache=skip_cache,
+            )
             if serialize_to_json:
                 ret.sample_df_serialized = rows_df.to_json(orient='table')
             else:
                 ret.rows = rows_df.values.tolist()
 
-        if (response_token != ''
-                and response_token in _IN_PROGRESS_GET_SAMPLE_ROWS):
-            log.info(f"Cache get_sample_rows for {response_token} with "
-                     f"{ret.columns} and {len(ret.rows)} rows.")
+        if response_token != '' and response_token in _IN_PROGRESS_GET_SAMPLE_ROWS:
+            log.info(
+                f'Cache get_sample_rows for {response_token} with '
+                f'{ret.columns} and {len(ret.rows)} rows.'
+            )
             _GET_SAMPLE_ROWS_CACHE[response_token] = ret
             _IN_PROGRESS_GET_SAMPLE_ROWS.pop(response_token)
 
     except Exception as e:
         # In case a failure, clean up in progress get sample rows.
-        error_msg = (
-            "Unable to read sample rows from the configured data provider.")
-        log.error("get_sample_rows failed (error_type=%s)", type(e).__name__)
-        if (response_token != ''
-                and response_token in _IN_PROGRESS_GET_SAMPLE_ROWS):
+        error_msg = 'Unable to read sample rows from the configured data provider.'
+        log.error('get_sample_rows failed (error_type=%s)', type(e).__name__)
+        if response_token != '' and response_token in _IN_PROGRESS_GET_SAMPLE_ROWS:
             _GET_SAMPLE_ROWS_ERROR_CACHE[response_token] = error_msg
             _IN_PROGRESS_GET_SAMPLE_ROWS.pop(response_token)
 
@@ -208,20 +209,23 @@ def get_sample_rows(
 
 
 def get_table_cols(
-    meta_table: TableOrViewMetadataConfig, ) -> SourceColumnsResource:
+    meta_table: TableOrViewMetadataConfig,
+) -> SourceColumnsResource:
     validation = ValidationResponse()
     for col in meta_table.cols:
         if not allow_array_targets() and col.dtype == Dtype.stringlist.value:
             validation.warnings.append(
                 ValidationWarning(
-                    title=f"Column Type Changed: {col.name}",
+                    title=f'Column Type Changed: {col.name}',
                     message=(
-                        f"The data type has been changed from "
-                        f"{col.dtype.value} to string, and the semantic type "
-                        f"has been changed from multicategorical to "
-                        f"categorical because string arrays are currently "
-                        f"not supported."),
-                ))
+                        f'The data type has been changed from '
+                        f'{col.dtype.value} to string, and the semantic type '
+                        f'has been changed from multicategorical to '
+                        f'categorical because string arrays are currently '
+                        f'not supported.'
+                    ),
+                )
+            )
             col.dtype = Dtype.string
             col.stype = Stype.categorical
 
@@ -235,9 +239,9 @@ def get_table_cols(
                 stype=meta_table.pkey.stype,
                 dtype=meta_table.pkey.dtype,
                 is_primary=True,
-                multicategorical_delimiter=(
-                    meta_table.pkey.multicategorical_delimiter),
-            ))
+                multicategorical_delimiter=(meta_table.pkey.multicategorical_delimiter),
+            )
+        )
 
     for fkey in meta_table.fkeys:
         assert fkey.dtype is not None
@@ -249,7 +253,8 @@ def get_table_cols(
                 dtype=fkey.dtype,
                 is_primary=False,
                 multicategorical_delimiter=(fkey.multicategorical_delimiter),
-            ))
+            )
+        )
 
     for feature_col in meta_table.cols:
         assert feature_col.dtype is not None
@@ -260,9 +265,9 @@ def get_table_cols(
                 stype=feature_col.stype,
                 dtype=feature_col.dtype,
                 is_primary=False,
-                multicategorical_delimiter=(
-                    feature_col.multicategorical_delimiter),
-            ))
+                multicategorical_delimiter=(feature_col.multicategorical_delimiter),
+            )
+        )
 
     if meta_table.time_col is not None:
         assert meta_table.time_col.dtype is not None
@@ -274,8 +279,10 @@ def get_table_cols(
                 dtype=meta_table.time_col.dtype,
                 is_primary=False,
                 multicategorical_delimiter=(
-                    meta_table.time_col.multicategorical_delimiter),
-            ))
+                    meta_table.time_col.multicategorical_delimiter
+                ),
+            )
+        )
 
     return SourceColumnsResource(cols, validation)
 
@@ -288,14 +295,17 @@ def get_columns_response(
 ) -> SourceColumnsResource:
     connector.open()
     meta_table_configs = connector.get_table_metadata(
-        table_names=[source_table_name], skip_cache=skip_cache)
+        table_names=[source_table_name], skip_cache=skip_cache
+    )
     if not meta_table_configs:
-        raise ValueError("Unable to fetch column data for source table "
-                         f"{source_table_name}, please check if it is empty.")
+        raise ValueError(
+            'Unable to fetch column data for source table '
+            f'{source_table_name}, please check if it is empty.'
+        )
     meta_table_config: TableMetadataConfig = meta_table_configs[0]
     table = Table.from_source_config(
         meta_config=meta_table_config,
-        name="placeholder_name",
+        name='placeholder_name',
         data_source=meta_table_config.data_source,
         connector=connector,
     )
@@ -327,8 +337,9 @@ def _advisory_read_only(sql: str, connector_type: ConnectorType) -> None:
         raise ConnectorValidationError(str(error)) from None
 
 
-def _validate_query_scope(sql: str, connector_type: ConnectorType,
-                          connector: Connector) -> None:
+def _validate_query_scope(
+    sql: str, connector_type: ConnectorType, connector: Connector
+) -> None:
     try:
         validate_connector_sql_scope(sql, connector_type, connector)
     except ValueError as error:
@@ -355,13 +366,14 @@ def _warehouse_query_errors() -> Iterator[None]:
     try:
         yield
     except Exception as error:
-        log.warning('Custom SQL query rejected by warehouse (error_type=%s)',
-                    type(error).__name__)
+        log.warning(
+            'Custom SQL query rejected by warehouse (error_type=%s)',
+            type(error).__name__,
+        )
         raise CustomSqlQueryError(sql_query_error_message(error)) from error
 
 
-def _describe_query_columns(connector: Connector,
-                            sql: str) -> SourceColumnsResource:
+def _describe_query_columns(connector: Connector, sql: str) -> SourceColumnsResource:
     """Column list for a Custom SQL query's result set.
 
     Describes the read-only ``SELECT`` (``get_query_metadata`` — no data scan)
@@ -376,7 +388,7 @@ def _describe_query_columns(connector: Connector,
         meta_table_config = connector.get_query_metadata(sql)
     table = Table.from_source_config(
         meta_config=meta_table_config,
-        name="placeholder_name",
+        name='placeholder_name',
         data_source=meta_table_config.data_source,
         connector=connector,
     )
@@ -409,8 +421,10 @@ def get_query_columns_response(
     return _describe_query_columns(connector, sql)
 
 
-@blocking_func(DATA_BACKEND_THREAD_POOL,
-               TraceOptions(trace_params=['num_rows', 'serialize_to_json']))
+@blocking_func(
+    DATA_BACKEND_THREAD_POOL,
+    TraceOptions(trace_params=['num_rows', 'serialize_to_json']),
+)
 def get_query_sample_rows_response(
     connector: Connector,
     sql: str,
@@ -464,8 +478,9 @@ def get_query_sample_rows_response(
     return ret
 
 
-@blocking_func(DATA_BACKEND_THREAD_POOL,
-               TraceOptions(trace_params=['num_rows', 'skip_cache']))
+@blocking_func(
+    DATA_BACKEND_THREAD_POOL, TraceOptions(trace_params=['num_rows', 'skip_cache'])
+)
 def get_sample_rows_response(
     connector: Connector,
     source_table_name: str,
@@ -478,9 +493,9 @@ def get_sample_rows_response(
     require_stats: bool = True,
 ):
     log.info(
-        "Running get_sample_rows_response "
-        "(num_rows=%s serialize_to_json=%s skip_cache=%s is_async=%s "
-        "require_stats=%s)",
+        'Running get_sample_rows_response '
+        '(num_rows=%s serialize_to_json=%s skip_cache=%s is_async=%s '
+        'require_stats=%s)',
         num_rows,
         serialize_to_json,
         skip_cache,
@@ -500,13 +515,13 @@ def get_sample_rows_response(
         except KeyError:
             log.error('Unable to fetch cached sample data')
             if response_token in _GET_SAMPLE_ROWS_ERROR_CACHE:
-                raise ValueError(
-                    _GET_SAMPLE_ROWS_ERROR_CACHE.pop(response_token))
+                raise ValueError(_GET_SAMPLE_ROWS_ERROR_CACHE.pop(response_token))
             else:
                 raise ValueError(
-                    "Unable to fetch sample data. Either reached the maximum "
-                    f"timeout of {_CACHE_TTL_SECONDS} seconds or there is an issue "
-                    "with your data source. Please try again.")
+                    'Unable to fetch sample data. Either reached the maximum '
+                    f'timeout of {_CACHE_TTL_SECONDS} seconds or there is an issue '
+                    'with your data source. Please try again.'
+                )
 
     if is_async:
         # Generate a unique cache key for the request.
@@ -516,22 +531,29 @@ def get_sample_rows_response(
         # Submit the function `get_sample_rows` in a separated thread.
         # TODO(dong) timeout this thread explicitly with large timeout.
         log.info(
-            "Submitting get_sample_rows to thread pool "
-            "(num_rows=%s serialize_to_json=%s skip_cache=%s)",
+            'Submitting get_sample_rows to thread pool '
+            '(num_rows=%s serialize_to_json=%s skip_cache=%s)',
             num_rows,
             serialize_to_json,
             skip_cache,
         )
-        fut = DATA_BACKEND_THREAD_POOL.submit(get_sample_rows, connector, None,
-                                              num_rows, serialize_to_json,
-                                              source_table_name, skip_cache,
-                                              response_token, mock_error)
+        fut = DATA_BACKEND_THREAD_POOL.submit(
+            get_sample_rows,
+            connector,
+            None,
+            num_rows,
+            serialize_to_json,
+            source_table_name,
+            skip_cache,
+            response_token,
+            mock_error,
+        )
         return SampleRowsResponse(response_token=response_token), fut
     else:
         connector.open()
         meta_table: TableMetadataConfig = connector.get_table_metadata(
-            table_names=[source_table_name], skip_inferral=False,
-            skip_cache=skip_cache)[0]
+            table_names=[source_table_name], skip_inferral=False, skip_cache=skip_cache
+        )[0]
         return get_sample_rows(
             connector=connector,
             meta_table=meta_table,

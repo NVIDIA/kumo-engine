@@ -109,31 +109,35 @@ from statedb.utils.errors import ArtifactNotFoundError
 log = logging.getLogger(__name__)
 
 _SINGLE_ACTIVITY_FAILURE_MESSAGE = (
-    'Data backend operation failed. Please retry or contact Kumo support.')
-_SINGLE_ACTIVITY_PUBLIC_ERROR_TYPES = frozenset({
-    # Generic PublicException is intentional: request-validation activities
-    # use it for messages whose complete text is constructed by Kumo.
-    'PublicException',
-    'ValidationException',
-    'ArtifactNotFoundError',
-    'CustomSqlQueryError',
-    'DataRefreshError',
-    'DatabricksClusterError',
-    'DiskgraphError',
-    'GraphRefreshError',
-    'InvalidGraphError',
-    'ProjectForbiddenError',
-    'ProjectNotAvailableError',
-    'ProjectNotFoundError',
-    'SourceTableNotFoundError',
-    'SourceTableUnavailableError',
-    'TableInvalidColumnNameError',
-    'UnsupportedInDiskgraphError',
-})
+    'Data backend operation failed. Please retry or contact Kumo support.'
+)
+_SINGLE_ACTIVITY_PUBLIC_ERROR_TYPES = frozenset(
+    {
+        # Generic PublicException is intentional: request-validation activities
+        # use it for messages whose complete text is constructed by Kumo.
+        'PublicException',
+        'ValidationException',
+        'ArtifactNotFoundError',
+        'CustomSqlQueryError',
+        'DataRefreshError',
+        'DatabricksClusterError',
+        'DiskgraphError',
+        'GraphRefreshError',
+        'InvalidGraphError',
+        'ProjectForbiddenError',
+        'ProjectNotAvailableError',
+        'ProjectNotFoundError',
+        'SourceTableNotFoundError',
+        'SourceTableUnavailableError',
+        'TableInvalidColumnNameError',
+        'UnsupportedInDiskgraphError',
+    }
+)
 
 
 def _extract_allowlisted_single_activity_public_exception(
-    error: BaseException, ):
+    error: BaseException,
+):
     """Accept only Kumo's exact Temporal PublicException envelope."""
     return _extract_allowlisted_temporal_public_exception(
         error,
@@ -159,14 +163,13 @@ def _extract_allowlisted_temporal_public_exception(
     current: BaseException | None = error
     for _ in range(20):
         if isinstance(current, TimeoutError):
-            return (extract_public_exception(current)
-                    if allow_timeout else None)
+            return extract_public_exception(current) if allow_timeout else None
         if isinstance(current, PublicException):
             error_type = type(current).__name__
             expected_type = exact_error_types.get(error_type)
-            if (error_type not in allowed_error_types
-                    or (expected_type is not None
-                        and type(current) is not expected_type)):
+            if error_type not in allowed_error_types or (
+                expected_type is not None and type(current) is not expected_type
+            ):
                 return None
             return current
         if isinstance(current, ApplicationError):
@@ -175,31 +178,42 @@ def _extract_allowlisted_temporal_public_exception(
                 return None
             payload = details[0]
             if set(payload) != {
-                    'type', 'message', 'template', 'kwargs', 'http_code',
-                    'non_retryable', 'related_errors'
+                'type',
+                'message',
+                'template',
+                'kwargs',
+                'http_code',
+                'non_retryable',
+                'related_errors',
             }:
                 return None
             error_type = payload['type']
-            if (not isinstance(error_type, str)
-                    or error_type not in allowed_error_types
-                    or current.type != error_type
-                    or not isinstance(payload['message'], str)
-                    or not isinstance(payload['template'], str)
-                    or not isinstance(payload['kwargs'], dict)
-                    or not isinstance(payload['http_code'], int)
-                    or not isinstance(payload['non_retryable'], bool)
-                    or payload['related_errors'] != []):
+            if (
+                not isinstance(error_type, str)
+                or error_type not in allowed_error_types
+                or current.type != error_type
+                or not isinstance(payload['message'], str)
+                or not isinstance(payload['template'], str)
+                or not isinstance(payload['kwargs'], dict)
+                or not isinstance(payload['http_code'], int)
+                or not isinstance(payload['non_retryable'], bool)
+                or payload['related_errors'] != []
+            ):
                 return None
             reconstructed = extract_public_exception(current)
             expected_type = exact_error_types.get(error_type)
-            if (reconstructed is None
-                    or type(reconstructed).__name__ != error_type
-                    or (expected_type is not None
-                        and type(reconstructed) is not expected_type)
-                    or reconstructed.message != payload['message']
-                    or reconstructed.template != payload['template']
-                    or reconstructed.http_code != payload['http_code']
-                    or reconstructed.non_retryable != payload['non_retryable']):
+            if (
+                reconstructed is None
+                or type(reconstructed).__name__ != error_type
+                or (
+                    expected_type is not None
+                    and type(reconstructed) is not expected_type
+                )
+                or reconstructed.message != payload['message']
+                or reconstructed.template != payload['template']
+                or reconstructed.http_code != payload['http_code']
+                or reconstructed.non_retryable != payload['non_retryable']
+            ):
                 return None
             return reconstructed
         cause = getattr(current, 'cause', None)
@@ -216,6 +230,7 @@ def _raise_safe_single_activity_failure(
 ) -> NoReturn:
     """Preserve typed public failures without exposing arbitrary causes."""
     from temporalio_commons.auto_rpc_exception import RpcError
+
     public_error = _extract_allowlisted_single_activity_public_exception(error)
     if public_error is not None:
         raise public_error from None
@@ -224,8 +239,7 @@ def _raise_safe_single_activity_failure(
     # details, or stack trace.  Log only safe correlation metadata and expose
     # the same workflow ID alongside the constant public payload.
     log.error(
-        'Data backend activity failed (workflow_id=%s activity_name=%s '
-        'error_type=%s)',
+        'Data backend activity failed (workflow_id=%s activity_name=%s error_type=%s)',
         workflow_id,
         activity_name,
         type(error).__name__,
@@ -249,11 +263,11 @@ def _compute_connector_col_stats(
     approx_sample_size: Optional[int] = None,
 ) -> Dict[BaseColumnConfig, Dict[ColStatType, Stats]]:
     kwargs = {
-        "approx": True,
-        "data_version": data_version,
+        'approx': True,
+        'data_version': data_version,
     }
     if approx_sample_size is not None:
-        kwargs["num_rows"] = approx_sample_size
+        kwargs['num_rows'] = approx_sample_size
     return connector.compute_col_stats(
         source_table_name,
         stats_dict,
@@ -279,9 +293,12 @@ def _compute_bp_sample_col_stats(
         timestamp_precision=timestamp_precision,
     )
     score_config = next(
-        (config
-         for config, requested in stats_dict.items() if config.name == 'SCORE'
-         and ColStatType.SUMMARY_STATS_BY_CLASS in requested),
+        (
+            config
+            for config, requested in stats_dict.items()
+            if config.name == 'SCORE'
+            and ColStatType.SUMMARY_STATS_BY_CLASS in requested
+        ),
         None,
     )
     if score_config is None or 'CLASS' not in sample:
@@ -296,14 +313,13 @@ def _compute_bp_sample_col_stats(
             'max': float(values.max()),
             'mean': float(values.mean()),
         }
-    result.setdefault(score_config,
-                      {})[ColStatType.SUMMARY_STATS_BY_CLASS] = Stats(
-                          by_class,
-                          approx=True,
-                          data_version=data_version,
-                          num_entries=len(valid),
-                          timestamp=now_utc().timestamp(),
-                      )
+    result.setdefault(score_config, {})[ColStatType.SUMMARY_STATS_BY_CLASS] = Stats(
+        by_class,
+        approx=True,
+        data_version=data_version,
+        num_entries=len(valid),
+        timestamp=now_utc().timestamp(),
+    )
     return result
 
 
@@ -321,10 +337,10 @@ def _merge_col_stats(
     return merged
 
 
-_BackgroundColStatsKey = Tuple[str, str, Tuple[Tuple[str, str, str,
-                                                     Tuple[str, ...]], ...]]
-_BACKGROUND_SAMPLE_COL_STATS_TASKS: Dict[_BackgroundColStatsKey,
-                                         asyncio.Task] = {}
+_BackgroundColStatsKey = Tuple[
+    str, str, Tuple[Tuple[str, str, str, Tuple[str, ...]], ...]
+]
+_BACKGROUND_SAMPLE_COL_STATS_TASKS: Dict[_BackgroundColStatsKey, asyncio.Task] = {}
 
 
 def _sample_col_stats_warmup_concurrency_limit() -> int:
@@ -332,8 +348,9 @@ def _sample_col_stats_warmup_concurrency_limit() -> int:
 
 
 def _num_active_sample_col_stats_warmups() -> int:
-    return sum(1 for task in _BACKGROUND_SAMPLE_COL_STATS_TASKS.values()
-               if not task.done())
+    return sum(
+        1 for task in _BACKGROUND_SAMPLE_COL_STATS_TASKS.values() if not task.done()
+    )
 
 
 def _background_col_stats_key(
@@ -342,12 +359,16 @@ def _background_col_stats_key(
     table_data_version: TableDataVersion,
 ) -> _BackgroundColStatsKey:
     stats_signature = tuple(
-        sorted((
-            col.name,
-            str(col.stype),
-            str(col.dtype),
-            tuple(sorted(str(stat) for stat in stats)),
-        ) for col, stats in stats_dict.items()))
+        sorted(
+            (
+                col.name,
+                str(col.stype),
+                str(col.dtype),
+                tuple(sorted(str(stat) for stat in stats)),
+            )
+            for col, stats in stats_dict.items()
+        )
+    )
     return (
         str(table.fingerprint()),
         str(table_data_version),
@@ -380,21 +401,21 @@ class DataBackend:
             defer_col_stats_validation (bool): When true, table refresh only
                 performs ingest-time validation and lets the parent graph
                 refresh compute and validate column stats at graph scope.
-    """
+        """
         if ctx._settings.disable_async_ingestion:
             log.debug('Async table refresh is disabled!')
             return None
 
-        log.debug(f"Start refresh workflow for "
-                  f"{table_def.get_source_table_name()}")
+        log.debug(f'Start refresh workflow for {table_def.get_source_table_name()}')
         # TODO(Dulloor): start table or view refresh workflow
         temporal_client = ctx.temporal_client()
         client = await temporal_client.get()
         refresh_wf_id = TableRefreshWorkflow.compose_wf_id(table_def, data_ver)
         log.info(
-            f"DataBackend.start_refresh_table: Starting TableRefreshWorkflow "
-            f"for table={table_def.get_source_table_name()}, "
-            f"wf_id={refresh_wf_id}")
+            f'DataBackend.start_refresh_table: Starting TableRefreshWorkflow '
+            f'for table={table_def.get_source_table_name()}, '
+            f'wf_id={refresh_wf_id}'
+        )
         try:
             await client.start_workflow(
                 TableRefreshWorkflow.run,
@@ -410,16 +431,17 @@ class DataBackend:
                 ],
                 id=refresh_wf_id,
                 task_queue=DATA_BACKEND_TASK_QUEUE,
-                execution_timeout=timedelta(
-                    hours=DATA_BACKEND_REFRESH_TIMEOUT_HOURS),
+                execution_timeout=timedelta(hours=DATA_BACKEND_REFRESH_TIMEOUT_HOURS),
             )
             log.info(
                 'Started TableRefreshWorkflow %s and saved state under %s@%s',
-                refresh_wf_id, table_def.cache_key(), data_ver)
+                refresh_wf_id,
+                table_def.cache_key(),
+                data_ver,
+            )
             return refresh_wf_id
         except WorkflowAlreadyStartedError:
-            log.info('Table refresh workflow %s is already running.',
-                     refresh_wf_id)
+            log.info('Table refresh workflow %s is already running.', refresh_wf_id)
             return None
 
     # Prepares a list of table files/directories that will be selected or
@@ -440,10 +462,13 @@ class DataBackend:
 
         # No tables found.
         if len(top_level_tables) == 0:
-            return S3FileList(files_selected=[], files_ignored=[],
-                              count_total=len(top_level_tables),
-                              count_selected=0,
-                              count_ignored=len(top_level_tables))
+            return S3FileList(
+                files_selected=[],
+                files_ignored=[],
+                count_total=len(top_level_tables),
+                count_selected=0,
+                count_ignored=len(top_level_tables),
+            )
 
         # Default to parquet file and support all parquet / csv type.
         for entry_path in top_level_tables:
@@ -453,49 +478,60 @@ class DataBackend:
             if TEST_KUMO_FILE == table_name:
                 continue
 
-            file: S3File = S3File(file_name=table_path, details="")
-            read_suffix = get_file_suffix(table_path,
-                                          default_suffix=_PARQUET_SUFFIX)
-            if (read_suffix in (_PARQUET_SUFFIX, _CSV_SUFFIX)
-                    and sel_count < MAX_SUPPORTED_FILES):
-                entry = S3Table(table_name=table_name, is_dir=False,
-                                table_files=[file], file_type=read_suffix)
+            file: S3File = S3File(file_name=table_path, details='')
+            read_suffix = get_file_suffix(table_path, default_suffix=_PARQUET_SUFFIX)
+            if (
+                read_suffix in (_PARQUET_SUFFIX, _CSV_SUFFIX)
+                and sel_count < MAX_SUPPORTED_FILES
+            ):
+                entry = S3Table(
+                    table_name=table_name,
+                    is_dir=False,
+                    table_files=[file],
+                    file_type=read_suffix,
+                )
                 selected_list.append(entry)
                 sel_count += 1
             else:
-                entry = S3Table(table_name=table_name, is_dir=False,
-                                table_files=[file], file_type="")
+                entry = S3Table(
+                    table_name=table_name,
+                    is_dir=False,
+                    table_files=[file],
+                    file_type='',
+                )
                 # Avoid overwhelmed number of ignored entries in the UI.
                 if len(ignored_list) < 10:
                     ignored_list.append(entry)
                 if sel_count >= MAX_SUPPORTED_FILES:
-                    file.details = ("Too many files or directories behind the "
-                                    "connector.")
+                    file.details = 'Too many files or directories behind the connector.'
                 else:
-                    file.details = (f"Default to parquet/csv connector, so all"
-                                    f" {read_suffix} files are ignored.")
+                    file.details = (
+                        f'Default to parquet/csv connector, so all'
+                        f' {read_suffix} files are ignored.'
+                    )
                 ign_count += 1
 
-        log.info(f"Validate s3 path {s3_root_dir}, found {sel_count} valid "
-                 f"tables.")
-        return S3FileList(files_selected=selected_list,
-                          files_ignored=ignored_list,
-                          count_total=len(top_level_tables),
-                          count_selected=sel_count, count_ignored=ign_count)
+        log.info(f'Validate s3 path {s3_root_dir}, found {sel_count} valid tables.')
+        return S3FileList(
+            files_selected=selected_list,
+            files_ignored=ignored_list,
+            count_total=len(top_level_tables),
+            count_selected=sel_count,
+            count_ignored=ign_count,
+        )
 
     # helper to check if a stats request dict is covered by the minimal stats
     # generator used later to compose the request within the workflow
     @staticmethod
     def is_covered_by_minimal_stats(
-            table: TableDefinition,
-            stats_dict: Dict[BaseColumnConfig, List[ColStatType]]) -> bool:
+        table: TableDefinition, stats_dict: Dict[BaseColumnConfig, List[ColStatType]]
+    ) -> bool:
         base_cols = table.to_base_columns()
         min_dict = get_minimal_stats(base_cols)
         min_dict = {k.base_config(): v for k, v in min_dict.items()}
 
         min_dict_by_name = {
-            col_config.name: min_dict[col_config]
-            for col_config in min_dict.keys()
+            col_config.name: min_dict[col_config] for col_config in min_dict.keys()
         }
         for col_config, col_list in stats_dict.items():
             stats_list = min_dict_by_name.get(col_config.name)
@@ -514,8 +550,8 @@ class DataBackend:
         """
         cache = get_active_cache()
         return await cache.table_refresh_result.save.coroutine(
-            table.connector_name, table.source_table_name, table.version,
-            task_result)
+            table.connector_name, table.source_table_name, table.version, task_result
+        )
 
     @staticmethod
     @measure_blocking_code
@@ -565,19 +601,23 @@ class DataBackend:
             updated_at=now,
         )
         await cache.table_refresh_result.save.coroutine(
-            table.get_connector_id(), table.cache_key(), str(data_version),
-            overall)
+            table.get_connector_id(), table.cache_key(), str(data_version), overall
+        )
 
         # Per-stage col-stat markers -> NOT_STARTED, so a waiter polling the
         # FULL_COL_STATS / MIN_COL_STATS stage no longer sees a terminal
         # (stale) result. These files are written at the same paths
         # get_many_table_refresh_results(stage=COMPUTE_*) reads.
-        table_dir = cache.create_table_cache_dir(table.get_connector_id(),
-                                                 table.cache_key(),
-                                                 str(data_version),
-                                                 table.fingerprint())
-        for stage in (TableRefreshStage.COMPUTE_MIN_COL_STATS,
-                      TableRefreshStage.COMPUTE_FULL_COL_STATS):
+        table_dir = cache.create_table_cache_dir(
+            table.get_connector_id(),
+            table.cache_key(),
+            str(data_version),
+            table.fingerprint(),
+        )
+        for stage in (
+            TableRefreshStage.COMPUTE_MIN_COL_STATS,
+            TableRefreshStage.COMPUTE_FULL_COL_STATS,
+        ):
             await save_json.coroutine(
                 TableDataTaskResult(
                     status=AsyncDataTaskStatus.NOT_STARTED,
@@ -593,7 +633,7 @@ class DataBackend:
     @staticmethod
     async def get_many_table_refresh_results(
         tables: List[Tuple[TableDefinition, TableDataVersion]],
-        stage: Optional[TableRefreshStage] = None
+        stage: Optional[TableRefreshStage] = None,
     ) -> List[Optional[TableDataTaskResult]]:
         """
         Batched operation for fetching table refresh results. If `stage` is
@@ -603,30 +643,39 @@ class DataBackend:
         cache: BackendCacheManager = get_active_cache()
         if stage is None:
             return await cache.table_refresh_result.get_many.coroutine(
-                [(table.get_connector_id(), table.cache_key(), ver)
-                 for table, ver in tables], TableDataTaskResult)
+                [
+                    (table.get_connector_id(), table.cache_key(), ver)
+                    for table, ver in tables
+                ],
+                TableDataTaskResult,
+            )
 
         if stage == TableRefreshStage.INGEST_TABLE:
             return await cache.table_refresh_result.get_many.coroutine(
-                [(table.get_connector_id(), table.get_source_table_name(), ver)
-                 for table, ver in tables], TableDataTaskResult)
+                [
+                    (table.get_connector_id(), table.get_source_table_name(), ver)
+                    for table, ver in tables
+                ],
+                TableDataTaskResult,
+            )
 
         if stage in [
-                TableRefreshStage.COMPUTE_MIN_COL_STATS,
-                TableRefreshStage.COMPUTE_FULL_COL_STATS
+            TableRefreshStage.COMPUTE_MIN_COL_STATS,
+            TableRefreshStage.COMPUTE_FULL_COL_STATS,
         ]:
             file_paths = []
             for table, data_version in tables:
                 table_dir = get_active_cache().create_table_cache_dir(
-                    table.get_connector_id(), table.cache_key(), data_version,
-                    table.fingerprint())
+                    table.get_connector_id(),
+                    table.cache_key(),
+                    data_version,
+                    table.fingerprint(),
+                )
                 file_paths.append(table_dir.colstat_task_result(stage))
             log.debug('Load colstat task result from %s', file_paths)
-            return await load_many_json.coroutine(file_paths,
-                                                  TableDataTaskResult)
+            return await load_many_json.coroutine(file_paths, TableDataTaskResult)
 
-        raise AssertionError(
-            f'Table task result for stage {stage} is not supported.')
+        raise AssertionError(f'Table task result for stage {stage} is not supported.')
 
     @staticmethod
     async def create_artifact_export_job(
@@ -649,13 +698,17 @@ class DataBackend:
             get_job_base_dir,
             get_job_dir,
         )
+
         home_dir = get_job_dir(get_job_base_dir(), JobID(job_id))
         home_dir_mgr = HomeDirManager(home_dir)
 
-        if isinstance(output_config, (
+        if isinstance(
+            output_config,
+            (
                 NamedTrainingTableOutputConfig,
                 FileTrainingTableOutputConfig,
-        )):
+            ),
+        ):
             train_table_job_id = GenerateTrainTableJobID(job_id)
             result = await temporal_client.result(train_table_job_id.wf_id)
             train_table_path: str = result.train_table_path
@@ -666,8 +719,7 @@ class DataBackend:
                 connector_spec,
             )
         else:
-            artifact_type = PredictionArtifactType(
-                output_config.artifact_type)
+            artifact_type = PredictionArtifactType(output_config.artifact_type)
             artifact = await resolve_prediction_artifact.coroutine(
                 home_dir_mgr,
                 artifact_type,
@@ -675,10 +727,12 @@ class DataBackend:
                 include_selection_ref=True,
             )
             if artifact is None or artifact.selection_ref is None:
-                raise ArtifactNotFoundError(path=osp.join(
-                    home_dir_mgr.prediction_output_dir,
-                    '_selected_artifacts.json',
-                ))
+                raise ArtifactNotFoundError(
+                    path=osp.join(
+                        home_dir_mgr.prediction_output_dir,
+                        '_selected_artifacts.json',
+                    )
+                )
             base_input = ArtifactExportInput.from_out_config_n_spec(
                 {artifact_type: artifact.root},
                 output_config,
@@ -687,11 +741,12 @@ class DataBackend:
             artifact_export_input = replace(
                 base_input,
                 prediction_selection=artifact.selection_ref,
-                prediction_artifact_types=(artifact_type, ),
+                prediction_artifact_types=(artifact_type,),
             )
 
         try:
             from rest.backends.ml_backend import workflows as ml_workflows
+
             await client.start_workflow(
                 ml_workflows.ArtifactExportWorkflow.run,
                 args=[
@@ -703,8 +758,10 @@ class DataBackend:
                 id_reuse_policy=WorkflowIDReusePolicy.REJECT_DUPLICATE,
             )
         except WorkflowAlreadyStartedError:
-            log.info('Artifact export workflow %s was already dispatched.',
-                     str(artifact_export_job_id))
+            log.info(
+                'Artifact export workflow %s was already dispatched.',
+                str(artifact_export_job_id),
+            )
         return artifact_export_job_id
 
     @staticmethod
@@ -719,26 +776,26 @@ class DataBackend:
         if not wf_desc:
             return JobStatus.MISSING
         if wf_desc.status in {
-                WorkflowExecutionStatus.FAILED,
-                WorkflowExecutionStatus.TIMED_OUT
+            WorkflowExecutionStatus.FAILED,
+            WorkflowExecutionStatus.TIMED_OUT,
         }:
             return JobStatus.FAILED
         elif wf_desc.status in {
-                WorkflowExecutionStatus.RUNNING,
-                WorkflowExecutionStatus.CONTINUED_AS_NEW
+            WorkflowExecutionStatus.RUNNING,
+            WorkflowExecutionStatus.CONTINUED_AS_NEW,
         }:
             return JobStatus.RUNNING
         elif wf_desc.status == WorkflowExecutionStatus.COMPLETED:
             return JobStatus.DONE
         elif wf_desc.status in {
-                WorkflowExecutionStatus.CANCELED,
-                WorkflowExecutionStatus.TERMINATED
+            WorkflowExecutionStatus.CANCELED,
+            WorkflowExecutionStatus.TERMINATED,
         }:
             return JobStatus.CANCELLED
         else:
             raise ValueError(
-                f"Unsupported WorkflowExecutionStatus "
-                f"{wf_desc.status}", )
+                f'Unsupported WorkflowExecutionStatus {wf_desc.status}',
+            )
 
     @staticmethod
     @trace()
@@ -762,12 +819,14 @@ class DataBackend:
     @trace()
     @measure_blocking_code
     async def get_min_col_stats(
-        connector_spec: ConnectorOpenSpec | None, table: TableDefinition,
-        stats_dict: Dict[BaseColumnConfig,
-                         List[ColStatType]], approx_sample_size: int,
-        check_refresh_status: bool = True, compute_missing_stats: bool = True,
+        connector_spec: ConnectorOpenSpec | None,
+        table: TableDefinition,
+        stats_dict: Dict[BaseColumnConfig, List[ColStatType]],
+        approx_sample_size: int,
+        check_refresh_status: bool = True,
+        compute_missing_stats: bool = True,
         allow_cached_approx_stats: bool = False,
-        table_data_version: TableDataVersion | None = None
+        table_data_version: TableDataVersion | None = None,
     ) -> Dict[BaseColumnConfig, Dict[ColStatType, Stats]]:
         connector_id = table.get_connector_id()
         source_table_name = table.get_source_table_name()
@@ -781,29 +840,37 @@ class DataBackend:
         if table_data_version is None:
             if connector_spec is None:
                 raise ValueError(
-                    'connector_spec is required to resolve a live data version')
+                    'connector_spec is required to resolve a live data version'
+                )
             table_data_version = await get_table_data_version(
-                connector_spec, source_table_name, table_def=table)
+                connector_spec, source_table_name, table_def=table
+            )
 
         minimal_stats_required = DataBackend.is_covered_by_minimal_stats(
-            table, stats_dict)
+            table, stats_dict
+        )
 
         cache: BackendCacheManager = get_active_cache()
-        results = await cache.table_refresh_result.get_many.coroutine([
-            (connector_id, cache_key, table_data_version),
-        ], TableDataTaskResult)
+        results = await cache.table_refresh_result.get_many.coroutine(
+            [
+                (connector_id, cache_key, table_data_version),
+            ],
+            TableDataTaskResult,
+        )
         refresh_status = results[0] or TableDataTaskResult(
-            AsyncDataTaskStatus.NOT_STARTED, ValidationResponse(),
-            TableRefreshStage.INGEST_TABLE, updated_at=now_utc())
+            AsyncDataTaskStatus.NOT_STARTED,
+            ValidationResponse(),
+            TableRefreshStage.INGEST_TABLE,
+            updated_at=now_utc(),
+        )
 
-        exact_stats_available = (minimal_stats_required
-                                 and refresh_status.min_col_stats_computed
-                                 ) or refresh_status.full_col_stats_computed
+        exact_stats_available = (
+            minimal_stats_required and refresh_status.min_col_stats_computed
+        ) or refresh_status.full_col_stats_computed
         exact_stats = {}
 
-        def load_exact_min_stats(
-        ) -> Dict[BaseColumnConfig, Dict[ColStatType, Stats]]:
-            log.debug("Searching for exact stats")
+        def load_exact_min_stats() -> Dict[BaseColumnConfig, Dict[ColStatType, Stats]]:
+            log.debug('Searching for exact stats')
             # DG-native: read exact min col stats from
             # BackendCacheManager directly (legacy
             # Backend.load_exact_min_col_stats_if_present was a thin
@@ -821,13 +888,15 @@ class DataBackend:
             )
             if len(loaded_stats) == 0:
                 log.warning(
-                    "get_exact_min_col_stats: exact stats not found for "
-                    f"{fingerprint.connector_name}.{source_table_name}"
-                    f" version: {table_data_version}")
+                    'get_exact_min_col_stats: exact stats not found for '
+                    f'{fingerprint.connector_name}.{source_table_name}'
+                    f' version: {table_data_version}'
+                )
             return loaded_stats
 
-        def load_cached_approx_stats(
-        ) -> Dict[BaseColumnConfig, Dict[ColStatType, Stats]]:
+        def load_cached_approx_stats() -> Dict[
+            BaseColumnConfig, Dict[ColStatType, Stats]
+        ]:
             loaded_stats = cache.get_min_col_stats(
                 table_fingerprint=fingerprint,
                 stats_dict=stats_dict,
@@ -839,7 +908,7 @@ class DataBackend:
         if exact_stats_available or not check_refresh_status:
             exact_stats = load_exact_min_stats()
             if col_stat_dict_complete(exact_stats, stats_dict):
-                log.debug("Exact stats returned and complete")
+                log.debug('Exact stats returned and complete')
                 return exact_stats
         elif check_refresh_status:
             # REST servers can cache an in-progress refresh result while a
@@ -848,14 +917,14 @@ class DataBackend:
             # only return once the requested exact stats are complete.
             exact_stats = load_exact_min_stats()
             if col_stat_dict_complete(exact_stats, stats_dict):
-                log.debug("Exact stats returned and complete")
+                log.debug('Exact stats returned and complete')
                 return exact_stats
 
         cached_approx_stats = {}
         if allow_cached_approx_stats:
             cached_approx_stats = load_cached_approx_stats()
             if col_stat_dict_complete(cached_approx_stats, stats_dict):
-                log.debug("Cached approximate stats returned and complete")
+                log.debug('Cached approximate stats returned and complete')
                 return cached_approx_stats
 
         if not compute_missing_stats:
@@ -863,10 +932,13 @@ class DataBackend:
 
         if connector_spec is None:
             raise ValueError(
-                'connector_spec is required to compute missing column stats')
+                'connector_spec is required to compute missing column stats'
+            )
 
-        log.debug('Exact stats not avilable for '
-                  f'{connector_spec.connector_id}.{source_table_name}')
+        log.debug(
+            'Exact stats not avilable for '
+            f'{connector_spec.connector_id}.{source_table_name}'
+        )
 
         # Pre-ingest resolution chain. Cache miss delegates to the connector
         # sample + Python stats fallback, then persists those approximate
@@ -881,7 +953,8 @@ class DataBackend:
         if not table.is_sql:
             try:
                 connector = await get_connector_from_spec_async(
-                    connector_spec, resolved_factory=get_connector_from_spec)
+                    connector_spec, resolved_factory=get_connector_from_spec
+                )
                 async with async_connector_lifecycle(connector):
                     tier2 = await _compute_connector_col_stats.coroutine(
                         connector,
@@ -892,11 +965,13 @@ class DataBackend:
                     )
             except Exception as exc:
                 log.warning(
-                    "DataBackend.get_min_col_stats: connector.compute_col_stats"
-                    " failed for %s.%s@%s (error_type=%s)",
-                    connector_spec.connector_id, source_table_name,
+                    'DataBackend.get_min_col_stats: connector.compute_col_stats'
+                    ' failed for %s.%s@%s (error_type=%s)',
+                    connector_spec.connector_id,
+                    source_table_name,
                     table_data_version,
-                    type(exc).__name__)
+                    type(exc).__name__,
+                )
                 tier2 = {}
 
             if any(stats for stats in tier2.values()):
@@ -906,24 +981,27 @@ class DataBackend:
                     table_data_version,
                 )
                 return _merge_col_stats(
-                    cached_approx_stats
-                    if allow_cached_approx_stats else exact_stats,
+                    cached_approx_stats if allow_cached_approx_stats else exact_stats,
                     tier2,
                 )
 
         if table.is_sql:
             remediation = (
                 'a Custom SQL table populates min col stats by materializing '
-                '(running its query and ingesting the result)')
+                '(running its query and ingesting the result)'
+            )
         else:
-            remediation = ('DiskGraph ingest must populate the requested min '
-                           'col stats first, or the connector must support '
-                           'sample reads')
+            remediation = (
+                'DiskGraph ingest must populate the requested min '
+                'col stats first, or the connector must support '
+                'sample reads'
+            )
         raise UnsupportedInDiskgraphError(
             'DataBackend.get_min_col_stats: requested exact min col stats '
-            f"unavailable for {connector_spec.connector_id}."
-            f"{source_table_name}@{table_data_version}; DG cache miss. "
-            f"{remediation}.")
+            f'unavailable for {connector_spec.connector_id}.'
+            f'{source_table_name}@{table_data_version}; DG cache miss. '
+            f'{remediation}.'
+        )
 
     @staticmethod
     def start_min_col_stats_cache_warmup(
@@ -938,26 +1016,28 @@ class DataBackend:
         key = _background_col_stats_key(table, stats_dict, table_data_version)
         existing_task = _BACKGROUND_SAMPLE_COL_STATS_TASKS.get(key)
         if existing_task is not None and not existing_task.done():
-            log.debug("Sample column stats cache warmup already running for %s",
-                      key)
+            log.debug('Sample column stats cache warmup already running for %s', key)
             return False
 
         concurrency_limit = _sample_col_stats_warmup_concurrency_limit()
         if concurrency_limit <= 0:
-            log.debug("Sample column stats cache warmup disabled for %s", key)
+            log.debug('Sample column stats cache warmup disabled for %s', key)
             return False
         if _num_active_sample_col_stats_warmups() >= concurrency_limit:
             log.debug(
-                "Skipping sample column stats cache warmup for %s; "
-                "concurrency cap %s reached", key, concurrency_limit)
+                'Skipping sample column stats cache warmup for %s; '
+                'concurrency cap %s reached',
+                key,
+                concurrency_limit,
+            )
             return False
 
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             log.warning(
-                "Cannot schedule sample column stats cache warmup without a "
-                "running event loop for %s.%s@%s",
+                'Cannot schedule sample column stats cache warmup without a '
+                'running event loop for %s.%s@%s',
                 connector_spec.connector_id,
                 table.get_source_table_name(),
                 table_data_version,
@@ -978,7 +1058,7 @@ class DataBackend:
                 )
             except Exception:
                 log.exception(
-                    "Sample column stats cache warmup failed for %s.%s@%s",
+                    'Sample column stats cache warmup failed for %s.%s@%s',
                     connector_spec.connector_id,
                     table.get_source_table_name(),
                     table_data_version,
@@ -986,11 +1066,13 @@ class DataBackend:
             finally:
                 _BACKGROUND_SAMPLE_COL_STATS_TASKS.pop(key, None)
 
-        _BACKGROUND_SAMPLE_COL_STATS_TASKS[key] = loop.create_task(
-            _warm_cache())
-        log.info("Scheduled sample column stats cache warmup for %s.%s@%s",
-                 connector_spec.connector_id, table.get_source_table_name(),
-                 table_data_version)
+        _BACKGROUND_SAMPLE_COL_STATS_TASKS[key] = loop.create_task(_warm_cache())
+        log.info(
+            'Scheduled sample column stats cache warmup for %s.%s@%s',
+            connector_spec.connector_id,
+            table.get_source_table_name(),
+            table_data_version,
+        )
         return True
 
     # Kick off graph refresh workflow.
@@ -1014,7 +1096,8 @@ class DataBackend:
                 task_queue=DATA_BACKEND_TASK_QUEUE,
                 execution_timeout=(
                     execution_timeout
-                    or timedelta(hours=DATA_BACKEND_REFRESH_TIMEOUT_HOURS)),
+                    or timedelta(hours=DATA_BACKEND_REFRESH_TIMEOUT_HOURS)
+                ),
             )
         except (Exception, asyncio.CancelledError) as error:
             failure = error
@@ -1083,11 +1166,13 @@ class DataBackend:
 
         client = await ctx.temporal_client().get()
         graph_refresh_wf_id = GraphRefreshWorkflow.compose_wf_id(
-            graph_input, graph_version_info)
+            graph_input, graph_version_info
+        )
         log.info(
-            f"DataBackend.start_refresh_graph: Starting GraphRefreshWorkflow "
-            f"for graph={graph_input.graph_display_name}, "
-            f"wf_id={graph_refresh_wf_id}")
+            f'DataBackend.start_refresh_graph: Starting GraphRefreshWorkflow '
+            f'for graph={graph_input.graph_display_name}, '
+            f'wf_id={graph_refresh_wf_id}'
+        )
         try:
             await client.start_workflow(
                 GraphRefreshWorkflow.run,
@@ -1099,15 +1184,16 @@ class DataBackend:
                 ],
                 id=graph_refresh_wf_id,
                 task_queue=DATA_BACKEND_TASK_QUEUE,
-                execution_timeout=timedelta(
-                    hours=DATA_BACKEND_REFRESH_TIMEOUT_HOURS),
+                execution_timeout=timedelta(hours=DATA_BACKEND_REFRESH_TIMEOUT_HOURS),
                 id_reuse_policy=WorkflowIDReusePolicy.ALLOW_DUPLICATE,
             )
-            log.info('Triggered async graph refresh in wf_id=%s, input=%s',
-                     graph_refresh_wf_id, graph_input)
+            log.info(
+                'Triggered async graph refresh in wf_id=%s, input=%s',
+                graph_refresh_wf_id,
+                graph_input,
+            )
         except WorkflowAlreadyStartedError:
-            log.info('Graph refresh wf %s is already running',
-                     graph_refresh_wf_id)
+            log.info('Graph refresh wf %s is already running', graph_refresh_wf_id)
 
         return graph_refresh_wf_id
 
@@ -1115,8 +1201,9 @@ class DataBackend:
     @trace()
     @measure_blocking_code
     async def get_edge_stats(
-        ctx: DataBackendContext, graph_input: GraphDataComputeInput,
-        graph_version_info: GraphDataVersionInfo | None = None
+        ctx: DataBackendContext,
+        graph_input: GraphDataComputeInput,
+        graph_version_info: GraphDataVersionInfo | None = None,
     ) -> Optional[List[EdgeHealth]]:
         """Fetches edge stats for a single graph. If stats are not available,
         return none and trigger a graph ingestion workflow in the background.
@@ -1126,27 +1213,31 @@ class DataBackend:
         if graph_version_info is None:
             versioned_key = (
                 await graph_cache.get_many_latest_graph_versions.coroutine(
-                    [graph_input.graph_key]))[0]
+                    [graph_input.graph_key]
+                )
+            )[0]
 
             # Graph refresh has not been started or failed before saving.
             if versioned_key is None:
-                log.error("Graph has no data refreshed yet %s", graph_input)
+                log.error('Graph has no data refreshed yet %s', graph_input)
                 return None
         else:
             versioned_key = VersionedGraphKey(
-                graph_input.graph_key, graph_version_info.graph_data_version)
+                graph_input.graph_key, graph_version_info.graph_data_version
+            )
 
         if not graph_input.graph_definition.col_groups:
             return []
 
-        edge_stats = await graph_cache.get_graph_edge_stats.coroutine(
-            versioned_key)
+        edge_stats = await graph_cache.get_graph_edge_stats.coroutine(versioned_key)
 
         if edge_stats is None:
             log.error(
-                "Edge stats compute was completed for %s but result is "
-                "missing, this might happen due to a bad workflow run or "
-                "data loss in persist dir.", versioned_key)
+                'Edge stats compute was completed for %s but result is '
+                'missing, this might happen due to a bad workflow run or '
+                'data loss in persist dir.',
+                versioned_key,
+            )
             return None
 
         return parse_edge_stats_result(graph_input, edge_stats)
@@ -1154,7 +1245,8 @@ class DataBackend:
     @staticmethod
     @blocking_func(DATA_BACKEND_THREAD_POOL)
     def get_many_graph_validations(
-            graph_keys: List[GraphKey]) -> Dict[GraphKey, ValidationResponse]:
+        graph_keys: List[GraphKey],
+    ) -> Dict[GraphKey, ValidationResponse]:
         """
         Get many validation responses (if present), for each of provided graph
         keys. Each graph key should be global dedupe key of a graph, for more
@@ -1164,10 +1256,10 @@ class DataBackend:
         """
         cache = get_active_cache()
         graph_version_keys = cache.graph_cache.get_many_latest_graph_versions(
-            graph_keys)
+            graph_keys
+        )
 
-        graph_validation_file_paths: Dict[GraphKey,
-                                          List[str]] = defaultdict(list)
+        graph_validation_file_paths: Dict[GraphKey, List[str]] = defaultdict(list)
         validation_file_paths: List[str] = []
         for graph_id, key in zip(graph_keys, graph_version_keys):
             if key:
@@ -1175,7 +1267,7 @@ class DataBackend:
                 file_paths = [
                     HomeDirManager(graph_dir).validation_path('edge_stats'),
                     HomeDirManager(graph_dir).validation_path('table_stats'),
-                    HomeDirManager(graph_dir).validation_path('table_col_stats')
+                    HomeDirManager(graph_dir).validation_path('table_col_stats'),
                 ]
                 graph_validation_file_paths[graph_id] = file_paths
                 validation_file_paths.extend(file_paths)
@@ -1184,8 +1276,8 @@ class DataBackend:
 
         files = fsutil.get_many_if_present(validation_file_paths)
         validations = [
-            fast_from_json(file, ValidationResponse)
-            if file else ValidationResponse() for file in files
+            fast_from_json(file, ValidationResponse) if file else ValidationResponse()
+            for file in files
         ]
         path_to_validation = dict(zip(validation_file_paths, validations))
         result: Dict[GraphKey, ValidationResponse] = {}
@@ -1231,11 +1323,15 @@ class DataBackend:
         )
         from rest.utils.driver_common import generate_bp_stats_workflow_args
 
-        if (PredictionArtifactType.PREDICTIONS
-                not in requested_prediction_artifact_types(job_input.config)):
+        if (
+            PredictionArtifactType.PREDICTIONS
+            not in requested_prediction_artifact_types(job_input.config)
+        ):
             log.info(
                 'Skipping prediction column statistics because predictions '
-                'were not requested: job=%s', job_input.id)
+                'were not requested: job=%s',
+                job_input.id,
+            )
             return
 
         bp_job_home_dir = get_job_dir(get_job_base_dir(), JobID(job_input.id))
@@ -1247,8 +1343,12 @@ class DataBackend:
         # Direct Databricks output computes these stats earlier while the
         # managed-volume stage still exists; make the later invocation a
         # cheap idempotent check.
-        if (not use_transformed_output and direct_databricks_stage is None
-                and databricks_only and fsutil.exists(job_stats_path)):
+        if (
+            not use_transformed_output
+            and direct_databricks_stage is None
+            and databricks_only
+            and fsutil.exists(job_stats_path)
+        ):
             log.info(
                 'BP col-stats already available for direct output: job=%s',
                 job_input.id,
@@ -1263,48 +1363,58 @@ class DataBackend:
                     job_input.id,
                 )
                 return
-            if direct_databricks_prediction_output_index(
-                    job_input.config) is not None:
+            if direct_databricks_prediction_output_index(job_input.config) is not None:
                 raise RuntimeError(
                     'Direct Databricks prediction stats were not computed '
-                    'before the managed-volume stage was cleaned up.')
+                    'before the managed-volume stage was cleaned up.'
+                )
 
-        if (direct_databricks_stage is None) != (direct_databricks_output_index
-                                                 is None):
+        if (direct_databricks_stage is None) != (
+            direct_databricks_output_index is None
+        ):
             raise ValueError(
                 'Direct Databricks stats require both an output index and '
-                'a managed-volume stage.')
+                'a managed-volume stage.'
+            )
         if direct_databricks_stage is not None:
             if use_transformed_output:
                 raise ValueError(
-                    'A raw Databricks stage cannot compute transformed stats.')
-            expected_index = direct_databricks_prediction_output_index(
-                job_input.config)
+                    'A raw Databricks stage cannot compute transformed stats.'
+                )
+            expected_index = direct_databricks_prediction_output_index(job_input.config)
             if direct_databricks_output_index != expected_index:
                 raise ValueError(
                     'Direct Databricks stats stage does not match the '
-                    'configured raw-prediction output.')
+                    'configured raw-prediction output.'
+                )
             if not direct_databricks_stage.files:
                 raise ValueError(
-                    'Direct Databricks stats stage contains no Parquet files.')
+                    'Direct Databricks stats stage contains no Parquet files.'
+                )
 
-        timestamp_precision = (job_input.graph_version_info.timestamp_precision
-                               if job_input.graph_version_info is not None else
-                               'seconds')
+        timestamp_precision = (
+            job_input.graph_version_info.timestamp_precision
+            if job_input.graph_version_info is not None
+            else 'seconds'
+        )
 
         entity_col_name = job_input.predictive_query.get_bp_entity_col_name()
-        (bp_connector_spec, bp_table_def, bp_data_version,
-         bp_col_stats_set) = await generate_bp_stats_workflow_args(
-             job_id=job_input.id,
-             job_home_dir=bp_job_home_dir,
-             task_type=job_input.config.task_type,
-             is_temporal=(
-                 job_input.predictive_query.query_type == QueryType.TEMPORAL),
-             entity_col_name=entity_col_name,
-             use_transformed_output=use_transformed_output,
-             data_version_override=(str(job_input.id) if direct_databricks_stage
-                                    is not None else None),
-         )
+        (
+            bp_connector_spec,
+            bp_table_def,
+            bp_data_version,
+            bp_col_stats_set,
+        ) = await generate_bp_stats_workflow_args(
+            job_id=job_input.id,
+            job_home_dir=bp_job_home_dir,
+            task_type=job_input.config.task_type,
+            is_temporal=(job_input.predictive_query.query_type == QueryType.TEMPORAL),
+            entity_col_name=entity_col_name,
+            use_transformed_output=use_transformed_output,
+            data_version_override=(
+                str(job_input.id) if direct_databricks_stage is not None else None
+            ),
+        )
 
         home = HomeDirManager(bp_job_home_dir)
         selected_parquet_files: list[str] | None = None
@@ -1314,15 +1424,16 @@ class DataBackend:
                 parquet_source = home.internal_transformed_predictions_file
             else:
                 predictions = await resolve_prediction_artifact.coroutine(
-                    home, PredictionArtifactType.PREDICTIONS)
+                    home, PredictionArtifactType.PREDICTIONS
+                )
                 if predictions is None:
                     raise RuntimeError(
-                        'Batch prediction statistics found no selected '
-                        'predictions')
+                        'Batch prediction statistics found no selected predictions'
+                    )
                 parquet_source = predictions.root
-                selected_parquet_files = (list(predictions.files)
-                                          if predictions.files is not None else
-                                          None)
+                selected_parquet_files = (
+                    list(predictions.files) if predictions.files is not None else None
+                )
         backend_cache = get_active_cache()
 
         if direct_databricks_stage is not None:
@@ -1333,26 +1444,24 @@ class DataBackend:
 
             assert direct_databricks_output_index is not None
             output = job_input.config.outputs[direct_databricks_output_index]
-            reference = job_input.output_connectors[ConnectorID(
-                output.connector_id)]
+            reference = job_input.output_connectors[ConnectorID(output.connector_id)]
             connector = get_connector_from_spec(
-                await
-                connector_broker.connector_credential_broker.resolve_async(
-                    reference))
+                await connector_broker.connector_credential_broker.resolve_async(
+                    reference
+                )
+            )
             if not isinstance(connector, DatabricksConnector):
                 raise TypeError(
-                    'Direct Databricks stats output has a non-Databricks '
-                    'connector.')
+                    'Direct Databricks stats output has a non-Databricks connector.'
+                )
 
             request = bp_col_stats_set.get_stats_types(bp_table_def)
-            async with async_connector_lifecycle(connector,
-                                                 open_connector=True):
-                sample = await (
-                    connector.read_managed_volume_parquet_sample.coroutine(
-                        direct_databricks_stage.path,
-                        list(request),
-                        num_rows=NUM_ROWS_FOR_APPROX_STATS,
-                    ))
+            async with async_connector_lifecycle(connector, open_connector=True):
+                sample = await connector.read_managed_volume_parquet_sample.coroutine(
+                    direct_databricks_stage.path,
+                    list(request),
+                    num_rows=NUM_ROWS_FOR_APPROX_STATS,
+                )
 
             if sample.empty:
                 fsutil.makedirs(job_outputs_dir, exist_ok=True)
@@ -1374,19 +1483,20 @@ class DataBackend:
             if not col_stat_dict_complete(sampled_stats, request):
                 raise RuntimeError(
                     'Databricks staged prediction sample did not produce all '
-                    'required column statistics.')
+                    'required column statistics.'
+                )
             backend_cache.add_col_stats(
                 bp_table_def.fingerprint(),
                 sampled_stats,
             )
-            cache_stats_path = await (
-                backend_cache.save_col_stats_cache.coroutine(
-                    bp_table_def.fingerprint(),
-                    str(bp_data_version),
-                ))
+            cache_stats_path = await backend_cache.save_col_stats_cache.coroutine(
+                bp_table_def.fingerprint(),
+                str(bp_data_version),
+            )
             if not fsutil.exists(cache_stats_path):
                 raise RuntimeError(
-                    'Databricks prediction statistics were not persisted.')
+                    'Databricks prediction statistics were not persisted.'
+                )
 
             fsutil.makedirs(job_outputs_dir, exist_ok=True)
             await fsutil.copy.coroutine(
@@ -1416,9 +1526,11 @@ class DataBackend:
         assert parquet_source is not None
         if fsutil.is_local(parquet_source):
             local_source = parquet_source
-            parquet_paths = (selected_parquet_files
-                             if selected_parquet_files is not None else
-                             _list_parquet_files(local_source))
+            parquet_paths = (
+                selected_parquet_files
+                if selected_parquet_files is not None
+                else _list_parquet_files(local_source)
+            )
         else:
             variant = 'transformed' if use_transformed_output else 'predictions'
             local_source = await _stage_remote_parquet_local(
@@ -1434,19 +1546,19 @@ class DataBackend:
             if not parquet_paths:
                 raise RuntimeError(
                     'Batch prediction column statistics found no Parquet '
-                    f'files at {parquet_source}.')
+                    f'files at {parquet_source}.'
+                )
             # @blocking_method, so from this async activity body it must be
             # invoked via .coroutine(...) rather than called directly on the
             # event loop. One call reads the parquet once and returns both
             # the full and min variants.
             svc = get_service()
-            full_json, min_json = \
-                await svc.compute_col_stats_for_parquet.coroutine(
-                    parquet_paths=parquet_paths,
-                    kumo_column_specs=kumo_column_specs,
-                    data_version=str(bp_data_version),
-                    timestamp_precision=timestamp_precision,
-                )
+            full_json, min_json = await svc.compute_col_stats_for_parquet.coroutine(
+                parquet_paths=parquet_paths,
+                kumo_column_specs=kumo_column_specs,
+                data_version=str(bp_data_version),
+                timestamp_precision=timestamp_precision,
+            )
         finally:
             if staging_dir is not None:
                 shutil.rmtree(staging_dir, ignore_errors=True)
@@ -1482,9 +1594,11 @@ class DataBackend:
         # what the ingest path does in graph_refresh_workflow.py:326-374.
         # ``save`` is @blocking_method → call via .coroutine(...).
         now = now_utc()
-        for stage in (TableRefreshStage.COMPUTE_MIN_COL_STATS,
-                      TableRefreshStage.COMPUTE_FULL_COL_STATS,
-                      TableRefreshStage.COMPLETED):
+        for stage in (
+            TableRefreshStage.COMPUTE_MIN_COL_STATS,
+            TableRefreshStage.COMPUTE_FULL_COL_STATS,
+            TableRefreshStage.COMPLETED,
+        ):
             await backend_cache.table_refresh_result.save.coroutine(
                 bp_table_def.get_connector_id(),
                 bp_table_def.cache_key(),
@@ -1501,7 +1615,10 @@ class DataBackend:
 
         log.info(
             'DG BP col-stats written: job=%s transformed=%s parquet=%d files',
-            job_input.id, use_transformed_output, len(parquet_paths))
+            job_input.id,
+            use_transformed_output,
+            len(parquet_paths),
+        )
 
     @staticmethod
     @measure_blocking_code
@@ -1521,14 +1638,17 @@ class DataBackend:
 
         file_source_decision = None
         if is_file_source_table(table_def):
-            file_source_decision = (await get_active_cache(
-            ).direct_diskgraph_source_decision.get.coroutine(
-                table_def.fingerprint(),
-                str(table_data_version),
-                cls=DirectDiskgraphSourceDecision,
-            ))
-            if (file_source_decision is not None
-                    and file_source_decision.source is not None):
+            file_source_decision = (
+                await get_active_cache().direct_diskgraph_source_decision.get.coroutine(
+                    table_def.fingerprint(),
+                    str(table_data_version),
+                    cls=DirectDiskgraphSourceDecision,
+                )
+            )
+            if (
+                file_source_decision is not None
+                and file_source_decision.source is not None
+            ):
                 log.info(
                     'Skipping standalone table col-stats for frozen direct '
                     'file source: connector=%s table=%s version=%s',
@@ -1539,7 +1659,8 @@ class DataBackend:
                 return False
 
         connector = await get_connector_from_spec_async(
-            connector_spec, resolved_factory=get_connector_from_spec)
+            connector_spec, resolved_factory=get_connector_from_spec
+        )
         async with async_connector_lifecycle(connector):
             from kumo.connector.file_connector import FileConnector
 
@@ -1549,13 +1670,17 @@ class DataBackend:
             direct_source = (
                 isinstance(connector, FileConnector)
                 and file_source_decision is None
-                and connector.uses_direct_diskgraph_source_for(source_name))
+                and connector.uses_direct_diskgraph_source_for(source_name)
+            )
             if direct_source:
                 log.info(
                     'Skipping standalone table col-stats for a table '
                     'without staged local Parquet: connector=%s table=%s '
-                    'version=%s', connector_spec.connector_id, source_name,
-                    table_data_version)
+                    'version=%s',
+                    connector_spec.connector_id,
+                    source_name,
+                    table_data_version,
+                )
                 return False
 
             from diskgraph import DiskgraphSourceValidationError
@@ -1571,15 +1696,16 @@ class DataBackend:
 
             data_version = str(table_data_version)
             staging_dir: Optional[str] = None
-            materialize_path = get_materialize_path(table_def.fingerprint(),
-                                                    data_version,
-                                                    MaterializationStage.INGEST)
+            materialize_path = get_materialize_path(
+                table_def.fingerprint(), data_version, MaterializationStage.INGEST
+            )
             try:
                 if fsutil.is_local(materialize_path):
                     parquet_paths = _list_parquet_files(materialize_path)
                 elif _list_parquet_files(materialize_path):
                     local_source = await _stage_remote_table_parquet_local(
-                        materialize_path, table_def, data_version)
+                        materialize_path, table_def, data_version
+                    )
                     staging_dir = osp.dirname(local_source)
                     parquet_paths = _list_parquet_files(local_source)
                 else:
@@ -1587,24 +1713,26 @@ class DataBackend:
 
                 if not parquet_paths:
                     diskgraph_path = get_diskgraph_local_ingest_path(
-                        table_def.fingerprint(), data_version)
+                        table_def.fingerprint(), data_version
+                    )
                     parquet_paths = _list_parquet_files(diskgraph_path)
                 if not parquet_paths:
                     raise RuntimeError(
-                        "Standalone table refresh could not find ingested parquet "
-                        f"for {table_def.get_source_table_name()}@{data_version}."
+                        'Standalone table refresh could not find ingested parquet '
+                        f'for {table_def.get_source_table_name()}@{data_version}.'
                     )
 
-                full_json, min_json = \
-                    await get_service().compute_col_stats_for_parquet.coroutine(
-                        parquet_paths=parquet_paths,
-                        kumo_column_specs=_to_kumo_col_specs(table_def),
-                        data_version=data_version,
-                    )
+                (
+                    full_json,
+                    min_json,
+                ) = await get_service().compute_col_stats_for_parquet.coroutine(
+                    parquet_paths=parquet_paths,
+                    kumo_column_specs=_to_kumo_col_specs(table_def),
+                    data_version=data_version,
+                )
             except DiskgraphSourceValidationError as error:
                 raise PublicException(
-                    message=(f"Table '{source_name}' could not be refreshed: "
-                             f"{error}"),
+                    message=(f"Table '{source_name}' could not be refreshed: {error}"),
                     non_retryable=True,
                 ) from None
             finally:
@@ -1622,8 +1750,11 @@ class DataBackend:
 
             log.info(
                 'Standalone table col-stats written: table=%s version=%s '
-                'parquet=%d files', table_def.get_source_table_name(),
-                data_version, len(parquet_paths))
+                'parquet=%d files',
+                table_def.get_source_table_name(),
+                data_version,
+                len(parquet_paths),
+            )
             return True
 
 
@@ -1640,17 +1771,22 @@ async def _stage_remote_table_parquet_local(
     if not isinstance(dc, DiskgraphConfig):
         raise RuntimeError(
             'compute_standalone_table_col_stats requires a DiskGraph '
-            f'data_compute config; got {type(dc).__name__}')
+            f'data_compute config; got {type(dc).__name__}'
+        )
 
-    staging_dir = osp.join(dc.data_root, 'table_colstats',
-                           table_def.fingerprint().ingest_path_fpid,
-                           str(data_version))
+    staging_dir = osp.join(
+        dc.data_root,
+        'table_colstats',
+        table_def.fingerprint().ingest_path_fpid,
+        str(data_version),
+    )
     shutil.rmtree(staging_dir, ignore_errors=True)
     os.makedirs(staging_dir, exist_ok=True)
     local_target = osp.join(staging_dir, 'source.parquet')
     try:
-        await fsutil.copy.coroutine(parquet_source, local_target,
-                                    overwrite=True, raise_on_exists=False)
+        await fsutil.copy.coroutine(
+            parquet_source, local_target, overwrite=True, raise_on_exists=False
+        )
     except BaseException:
         shutil.rmtree(staging_dir, ignore_errors=True)
         raise
@@ -1689,9 +1825,11 @@ async def _stage_remote_parquet_local(
     if not isinstance(dc, DiskgraphConfig):
         raise RuntimeError(
             'start_bp_stats_activity requires a DiskGraph data_compute '
-            f'config; got {type(dc).__name__}')
-    staging_dir = osp.join(dc.data_root, 'pred_artifact_cache', job_id,
-                           'bp_colstats', variant)
+            f'config; got {type(dc).__name__}'
+        )
+    staging_dir = osp.join(
+        dc.data_root, 'pred_artifact_cache', job_id, 'bp_colstats', variant
+    )
     # Fresh dir per attempt; the caller rmtree's it after compute.
     shutil.rmtree(staging_dir, ignore_errors=True)
     os.makedirs(staging_dir, exist_ok=True)
@@ -1699,8 +1837,9 @@ async def _stage_remote_parquet_local(
     # fsutil.copy is @blocking_func; from this async activity it must be
     # awaited via .coroutine(...) rather than called on the event loop.
     if parquet_files is None:
-        await fsutil.copy.coroutine(parquet_source, local_target,
-                                    overwrite=True, raise_on_exists=False)
+        await fsutil.copy.coroutine(
+            parquet_source, local_target, overwrite=True, raise_on_exists=False
+        )
     else:
         os.makedirs(local_target, exist_ok=True)
         names = [osp.basename(path) for path in parquet_files]
@@ -1745,7 +1884,7 @@ def _list_parquet_files(parquet_source: str) -> List[str]:
 # Helper function to get file suffix.
 
 
-def get_file_suffix(file_name: str, default_suffix: str = "") -> str:
+def get_file_suffix(file_name: str, default_suffix: str = '') -> str:
     suffix = default_suffix
     dot_suffix = os.path.splitext(file_name)[1]
     if dot_suffix:
@@ -1754,13 +1893,13 @@ def get_file_suffix(file_name: str, default_suffix: str = "") -> str:
 
 
 @blocking_func()
-def get_output_path(home_dir_mgr: HomeDirManager, job_id: str,
-                    prediction_output: PredictionOutputConfig) -> Dict:
-    prediction_config = PredictionConfig.load(
-        home_dir_mgr.job_config_path(job_id))
+def get_output_path(
+    home_dir_mgr: HomeDirManager, job_id: str, prediction_output: PredictionOutputConfig
+) -> Dict:
+    prediction_config = PredictionConfig.load(home_dir_mgr.job_config_path(job_id))
     out_dir = prediction_config.output_dir
 
-    out_filename = f"{prediction_output.artifact_type.value.lower()}.parquet"
+    out_filename = f'{prediction_output.artifact_type.value.lower()}.parquet'
     output_path = os.path.join(out_dir, out_filename)
     if not fsutil.exists(output_path):
         raise ArtifactNotFoundError(path=output_path)
@@ -1769,8 +1908,8 @@ def get_output_path(home_dir_mgr: HomeDirManager, job_id: str,
 
 @blocking_func()
 def get_train_table_artifact_path(
-        home_dir_mgr: HomeDirManager,
-        output_config: TrainingTableOutputConfig) -> Dict:
+    home_dir_mgr: HomeDirManager, output_config: TrainingTableOutputConfig
+) -> Dict:
     artifact_type = output_config.artifact_type
     if artifact_type == TrainingTableArtifactType.FULL_TRAIN_TABLE:
         train_table_dir = home_dir_mgr.train_table_dir
@@ -1778,10 +1917,11 @@ def get_train_table_artifact_path(
             raise ArtifactNotFoundError(path=train_table_dir)
         return {artifact_type: train_table_dir}
     else:
-        raise ValueError(f"Unsupported artifact type: {artifact_type}")
+        raise ValueError(f'Unsupported artifact type: {artifact_type}')
 
 
 @blocking_func()
 def get_prediction_job_input_file(
-        prediction_job_input_file: str) -> BatchPredictionJobInput:
+    prediction_job_input_file: str,
+) -> BatchPredictionJobInput:
     return json.load_json(prediction_job_input_file, BatchPredictionJobInput)

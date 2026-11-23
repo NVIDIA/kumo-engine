@@ -26,8 +26,7 @@ def _get_arr_offsets(arr: pa.lib.ChunkedArray):
     return _get_list_offsets([len(c) for c in arr.chunks])
 
 
-def _resolve_take_indices(idx: Iterable[int],
-                          offsets: List[int]) -> _TakeIndices:
+def _resolve_take_indices(idx: Iterable[int], offsets: List[int]) -> _TakeIndices:
     per_chunk_idx = [[] for _ in offsets[:-1]]
     chunk_reassemble_idx = []
 

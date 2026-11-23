@@ -19,12 +19,19 @@ def test_invalid_accelerator_fails_at_construction(accelerator):
         Trainer(ModelPlan(), accelerator=accelerator)
 
 
-@pytest.mark.parametrize('release, accelerator, fails',
-                         [('14.7.1', 'mps', True), ('14.7.1', 'gpu', True),
-                          ('14.7.1', 'auto', False), ('14.7.1', 'cpu', False),
-                          ('15.0', 'mps', False), ('', 'gpu', False)])
+@pytest.mark.parametrize(
+    'release, accelerator, fails',
+    [
+        ('14.7.1', 'mps', True),
+        ('14.7.1', 'gpu', True),
+        ('14.7.1', 'auto', False),
+        ('14.7.1', 'cpu', False),
+        ('15.0', 'mps', False),
+        ('', 'gpu', False),
+    ],
+)
 def test_mps_needs_macos_15(monkeypatch, release, accelerator, fails):
-    monkeypatch.setattr('platform.mac_ver', lambda: (release, ('', ) * 3, ''))
+    monkeypatch.setattr('platform.mac_ver', lambda: (release, ('',) * 3, ''))
     if fails:
         with pytest.raises(UnsupportedAcceleratorError, match='macOS 15'):
             Trainer(ModelPlan(), accelerator=accelerator)
@@ -44,7 +51,8 @@ def test_accelerator_defaults_to_auto_and_is_instance_local(monkeypatch):
 
 @pytest.mark.parametrize('num_workers', [1, 2])
 def test_cpu_fit_refit_reload_and_predict_override_environment(
-        tmp_path, monkeypatch, num_workers):
+    tmp_path, monkeypatch, num_workers
+):
     import torch
     from kumo_core.train.trainer import Trainer as CoreTrainer
 
@@ -65,13 +73,16 @@ def test_cpu_fit_refit_reload_and_predict_override_environment(
     try:
         data = tmp_path / 'data'
         data.mkdir()
-        pd.DataFrame({
-            'id': range(100),
-            'label': [bool(i % 2) if i < 80 else None for i in range(100)],
-            'value': [i / 100 for i in range(100)],
-        }).to_parquet(data / 'users.parquet')
+        pd.DataFrame(
+            {
+                'id': range(100),
+                'label': [bool(i % 2) if i < 80 else None for i in range(100)],
+                'value': [i / 100 for i in range(100)],
+            }
+        ).to_parquet(data / 'users.parquet')
         users = Table.from_source_table(
-            FileConnector(root_dir=str(data))['users'], primary_key='id')
+            FileConnector(root_dir=str(data))['users'], primary_key='id'
+        )
         graph = Graph({'users': users})
         snapshot = graph.snapshot()
         query = PredictiveQuery(graph, 'PREDICT users.label FOR EACH users.id')
@@ -85,14 +96,16 @@ def test_cpu_fit_refit_reload_and_predict_override_environment(
         plan.optimization.max_steps_per_epoch = 2
         plan.model_architecture.channels = [8]
         trainer = Trainer(plan, accelerator='cpu')
-        result = trainer.fit(query.generate_training_table(snapshot),
-                             snapshot=snapshot)
+        result = trainer.fit(query.generate_training_table(snapshot), snapshot=snapshot)
         assert len(devices) >= 2
         fit_count = len(devices)
         restored = Trainer.load(result.bundle_dir, accelerator='cpu')
         prediction = restored.predict(
-            query.generate_prediction_table(snapshot), snapshot=snapshot,
-            binary_classification_threshold=0.5, num_workers=num_workers)
+            query.generate_prediction_table(snapshot),
+            snapshot=snapshot,
+            binary_classification_threshold=0.5,
+            num_workers=num_workers,
+        )
         assert len(prediction.frame) == 20
         assert len(prediction.files) >= num_workers
         if num_workers == 1:

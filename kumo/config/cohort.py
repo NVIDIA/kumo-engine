@@ -37,28 +37,34 @@ class DataCube:
     dimensions: List[DimensionSpec] = field(default_factory=list)
 
 
-def _data_frame_to_cube(col_stats: COHORT_DATAFRAME,
-                        is_classification: bool) -> DataCube:
+def _data_frame_to_cube(
+    col_stats: COHORT_DATAFRAME, is_classification: bool
+) -> DataCube:
     dimensions = []
     if is_classification:
         dimensions.append(
-            DimensionSpec(name='Class Label', all_values=list(col_stats.keys()),
-                          value_type='str'))
+            DimensionSpec(
+                name='Class Label', all_values=list(col_stats.keys()), value_type='str'
+            )
+        )
         # Only support binary classification now
         all_values = list(next(iter(col_stats.values())).keys())
         dimensions.append(
-            DimensionSpec(name='Data Field', all_values=all_values,
-                          value_type='str'))
+            DimensionSpec(name='Data Field', all_values=all_values, value_type='str')
+        )
     else:
         dimensions.append(
-            DimensionSpec(name='Data Field', all_values=list(col_stats.keys()),
-                          value_type='str'))
+            DimensionSpec(
+                name='Data Field', all_values=list(col_stats.keys()), value_type='str'
+            )
+        )
     return DataCube(json_data=col_stats, dimensions=dimensions)
 
 
 @kumo_dataclass
 class ColumnCohort:
     r"""Cohort analysis results for a column."""
+
     task_type: TaskType = TaskType.BINARY_CLASSIFICATION
     col_stats: COHORT_DATAFRAME = field(default_factory=dict)
     col_value_stats: Dict[str, COHORT_DATAFRAME] = field(default_factory=dict)
@@ -69,19 +75,22 @@ class ColumnCohort:
         """
         if self.col_stats:
             return _data_frame_to_cube(
-                self.col_stats,
-                is_classification=self.task_type.is_classification)
+                self.col_stats, is_classification=self.task_type.is_classification
+            )
 
         assert self.col_value_stats
         dimensions = [
-            DimensionSpec(name='Categorical Column Value',
-                          all_values=list(self.col_value_stats.keys()),
-                          value_type='str')
+            DimensionSpec(
+                name='Categorical Column Value',
+                all_values=list(self.col_value_stats.keys()),
+                value_type='str',
+            )
         ]
         json_data = {}
         for col_val, col_stats in self.col_value_stats.items():
             cube = _data_frame_to_cube(
-                col_stats, is_classification=self.task_type.is_classification)
+                col_stats, is_classification=self.task_type.is_classification
+            )
             json_data[col_val] = cube.json_data
             if len(dimensions) == 1:
                 dimensions.extend(cube.dimensions)
@@ -95,6 +104,7 @@ class TableCohort:
     `ColumnCohort`, which holds cohort analysis results for each
     column.
     """
+
     cols: Dict[str, ColumnCohort] = field(default_factory=dict)
 
 
@@ -106,6 +116,7 @@ class TaskCohort:
     key is the table name and value is dataclass `TableCohort`, which
     holds cohort analysis results for each column.
     """
+
     target_type: TargetType = TargetType.TRUTH
     tables: Dict[str, TableCohort] = field(default_factory=dict)
     task_type: TaskType = TaskType.BINARY_CLASSIFICATION
@@ -116,8 +127,8 @@ class TaskCohort:
 
 @kumo_dataclass(repr=False)
 class QuantileStats:
-    r"""Quantile statistics for cohort analysis.
-    """
+    r"""Quantile statistics for cohort analysis."""
+
     stats: List[float] = field(default_factory=list)
 
     def to_unique_list(self) -> List[float]:

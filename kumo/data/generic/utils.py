@@ -18,9 +18,12 @@ def get_fully_qualified_snowflake_udf_name(udf_func_name: str) -> str:
         SNOWFLAKE_DATABASE,
         SNOWFLAKE_SCHEMA,
     )
+
     if SNOWFLAKE_DATABASE and SNOWFLAKE_SCHEMA:
-        logger.debug(f'Qualifying UDF function name {udf_func_name} with '
-                     f'database {SNOWFLAKE_DATABASE} and schema '
-                     f'{SNOWFLAKE_SCHEMA}')
+        logger.debug(
+            f'Qualifying UDF function name {udf_func_name} with '
+            f'database {SNOWFLAKE_DATABASE} and schema '
+            f'{SNOWFLAKE_SCHEMA}'
+        )
         return f'{SNOWFLAKE_DATABASE}.{SNOWFLAKE_SCHEMA}.{udf_func_name}'
     return udf_func_name

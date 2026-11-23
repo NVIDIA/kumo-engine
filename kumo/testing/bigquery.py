@@ -57,8 +57,9 @@ def credential_kind(path: str) -> CredentialKind:
             raise ValueError('credential document must be a JSON object')
         return CredentialKind(document.get('type'))
     except (ValueError, TypeError) as error:
-        raise RuntimeError('BigQuery credential file has an invalid or '
-                           'unsupported credential type') from error
+        raise RuntimeError(
+            'BigQuery credential file has an invalid or unsupported credential type'
+        ) from error
 
 
 def resolve_credentials(identity: BigQueryIdentity) -> tuple[str, str | None]:
@@ -67,14 +68,17 @@ def resolve_credentials(identity: BigQueryIdentity) -> tuple[str, str | None]:
         raise TypeError('BigQuery credentials require a BigQueryIdentity')
     path = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS')
     if not path:
-        raise RuntimeError('BigQuery tests require explicit '
-                           'GOOGLE_APPLICATION_CREDENTIALS')
+        raise RuntimeError(
+            'BigQuery tests require explicit GOOGLE_APPLICATION_CREDENTIALS'
+        )
     kind = credential_kind(path)
     require_wif = EnvVar(
-        'KUMO_GCP_WORKLOAD_EXCHANGE_ENABLED', bool, default_value=False).parse_value()
+        'KUMO_GCP_WORKLOAD_EXCHANGE_ENABLED', bool, default_value=False
+    ).parse_value()
     if require_wif and kind != CredentialKind.FEDERATED:
-        raise RuntimeError('Workload exchange BigQuery tests require '
-                           'external_account ADC')
+        raise RuntimeError(
+            'Workload exchange BigQuery tests require external_account ADC'
+        )
     if identity == BigQueryIdentity.DEFAULT:
         return path, None
 
@@ -85,11 +89,12 @@ def resolve_credentials(identity: BigQueryIdentity) -> tuple[str, str | None]:
         }[identity]
         restricted_path = os.environ.get(variable)
         if not restricted_path:
-            raise RuntimeError(f'{variable} must identify the restricted '
-                               'BigQuery service-account credential file')
+            raise RuntimeError(
+                f'{variable} must identify the restricted '
+                'BigQuery service-account credential file'
+            )
         if credential_kind(restricted_path) != CredentialKind.KEY:
-            raise RuntimeError(f'{variable} must contain service_account '
-                               'credentials')
+            raise RuntimeError(f'{variable} must contain service_account credentials')
         return restricted_path, None
 
     variable = {
@@ -98,8 +103,9 @@ def resolve_credentials(identity: BigQueryIdentity) -> tuple[str, str | None]:
     }[identity]
     target = os.environ.get(variable)
     if not target:
-        raise RuntimeError(f'{variable} must be configured for '
-                           'the restricted BigQuery test identity')
+        raise RuntimeError(
+            f'{variable} must be configured for the restricted BigQuery test identity'
+        )
     return path, target
 
 
@@ -121,13 +127,14 @@ def setup_bigquery_credentials(
         if target:
             environment.setenv(ENV_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT, target)
         else:
-            environment.delenv(ENV_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT,
-                               raising=False)
+            environment.delenv(ENV_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT, raising=False)
         environment.setenv(
             ENV_GCS_KUMO_BUCKET.name,
-            os.environ.get(ENV_GCS_KUMO_BUCKET.name) or 'kumo-test-bucket')
-        project = (os.environ.get('GCP_PROJECT_ID')
-                   or os.environ.get('GOOGLE_CLOUD_PROJECT'))
+            os.environ.get(ENV_GCS_KUMO_BUCKET.name) or 'kumo-test-bucket',
+        )
+        project = os.environ.get('GCP_PROJECT_ID') or os.environ.get(
+            'GOOGLE_CLOUD_PROJECT'
+        )
         if project:
             environment.setenv('GCP_PROJECT_ID', project)
         yield
@@ -139,6 +146,7 @@ def withBigQueryCredentials(
     identity: BigQueryIdentity = BigQueryIdentity.DEFAULT,
 ):
     """Declare credentials without performing auth or wrapping the test body."""
+
     def decorator(inner_func: Callable):
         return pytest.mark.bigquery_credentials(identity)(inner_func)
 

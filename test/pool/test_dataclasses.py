@@ -7,6 +7,7 @@ We verify that every persisted dataclass survives a ``save_json`` /
 ``load_json`` round-trip, catching serializer regressions before they cause
 a silent data-loss incident on controller restart.
 """
+
 from dataclasses import field
 from datetime import datetime, timezone
 from typing import Dict, Literal
@@ -49,6 +50,7 @@ from pool.strategy import ReconcileDelta, RouteDecision
 @kumo_dataclass
 class _RollbackK8sPlacementState:
     """Schema used by the pre-PR binary during a rollback."""
+
     type: Literal['k8s'] = 'k8s'
     pvcs: Dict[str, PvcState] = field(default_factory=dict)
 
@@ -70,36 +72,37 @@ def populated_state() -> PoolState:
     return PoolState(
         placement_state=K8sPlacementState(
             pvcs={
-                'worker-a':
-                PvcState(pool_worker_uid='worker-a', created_at=datetime(
-                    2026, 4, 20, tzinfo=timezone.utc)),
-                'worker-b':
-                PvcState(pool_worker_uid='worker-b', created_at=datetime(
-                    2026, 4, 21, tzinfo=timezone.utc)),
-            }),
+                'worker-a': PvcState(
+                    pool_worker_uid='worker-a',
+                    created_at=datetime(2026, 4, 20, tzinfo=timezone.utc),
+                ),
+                'worker-b': PvcState(
+                    pool_worker_uid='worker-b',
+                    created_at=datetime(2026, 4, 21, tzinfo=timezone.utc),
+                ),
+            }
+        ),
         snapshots={
             'snap-1': placement1,
             'snap-2': placement2,
         },
         dataplane_backups={
-            'snap-1':
-            DataplaneBackup(snapshot_id='snap-1',
-                            dataplane_path='s3://b/snap-1'),
-            'snap-2':
-            DataplaneBackup(snapshot_id='snap-2',
-                            dataplane_path='s3://b/snap-2'),
+            'snap-1': DataplaneBackup(
+                snapshot_id='snap-1', dataplane_path='s3://b/snap-1'
+            ),
+            'snap-2': DataplaneBackup(
+                snapshot_id='snap-2', dataplane_path='s3://b/snap-2'
+            ),
         },
         snapshot_compliance={
-            'snap-1':
-            SnapshotComplianceRecord(
+            'snap-1': SnapshotComplianceRecord(
                 snapshot_id='snap-1',
                 active_consumer_count=1,
                 compliance_delete_at=None,
             ),
         },
         local_copies={
-            'snap-1:worker-a':
-            SnapshotLocalCopyRecord(
+            'snap-1:worker-a': SnapshotLocalCopyRecord(
                 snapshot_id='snap-1',
                 pool_worker_uid='worker-a',
                 local_state=SnapshotLocalCopyState.WARM,
@@ -259,8 +262,10 @@ def test_active_job_round_trip(tmp_path):
 
 
 def test_pvc_state_round_trip(tmp_path):
-    pvc = PvcState(pool_worker_uid='worker-a',
-                   created_at=datetime(2026, 4, 20, tzinfo=timezone.utc))
+    pvc = PvcState(
+        pool_worker_uid='worker-a',
+        created_at=datetime(2026, 4, 20, tzinfo=timezone.utc),
+    )
     path = str(tmp_path / 'pvc.json')
     save_json(pvc, path)
     assert load_json(path, PvcState) == pvc

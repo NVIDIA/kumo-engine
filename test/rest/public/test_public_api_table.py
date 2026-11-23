@@ -13,11 +13,13 @@ from rest.driver.table_driver import TableDriver
 
 def _table_definition(source_path: str, connector_id: str) -> dict:
     return {
-        'cols': [{
-            'name': 'event_id',
-            'stype': 'ID',
-            'dtype': 'int64',
-        }],
+        'cols': [
+            {
+                'name': 'event_id',
+                'stype': 'ID',
+                'dtype': 'int64',
+            }
+        ],
         'source_table': {
             'connector_id': connector_id,
             'source': {
@@ -56,7 +58,9 @@ def test_public_table_create_and_overwrite_through_http(
     )
     upload_connector = _expect_success(
         public_api_client.get(
-            f'/v1/projects/{DEFAULT_PROJECT_ID}/connectors/uploads/connector'))
+            f'/v1/projects/{DEFAULT_PROJECT_ID}/connectors/uploads/connector'
+        )
+    )
     connector_id = upload_connector['connector_id']
     params = {
         'project_id': DEFAULT_PROJECT_ID,
@@ -66,20 +70,21 @@ def test_public_table_create_and_overwrite_through_http(
 
     first_definition = _table_definition('first/events.parquet', connector_id)
     first = _expect_success(
-        public_api_client.post('/v1/tables', params=params,
-                               json=first_definition))
+        public_api_client.post('/v1/tables', params=params, json=first_definition)
+    )
 
     second_definition = _table_definition('second/events.parquet', connector_id)
     second = _expect_success(
-        public_api_client.post('/v1/tables', params=params,
-                               json=second_definition))
+        public_api_client.post('/v1/tables', params=params, json=second_definition)
+    )
     assert second['id'] != first['id']
 
     loaded = _expect_success(
         public_api_client.get(
             '/v1/tables/sdk_smoke_table',
             params={'project_id': DEFAULT_PROJECT_ID},
-        ))
+        )
+    )
     assert loaded['name_alias'] == 'sdk_smoke_table'
     assert loaded['table']['source_table']['source'] == {
         'mode': 'relative',

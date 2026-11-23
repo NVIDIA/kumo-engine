@@ -44,8 +44,10 @@ def _resolve_entity_time_col(predictive_query) -> Optional[str]:
         validated = predictive_query.validated_predictive_query
         entity_table_name = validated.entity_table
         for table in predictive_query.graph.tables:
-            if (table.table_name == entity_table_name
-                    or getattr(table, 'name', None) == entity_table_name):
+            if (
+                table.table_name == entity_table_name
+                or getattr(table, 'name', None) == entity_table_name
+            ):
                 if table.time_col is not None:
                     return table.time_col.name
                 return None
@@ -64,6 +66,7 @@ class CustomTrainTableResult:
             table.
         validation: Validation response.
     """
+
     train_table_path: str
     train_table_materialization_path: str
     validation: ValidationResponse
@@ -72,10 +75,11 @@ class CustomTrainTableResult:
 @workflow.defn
 class CustomTrainTableWorkflow:
     """Workflow for creating and materializing a custom training table."""
+
     @staticmethod
     def generate_wf_id(job_id: TrainingJobID) -> str:
         """Generate a workflow ID for a particular job."""
-        return f"custom-train-table-{job_id}"
+        return f'custom-train-table-{job_id}'
 
     @workflow.run
     async def run(
@@ -120,14 +124,15 @@ class CustomTrainTableWorkflow:
             predictive_query = job_input.spec.predictive_query
             query_type = predictive_query.query_type
             list_distinct_target_is_array = bool(
-                predictive_query.list_distinct_target_is_array)
+                predictive_query.list_distinct_target_is_array
+            )
 
             # When the entity table has its own time_col, the sentinel
             # synthesizer skips static node-pred since the customer's
             # parquet already carries real per-row time.
             entity_time_col = _resolve_entity_time_col(predictive_query)
 
-            new_train_table_path, response = (await workflow.execute_activity(
+            new_train_table_path, response = await workflow.execute_activity(
                 ingest_custom_train_table,
                 args=[
                     custom_train_table_spec,
@@ -141,30 +146,34 @@ class CustomTrainTableWorkflow:
                 ],
                 task_queue=DATA_BACKEND_TASK_QUEUE,
                 schedule_to_close_timeout=timedelta(
-                    hours=DATA_BACKEND_INGEST_TIMEOUT_HOURS),
+                    hours=DATA_BACKEND_INGEST_TIMEOUT_HOURS
+                ),
                 retry_policy=COMPUTE_ACTIVITY_RETRY_POLICY,
-            ))
+            )
             validation_response.merge(response)
             if not validation_response.ok:
-                return CustomTrainTableResult("", "", validation_response)
-            validation_response.merge(await workflow.execute_activity(
-                validate_weighted_train_table,
-                args=[
-                    original_train_table_path,
-                    new_train_table_path,
-                    job_input.weight_col_name,
-                    deploy_env(),
-                    job_input.id,
-                    task_type,
-                    custom_train_table_spec.split_col_name,
-                ],
-                task_queue=DATA_BACKEND_TASK_QUEUE,
-                schedule_to_close_timeout=timedelta(
-                    hours=DATA_BACKEND_INGEST_TIMEOUT_HOURS),
-                retry_policy=COMPUTE_ACTIVITY_RETRY_POLICY,
-            ))
+                return CustomTrainTableResult('', '', validation_response)
+            validation_response.merge(
+                await workflow.execute_activity(
+                    validate_weighted_train_table,
+                    args=[
+                        original_train_table_path,
+                        new_train_table_path,
+                        job_input.weight_col_name,
+                        deploy_env(),
+                        job_input.id,
+                        task_type,
+                        custom_train_table_spec.split_col_name,
+                    ],
+                    task_queue=DATA_BACKEND_TASK_QUEUE,
+                    schedule_to_close_timeout=timedelta(
+                        hours=DATA_BACKEND_INGEST_TIMEOUT_HOURS
+                    ),
+                    retry_policy=COMPUTE_ACTIVITY_RETRY_POLICY,
+                )
+            )
             if not validation_response.ok:
-                return CustomTrainTableResult("", "", validation_response)
+                return CustomTrainTableResult('', '', validation_response)
 
         # Build and persist the custom TT-NG bundle while the pool keeps the
         # parent graph index resident. The following materializer only validates
@@ -173,7 +182,8 @@ class CustomTrainTableWorkflow:
         assert job_input.graph_version_info is not None
         snapshot_id = DataSnapshot.GRAPH.canonicalize(
             f'{_graph_key_to_v2(job_input.graph_data_compute_input.graph_key)}'
-            f'@{job_input.graph_version_info.graph_data_version}')
+            f'@{job_input.graph_version_info.graph_data_version}'
+        )
         new_train_table_path = await run_pooled_activity(
             snapshot_id=snapshot_id,
             activity=SnapshotActivity.GEN_CUSTOM_TT,
@@ -186,32 +196,33 @@ class CustomTrainTableWorkflow:
                 job_input.weight_col_name,
             ],
             schedule_to_close_timeout=timedelta(
-                hours=DATA_BACKEND_MATERIALIZE_TIMEOUT_HOURS),
+                hours=DATA_BACKEND_MATERIALIZE_TIMEOUT_HOURS
+            ),
             heartbeat_timeout=HEARTBEAT_TIMEOUT_COMPUTE_ACTIVITY,
             retry_policy=COMPUTE_ACTIVITY_RETRY_POLICY,
         )
 
-        materialized_train_table_data_path, response = (
-            await workflow.execute_activity(
-                materialize_training_table,
-                args=[
-                    job_input,
-                    ml_job_settings,
-                    new_train_table_path,
-                    True,
-                    job_input.weight_col_name,
-                    True,
-                ],
-                task_queue=DATA_BACKEND_TASK_QUEUE,
-                schedule_to_close_timeout=timedelta(
-                    hours=DATA_BACKEND_MATERIALIZE_TIMEOUT_HOURS),
-                heartbeat_timeout=HEARTBEAT_TIMEOUT_TRAIN_TABLE_SPLIT,
-                retry_policy=COMPUTE_ACTIVITY_RETRY_POLICY,
-            ))
+        materialized_train_table_data_path, response = await workflow.execute_activity(
+            materialize_training_table,
+            args=[
+                job_input,
+                ml_job_settings,
+                new_train_table_path,
+                True,
+                job_input.weight_col_name,
+                True,
+            ],
+            task_queue=DATA_BACKEND_TASK_QUEUE,
+            schedule_to_close_timeout=timedelta(
+                hours=DATA_BACKEND_MATERIALIZE_TIMEOUT_HOURS
+            ),
+            heartbeat_timeout=HEARTBEAT_TIMEOUT_TRAIN_TABLE_SPLIT,
+            retry_policy=COMPUTE_ACTIVITY_RETRY_POLICY,
+        )
         validation_response.merge(response)
 
         if not validation_response.ok:
-            return CustomTrainTableResult("", "", validation_response)
+            return CustomTrainTableResult('', '', validation_response)
 
         return CustomTrainTableResult(
             new_train_table_path,

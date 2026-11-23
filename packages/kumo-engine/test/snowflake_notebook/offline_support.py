@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Verify and unpack the flat, reviewed offline wheel set."""
+
 import hashlib
 import json
 import shutil
@@ -25,29 +26,32 @@ def unpack(payload, destination):
     if destination.exists():
         verify(destination, expected)
         return manifest
-    with tempfile.TemporaryDirectory(prefix=destination.name + '-pending-',
-                                     dir=destination.parent) as temporary:
+    with tempfile.TemporaryDirectory(
+        prefix=destination.name + '-pending-', dir=destination.parent
+    ) as temporary:
         staging = Path(temporary)
         with tarfile.open(archive, mode='r:') as bundle:
             members = bundle.getmembers()
-            if len(members) != len(expected) or {m.name
-                                                 for m in members
-                                                 } != set(expected):
+            if len(members) != len(expected) or {m.name for m in members} != set(
+                expected
+            ):
                 raise ValueError('Wheel archive file set mismatch')
             for member in members:
-                if (not member.isfile() or Path(member.name).name != member.name
-                        or not member.name.endswith('.whl')
-                        or member.size != expected[member.name]['size']):
-                    raise ValueError('Invalid wheel archive entry: ' +
-                                     member.name)
+                if (
+                    not member.isfile()
+                    or Path(member.name).name != member.name
+                    or not member.name.endswith('.whl')
+                    or member.size != expected[member.name]['size']
+                ):
+                    raise ValueError('Invalid wheel archive entry: ' + member.name)
             for member in members:
                 target = staging / member.name
-                with bundle.extractfile(member) as source, target.open(
-                        'xb') as output:
+                with bundle.extractfile(member) as source, target.open('xb') as output:
                     shutil.copyfileobj(source, output)
                 if sha(target) != expected[member.name]['sha256']:
-                    raise ValueError('Dependency wheel checksum mismatch: ' +
-                                     member.name)
+                    raise ValueError(
+                        'Dependency wheel checksum mismatch: ' + member.name
+                    )
         staging.rename(destination)
     return manifest
 
@@ -59,7 +63,10 @@ def verify(destination, expected):
         raise ValueError('Existing wheelhouse file set mismatch')
     for name, metadata in expected.items():
         target = destination / name
-        if (target.is_symlink() or not target.is_file()
-                or target.stat().st_size != metadata['size']
-                or sha(target) != metadata['sha256']):
+        if (
+            target.is_symlink()
+            or not target.is_file()
+            or target.stat().st_size != metadata['size']
+            or sha(target) != metadata['sha256']
+        ):
             raise ValueError('Existing wheelhouse checksum mismatch: ' + name)

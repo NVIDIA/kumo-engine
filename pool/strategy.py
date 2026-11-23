@@ -5,6 +5,7 @@
 """Placement strategy seam between deployment-agnostic controller core and
 per-deployment placement (singlehost / testing / k8s). Concrete strategies
 implement the methods on :class:`PlacementStrategy`."""
+
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Dict, Literal, Optional, Protocol, Set, runtime_checkable
@@ -25,6 +26,7 @@ ActivityPollerWaiter = Callable[[str, str, float], Awaitable[None]]
 @dataclass(frozen=True)
 class RouteDecision:
     """Pure-function output of :meth:`PlacementStrategy.route`."""
+
     path: Literal['durable', 'overflow']
     pool_worker_uid: Optional[str]
     provisioned_new_worker: bool
@@ -52,6 +54,7 @@ class ReconcileDelta:
     be selected for a new placement in the window between "decided to delete"
     and "deleted".
     """
+
     retired_uids: Set[str] = field(default_factory=set)
     # Workers with exact persisted SSD/GPU tiers removed from current config.
     # Liveness cannot veto their replacement: a live old-tier pod is still
@@ -151,8 +154,7 @@ class PlacementStrategy(Protocol):
         :meth:`delete_workers`."""
         ...
 
-    async def revalidate_retired_workers(
-            self, uids: Iterable[str]) -> Set[str]:
+    async def revalidate_retired_workers(self, uids: Iterable[str]) -> Set[str]:
         """Return candidates still safe to retire on a fresh observation."""
         ...
 

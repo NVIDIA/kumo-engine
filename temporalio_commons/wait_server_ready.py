@@ -25,15 +25,19 @@ async def main(max_timeout: timedelta):
             try:
                 await temporal_client.init()
                 await temporal_client.create_namespace()
-                log.info('Successfully connected to namespace %s at %s',
-                         cfg.temporal_namespace, cfg.temporal_server_address)
+                log.info(
+                    'Successfully connected to namespace %s at %s',
+                    cfg.temporal_namespace,
+                    cfg.temporal_server_address,
+                )
                 return
             except Exception as ex:  # pylint: disable=broad-except
                 log.info('Temporal server is not ready, ex: %s', ex)
                 await asyncio.sleep(5.0)
         raise RuntimeError(
             f'Temporal is not ready at {cfg.temporal_server_address} '
-            f'after {datetime.now(timezone.utc) - start_time}')
+            f'after {datetime.now(timezone.utc) - start_time}'
+        )
     finally:
         # This module runs as a short-lived readiness subprocess.  Explicitly
         # release the Rust-backed gRPC bridge before interpreter finalization;
@@ -41,12 +45,18 @@ async def main(max_timeout: timedelta):
         await temporal_client.close()
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     logging.initialize_logging(logging.LoggingMode.DEBUG, log_to_file=False)
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('-t', '--timeout_seconds', dest='timeout_seconds',
-                        default=120, type=int, required=False)
+    parser.add_argument(
+        '-t',
+        '--timeout_seconds',
+        dest='timeout_seconds',
+        default=120,
+        type=int,
+        required=False,
+    )
     args = parser.parse_args()
 
     asyncio.run(main(timedelta(seconds=int(args.timeout_seconds))))

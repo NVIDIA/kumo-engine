@@ -15,16 +15,16 @@ class ProjectResolver:
     adapter. Project ownership, project status, native membership, and live
     external-to-Kumo mappings are deliberately evaluated on every request.
     """
+
     def __init__(self, state_services: Optional[StateServices] = None):
         self._state_services = state_services
 
     def configure_state_services(self, state_services: StateServices) -> None:
         self._state_services = state_services
 
-    async def resolve_projects(
-            self, user_authorization: AuthPrincipal) -> List[str]:
+    async def resolve_projects(self, user_authorization: AuthPrincipal) -> List[str]:
         if self._state_services is None:
-            raise RuntimeError(
-                "ProjectResolver StateServices is not configured")
+            raise RuntimeError('ProjectResolver StateServices is not configured')
         return await self._state_services.projects.list_visible_project_ids(
-            user_authorization)
+            user_authorization
+        )

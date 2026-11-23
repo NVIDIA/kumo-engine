@@ -54,15 +54,15 @@ def _build_fsutil_session_parameters() -> Optional[Dict]:
         return None
 
     connection_params = {
-        "host": SNOWFLAKE_HOST,
-        "account": SNOWFLAKE_ACCOUNT,
-        "token": token,
-        "authenticator": 'oauth',
-        "client_session_keep_alive": True,
-        "ocsp_fail_open": True,
-        "application": get_snowflake_connection_string(),
-        "database": SNOWFLAKE_DATABASE,
-        "schema": SNOWFLAKE_SCHEMA,
+        'host': SNOWFLAKE_HOST,
+        'account': SNOWFLAKE_ACCOUNT,
+        'token': token,
+        'authenticator': 'oauth',
+        'client_session_keep_alive': True,
+        'ocsp_fail_open': True,
+        'application': get_snowflake_connection_string(),
+        'database': SNOWFLAKE_DATABASE,
+        'schema': SNOWFLAKE_SCHEMA,
     }
 
     return connection_params
@@ -70,15 +70,14 @@ def _build_fsutil_session_parameters() -> Optional[Dict]:
 
 @retry(exceptions=SnowflakeError, tries=10, delay=1, logger=logger)
 def _build_fsutil_session(connection_parameters: Optional[Dict] = None):
-    logger.debug("Initializing Snowflake session")
+    logger.debug('Initializing Snowflake session')
     params = connection_parameters or _build_fsutil_session_parameters()
     if params is None:
         return None
     session = ensure_logged_snowpark_session(
         Session.builder.configs(params).create(),  # type: ignore
     )
-    session.sql(
-        "ALTER SESSION SET TIMESTAMP_TYPE_MAPPING=TIMESTAMP_NTZ").collect()
+    session.sql('ALTER SESSION SET TIMESTAMP_TYPE_MAPPING=TIMESTAMP_NTZ').collect()
 
     return session
 
@@ -109,23 +108,22 @@ def get_fsutil_session() -> Session:
 
 
 @contextmanager
-def snowpark_caller_rights_session(
-        ingress_user_token: str) -> Generator[Session]:
+def snowpark_caller_rights_session(ingress_user_token: str) -> Generator[Session]:
     login_token = _get_login_token()
     if not login_token:
-        raise ValueError("No login token found")
+        raise ValueError('No login token found')
 
     params = _build_fsutil_session_parameters()
     if params is None:
-        raise ValueError("No connection parameters found")
+        raise ValueError('No connection parameters found')
 
-    token = f"{login_token}.{ingress_user_token}"
-    params["token"] = token
-    params.pop("database", None)
-    params.pop("schema", None)
+    token = f'{login_token}.{ingress_user_token}'
+    params['token'] = token
+    params.pop('database', None)
+    params.pop('schema', None)
     session = _build_fsutil_session(params)
     if session is None:
-        raise ValueError("Failed to create caller rights session")
+        raise ValueError('Failed to create caller rights session')
 
     try:
         yield session
@@ -145,16 +143,20 @@ def snowpark_session_in_app_schema(session: Session) -> Generator[Session]:
     creating temporary File Formats for Parquet operations.
     """
     if SNOWFLAKE_DATABASE is None or SNOWFLAKE_APP_SCHEMA is None:
-        logger.warning(f"unable to set db.schema to match native app, "
-                       f"got {SNOWFLAKE_DATABASE}.{SNOWFLAKE_APP_SCHEMA}")
+        logger.warning(
+            f'unable to set db.schema to match native app, '
+            f'got {SNOWFLAKE_DATABASE}.{SNOWFLAKE_APP_SCHEMA}'
+        )
         yield session
         return
 
     recorded_database = session.get_current_database()
     recorded_schema = session.get_current_schema()
     if recorded_database is None or recorded_schema is None:
-        logger.warning(f"unable to record db.schema to revert to, "
-                       f"got {recorded_database}.{recorded_schema}")
+        logger.warning(
+            f'unable to record db.schema to revert to, '
+            f'got {recorded_database}.{recorded_schema}'
+        )
         yield session
         return
 

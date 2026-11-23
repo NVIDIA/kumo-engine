@@ -40,6 +40,7 @@ class StrictQueryAPIRoute(APIRoute):
     happens before body parsing and applies generically to every route using
     this route class.
     """
+
     def get_route_handler(self) -> Callable:
         original_handler = super().get_route_handler()
 
@@ -66,7 +67,7 @@ class StrictQueryAPIRoute(APIRoute):
 
 @contextmanager
 def wrap_auth_exceptions() -> Generator[None, None, None]:
-    """ Catches all AuthenticationErrors, and wraps them with
+    """Catches all AuthenticationErrors, and wraps them with
     ValidationHTTPExceptions. This is intended to be used to catch errors that
     are intentionally raised when when authenticating and authorizing a user.
     """
@@ -89,7 +90,7 @@ def wrap_auth_exceptions() -> Generator[None, None, None]:
 @contextmanager
 def wrap_validation_exceptions(
     not_exists_error: Optional[Type[ValueError]] = None,
-    failure_callback: Callable = lambda *args: None
+    failure_callback: Callable = lambda *args: None,
 ) -> Generator[None, None, None]:
     """Map user-input validation failures to HTTP errors.
 
@@ -161,6 +162,7 @@ def convert_500_http_error_to_503() -> Generator[None, None, None]:
 
 class PydanticValidationHTTPException(BaseException):
     """Convert a Pydantic error to a 422 with sanitized messages only."""
+
     def __new__(cls, error: ValidationError) -> HTTPException:
         error_messages = [err['msg'] for err in error.errors()]
         message = '\n'.join(error_messages)
@@ -172,11 +174,12 @@ class ValidationHTTPException(HTTPException):
     the user in the UI. For convenience, the error message is logged to stderr
     as well.
     """
+
     def __init__(self, msg: str, error: Optional[Exception] = None) -> None:
         logger.info(
-            "User input validation error: %s (error_type=%s)",
+            'User input validation error: %s (error_type=%s)',
             msg,
-            type(error).__name__ if error is not None else "none",
+            type(error).__name__ if error is not None else 'none',
         )
         return super().__init__(HTTPStatus.UNPROCESSABLE_ENTITY, msg)
 
@@ -210,15 +213,7 @@ def nullable_response(status_code: int = 200) -> dict:
         )
     """
     return {
-        status_code: {
-            "content": {
-                "application/json": {
-                    "schema": {
-                        "nullable": True
-                    }
-                }
-            }
-        }
+        status_code: {'content': {'application/json': {'schema': {'nullable': True}}}}
     }
 
 
@@ -238,7 +233,7 @@ def enable_api_caching(
         if isinstance(api_route, APIRoute) and method in api_route.methods:
             path = api_route.path
             if path.startswith(router.prefix):  # strip prefix for matching
-                path = path[len(router.prefix):]
+                path = path[len(router.prefix) :]
             if include_paths is not None and path not in include_paths:
                 continue
             if exclude_paths is not None and path in exclude_paths:

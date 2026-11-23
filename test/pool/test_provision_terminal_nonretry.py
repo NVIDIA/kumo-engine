@@ -20,6 +20,7 @@ The test patches get_controller_client so place_snapshot_activity
 talks to the fake PoolController.  Event history of the outer workflow
 must show exactly 1 ACTIVITY_TASK_SCHEDULED for place_snapshot_activity.
 """
+
 import asyncio
 import uuid
 from datetime import timedelta
@@ -85,13 +86,13 @@ class _FakePoolController:
 
     Raises a configurable exception from place_snapshot() and counts calls.
     """
+
     def __init__(self, exc: Exception | None = None) -> None:
         self.call_count = 0
         self._exc = exc or ProvisionTerminalError('injected by test')
 
     @rpc_handler
-    async def place_snapshot(self,
-                             request: PlacementRequest) -> PlacementResult:
+    async def place_snapshot(self, request: PlacementRequest) -> PlacementResult:
         self.call_count += 1
         raise self._exc
 
@@ -108,11 +109,12 @@ class _FakePoolController:
 @workflow.defn
 class _DummySnapshotWorkflow:
     """Minimal workflow that acquires a pool lease."""
+
     @workflow.run
     async def run(self, snapshot_id: str) -> str:
         async with snapshot_placement_session_ctx(
-                snapshot_id,
-                SnapshotActivity.ENSURE_SNAPSHOT,
+            snapshot_id,
+            SnapshotActivity.ENSURE_SNAPSHOT,
         ) as placement:
             return placement.task_queue
 
@@ -126,7 +128,10 @@ async def _activity_schedule_count(wf_handle, activity_name: str) -> int:
     count = 0
     async for event in wf_handle.fetch_history_events():
         if event.event_type == EventType.EVENT_TYPE_ACTIVITY_TASK_SCHEDULED:
-            if activity_name in event.activity_task_scheduled_event_attributes.activity_type.name:
+            if (
+                activity_name
+                in event.activity_task_scheduled_event_attributes.activity_type.name
+            ):
                 count += 1
     return count
 
@@ -138,7 +143,8 @@ async def _activity_schedule_count(wf_handle, activity_name: str) -> int:
 
 @pytest.mark.asyncio
 async def test_provision_terminal_error_no_retry_through_placement_context(
-        temporal_config: DeployEnvConfig, monkeypatch: pytest.MonkeyPatch):
+    temporal_config: DeployEnvConfig, monkeypatch: pytest.MonkeyPatch
+):
     """ProvisionTerminalError must not trigger retries at any layer.
 
     Verifies:
@@ -152,11 +158,13 @@ async def test_provision_terminal_error_no_retry_through_placement_context(
     """
     # Shorten pool timeouts so the test doesn't wait minutes
     import pool.timeouts as _tmod
+
     monkeypatch.setattr(_tmod, 'PLACE_START_TO_CLOSE', timedelta(seconds=15))
     monkeypatch.setattr(_tmod, 'PLACE_SCHEDULE_TO_CLOSE', timedelta(seconds=30))
 
-    fake_ctrl = _FakePoolController(exc=ProvisionTerminalError(
-        'CrashLoopBackOff: container exited immediately'))
+    fake_ctrl = _FakePoolController(
+        exc=ProvisionTerminalError('CrashLoopBackOff: container exited immediately')
+    )
 
     # AutoRPC client connecting to the fake controller on its task queue.
     # Single attempt at the AutoRPC level — the outer retry behavior is what
@@ -174,18 +182,15 @@ async def test_provision_terminal_error_no_retry_through_placement_context(
 
     # Workflow worker: runs _DummySnapshotWorkflow + pool activities
     tq = f'test-provision-terminal-{uuid.uuid4().hex[:8]}'
-    worker_env = WorkerEnv('test-worker', WorkerOptions(task_queue=tq),
-                           temporal_config)
+    worker_env = WorkerEnv('test-worker', WorkerOptions(task_queue=tq), temporal_config)
     wf_worker = await worker_env.build_worker(
         activities=[place_snapshot_activity, release_snapshot_activity],
         workflows=[_DummySnapshotWorkflow],
     )
 
     # AutoRPC server worker: serves the fake PoolController
-    server_cfg = AutoRpcServerWorkerConfig(temporal_config,
-                                           max_executor_threads=2)
-    autorpc_env, autorpc_worker = await create_server_from_config(
-        fake_ctrl, server_cfg)
+    server_cfg = AutoRpcServerWorkerConfig(temporal_config, max_executor_threads=2)
+    autorpc_env, autorpc_worker = await create_server_from_config(fake_ctrl, server_cfg)
     autorpc_task = asyncio.create_task(autorpc_worker.run())
 
     try:
@@ -193,10 +198,12 @@ async def test_provision_terminal_error_no_retry_through_placement_context(
             client = await worker_env.client()
 
             # Redirect place_snapshot_activity → fake PoolController
-            with mock.patch('pool.activities.get_controller_client',
-                            return_value=fake_client), \
-                 mock.patch('pool.activities.deploy_env'):
-
+            with (
+                mock.patch(
+                    'pool.activities.get_controller_client', return_value=fake_client
+                ),
+                mock.patch('pool.activities.deploy_env'),
+            ):
                 wf_handle = await client.start_workflow(
                     _DummySnapshotWorkflow.run,
                     args=['NA-deadbeefdeadbeefdeadbeefdeadbeef@v1'],
@@ -213,16 +220,17 @@ async def test_provision_terminal_error_no_retry_through_placement_context(
         assert fake_ctrl.call_count == 1, (
             f'place_snapshot was called {fake_ctrl.call_count}× at the AutoRPC level; '
             f'expected 1. ProvisionTerminalError is being retried by AutoRPC, '
-            f'meaning is_retryable() returned True (RuntimeError in MRO).')
+            f'meaning is_retryable() returned True (RuntimeError in MRO).'
+        )
 
         # 2. Temporal level: activity scheduled exactly once (_PLACE_RETRY_POLICY)
-        schedules = await _activity_schedule_count(wf_handle,
-                                                   'place_snapshot_activity')
+        schedules = await _activity_schedule_count(wf_handle, 'place_snapshot_activity')
         assert schedules == 1, (
             f'place_snapshot_activity was scheduled {schedules}× by Temporal; '
             f'expected 1. _PLACE_RETRY_POLICY has maximum_attempts='
             f'{_PLACE_RETRY_POLICY.maximum_attempts} but non_retryable=True '
-            f'should stop all retries immediately.')
+            f'should stop all retries immediately.'
+        )
 
     finally:
         await autorpc_worker.shutdown()

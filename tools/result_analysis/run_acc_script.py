@@ -32,7 +32,7 @@ def print_output(s3_path):
     outputs = fsutil.listdir(s3_path)
     for output_object in outputs:
         df = pd.read_parquet(output_object)
-        print(f"\nOutput Artifact: {output_object.split('/')[-1]}")
+        print(f'\nOutput Artifact: {output_object.split("/")[-1]}')
         print(df)
 
 
@@ -44,21 +44,19 @@ def update_step_script(template_path, out_path, args_str):
     with open(out_path, 'w') as outfile:
         for line in template_lines:
             # replace ${(i)} with the ith arg
-            line = re.sub(r"\${(.*?)}",
-                          lambda x: args_list[int(x.group()[2:-1])], line)
+            line = re.sub(r'\${(.*?)}', lambda x: args_list[int(x.group()[2:-1])], line)
             outfile.write(line)
 
-    print(f"Args used to fill in template at {out_path}: {args_list}")
+    print(f'Args used to fill in template at {out_path}: {args_list}')
 
 
 def upload_step_script(local_path):
     s3_client = boto3.client('s3')
     local_name = local_path.split('/')[-1]
-    response = s3_client.upload_file(local_path, bucket,
-                                     f'{prefix}/{local_name}')
+    response = s3_client.upload_file(local_path, bucket, f'{prefix}/{local_name}')
     upload_path = f's3://{bucket}/{prefix}/{local_name}'
     print(response)
-    print(f"Script uploaded to {upload_path}.")
+    print(f'Script uploaded to {upload_path}.')
     return upload_path
 
 
@@ -66,39 +64,40 @@ def upload_analysis_zip():
     s3_client = boto3.client('s3')
     local_dir = osp.dirname(osp.realpath(__file__))
     root_dir, base_dir = osp.split(local_dir)
-    shutil.make_archive(base_name=local_dir, format='zip', root_dir=root_dir,
-                        base_dir=base_dir)
+    shutil.make_archive(
+        base_name=local_dir, format='zip', root_dir=root_dir, base_dir=base_dir
+    )
     zip_path = local_dir + '.zip'
-    response = s3_client.upload_file(zip_path, bucket,
-                                     f'{prefix}/result_analysis.zip')
+    response = s3_client.upload_file(zip_path, bucket, f'{prefix}/result_analysis.zip')
 
     upload_path = f's3://{bucket}/{prefix}/result_analysis.zip'
     print(response)
-    print(f"Script uploaded to {upload_path}.")
+    print(f'Script uploaded to {upload_path}.')
     fsutil.rm(zip_path)
     return upload_path
 
 
 def get_cluster_id(cluster_name: str, client):
     response = client.list_clusters(ClusterStates=['RUNNING', 'WAITING'])
-    while "Clusters" in response and len(response["Clusters"]) > 0:
+    while 'Clusters' in response and len(response['Clusters']) > 0:
         print(f'response: {response} num clusters:{len(response["Clusters"])}')
         for cluster in response['Clusters']:
             if cluster['Name'] == cluster_name:
                 return cluster['Id']
         marker = response.get('Marker')
-        response = client.list_clusters(ClusterStates=['RUNNING', 'WAITING'],
-                                        Marker=marker)
+        response = client.list_clusters(
+            ClusterStates=['RUNNING', 'WAITING'], Marker=marker
+        )
 
     raise ValueError(f'No running cluster with name {cluster_name} found.')
 
 
 def run(args):
     eval_script_template_path = osp.join(root_dir, args.template_name + '.py')
-    eval_script_filled_path = osp.join(root_dir,
-                                       args.template_name + '_filled.py')
-    update_step_script(eval_script_template_path, eval_script_filled_path,
-                       args.script_args)
+    eval_script_filled_path = osp.join(root_dir, args.template_name + '_filled.py')
+    update_step_script(
+        eval_script_template_path, eval_script_filled_path, args.script_args
+    )
 
     if args.dry_run:
         print(
@@ -117,8 +116,7 @@ def run(args):
                 'Name': 'acceptance_test',
                 'ActionOnFailure': 'CONTINUE',
                 'HadoopJarStep': {
-                    'Jar':
-                    'command-runner.jar',
+                    'Jar': 'command-runner.jar',
                     'Args': [
                         'spark-submit',
                         '--conf',
@@ -137,9 +135,9 @@ def run(args):
                         's3://kumo-pyspark-venv/jars/*.jar',
                         '--py-files',
                         f'{package_location}',
-                        f'{uploaded_script_location}'
-                    ]
-                }
+                        f'{uploaded_script_location}',
+                    ],
+                },
             },
         ],
     )
@@ -151,21 +149,23 @@ def run(args):
         StepId=step_id,
     )
     step_status = response['Step']['Status']['State']
-    print(f"Status {step_status}")
+    print(f'Status {step_status}')
     while step_status == 'PENDING' or step_status == 'RUNNING':
         response = client.describe_step(
             ClusterId=cluster_id,
             StepId=step_id,
         )
         step_status = response['Step']['Status']['State']
-        print(f"Status {step_status}")
+        print(f'Status {step_status}')
         if step_status in ['FAILED', 'CANCELLED', 'CANCEL_PENDING']:
-            raise ValueError(f"Step {step_id} failed, check the EMR cluster "
-                             "in AWS for details. If stdout logs are not "
-                             "available on the step, check the application "
-                             "logs in the YARN Timeline server for the "
-                             "cluster and get logs from the corresponding "
-                             "spark application.")
+            raise ValueError(
+                f'Step {step_id} failed, check the EMR cluster '
+                'in AWS for details. If stdout logs are not '
+                'available on the step, check the application '
+                'logs in the YARN Timeline server for the '
+                'cluster and get logs from the corresponding '
+                'spark application.'
+            )
         time.sleep(10)
 
 
@@ -182,8 +182,12 @@ if __name__ == '__main__':
     # --script_args 'hnm_partitioned_store_rank_channels128 v1.20.3 v1.20.0'
     # to replace ${0} ${1} and {2}
     parser.add_argument('--script_args', type=str, required=True)
-    parser.add_argument('--dry-run', action='store_true', default=False,
-                        help='Print planned actions without executing')
+    parser.add_argument(
+        '--dry-run',
+        action='store_true',
+        default=False,
+        help='Print planned actions without executing',
+    )
 
     args = parser.parse_args()
     run(args)

@@ -15,8 +15,7 @@ from rest.devserver.planning import build_multi_devserver_plan
 
 
 def test_auto_port_assignment_checks_the_complete_nonlegacy_block():
-    plan = build_multi_devserver_plan('auto', nums=2,
-                                      devserver_ids='train-a,train-b')
+    plan = build_multi_devserver_plan('auto', nums=2, devserver_ids='train-a,train-b')
 
     resolved = assign_auto_base_ports(
         plan,
@@ -32,16 +31,13 @@ def test_auto_port_assignment_fails_without_enough_free_blocks():
     plan = build_multi_devserver_plan('auto', nums=1)
 
     with pytest.raises(DevserverCoordinatorError, match='free port block'):
-        assign_auto_base_ports(plan,
-                               is_available=lambda _: False,
-                               first_port=65000,
-                               stride=100)
+        assign_auto_base_ports(
+            plan, is_available=lambda _: False, first_port=65000, stride=100
+        )
 
 
 def test_auto_cgroup_limits_reserve_headroom_and_divide_equally():
-    limits = resolve_auto_cgroup_limits(cpu_capacity=64,
-                                        memory_gib=512,
-                                        count=2)
+    limits = resolve_auto_cgroup_limits(cpu_capacity=64, memory_gib=512, count=2)
 
     assert limits[0].cpus == 28
     assert limits[1].cpus == 28
@@ -51,6 +47,4 @@ def test_auto_cgroup_limits_reserve_headroom_and_divide_equally():
 
 def test_auto_cgroup_limits_fail_instead_of_tiny_allocations():
     with pytest.raises(DevserverCoordinatorError, match='too little'):
-        resolve_auto_cgroup_limits(cpu_capacity=2,
-                                   memory_gib=16,
-                                   count=2)
+        resolve_auto_cgroup_limits(cpu_capacity=2, memory_gib=16, count=2)

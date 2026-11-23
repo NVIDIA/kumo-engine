@@ -10,8 +10,7 @@ from rest.config.file_type import FileType
 ONE_BILLION = 1e9
 
 
-def validated_file_type(file_path: str,
-                        file_type: Optional[FileType]) -> FileType:
+def validated_file_type(file_path: str, file_type: Optional[FileType]) -> FileType:
     if file_type is not None:
         return file_type
 

@@ -8,10 +8,9 @@ import re
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-_NETWORK_FILESYSTEMS = frozenset({
-    '9p', 'afs', 'ceph', 'cifs', 'glusterfs', 'lustre', 'nfs', 'nfs4',
-    'smb3', 'smbfs'
-})
+_NETWORK_FILESYSTEMS = frozenset(
+    {'9p', 'afs', 'ceph', 'cifs', 'glusterfs', 'lustre', 'nfs', 'nfs4', 'smb3', 'smbfs'}
+)
 
 _NETWORK_BLOCK_MODELS = (
     ('Amazon Elastic Block Store', 'Amazon EBS'),
@@ -24,8 +23,7 @@ _SYS_BLOCK = Path('/sys/dev/block')
 
 def _unescape(field: bytes) -> str:
     # mountinfo octal-escapes whitespace; other bytes are raw.
-    return os.fsdecode(
-        re.sub(rb'\\([0-7]{3})', lambda m: bytes([int(m[1], 8)]), field))
+    return os.fsdecode(re.sub(rb'\\([0-7]{3})', lambda m: bytes([int(m[1], 8)]), field))
 
 
 def _mount_of(path: Path, mountinfo: Path) -> Optional[Tuple[str, str, str]]:
@@ -43,7 +41,8 @@ def _mount_of(path: Path, mountinfo: Path) -> Optional[Tuple[str, str, str]]:
         except (IndexError, ValueError):
             continue
         if (path == Path(point) or Path(point) in path.parents) and (
-                best is None or len(point) >= len(best[0])):
+            best is None or len(point) >= len(best[0])
+        ):
             best = (point, fstype, device)
     return best
 
@@ -82,6 +81,9 @@ def network_storage(path: Path) -> Optional[str]:
     models = _block_models(device, _SYS_BLOCK)
     for marker, name in _NETWORK_BLOCK_MODELS:
         if any(marker in model for model in models):
-            return name if len(models) == 1 else (
-                f'a volume of {len(models)} disks that includes {name}')
+            return (
+                name
+                if len(models) == 1
+                else (f'a volume of {len(models)} disks that includes {name}')
+            )
     return None

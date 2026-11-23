@@ -11,6 +11,7 @@ cross-account / credentialed reads 403. ``arrow_cloud_filesystem`` now resolves
 credentials with boto3 (pure-Python, fork-safe) and injects them explicitly,
 falling back to the native chain when no credentials resolve.
 """
+
 import types
 from unittest import mock
 
@@ -40,12 +41,19 @@ def _clear_fs_caches():
 
 
 def _fake_frozen(access_key='AKIA', secret_key='secret', token='tok'):
-    return types.SimpleNamespace(access_key=access_key, secret_key=secret_key,
-                                 token=token)
+    return types.SimpleNamespace(
+        access_key=access_key, secret_key=secret_key, token=token
+    )
 
 
-def _patch_boto(monkeypatch, *, credentials, region='us-west-2',
-                bucket_region='us-west-2', endpoint_url=None):
+def _patch_boto(
+    monkeypatch,
+    *,
+    credentials,
+    region='us-west-2',
+    bucket_region='us-west-2',
+    endpoint_url=None,
+):
     """Patch the boto3 session stack that _resolve_s3_filesystem uses."""
     session = mock.MagicMock()
     session.region_name = region
@@ -57,12 +65,10 @@ def _patch_boto(monkeypatch, *, credentials, region='us-west-2',
     # vending sets a real endpoint string; default it to a concrete value so it
     # is not an auto-truthy MagicMock that would leak into S3FileSystem.
     fake_tb._endpoint_url = endpoint_url
-    monkeypatch.setattr('io_utils.fsutil.s3_filesystem.threadsafe_boto',
-                        fake_tb)
+    monkeypatch.setattr('io_utils.fsutil.s3_filesystem.threadsafe_boto', fake_tb)
     # Region now comes from pyarrow's own resolver (unsigned, 403/301-robust),
     # not a boto3 head_bucket.
-    monkeypatch.setattr(pyu.fs, 'resolve_s3_region',
-                        lambda bucket: bucket_region)
+    monkeypatch.setattr(pyu.fs, 'resolve_s3_region', lambda bucket: bucket_region)
     return fake_tb
 
 
@@ -71,8 +77,7 @@ def test_resolve_s3_filesystem_uses_explicit_boto3_credentials(monkeypatch):
     # S3FileSystem (NOT the native default-chain one).
     creds = mock.MagicMock()
     creds.get_frozen_credentials.return_value = _fake_frozen()
-    fake_tb = _patch_boto(monkeypatch, credentials=creds,
-                          bucket_region='eu-west-1')
+    fake_tb = _patch_boto(monkeypatch, credentials=creds, bucket_region='eu-west-1')
 
     captured = {}
 
@@ -106,12 +111,14 @@ def test_resolve_s3_filesystem_falls_back_to_session_region(monkeypatch):
     creds = mock.MagicMock()
     creds.get_frozen_credentials.return_value = _fake_frozen()
     _patch_boto(monkeypatch, credentials=creds, region='ap-south-1')
-    monkeypatch.setattr(pyu.fs, 'resolve_s3_region',
-                        mock.MagicMock(side_effect=ValueError('no region')))
+    monkeypatch.setattr(
+        pyu.fs, 'resolve_s3_region', mock.MagicMock(side_effect=ValueError('no region'))
+    )
 
     captured = {}
-    monkeypatch.setattr(pyu.fs, 'S3FileSystem',
-                        lambda **kw: captured.update(kw) or 'FS')
+    monkeypatch.setattr(
+        pyu.fs, 'S3FileSystem', lambda **kw: captured.update(kw) or 'FS'
+    )
 
     assert pyu._resolve_s3_filesystem('s3://bucket') == 'FS'
     assert captured['region'] == 'ap-south-1'
@@ -125,8 +132,12 @@ def test_resolve_s3_filesystem_threads_stage_endpoint_override(monkeypatch):
     # from an AWS query.
     creds = mock.MagicMock()
     creds.get_frozen_credentials.return_value = _fake_frozen()
-    _patch_boto(monkeypatch, credentials=creds, region='ca-central-1',
-                endpoint_url='https://acct.snowflakecomputing.com')
+    _patch_boto(
+        monkeypatch,
+        credentials=creds,
+        region='ca-central-1',
+        endpoint_url='https://acct.snowflakecomputing.com',
+    )
     # resolve_s3_region queries AWS S3; it must NOT be consulted for a non-AWS
     # stage host. Use a plain spy and assert it stays untouched -- an
     # AssertionError side_effect would now be swallowed by the caller's except.
@@ -134,12 +145,12 @@ def test_resolve_s3_filesystem_threads_stage_endpoint_override(monkeypatch):
     monkeypatch.setattr(pyu.fs, 'resolve_s3_region', resolver)
 
     captured = {}
-    monkeypatch.setattr(pyu.fs, 'S3FileSystem',
-                        lambda **kw: captured.update(kw) or 'FS')
+    monkeypatch.setattr(
+        pyu.fs, 'S3FileSystem', lambda **kw: captured.update(kw) or 'FS'
+    )
 
     assert pyu._resolve_s3_filesystem('s3://stage-bucket') == 'FS'
-    assert (
-        captured['endpoint_override'] == 'https://acct.snowflakecomputing.com')
+    assert captured['endpoint_override'] == 'https://acct.snowflakecomputing.com'
     assert captured['force_virtual_addressing'] is True
     # Region is the stage region from the session (used for SigV4 signing).
     assert captured['region'] == 'ca-central-1'
@@ -162,11 +173,11 @@ def test_resolve_s3_filesystem_threads_deployment_minio_settings(monkeypatch):
         ca_bundle_path='/etc/kumo/minio-ca/ca.crt',
         send_bucket_owner_full_control=False,
     )
-    monkeypatch.setattr(s3_connection, 'active_s3_connection',
-                        lambda: connection)
+    monkeypatch.setattr(s3_connection, 'active_s3_connection', lambda: connection)
     captured = {}
-    monkeypatch.setattr(pyu.fs, 'S3FileSystem',
-                        lambda **kw: captured.update(kw) or 'MINIO_FS')
+    monkeypatch.setattr(
+        pyu.fs, 'S3FileSystem', lambda **kw: captured.update(kw) or 'MINIO_FS'
+    )
 
     assert pyu._resolve_s3_filesystem('s3://example-dataplane') == 'MINIO_FS'
     expected = connection.pyarrow_options()
@@ -180,9 +191,12 @@ def test_resolve_s3_filesystem_returns_none_without_credentials(monkeypatch):
     # (anonymous / public reads -- the common singlehost path is unchanged).
     _patch_boto(monkeypatch, credentials=None)
     monkeypatch.setattr(
-        pyu.fs, 'S3FileSystem',
-        mock.MagicMock(side_effect=AssertionError(
-            'must not build an explicit FS without creds')))
+        pyu.fs,
+        'S3FileSystem',
+        mock.MagicMock(
+            side_effect=AssertionError('must not build an explicit FS without creds')
+        ),
+    )
     assert pyu._resolve_s3_filesystem('s3://b') is None
 
 
@@ -191,18 +205,23 @@ def test_resolve_s3_filesystem_returns_none_when_keys_blank(monkeypatch):
     # credentialed FS -- fall back to from_uri instead.
     creds = mock.MagicMock()
     creds.get_frozen_credentials.return_value = _fake_frozen(
-        access_key='', secret_key='', token=None)
+        access_key='', secret_key='', token=None
+    )
     _patch_boto(monkeypatch, credentials=creds)
     monkeypatch.setattr(
-        pyu.fs, 'S3FileSystem',
-        mock.MagicMock(side_effect=AssertionError(
-            'must not build an explicit FS with blank keys')))
+        pyu.fs,
+        'S3FileSystem',
+        mock.MagicMock(
+            side_effect=AssertionError('must not build an explicit FS with blank keys')
+        ),
+    )
     assert pyu._resolve_s3_filesystem('s3://b') is None
 
 
 class _FakeFs:
     """Stand-in for the immutable pyarrow.fs module (from_uri is a C method
     that cannot be monkeypatched in place), used to observe routing."""
+
     def __init__(self, from_uri_result=None, from_uri_exc=None):
         self.from_uri_calls = []
         self._result = from_uri_result
@@ -220,8 +239,7 @@ class _FakeFs:
 
 
 def test_arrow_cloud_filesystem_s3_prefers_credentialed(monkeypatch):
-    monkeypatch.setattr(pyu, '_resolve_s3_filesystem',
-                        lambda path: 'CREDENTIALED')
+    monkeypatch.setattr(pyu, '_resolve_s3_filesystem', lambda path: 'CREDENTIALED')
     fake_fs = _FakeFs(from_uri_result=('NATIVE', 'bucket'))
     monkeypatch.setattr(pyu, 'fs', fake_fs)
     assert pyu.arrow_cloud_filesystem('s3://bucket/key') == 'CREDENTIALED'
@@ -240,34 +258,36 @@ def test_arrow_cloud_filesystem_s3_falls_back_to_native(monkeypatch):
     assert fake_fs.from_uri_calls  # native chain WAS consulted
 
 
-def test_arrow_cloud_filesystem_s3_falls_back_when_resolver_raises(
-        monkeypatch, caplog):
+def test_arrow_cloud_filesystem_s3_falls_back_when_resolver_raises(monkeypatch, caplog):
     # A resolver exception must not break reads: swallow and fall back to the
     # native chain.
     canary = 's3://restricted-bucket/password=credential-secret'
     monkeypatch.setattr(
-        pyu, '_resolve_s3_filesystem',
-        mock.MagicMock(side_effect=RuntimeError(canary)))
+        pyu, '_resolve_s3_filesystem', mock.MagicMock(side_effect=RuntimeError(canary))
+    )
     sentinel = object()
     fake_fs = _FakeFs(from_uri_result=(sentinel, 'bucket'))
     monkeypatch.setattr(pyu, 'fs', fake_fs)
     with caplog.at_level('DEBUG', logger='io_utils.pyarrow'):
         assert pyu.arrow_cloud_filesystem(canary) is sentinel
     assert fake_fs.from_uri_calls
-    warning_text = ' '.join(record.getMessage()
-                            for record in caplog.records
-                            if record.levelname == 'WARNING')
+    warning_text = ' '.join(
+        record.getMessage()
+        for record in caplog.records
+        if record.levelname == 'WARNING'
+    )
     assert canary not in warning_text
     assert canary in caplog.text
 
 
 def test_arrow_cloud_filesystem_minio_never_falls_back_to_aws(monkeypatch):
-    connection = mock.Mock(identity=('minio', ))
-    monkeypatch.setattr(s3_connection, 'active_s3_connection',
-                        lambda: connection)
+    connection = mock.Mock(identity=('minio',))
+    monkeypatch.setattr(s3_connection, 'active_s3_connection', lambda: connection)
     monkeypatch.setattr(
-        pyu, '_resolve_s3_filesystem',
-        mock.MagicMock(side_effect=RuntimeError('minio setup failed')))
+        pyu,
+        '_resolve_s3_filesystem',
+        mock.MagicMock(side_effect=RuntimeError('minio setup failed')),
+    )
     fake_fs = _FakeFs(from_uri_result=('AWS_NATIVE', 'bucket'))
     monkeypatch.setattr(pyu, 'fs', fake_fs)
 
@@ -281,9 +301,12 @@ def test_arrow_cloud_filesystem_gcs_uses_native(monkeypatch):
     # GCS paths must never touch the S3 credential resolver -- they keep using
     # from_uri unchanged.
     monkeypatch.setattr(
-        pyu, '_resolve_s3_filesystem',
-        mock.MagicMock(side_effect=AssertionError(
-            'GCS must not resolve S3 credentials')))
+        pyu,
+        '_resolve_s3_filesystem',
+        mock.MagicMock(
+            side_effect=AssertionError('GCS must not resolve S3 credentials')
+        ),
+    )
     sentinel = object()
     fake_fs = _FakeFs(from_uri_result=(sentinel, 'bucket'))
     monkeypatch.setattr(pyu, 'fs', fake_fs)
@@ -297,9 +320,11 @@ def test_resolve_s3_filesystem_builds_real_pyarrow_s3fs(monkeypatch):
     # resolve_s3_region is patched so the constructor needs no network.
     creds = mock.MagicMock()
     creds.get_frozen_credentials.return_value = _fake_frozen(
-        access_key='AKIAEXAMPLE', secret_key='shh', token='session-token')
-    _patch_boto(monkeypatch, credentials=creds, region='us-west-2',
-                bucket_region='us-west-2')
+        access_key='AKIAEXAMPLE', secret_key='shh', token='session-token'
+    )
+    _patch_boto(
+        monkeypatch, credentials=creds, region='us-west-2', bucket_region='us-west-2'
+    )
     out = pyu._resolve_s3_filesystem('s3://bucket')
     assert isinstance(out, pa.fs.S3FileSystem)
     assert out.region == 'us-west-2'

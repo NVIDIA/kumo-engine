@@ -15,27 +15,38 @@ from service_framework.deploy_env import (
 
 
 def test_db_connection_info_host():
-    info = DatabricksConnectionInfo(host='host',
-                                    cluster_id='cluster',
-                                    warehouse_id='warehouse',
-                                    catalog='catalog', credentials={})
-    assert info.host == 'https://host'
-    info = DatabricksConnectionInfo(host='https://host/',
-                                    cluster_id='cluster',
-                                    warehouse_id='warehouse',
-                                    catalog='catalog', credentials={})
+    info = DatabricksConnectionInfo(
+        host='host',
+        cluster_id='cluster',
+        warehouse_id='warehouse',
+        catalog='catalog',
+        credentials={},
+    )
     assert info.host == 'https://host'
     info = DatabricksConnectionInfo(
-                                    host='https://host/login.html',
-                                    cluster_id='cluster',
-                                    warehouse_id='warehouse',
-                                    catalog='catalog', credentials={})
+        host='https://host/',
+        cluster_id='cluster',
+        warehouse_id='warehouse',
+        catalog='catalog',
+        credentials={},
+    )
+    assert info.host == 'https://host'
+    info = DatabricksConnectionInfo(
+        host='https://host/login.html',
+        cluster_id='cluster',
+        warehouse_id='warehouse',
+        catalog='catalog',
+        credentials={},
+    )
     assert info.host == 'https://host'
     # Test http scheme is converted to https
-    info = DatabricksConnectionInfo(host='http://host',
-                                    cluster_id='cluster',
-                                    warehouse_id='warehouse',
-                                    catalog='catalog', credentials={})
+    info = DatabricksConnectionInfo(
+        host='http://host',
+        cluster_id='cluster',
+        warehouse_id='warehouse',
+        catalog='catalog',
+        credentials={},
+    )
     assert info.host == 'https://host'
 
 
@@ -55,20 +66,22 @@ def test_connection_info_load(monkeypatch):
 def test_is_auth_error():
     """_is_auth_error matches invalid_client errors and nothing else."""
     from io_utils.fsutil.impl_ucv import _is_auth_error
-    assert _is_auth_error(ValueError("invalid_client: Client authentication failed"))
-    assert _is_auth_error(Exception("invalid_client"))
-    assert not _is_auth_error(ValueError("some other error"))
-    assert not _is_auth_error(RuntimeError("invalid_request"))
+
+    assert _is_auth_error(ValueError('invalid_client: Client authentication failed'))
+    assert _is_auth_error(Exception('invalid_client'))
+    assert not _is_auth_error(ValueError('some other error'))
+    assert not _is_auth_error(RuntimeError('invalid_request'))
 
 
 def test_uc_context_reconnect_clears_cached_state():
     """reconnect() clears both the cached client and connection_info."""
     from io_utils.fsutil.impl_ucv import UCContext
+
     ctx = UCContext()
     ctx._local.client = object()
     ctx._connection_info = DatabricksConnectionInfo(
-        host='https://h', cluster_id='c', warehouse_id='w',
-        catalog='', credentials={})
+        host='https://h', cluster_id='c', warehouse_id='w', catalog='', credentials={}
+    )
     ctx.reconnect()
     assert ctx._local.client is None
     assert ctx._connection_info is None
@@ -78,6 +91,7 @@ def test_retry_policy_reconnects_on_auth_failure(caplog, monkeypatch):
     """retry_policy invokes uc_ctx.reconnect() on invalid_client errors,
     then retries the operation."""
     from io_utils.fsutil import impl_ucv
+
     monkeypatch.setattr('io_utils.retry.time.sleep', lambda _delay: None)
 
     call_count = 0
@@ -89,12 +103,12 @@ def test_retry_policy_reconnects_on_auth_failure(caplog, monkeypatch):
         call_count += 1
         if call_count == 1:
             raise ValueError(canary)
-        return "success"
+        return 'success'
 
     with patch.object(impl_ucv.uc_ctx, 'reconnect') as mock_reconnect:
         result = operation()
 
-    assert result == "success"
+    assert result == 'success'
     assert call_count == 2
     mock_reconnect.assert_called_once()
     assert canary not in caplog.text
@@ -113,8 +127,9 @@ def test_upload_retry_log_never_exposes_provider_error(monkeypatch, caplog):
     local = LocalURI(path='/tmp/local-artifact')
     remote = ParseURI('dbfs:/Volumes/catalog/schema/volume/artifact')
 
-    with patch.object(type(impl_ucv.uc_ctx), 'client', new_callable=PropertyMock,
-                      return_value=client):
+    with patch.object(
+        type(impl_ucv.uc_ctx), 'client', new_callable=PropertyMock, return_value=client
+    ):
         impl_ucv._upload(local=local, remote=remote)
 
     assert files.upload_from.call_count == 2
@@ -126,6 +141,7 @@ def test_retry_policy_does_not_reconnect_on_other_errors(monkeypatch):
     """retry_policy does NOT call reconnect for non-auth errors (e.g.
     transient RuntimeError). It still retries via the base retry."""
     from io_utils.fsutil import impl_ucv
+
     monkeypatch.setattr('io_utils.retry.time.sleep', lambda _delay: None)
 
     call_count = 0
@@ -135,13 +151,13 @@ def test_retry_policy_does_not_reconnect_on_other_errors(monkeypatch):
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            raise RuntimeError("transient failure")
-        return "success"
+            raise RuntimeError('transient failure')
+        return 'success'
 
     with patch.object(impl_ucv.uc_ctx, 'reconnect') as mock_reconnect:
         result = operation()
 
-    assert result == "success"
+    assert result == 'success'
     assert call_count == 2
     mock_reconnect.assert_not_called()
 
@@ -150,6 +166,7 @@ def test_retry_policy_gives_up_after_max_tries(monkeypatch):
     """If auth failure persists across all retries, retry_policy still
     raises after exhausting attempts."""
     from io_utils.fsutil import impl_ucv
+
     monkeypatch.setattr('io_utils.retry.time.sleep', lambda _delay: None)
 
     call_count = 0
@@ -158,10 +175,10 @@ def test_retry_policy_gives_up_after_max_tries(monkeypatch):
     def operation():
         nonlocal call_count
         call_count += 1
-        raise ValueError("invalid_client: Client authentication failed")
+        raise ValueError('invalid_client: Client authentication failed')
 
     with patch.object(impl_ucv.uc_ctx, 'reconnect'):
-        with pytest.raises(ValueError, match="invalid_client"):
+        with pytest.raises(ValueError, match='invalid_client'):
             operation()
 
     assert call_count == 3

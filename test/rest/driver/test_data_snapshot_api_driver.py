@@ -70,8 +70,7 @@ _PROJECT_ID = ProjectID('project_' + 'a' * 32)
 
 @pytest.fixture(autouse=True)
 def auto_cleanup_per_func(monkeypatch):
-    monkeypatch.setattr(DataSnapshotApiDriver, "require_project_access",
-                        AsyncMock())
+    monkeypatch.setattr(DataSnapshotApiDriver, 'require_project_access', AsyncMock())
     yield
 
 
@@ -95,17 +94,15 @@ def _make_s3_table(*, connector_id, source_table_name):
         source_table=S3SourceTable(
             data_source_type=DataSourceType.S3,
             connector_id=_connector_id(connector_id),
-            source={
-                'mode': 'relative',
-                'path': source_table_name
-            },
+            source={'mode': 'relative', 'path': source_table_name},
             file_type=FileType.PARQUET,
         ),
     )
 
 
-def _make_table_entry(table: TableDefinition,
-                      alias: str | None = None) -> TableDBEntryV2:
+def _make_table_entry(
+    table: TableDefinition, alias: str | None = None
+) -> TableDBEntryV2:
     return TableDBEntryV2(
         id=table.fpid,
         project_id=_PROJECT_ID,
@@ -119,8 +116,7 @@ def _make_table_entry(table: TableDefinition,
     )
 
 
-def _make_file_connector_entry(connector_id: str,
-                               root_dir: str) -> ConnectorDBEntry:
+def _make_file_connector_entry(connector_id: str, root_dir: str) -> ConnectorDBEntry:
     normalized_id = _connector_id(connector_id)
     assert normalized_id is not None
     return InternalConnectorDBEntry(
@@ -160,13 +156,9 @@ class _TableService:
     async def get_table_entries(self, project_id, fpids):
         fpids = list(fpids)
         self.get_many_calls.append((project_id, fpids))
-        return {
-            fpid: self.entries[fpid]
-            for fpid in fpids if fpid in self.entries
-        }
+        return {fpid: self.entries[fpid] for fpid in fpids if fpid in self.entries}
 
-    async def save_table_definition(self, project_id, table_definition,
-                                    **kwargs):
+    async def save_table_definition(self, project_id, table_definition, **kwargs):
         self.save_calls.append((project_id, table_definition, kwargs))
         entry = _make_table_entry(table_definition)
         self.entries[entry.id] = entry
@@ -192,12 +184,14 @@ class _ConnectorService:
         root_dirs = kwargs.get('root_dirs')
         if root_dir is not None:
             connectors = [
-                connector for connector in connectors
+                connector
+                for connector in connectors
                 if getattr(connector.config, 'root_dir', None) == root_dir
             ]
         if root_dirs is not None:
             connectors = [
-                connector for connector in connectors
+                connector
+                for connector in connectors
                 if getattr(connector.config, 'root_dir', None) in root_dirs
             ]
         return connectors
@@ -211,7 +205,8 @@ class _ConnectorService:
         self.get_many_calls.append(connector_ids)
         return {
             connector_id: self.connectors[connector_id]
-            for connector_id in connector_ids if connector_id in self.connectors
+            for connector_id in connector_ids
+            if connector_id in self.connectors
         }
 
     async def get_required(self, connector_id):
@@ -222,15 +217,13 @@ class _ConnectorService:
         self.get_spec_calls.append(connector_id)
         return self.connectors[connector_id].as_connector_spec()
 
-    async def execution_ref_for_project(self, principal, project_id,
-                                        connector_id, actions):
-        self.execution_ref_calls.append(
-            (principal, project_id, connector_id, actions))
-        return ConnectorExecutionRef(project_id=project_id,
-                                     connector_id=connector_id)
+    async def execution_ref_for_project(
+        self, principal, project_id, connector_id, actions
+    ):
+        self.execution_ref_calls.append((principal, project_id, connector_id, actions))
+        return ConnectorExecutionRef(project_id=project_id, connector_id=connector_id)
 
-    async def fresh_execution_refs_for_workflow(self, principal, references,
-                                                actions):
+    async def fresh_execution_refs_for_workflow(self, principal, references, actions):
         references = tuple(references)
         self.fresh_execution_ref_calls.append((principal, references, actions))
         fresh = []
@@ -240,7 +233,8 @@ class _ConnectorService:
                 dataclasses.replace(
                     reference,
                     authorization_token=f'fresh-{self._fresh_token_counter}',
-                ))
+                )
+            )
         return tuple(fresh)
 
 
@@ -263,15 +257,13 @@ class _GraphService:
         return list(self.entries.values())
 
     async def get_graph_cache_input(self, graph_id, project_id):
-        return await self.get_graph_data_compute_input(graph_id,
-                                                       project_id=project_id)
+        return await self.get_graph_data_compute_input(graph_id, project_id=project_id)
 
 
 def test_hydrate_graph_config_source_from_graph_def_backfills_missing_fields():
     graph_def = GraphDefinition(
         tables={
-            'LOAN':
-            _make_s3_table(
+            'LOAN': _make_s3_table(
                 connector_id='financial_conn',
                 source_table_name='LOAN',
             ),
@@ -283,8 +275,7 @@ def test_hydrate_graph_config_source_from_graph_def_backfills_missing_fields():
         tables=[TableConfig(table_name='LOAN')],
     )
 
-    hydrated = _hydrate_graph_config_source_from_graph_def(
-        graph_config, graph_def)
+    hydrated = _hydrate_graph_config_source_from_graph_def(graph_config, graph_def)
 
     assert hydrated['LOAN'].data_source == str(_connector_id('financial_conn'))
     assert hydrated['LOAN'].source_name == 'LOAN'
@@ -293,8 +284,7 @@ def test_hydrate_graph_config_source_from_graph_def_backfills_missing_fields():
 def test_hydrate_graph_config_source_from_graph_def_preserves_existing_values():
     graph_def = GraphDefinition(
         tables={
-            'LOAN':
-            _make_s3_table(
+            'LOAN': _make_s3_table(
                 connector_id='financial_conn',
                 source_table_name='LOAN',
             ),
@@ -312,8 +302,7 @@ def test_hydrate_graph_config_source_from_graph_def_preserves_existing_values():
         ],
     )
 
-    hydrated = _hydrate_graph_config_source_from_graph_def(
-        graph_config, graph_def)
+    hydrated = _hydrate_graph_config_source_from_graph_def(graph_config, graph_def)
 
     assert hydrated['LOAN'].data_source == 'existing_conn'
     assert hydrated['LOAN'].source_name == 'existing_source'
@@ -332,7 +321,8 @@ async def test_get_table_definition_uses_state_services(mock_temporal_client):
     data_backend_ctx._config = MagicMock()
     driver = DataSnapshotApiDriver(data_backend_ctx)
     driver._configure_state_services(
-        SimpleNamespace(tables=table_service, connectors=MagicMock()))
+        SimpleNamespace(tables=table_service, connectors=MagicMock())
+    )
 
     got = await driver.get_table_definition(
         DataSnapshot.TABLE.format_id(entry.id, TableDataVersion('v1')),
@@ -360,10 +350,10 @@ async def test_get_graph_by_fpid_uses_state_services(mock_temporal_client):
             graphs=graph_service,
             tables=MagicMock(),
             connectors=MagicMock(),
-        ))
+        )
+    )
 
-    graph_id, got = await driver._get_graph_by_fpid(_PROJECT_ID,
-                                                    FPID(graph_def.fpid))
+    graph_id, got = await driver._get_graph_by_fpid(_PROJECT_ID, FPID(graph_def.fpid))
 
     assert graph_id == GraphIDv2.compose(fpid=graph_def.fpid)
     assert got == graph_def
@@ -372,8 +362,10 @@ async def test_get_graph_by_fpid_uses_state_services(mock_temporal_client):
 
 @pytest.mark.asyncio
 @patch('rest.driver.data_snapshot_api_driver.TemporalClient')
-@patch('rest.driver.data_snapshot_api_driver.get_graph_snapshot_info',
-       new_callable=AsyncMock)
+@patch(
+    'rest.driver.data_snapshot_api_driver.get_graph_snapshot_info',
+    new_callable=AsyncMock,
+)
 async def test_get_graph_snapshot_uses_snapshot_info(
     mock_get_graph_snapshot_info,
     mock_temporal_client,
@@ -382,8 +374,7 @@ async def test_get_graph_snapshot_uses_snapshot_info(
         connector_id='connector_a',
         source_table_name='ACCOUNT',
     )
-    graph_def = GraphDefinition(tables={TableName('ACCOUNT'): table},
-                                col_groups=[])
+    graph_def = GraphDefinition(tables={TableName('ACCOUNT'): table}, col_groups=[])
     graph_id = GraphIDv2.compose(fpid=graph_def.fpid)
     graph_snapshot_id = DataSnapshot.GRAPH.format_id(graph_def.fpid, 'gv1')
     version_info = GraphDataVersionInfo(
@@ -398,15 +389,16 @@ async def test_get_graph_snapshot_uses_snapshot_info(
     driver._get_many_kumo_table_snapshots = AsyncMock(  # type: ignore[method-assign]
         return_value=[
             snapshot_interfaces.TableSnapshotResource(
-                id=DataSnapshot.TABLE.format_id(table.fpid,
-                                                TableDataVersion('tv1')),
+                id=DataSnapshot.TABLE.format_id(table.fpid, TableDataVersion('tv1')),
                 table_definition=table,
                 stages={
-                    snapshot_interfaces.TableSnapshotStage.INGEST:
-                    snapshot_interfaces.JobState(JobStatus.DONE),
+                    snapshot_interfaces.TableSnapshotStage.INGEST: snapshot_interfaces.JobState(
+                        JobStatus.DONE
+                    ),
                 },
             )
-        ])
+        ]
+    )
     mock_get_graph_snapshot_info.return_value = (graph_id, version_info)
 
     response = await driver.get_graph_snapshot(
@@ -420,18 +412,23 @@ async def test_get_graph_snapshot_uses_snapshot_info(
     assert response.snapshot_resource.id == graph_snapshot_id
     assert response.snapshot_resource.graph_name == 'Graph Alias'
     assert response.snapshot_resource.table_ids == {
-        TableName('ACCOUNT'):
-        DataSnapshot.TABLE.format_id(table.fpid, TableDataVersion('tv1'))
+        TableName('ACCOUNT'): DataSnapshot.TABLE.format_id(
+            table.fpid, TableDataVersion('tv1')
+        )
     }
     mock_get_graph_snapshot_info.assert_awaited_once_with(graph_snapshot_id)
 
 
 @pytest.mark.asyncio
 @patch('rest.driver.data_snapshot_api_driver.TemporalClient')
-@patch('rest.driver.data_snapshot_api_driver.get_graph_snapshot_info',
-       new_callable=AsyncMock)
-@patch('rest.driver.data_snapshot_api_driver.DataBackend.get_edge_stats',
-       new_callable=AsyncMock)
+@patch(
+    'rest.driver.data_snapshot_api_driver.get_graph_snapshot_info',
+    new_callable=AsyncMock,
+)
+@patch(
+    'rest.driver.data_snapshot_api_driver.DataBackend.get_edge_stats',
+    new_callable=AsyncMock,
+)
 async def test_get_ui_edge_health_uses_state_services_without_opening_dao(
     mock_get_edge_stats,
     mock_get_graph_snapshot_info,
@@ -464,9 +461,9 @@ async def test_get_ui_edge_health_uses_state_services_without_opening_dao(
         tables={table_id: table},
         base_tables={},
         connectors={
-            connector.id:
-            ConnectorExecutionRef(project_id=_PROJECT_ID,
-                                  connector_id=connector.id)
+            connector.id: ConnectorExecutionRef(
+                project_id=_PROJECT_ID, connector_id=connector.id
+            )
         },
         graph_definition=GraphDefinition(
             tables={TableName('ACCOUNT'): table},
@@ -475,8 +472,7 @@ async def test_get_ui_edge_health_uses_state_services_without_opening_dao(
         table_aliases={table_id: TableName('ACCOUNT')},
     )
     graph_service = _GraphService({}, {graph_entry.id: graph_entry})
-    graph_service.get_graph_data_compute_input = AsyncMock(
-        return_value=graph_input)
+    graph_service.get_graph_data_compute_input = AsyncMock(return_value=graph_input)
     table_service = _TableService({entry.id: entry})
     connector_service = _ConnectorService([connector])
     data_backend_ctx = MagicMock()
@@ -487,17 +483,17 @@ async def test_get_ui_edge_health_uses_state_services_without_opening_dao(
             graphs=graph_service,
             tables=table_service,
             connectors=connector_service,
-        ))
+        )
+    )
     mock_get_graph_snapshot_info.return_value = (graph_id, version_info)
 
-    result = await driver.get_ui_edge_health(f'graph-{graph_entry.id}-v1',
-                                             _PROJECT_ID)
+    result = await driver.get_ui_edge_health(f'graph-{graph_entry.id}-v1', _PROJECT_ID)
 
     assert result.is_ready is False
-    mock_get_graph_snapshot_info.assert_awaited_once_with(
-        f'graph-{graph_entry.id}-v1')
+    mock_get_graph_snapshot_info.assert_awaited_once_with(f'graph-{graph_entry.id}-v1')
     graph_service.get_graph_data_compute_input.assert_awaited_once_with(
-        graph_id, project_id=_PROJECT_ID)
+        graph_id, project_id=_PROJECT_ID
+    )
     assert graph_service.get_entry_calls == []
     assert table_service.get_many_calls == []
     assert connector_service.get_calls == []
@@ -517,14 +513,18 @@ async def test_get_ui_edge_health_uses_state_services_without_opening_dao(
 
 @pytest.mark.asyncio
 @patch('rest.driver.data_snapshot_api_driver.TemporalClient')
-@patch('rest.driver.data_snapshot_api_driver.DataBackend.start_refresh_graph',
-       new_callable=AsyncMock)
+@patch(
+    'rest.driver.data_snapshot_api_driver.DataBackend.start_refresh_graph',
+    new_callable=AsyncMock,
+)
 @patch(
     'rest.driver.data_snapshot_api_driver.DataBackendActivities.save_graph_data_version',
-    new_callable=AsyncMock)
+    new_callable=AsyncMock,
+)
 @patch(
     'rest.driver.data_snapshot_api_driver.DataBackend.refresh_graph_data_version_in_activity',
-    new_callable=AsyncMock)
+    new_callable=AsyncMock,
+)
 async def test_create_graph_snapshot_uses_state_services_for_graph_metadata(
     mock_refresh_graph_data_version,
     mock_save_graph_data_version,
@@ -548,8 +548,7 @@ async def test_create_graph_snapshot_uses_state_services_for_graph_metadata(
             updated_at=datetime.now(),
         ),
     )
-    graph_def = GraphDefinition(tables={TableName('ACCOUNT'): table},
-                                col_groups=[])
+    graph_def = GraphDefinition(tables={TableName('ACCOUNT'): table}, col_groups=[])
     table_id = TableIDv2.compose(None, TableName('ACCOUNT'), entry.id)
     graph_input = GraphDataComputeInput(
         graph_display_name='Graph Alias',
@@ -557,9 +556,9 @@ async def test_create_graph_snapshot_uses_state_services_for_graph_metadata(
         tables={table_id: table},
         base_tables={},
         connectors={
-            connector.id:
-            ConnectorExecutionRef(project_id=_PROJECT_ID,
-                                  connector_id=connector.id)
+            connector.id: ConnectorExecutionRef(
+                project_id=_PROJECT_ID, connector_id=connector.id
+            )
         },
         graph_definition=graph_def,
         table_aliases={table_id: TableName('ACCOUNT')},
@@ -567,12 +566,12 @@ async def test_create_graph_snapshot_uses_state_services_for_graph_metadata(
     version_info = SimpleNamespace(graph_data_version='gv1', graph_name=None)
     mock_refresh_graph_data_version.return_value = version_info
 
-    graph_service = _GraphService({graph_entry.id: graph_def},
-                                  {graph_entry.id: graph_entry})
+    graph_service = _GraphService(
+        {graph_entry.id: graph_def}, {graph_entry.id: graph_entry}
+    )
     table_service = _TableService({entry.id: entry})
     connector_service = _ConnectorService([connector])
-    graph_service.get_graph_data_compute_input = AsyncMock(
-        return_value=graph_input)
+    graph_service.get_graph_data_compute_input = AsyncMock(return_value=graph_input)
     data_backend_ctx = MagicMock()
     data_backend_ctx._config = MagicMock()
     driver = DataSnapshotApiDriver(data_backend_ctx)
@@ -581,11 +580,11 @@ async def test_create_graph_snapshot_uses_state_services_for_graph_metadata(
             graphs=graph_service,
             tables=table_service,
             connectors=connector_service,
-        ))
+        )
+    )
     driver._create_many_table_snapshots = AsyncMock(  # type: ignore[method-assign]
-        return_value=[
-            DataSnapshot.TABLE.format_id(entry.id, TableDataVersion('v1'))
-        ])
+        return_value=[DataSnapshot.TABLE.format_id(entry.id, TableDataVersion('v1'))]
+    )
 
     snapshot_id = await driver.create_graph_snapshot(
         graph_entry.id,
@@ -616,32 +615,34 @@ async def test_create_graph_snapshot_uses_state_services_for_graph_metadata(
     assert len(connector_service.fresh_execution_ref_calls) == 1
 
     mock_refresh_graph_data_version.assert_awaited_once()
-    assert mock_refresh_graph_data_version.await_args.args[
-        0] is data_backend_ctx
+    assert mock_refresh_graph_data_version.await_args.args[0] is data_backend_ctx
     graph_input = mock_refresh_graph_data_version.await_args.args[1]
     table_id = TableIDv2.compose(None, TableName('ACCOUNT'), entry.id)
     assert graph_input.graph_definition == graph_def
-    assert graph_input.pinned_data_versions == {
-        table_id: TableDataVersion('v1')
-    }
-    mock_save_graph_data_version.assert_awaited_once_with(
-        graph_input, version_info)
+    assert graph_input.pinned_data_versions == {table_id: TableDataVersion('v1')}
+    mock_save_graph_data_version.assert_awaited_once_with(graph_input, version_info)
     mock_start_refresh_graph.assert_awaited_once()
     started_graph_input = mock_start_refresh_graph.await_args.args[1]
-    assert next(iter(started_graph_input.connectors.values())
-                ).authorization_token == 'fresh-1'
+    assert (
+        next(iter(started_graph_input.connectors.values())).authorization_token
+        == 'fresh-1'
+    )
 
 
 @pytest.mark.asyncio
 @patch('rest.driver.data_snapshot_api_driver.TemporalClient')
-@patch('rest.driver.data_snapshot_api_driver.DataBackend.start_refresh_graph',
-       new_callable=AsyncMock)
+@patch(
+    'rest.driver.data_snapshot_api_driver.DataBackend.start_refresh_graph',
+    new_callable=AsyncMock,
+)
 @patch(
     'rest.driver.data_snapshot_api_driver.DataBackendActivities.save_graph_data_version',
-    new_callable=AsyncMock)
+    new_callable=AsyncMock,
+)
 @patch(
     'rest.driver.data_snapshot_api_driver.DataBackend.refresh_graph_data_version_in_activity',
-    new_callable=AsyncMock)
+    new_callable=AsyncMock,
+)
 async def test_create_graph_snapshot_missing_graph_entry_uses_base_graph_name_without_legacy_dao(
     mock_refresh_graph_data_version,
     mock_save_graph_data_version,
@@ -654,8 +655,7 @@ async def test_create_graph_snapshot_missing_graph_entry_uses_base_graph_name_wi
     )
     entry = _make_table_entry(table)
     connector = _make_file_connector_entry('connector_a', 's3://bucket-a/path')
-    graph_def = GraphDefinition(tables={TableName('ACCOUNT'): table},
-                                col_groups=[])
+    graph_def = GraphDefinition(tables={TableName('ACCOUNT'): table}, col_groups=[])
     table_id = TableIDv2.compose(None, TableName('ACCOUNT'), entry.id)
     graph_input = GraphDataComputeInput(
         graph_display_name='Base Graph',
@@ -663,9 +663,9 @@ async def test_create_graph_snapshot_missing_graph_entry_uses_base_graph_name_wi
         tables={table_id: table},
         base_tables={},
         connectors={
-            connector.id:
-            ConnectorExecutionRef(project_id=_PROJECT_ID,
-                                  connector_id=connector.id)
+            connector.id: ConnectorExecutionRef(
+                project_id=_PROJECT_ID, connector_id=connector.id
+            )
         },
         graph_definition=graph_def,
         table_aliases={table_id: TableName('ACCOUNT')},
@@ -676,8 +676,7 @@ async def test_create_graph_snapshot_missing_graph_entry_uses_base_graph_name_wi
     graph_service = _GraphService({graph_def.fpid: graph_def}, {})
     table_service = _TableService({entry.id: entry})
     connector_service = _ConnectorService([connector])
-    graph_service.get_graph_data_compute_input = AsyncMock(
-        return_value=graph_input)
+    graph_service.get_graph_data_compute_input = AsyncMock(return_value=graph_input)
     data_backend_ctx = MagicMock()
     data_backend_ctx._config = MagicMock()
     driver = DataSnapshotApiDriver(data_backend_ctx)
@@ -686,11 +685,11 @@ async def test_create_graph_snapshot_missing_graph_entry_uses_base_graph_name_wi
             graphs=graph_service,
             tables=table_service,
             connectors=connector_service,
-        ))
+        )
+    )
     driver._create_many_table_snapshots = AsyncMock(  # type: ignore[method-assign]
-        return_value=[
-            DataSnapshot.TABLE.format_id(entry.id, TableDataVersion('v1'))
-        ])
+        return_value=[DataSnapshot.TABLE.format_id(entry.id, TableDataVersion('v1'))]
+    )
 
     snapshot_id = await driver.create_graph_snapshot(
         graph_def.fpid,
@@ -710,21 +709,25 @@ async def test_create_graph_snapshot_missing_graph_entry_uses_base_graph_name_wi
     )
     assert version_info.graph_name == 'Base Graph (modified)'
     assert len(connector_service.fresh_execution_ref_calls) == 1
-    mock_save_graph_data_version.assert_awaited_once_with(
-        graph_input, version_info)
+    mock_save_graph_data_version.assert_awaited_once_with(graph_input, version_info)
     mock_start_refresh_graph.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 @patch('rest.driver.data_snapshot_api_driver.TemporalClient')
-@patch('rest.driver.data_snapshot_api_driver.DataBackend.start_refresh_table',
-       new_callable=AsyncMock)
+@patch(
+    'rest.driver.data_snapshot_api_driver.DataBackend.start_refresh_table',
+    new_callable=AsyncMock,
+)
 @patch(
     'rest.driver.data_snapshot_api_driver.DataBackend.get_many_table_refresh_results',
-    new_callable=AsyncMock)
+    new_callable=AsyncMock,
+)
 @patch(
     'rest.driver.data_snapshot_api_driver.DataBackend.'
-    'get_table_data_version_in_activity', new_callable=AsyncMock)
+    'get_table_data_version_in_activity',
+    new_callable=AsyncMock,
+)
 @patch('rest.driver.data_snapshot_api_driver.get_active_cache')
 async def test_create_many_table_snapshots_uses_bulk_table_and_connector_reads(
     mock_get_active_cache,
@@ -733,8 +736,7 @@ async def test_create_many_table_snapshots_uses_bulk_table_and_connector_reads(
     mock_start_refresh_table,
     mock_temporal_client,
 ):
-    connector = _make_file_connector_entry('connector_a',
-                                           's3://bucket-bulk/path')
+    connector = _make_file_connector_entry('connector_a', 's3://bucket-bulk/path')
     table_a = _make_s3_table(
         connector_id='connector_a',
         source_table_name='ACCOUNT',
@@ -745,10 +747,12 @@ async def test_create_many_table_snapshots_uses_bulk_table_and_connector_reads(
     )
     entry_a = _make_table_entry(table_a)
     entry_b = _make_table_entry(table_b)
-    table_service = _TableService({
-        entry_a.id: entry_a,
-        entry_b.id: entry_b,
-    })
+    table_service = _TableService(
+        {
+            entry_a.id: entry_a,
+            entry_b.id: entry_b,
+        }
+    )
     connector_service = _ConnectorService([connector])
     data_backend_ctx = MagicMock()
     data_backend_ctx._config = MagicMock()
@@ -756,14 +760,13 @@ async def test_create_many_table_snapshots_uses_bulk_table_and_connector_reads(
     cache = MagicMock()
     cache.table_version_cache.get.coroutine = AsyncMock(return_value=None)
     mock_get_active_cache.return_value = cache
-    mock_get_table_data_version_in_activity.side_effect = [
-        'v-account', 'v-loan'
-    ]
+    mock_get_table_data_version_in_activity.side_effect = ['v-account', 'v-loan']
     mock_get_many_table_refresh_results.return_value = [None]
 
     driver = DataSnapshotApiDriver(data_backend_ctx)
     driver._configure_state_services(
-        SimpleNamespace(tables=table_service, connectors=connector_service))
+        SimpleNamespace(tables=table_service, connectors=connector_service)
+    )
 
     snapshot_ids = await driver._create_many_table_snapshots(
         [table_a, table_b],
@@ -772,12 +775,10 @@ async def test_create_many_table_snapshots_uses_bulk_table_and_connector_reads(
     )
 
     assert snapshot_ids == [
-        DataSnapshot.TABLE.format_id(table_a.fpid,
-                                     TableDataVersion('v-account')),
+        DataSnapshot.TABLE.format_id(table_a.fpid, TableDataVersion('v-account')),
         DataSnapshot.TABLE.format_id(table_b.fpid, TableDataVersion('v-loan')),
     ]
-    assert table_service.get_many_calls == [(_PROJECT_ID,
-                                             [entry_a.id, entry_b.id])]
+    assert table_service.get_many_calls == [(_PROJECT_ID, [entry_a.id, entry_b.id])]
     assert table_service.get_calls == []
     assert connector_service.get_many_calls == []
     assert connector_service.get_required_calls == []
@@ -789,9 +790,10 @@ async def test_create_many_table_snapshots_uses_bulk_table_and_connector_reads(
     assert cache.table_version_cache.get.coroutine.await_count == 2
     assert mock_get_table_data_version_in_activity.await_count == 2
     assert all(
-        call.args[1] == ConnectorExecutionRef(project_id=_PROJECT_ID,
-                                              connector_id=connector.id)
-        for call in mock_get_table_data_version_in_activity.await_args_list)
+        call.args[1]
+        == ConnectorExecutionRef(project_id=_PROJECT_ID, connector_id=connector.id)
+        for call in mock_get_table_data_version_in_activity.await_args_list
+    )
     assert mock_get_many_table_refresh_results.await_count == 2
     assert mock_start_refresh_table.await_count == 2
     assert len(connector_service.fresh_execution_ref_calls) == 2
@@ -807,7 +809,8 @@ async def test_create_many_table_snapshots_uses_bulk_table_and_connector_reads(
 
 @pytest.mark.asyncio
 async def test_table_snapshot_batch_can_defer_col_stats_for_graph_snapshot(
-        monkeypatch) -> None:
+    monkeypatch,
+) -> None:
     table = _make_s3_table(
         connector_id='connector_a',
         source_table_name='ACCOUNT',
@@ -815,16 +818,18 @@ async def test_table_snapshot_batch_can_defer_col_stats_for_graph_snapshot(
     entry = _make_table_entry(table)
     connector_id = table.get_connector_id()
     connector_service = SimpleNamespace(
-        execution_ref_for_project=AsyncMock(return_value=ConnectorExecutionRef(
-            project_id=_PROJECT_ID,
-            connector_id=connector_id,
-            authorization_token='probe-token',
-        )), )
+        execution_ref_for_project=AsyncMock(
+            return_value=ConnectorExecutionRef(
+                project_id=_PROJECT_ID,
+                connector_id=connector_id,
+                authorization_token='probe-token',
+            )
+        ),
+    )
     data_backend_ctx = MagicMock()
     data_backend_ctx._config = MagicMock()
     driver = DataSnapshotApiDriver(data_backend_ctx)
-    driver._configure_state_services(
-        SimpleNamespace(connectors=connector_service))
+    driver._configure_state_services(SimpleNamespace(connectors=connector_service))
     driver._prepare_state_services_table_refresh_with_connector = AsyncMock(  # type: ignore[method-assign]
         return_value=_PreparedTableRefresh(
             table_entry=entry,
@@ -834,7 +839,8 @@ async def test_table_snapshot_batch_can_defer_col_stats_for_graph_snapshot(
                 connector_id=connector_id,
                 authorization_token='workflow-token',
             ),
-        ))
+        )
+    )
     start_refresh = AsyncMock(return_value='workflow-1')
     monkeypatch.setattr(DataBackend, 'start_refresh_table', start_refresh)
 
@@ -852,10 +858,13 @@ async def test_table_snapshot_batch_can_defer_col_stats_for_graph_snapshot(
 @pytest.mark.asyncio
 @patch(
     'rest.driver.data_snapshot_api_driver.DataBackend.get_many_table_refresh_results',
-    new_callable=AsyncMock)
+    new_callable=AsyncMock,
+)
 @patch(
     'rest.driver.data_snapshot_api_driver.DataBackend.'
-    'get_table_data_version_in_activity', new_callable=AsyncMock)
+    'get_table_data_version_in_activity',
+    new_callable=AsyncMock,
+)
 @patch('rest.driver.data_snapshot_api_driver.get_active_cache')
 async def test_cache_miss_refresh_uses_fresh_workflow_capability(
     mock_get_active_cache,
@@ -868,8 +877,7 @@ async def test_cache_miss_refresh_uses_fresh_workflow_capability(
         source_table_name='ACCOUNT',
     )
     entry = _make_table_entry(table)
-    connector = _make_file_connector_entry('connector_a',
-                                           's3://bucket-cache-miss/path')
+    connector = _make_file_connector_entry('connector_a', 's3://bucket-cache-miss/path')
     connector_service = _ConnectorService([connector])
     cache = MagicMock()
     cache.table_version_cache.get.coroutine = AsyncMock(return_value=None)
@@ -879,8 +887,7 @@ async def test_cache_miss_refresh_uses_fresh_workflow_capability(
     data_backend_ctx = MagicMock()
     data_backend_ctx._config = MagicMock()
     driver = DataSnapshotApiDriver(data_backend_ctx)
-    driver._configure_state_services(
-        SimpleNamespace(connectors=connector_service))
+    driver._configure_state_services(SimpleNamespace(connectors=connector_service))
     probe_ref = ConnectorExecutionRef(
         project_id=_PROJECT_ID,
         connector_id=connector.id,
@@ -900,11 +907,13 @@ async def test_cache_miss_refresh_uses_fresh_workflow_capability(
         refresh_table_version=True,
         table_def=entry.config,
     )
-    assert connector_service.fresh_execution_ref_calls == [(
-        None,
-        (probe_ref, ),
-        CONNECTOR_GRAPH_ACTIONS,
-    )]
+    assert connector_service.fresh_execution_ref_calls == [
+        (
+            None,
+            (probe_ref,),
+            CONNECTOR_GRAPH_ACTIONS,
+        )
+    ]
     assert prepared.execution_ref is not None
     assert prepared.execution_ref.authorization_token == 'fresh-1'
 
@@ -912,10 +921,13 @@ async def test_cache_miss_refresh_uses_fresh_workflow_capability(
 @pytest.mark.asyncio
 @patch(
     'rest.driver.data_snapshot_api_driver.DataBackend.get_many_table_refresh_results',
-    new_callable=AsyncMock)
+    new_callable=AsyncMock,
+)
 @patch(
     'rest.driver.data_snapshot_api_driver.DataBackend.'
-    'get_table_data_version_in_activity', new_callable=AsyncMock)
+    'get_table_data_version_in_activity',
+    new_callable=AsyncMock,
+)
 @patch('rest.driver.data_snapshot_api_driver.get_active_cache')
 async def test_cache_hit_without_refresh_reuses_unconsumed_capability(
     mock_get_active_cache,
@@ -927,19 +939,16 @@ async def test_cache_hit_without_refresh_reuses_unconsumed_capability(
         source_table_name='ACCOUNT',
     )
     entry = _make_table_entry(table)
-    connector = _make_file_connector_entry('connector_a',
-                                           's3://bucket-cache-hit/path')
+    connector = _make_file_connector_entry('connector_a', 's3://bucket-cache-hit/path')
     connector_service = _ConnectorService([connector])
     cache = MagicMock()
-    cache.table_version_cache.get.coroutine = AsyncMock(
-        return_value='version-1')
+    cache.table_version_cache.get.coroutine = AsyncMock(return_value='version-1')
     mock_get_active_cache.return_value = cache
     mock_get_many_table_refresh_results.return_value = [None]
     data_backend_ctx = MagicMock()
     data_backend_ctx._config = MagicMock()
     driver = DataSnapshotApiDriver(data_backend_ctx)
-    driver._configure_state_services(
-        SimpleNamespace(connectors=connector_service))
+    driver._configure_state_services(SimpleNamespace(connectors=connector_service))
     unconsumed_ref = ConnectorExecutionRef(
         project_id=_PROJECT_ID,
         connector_id=connector.id,
@@ -959,31 +968,36 @@ async def test_cache_hit_without_refresh_reuses_unconsumed_capability(
 
 @pytest.mark.asyncio
 async def test_table_refresh_batch_rolls_back_partial_workflow_starts(
-    monkeypatch, ) -> None:
+    monkeypatch,
+) -> None:
     tables = [
-        _make_s3_table(connector_id='connector_a',
-                       source_table_name=f'TABLE_{index}') for index in range(3)
+        _make_s3_table(connector_id='connector_a', source_table_name=f'TABLE_{index}')
+        for index in range(3)
     ]
     entries = [_make_table_entry(table) for table in tables]
     connector_id = tables[0].get_connector_id()
     connector_service = SimpleNamespace(
-        execution_ref_for_project=AsyncMock(side_effect=[
-            ConnectorExecutionRef(
-                project_id=_PROJECT_ID,
-                connector_id=connector_id,
-                authorization_token=f'probe-{index}',
-            ) for index in range(3)
-        ]), )
+        execution_ref_for_project=AsyncMock(
+            side_effect=[
+                ConnectorExecutionRef(
+                    project_id=_PROJECT_ID,
+                    connector_id=connector_id,
+                    authorization_token=f'probe-{index}',
+                )
+                for index in range(3)
+            ]
+        ),
+    )
     authorization_service = SimpleNamespace(revoke=AsyncMock())
     handles = {
-        'workflow-0':
-        SimpleNamespace(terminate=AsyncMock(
-            side_effect=[RuntimeError('transient'), None])),
-        'workflow-2':
-        SimpleNamespace(terminate=AsyncMock()),
+        'workflow-0': SimpleNamespace(
+            terminate=AsyncMock(side_effect=[RuntimeError('transient'), None])
+        ),
+        'workflow-2': SimpleNamespace(terminate=AsyncMock()),
     }
-    temporal_client = SimpleNamespace(get_workflow_handle=AsyncMock(
-        side_effect=handles.__getitem__))
+    temporal_client = SimpleNamespace(
+        get_workflow_handle=AsyncMock(side_effect=handles.__getitem__)
+    )
     data_backend_ctx = MagicMock()
     data_backend_ctx._config = MagicMock()
     data_backend_ctx.temporal_client.return_value = temporal_client
@@ -992,7 +1006,8 @@ async def test_table_refresh_batch_rolls_back_partial_workflow_starts(
         SimpleNamespace(
             connectors=connector_service,
             connector_authorizations=authorization_service,
-        ))
+        )
+    )
     prepared = [
         _PreparedTableRefresh(
             table_entry=entry,
@@ -1002,15 +1017,19 @@ async def test_table_refresh_batch_rolls_back_partial_workflow_starts(
                 connector_id=connector_id,
                 authorization_token=f'workflow-token-{index}',
             ),
-        ) for index, entry in enumerate(entries)
+        )
+        for index, entry in enumerate(entries)
     ]
     driver._prepare_state_services_table_refresh_with_connector = AsyncMock(  # type: ignore[method-assign]
-        side_effect=prepared)
-    start_refresh = AsyncMock(side_effect=[
-        'workflow-0',
-        RuntimeError('database is locked: secret.sqlite'),
-        'workflow-2',
-    ])
+        side_effect=prepared
+    )
+    start_refresh = AsyncMock(
+        side_effect=[
+            'workflow-0',
+            RuntimeError('database is locked: secret.sqlite'),
+            'workflow-2',
+        ]
+    )
     monkeypatch.setattr(DataBackend, 'start_refresh_table', start_refresh)
 
     with pytest.raises(ConnectorError) as error:
@@ -1021,41 +1040,48 @@ async def test_table_refresh_batch_rolls_back_partial_workflow_starts(
 
     assert str(error.value) == (
         'Unable to start all table refreshes; partial starts were rolled back. '
-        'Please retry.')
+        'Please retry.'
+    )
     assert 'locked' not in str(error.value)
     assert temporal_client.get_workflow_handle.await_args_list == [
-        ((workflow_id, ), {}) for workflow_id in ('workflow-0', 'workflow-2')
+        ((workflow_id,), {}) for workflow_id in ('workflow-0', 'workflow-2')
     ]
     assert handles['workflow-0'].terminate.await_count == 2
     assert handles['workflow-2'].terminate.await_count == 1
-    assert sorted(call.args[0]
-                  for call in authorization_service.revoke.await_args_list) == [
-                      'probe-0',
-                      'probe-1',
-                      'probe-2',
-                      'workflow-token-0',
-                      'workflow-token-1',
-                      'workflow-token-2',
-                  ]
+    assert sorted(
+        call.args[0] for call in authorization_service.revoke.await_args_list
+    ) == [
+        'probe-0',
+        'probe-1',
+        'probe-2',
+        'workflow-token-0',
+        'workflow-token-1',
+        'workflow-token-2',
+    ]
 
 
 @pytest.mark.asyncio
 async def test_table_refresh_batch_revokes_all_refs_when_preparation_fails(
-    monkeypatch, ) -> None:
+    monkeypatch,
+) -> None:
     tables = [
-        _make_s3_table(connector_id='connector_a',
-                       source_table_name=f'TABLE_{index}') for index in range(3)
+        _make_s3_table(connector_id='connector_a', source_table_name=f'TABLE_{index}')
+        for index in range(3)
     ]
     entries = [_make_table_entry(table) for table in tables]
     connector_id = tables[0].get_connector_id()
     connector_service = SimpleNamespace(
-        execution_ref_for_project=AsyncMock(side_effect=[
-            ConnectorExecutionRef(
-                project_id=_PROJECT_ID,
-                connector_id=connector_id,
-                authorization_token=f'probe-{index}',
-            ) for index in range(3)
-        ]), )
+        execution_ref_for_project=AsyncMock(
+            side_effect=[
+                ConnectorExecutionRef(
+                    project_id=_PROJECT_ID,
+                    connector_id=connector_id,
+                    authorization_token=f'probe-{index}',
+                )
+                for index in range(3)
+            ]
+        ),
+    )
     authorization_service = SimpleNamespace(revoke=AsyncMock())
     data_backend_ctx = MagicMock()
     data_backend_ctx._config = MagicMock()
@@ -1064,7 +1090,8 @@ async def test_table_refresh_batch_revokes_all_refs_when_preparation_fails(
         SimpleNamespace(
             connectors=connector_service,
             connector_authorizations=authorization_service,
-        ))
+        )
+    )
     prepared = _PreparedTableRefresh(
         table_entry=entries[0],
         data_version=TableDataVersion('version-0'),
@@ -1084,7 +1111,8 @@ async def test_table_refresh_batch_revokes_all_refs_when_preparation_fails(
                 data_version=TableDataVersion('version-2'),
                 execution_ref=None,
             ),
-        ])
+        ]
+    )
     start_refresh = AsyncMock()
     monkeypatch.setattr(DataBackend, 'start_refresh_table', start_refresh)
 
@@ -1094,50 +1122,55 @@ async def test_table_refresh_batch_revokes_all_refs_when_preparation_fails(
             project_id=_PROJECT_ID,
         )
 
-    assert str(
-        error.value) == ('Unable to prepare all table refreshes; please retry.')
+    assert str(error.value) == ('Unable to prepare all table refreshes; please retry.')
     assert 'locked' not in str(error.value)
     start_refresh.assert_not_awaited()
-    assert sorted(call.args[0]
-                  for call in authorization_service.revoke.await_args_list) == [
-                      'probe-0',
-                      'probe-1',
-                      'probe-2',
-                      'workflow-token-0',
-                  ]
+    assert sorted(
+        call.args[0] for call in authorization_service.revoke.await_args_list
+    ) == [
+        'probe-0',
+        'probe-1',
+        'probe-2',
+        'workflow-token-0',
+    ]
 
 
 @pytest.mark.asyncio
 async def test_table_refresh_cancellation_during_prepare_revokes_all_refs(
-        monkeypatch) -> None:
+    monkeypatch,
+) -> None:
     tables = [
-        _make_s3_table(connector_id='connector_a',
-                       source_table_name=f'TABLE_{index}') for index in range(3)
+        _make_s3_table(connector_id='connector_a', source_table_name=f'TABLE_{index}')
+        for index in range(3)
     ]
     entries = [_make_table_entry(table) for table in tables]
     connector_id = tables[0].get_connector_id()
     connector_service = SimpleNamespace(
-        execution_ref_for_project=AsyncMock(side_effect=[
-            ConnectorExecutionRef(
-                project_id=_PROJECT_ID,
-                connector_id=connector_id,
-                authorization_token=f'probe-{index}',
-            ) for index in range(3)
-        ]), )
+        execution_ref_for_project=AsyncMock(
+            side_effect=[
+                ConnectorExecutionRef(
+                    project_id=_PROJECT_ID,
+                    connector_id=connector_id,
+                    authorization_token=f'probe-{index}',
+                )
+                for index in range(3)
+            ]
+        ),
+    )
 
     async def revoke(token):
         if token == 'workflow-token-1':
             raise RuntimeError('cleanup-secret')
 
-    authorization_service = SimpleNamespace(revoke=AsyncMock(
-        side_effect=revoke))
+    authorization_service = SimpleNamespace(revoke=AsyncMock(side_effect=revoke))
     data_backend_ctx = MagicMock()
     driver = DataSnapshotApiDriver(data_backend_ctx)
     driver._configure_state_services(
         SimpleNamespace(
             connectors=connector_service,
             connector_authorizations=authorization_service,
-        ))
+        )
+    )
     release = asyncio.Event()
     all_started = asyncio.Event()
     started = 0
@@ -1166,7 +1199,8 @@ async def test_table_refresh_cancellation_during_prepare_revokes_all_refs(
         driver._trigger_many_state_services_table_refresh(
             entries,
             project_id=_PROJECT_ID,
-        ))
+        )
+    )
     await all_started.wait()
     task.cancel()
     release.set()
@@ -1174,48 +1208,52 @@ async def test_table_refresh_cancellation_during_prepare_revokes_all_refs(
         await task
 
     start_refresh.assert_not_awaited()
-    assert sorted(call.args[0]
-                  for call in authorization_service.revoke.await_args_list) == [
-                      'probe-0',
-                      'probe-1',
-                      'probe-2',
-                      'workflow-token-0',
-                      'workflow-token-1',
-                      'workflow-token-2',
-                  ]
+    assert sorted(
+        call.args[0] for call in authorization_service.revoke.await_args_list
+    ) == [
+        'probe-0',
+        'probe-1',
+        'probe-2',
+        'workflow-token-0',
+        'workflow-token-1',
+        'workflow-token-2',
+    ]
 
 
 @pytest.mark.asyncio
 async def test_table_refresh_cancellation_during_start_rolls_back_new_only(
-        monkeypatch) -> None:
+    monkeypatch,
+) -> None:
     tables = [
-        _make_s3_table(connector_id='connector_a',
-                       source_table_name=f'TABLE_{index}') for index in range(3)
+        _make_s3_table(connector_id='connector_a', source_table_name=f'TABLE_{index}')
+        for index in range(3)
     ]
     entries = [_make_table_entry(table) for table in tables]
     connector_id = tables[0].get_connector_id()
     connector_service = SimpleNamespace(
-        execution_ref_for_project=AsyncMock(side_effect=[
-            ConnectorExecutionRef(
-                project_id=_PROJECT_ID,
-                connector_id=connector_id,
-                authorization_token=f'probe-{index}',
-            ) for index in range(3)
-        ]), )
+        execution_ref_for_project=AsyncMock(
+            side_effect=[
+                ConnectorExecutionRef(
+                    project_id=_PROJECT_ID,
+                    connector_id=connector_id,
+                    authorization_token=f'probe-{index}',
+                )
+                for index in range(3)
+            ]
+        ),
+    )
 
     async def revoke(token):
         if token == 'probe-1':
             raise RuntimeError('cleanup-secret')
 
-    authorization_service = SimpleNamespace(revoke=AsyncMock(
-        side_effect=revoke))
+    authorization_service = SimpleNamespace(revoke=AsyncMock(side_effect=revoke))
     lookup_attempts = {'workflow-0': 0, 'workflow-2': 0}
     handles = {
-        'workflow-0':
-        SimpleNamespace(terminate=AsyncMock()),
-        'workflow-2':
-        SimpleNamespace(terminate=AsyncMock(
-            side_effect=RuntimeError('termination-secret'))),
+        'workflow-0': SimpleNamespace(terminate=AsyncMock()),
+        'workflow-2': SimpleNamespace(
+            terminate=AsyncMock(side_effect=RuntimeError('termination-secret'))
+        ),
     }
 
     async def get_handle(workflow_id):
@@ -1224,8 +1262,9 @@ async def test_table_refresh_cancellation_during_start_rolls_back_new_only(
             raise RuntimeError('lookup-secret')
         return handles[workflow_id]
 
-    temporal_client = SimpleNamespace(get_workflow_handle=AsyncMock(
-        side_effect=get_handle))
+    temporal_client = SimpleNamespace(
+        get_workflow_handle=AsyncMock(side_effect=get_handle)
+    )
     data_backend_ctx = MagicMock()
     data_backend_ctx.temporal_client.return_value = temporal_client
     driver = DataSnapshotApiDriver(data_backend_ctx)
@@ -1233,7 +1272,8 @@ async def test_table_refresh_cancellation_during_start_rolls_back_new_only(
         SimpleNamespace(
             connectors=connector_service,
             connector_authorizations=authorization_service,
-        ))
+        )
+    )
     prepared = [
         _PreparedTableRefresh(
             table_entry=entry,
@@ -1243,10 +1283,12 @@ async def test_table_refresh_cancellation_during_start_rolls_back_new_only(
                 connector_id=connector_id,
                 authorization_token=f'workflow-token-{index}',
             ),
-        ) for index, entry in enumerate(entries)
+        )
+        for index, entry in enumerate(entries)
     ]
     driver._prepare_state_services_table_refresh_with_connector = AsyncMock(  # type: ignore[method-assign]
-        side_effect=prepared)
+        side_effect=prepared
+    )
     release = asyncio.Event()
     all_started = asyncio.Event()
     started = 0
@@ -1266,7 +1308,8 @@ async def test_table_refresh_cancellation_during_start_rolls_back_new_only(
         driver._trigger_many_state_services_table_refresh(
             entries,
             project_id=_PROJECT_ID,
-        ))
+        )
+    )
     await all_started.wait()
     task.cancel()
     release.set()
@@ -1280,35 +1323,38 @@ async def test_table_refresh_cancellation_during_start_rolls_back_new_only(
     assert lookup_attempts['workflow-2'] == 1
     handles['workflow-0'].terminate.assert_awaited_once()
     assert handles['workflow-2'].terminate.await_count == 3
-    assert sorted(call.args[0]
-                  for call in authorization_service.revoke.await_args_list) == [
-                      'probe-0',
-                      'probe-1',
-                      'probe-2',
-                      'workflow-token-0',
-                      'workflow-token-1',
-                      'workflow-token-2',
-                  ]
+    assert sorted(
+        call.args[0] for call in authorization_service.revoke.await_args_list
+    ) == [
+        'probe-0',
+        'probe-1',
+        'probe-2',
+        'workflow-token-0',
+        'workflow-token-1',
+        'workflow-token-2',
+    ]
 
 
 @pytest.mark.asyncio
-async def test_table_refresh_cancellation_cleanup_is_bounded(
-        monkeypatch) -> None:
-    table = _make_s3_table(connector_id='connector_a',
-                           source_table_name='TABLE')
+async def test_table_refresh_cancellation_cleanup_is_bounded(monkeypatch) -> None:
+    table = _make_s3_table(connector_id='connector_a', source_table_name='TABLE')
     entry = _make_table_entry(table)
     connector_id = table.get_connector_id()
     connector_service = SimpleNamespace(
-        execution_ref_for_project=AsyncMock(return_value=ConnectorExecutionRef(
-            project_id=_PROJECT_ID,
-            connector_id=connector_id,
-            authorization_token='probe',
-        )), )
+        execution_ref_for_project=AsyncMock(
+            return_value=ConnectorExecutionRef(
+                project_id=_PROJECT_ID,
+                connector_id=connector_id,
+                authorization_token='probe',
+            )
+        ),
+    )
     authorization_service = SimpleNamespace(revoke=AsyncMock())
     never = asyncio.Event()
     handle = SimpleNamespace(terminate=AsyncMock(side_effect=never.wait))
-    temporal_client = SimpleNamespace(get_workflow_handle=AsyncMock(
-        return_value=handle))
+    temporal_client = SimpleNamespace(
+        get_workflow_handle=AsyncMock(return_value=handle)
+    )
     data_backend_ctx = MagicMock()
     data_backend_ctx.temporal_client.return_value = temporal_client
     driver = DataSnapshotApiDriver(data_backend_ctx)
@@ -1316,7 +1362,8 @@ async def test_table_refresh_cancellation_cleanup_is_bounded(
         SimpleNamespace(
             connectors=connector_service,
             connector_authorizations=authorization_service,
-        ))
+        )
+    )
     prepared = _PreparedTableRefresh(
         table_entry=entry,
         data_version=TableDataVersion('version'),
@@ -1327,7 +1374,8 @@ async def test_table_refresh_cancellation_cleanup_is_bounded(
         ),
     )
     driver._prepare_state_services_table_refresh_with_connector = AsyncMock(  # type: ignore[method-assign]
-        return_value=prepared)
+        return_value=prepared
+    )
     start_entered = asyncio.Event()
     release_start = asyncio.Event()
 
@@ -1339,13 +1387,16 @@ async def test_table_refresh_cancellation_cleanup_is_bounded(
     monkeypatch.setattr(DataBackend, 'start_refresh_table', start_refresh)
     monkeypatch.setattr(
         'rest.driver.data_snapshot_api_driver.'
-        '_TABLE_REFRESH_BATCH_CLEANUP_TIMEOUT_SECONDS', 0.02)
+        '_TABLE_REFRESH_BATCH_CLEANUP_TIMEOUT_SECONDS',
+        0.02,
+    )
 
     task = asyncio.create_task(
         driver._trigger_many_state_services_table_refresh(
             [entry],
             project_id=_PROJECT_ID,
-        ))
+        )
+    )
     await start_entered.wait()
     started_at = asyncio.get_running_loop().time()
     task.cancel()
@@ -1356,10 +1407,9 @@ async def test_table_refresh_cancellation_cleanup_is_bounded(
 
     assert elapsed < 0.5
     handle.terminate.assert_awaited_once()
-    assert sorted(call.args[0]
-                  for call in authorization_service.revoke.await_args_list) == [
-                      'probe', 'workflow-token'
-                  ]
+    assert sorted(
+        call.args[0] for call in authorization_service.revoke.await_args_list
+    ) == ['probe', 'workflow-token']
 
 
 @pytest.mark.asyncio
@@ -1372,24 +1422,28 @@ async def test_create_table_snapshot_canonicalizes_custom_sql_name():
     cid = _connector_id('sql_conn')
     sql_def = TableDefinition(
         cols=[Column(name='id', stype=Stype.ID, dtype=Dtype.int)],
-        source_table=CustomSQLSourceTable(connector_id=str(cid),
-                                          connector_type='snowflake',
-                                          sql='SELECT id FROM t',
-                                          table='custom_sql_provisional',
-                                          referenced_tables=['stale']),
+        source_table=CustomSQLSourceTable(
+            connector_id=str(cid),
+            connector_type='snowflake',
+            sql='SELECT id FROM t',
+            table='custom_sql_provisional',
+            referenced_tables=['stale'],
+        ),
         pkey='id',
     )
-    connector = SimpleNamespace(config=SimpleNamespace(type=SimpleNamespace(
-        value='snowflake')))
-    connectors = SimpleNamespace(get_for_project=AsyncMock(
-        return_value=connector))
+    connector = SimpleNamespace(
+        config=SimpleNamespace(type=SimpleNamespace(value='snowflake'))
+    )
+    connectors = SimpleNamespace(get_for_project=AsyncMock(return_value=connector))
     driver = DataSnapshotApiDriver(MagicMock())
     driver._configure_state_services(
-        SimpleNamespace(tables=MagicMock(), connectors=connectors))
+        SimpleNamespace(tables=MagicMock(), connectors=connectors)
+    )
 
     canon = await driver._canonicalize_custom_sql_name(sql_def, _PROJECT_ID)
     assert canon.source_table.table == custom_sql_synthetic_name(
-        'SELECT id FROM t', ConnectorType.SNOWFLAKE)
+        'SELECT id FROM t', ConnectorType.SNOWFLAKE
+    )
     # Referenced tables are recomputed server-side (the client 'stale' list is
     # overwritten with the query's real dependency).
     assert canon.source_table.referenced_tables == ['t']
@@ -1408,28 +1462,33 @@ async def test_create_table_snapshot_persists_canonical_sql_fpid(monkeypatch):
     cid = _connector_id('sql_conn_e2e')
     provisional = TableDefinition(
         cols=[Column(name='id', stype=Stype.ID, dtype=Dtype.int)],
-        source_table=CustomSQLSourceTable(connector_id=str(cid),
-                                          connector_type='snowflake',
-                                          sql='SELECT id FROM t',
-                                          table='custom_sql_provisional',
-                                          referenced_tables=[]),
+        source_table=CustomSQLSourceTable(
+            connector_id=str(cid),
+            connector_type='snowflake',
+            sql='SELECT id FROM t',
+            table='custom_sql_provisional',
+            referenced_tables=[],
+        ),
         pkey='id',
     )
-    canonical_name = custom_sql_synthetic_name('SELECT id FROM t',
-                                               ConnectorType.SNOWFLAKE)
+    canonical_name = custom_sql_synthetic_name(
+        'SELECT id FROM t', ConnectorType.SNOWFLAKE
+    )
     canonical_fpid = dataclasses.replace(
         provisional,
-        source_table=dataclasses.replace(provisional.source_table,
-                                         table=canonical_name,
-                                         referenced_tables=['t'])).fpid
+        source_table=dataclasses.replace(
+            provisional.source_table, table=canonical_name, referenced_tables=['t']
+        ),
+    ).fpid
 
-    connector = SimpleNamespace(config=SimpleNamespace(type=SimpleNamespace(
-        value='snowflake')))
-    connectors = SimpleNamespace(get_for_project=AsyncMock(
-        return_value=connector))
+    connector = SimpleNamespace(
+        config=SimpleNamespace(type=SimpleNamespace(value='snowflake'))
+    )
+    connectors = SimpleNamespace(get_for_project=AsyncMock(return_value=connector))
     driver = DataSnapshotApiDriver(MagicMock())
     driver._configure_state_services(
-        SimpleNamespace(tables=MagicMock(), connectors=connectors))
+        SimpleNamespace(tables=MagicMock(), connectors=connectors)
+    )
 
     seen = {}
 
@@ -1438,12 +1497,15 @@ async def test_create_table_snapshot_persists_canonical_sql_fpid(monkeypatch):
         return _make_table_entry(table_definition)
 
     monkeypatch.setattr(driver, '_require_reachable_table_entry', _resolve)
-    monkeypatch.setattr(driver, '_trigger_state_services_table_refresh',
-                        AsyncMock(return_value=TableDataVersion('dv1')))
+    monkeypatch.setattr(
+        driver,
+        '_trigger_state_services_table_refresh',
+        AsyncMock(return_value=TableDataVersion('dv1')),
+    )
 
-    snap_id = await driver.create_table_snapshot(provisional,
-                                                 refresh_source=False,
-                                                 project_id=_PROJECT_ID)
+    snap_id = await driver.create_table_snapshot(
+        provisional, refresh_source=False, project_id=_PROJECT_ID
+    )
 
     # The definition handed to the entry lookup carries the canonical
     # name/fpid.
@@ -1455,21 +1517,21 @@ async def test_create_table_snapshot_persists_canonical_sql_fpid(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('stored, refusal', [
-    ('absent', 'not saved in this project'),
-    ('named', None),
-    ('graph_referenced', None),
-    ('nameless', 'stored without a name'),
-])
-async def test_create_table_snapshot_requires_a_reachable_table(
-        stored, refusal):
+@pytest.mark.parametrize(
+    'stored, refusal',
+    [
+        ('absent', 'not saved in this project'),
+        ('named', None),
+        ('graph_referenced', None),
+        ('nameless', 'stored without a name'),
+    ],
+)
+async def test_create_table_snapshot_requires_a_reachable_table(stored, refusal):
     """A direct table snapshot resolves a definition the project already holds
     under a name or inside a saved graph, and refuses any other definition
     without persisting it."""
-    table = _make_s3_table(connector_id='connector_a',
-                           source_table_name='ACCOUNT')
-    entry = _make_table_entry(table,
-                              alias='account' if stored == 'named' else None)
+    table = _make_s3_table(connector_id='connector_a', source_table_name='ACCOUNT')
+    entry = _make_table_entry(table, alias='account' if stored == 'named' else None)
     graph_entry = GraphDBEntryV2(
         id=FPID('b' * 32),
         project_id=_PROJECT_ID,
@@ -1480,31 +1542,34 @@ async def test_create_table_snapshot_requires_a_reachable_table(
             updated_at=datetime.now(),
         ),
     )
-    table_service = _TableService({} if stored ==
-                                  'absent' else {entry.id: entry})
+    table_service = _TableService({} if stored == 'absent' else {entry.id: entry})
     graph_service = _GraphService(
-        {},
-        {graph_entry.id: graph_entry} if stored == 'graph_referenced' else {})
+        {}, {graph_entry.id: graph_entry} if stored == 'graph_referenced' else {}
+    )
     driver = DataSnapshotApiDriver(MagicMock())
     driver._configure_state_services(
         SimpleNamespace(
             tables=table_service,
             graphs=graph_service,
             connectors=MagicMock(),
-        ))
+        )
+    )
     driver._trigger_state_services_table_refresh = AsyncMock(  # type: ignore[method-assign]
-        return_value=TableDataVersion('dv1'))
+        return_value=TableDataVersion('dv1')
+    )
 
     if refusal is None:
-        snap_id = await driver.create_table_snapshot(table,
-                                                     refresh_source=False,
-                                                     project_id=_PROJECT_ID)
-        assert snap_id == DataSnapshot.TABLE.format_id(table.fpid,
-                                                       TableDataVersion('dv1'))
+        snap_id = await driver.create_table_snapshot(
+            table, refresh_source=False, project_id=_PROJECT_ID
+        )
+        assert snap_id == DataSnapshot.TABLE.format_id(
+            table.fpid, TableDataVersion('dv1')
+        )
     else:
         with pytest.raises(ValueError, match=refusal):
-            await driver.create_table_snapshot(table, refresh_source=False,
-                                               project_id=_PROJECT_ID)
+            await driver.create_table_snapshot(
+                table, refresh_source=False, project_id=_PROJECT_ID
+            )
     assert table_service.save_calls == []
 
 
@@ -1512,17 +1577,15 @@ async def test_create_table_snapshot_requires_a_reachable_table(
 async def test_graph_snapshot_persists_its_tables_without_an_alias(monkeypatch):
     """The graph snapshot path persists an embedded table the project does not
     hold yet, and gives it no project-local name."""
-    table = _make_s3_table(connector_id='connector_a',
-                           source_table_name='ACCOUNT')
+    table = _make_s3_table(connector_id='connector_a', source_table_name='ACCOUNT')
     table_service = _TableService({})
     driver = DataSnapshotApiDriver(MagicMock())
     driver._configure_state_services(
-        SimpleNamespace(tables=table_service, connectors=MagicMock()))
-    monkeypatch.setattr(driver, '_validate_new_table_with_state_services',
-                        AsyncMock())
+        SimpleNamespace(tables=table_service, connectors=MagicMock())
+    )
+    monkeypatch.setattr(driver, '_validate_new_table_with_state_services', AsyncMock())
 
-    entry = await driver._ensure_table_entry_with_state_services(
-        table, _PROJECT_ID)
+    entry = await driver._ensure_table_entry_with_state_services(table, _PROJECT_ID)
 
     assert entry.alias is None
     assert table_service.save_calls == [(_PROJECT_ID, table, {})]
@@ -1538,8 +1601,7 @@ def _ingest_table_snapshot(
     return snapshot_interfaces.TableSnapshotResource(
         id=snapshot_interfaces.TableSnapshotID(snapshot_id),
         stages={
-            snapshot_interfaces.TableSnapshotStage.INGEST:
-            snapshot_interfaces.JobState(
+            snapshot_interfaces.TableSnapshotStage.INGEST: snapshot_interfaces.JobState(
                 status=status,
                 start_time=start_time,
                 end_time=end_time,
@@ -1557,11 +1619,14 @@ _LATE_INGEST_END = datetime(2026, 7, 9, 14, 33, 43, 151460)
 
 @pytest.mark.parametrize('early_first', [True, False])
 def test_merge_table_ingest_job_states_spans_min_start_max_end(
-        early_first: bool) -> None:
-    early = _ingest_table_snapshot('table-early@1', JobStatus.DONE,
-                                   _EARLY_INGEST_START, _EARLY_INGEST_END)
-    late = _ingest_table_snapshot('table-late@1', JobStatus.DONE,
-                                  _LATE_INGEST_START, _LATE_INGEST_END)
+    early_first: bool,
+) -> None:
+    early = _ingest_table_snapshot(
+        'table-early@1', JobStatus.DONE, _EARLY_INGEST_START, _EARLY_INGEST_END
+    )
+    late = _ingest_table_snapshot(
+        'table-late@1', JobStatus.DONE, _LATE_INGEST_START, _LATE_INGEST_END
+    )
     snapshots = [early, late] if early_first else [late, early]
 
     merged = _merge_table_ingest_job_states(snapshots)
@@ -1577,15 +1642,24 @@ def test_merge_table_ingest_job_states_spans_min_start_max_end(
 
 @pytest.mark.parametrize('early_first', [True, False])
 def test_merge_table_ingest_job_states_failed_keeps_true_span(
-        early_first: bool) -> None:
+    early_first: bool,
+) -> None:
     # The timing loop also runs when the merged status is FAILED; the span
     # and the aggregated per-table errors must both be preserved.
-    early = _ingest_table_snapshot('table-early@1', JobStatus.FAILED,
-                                   _EARLY_INGEST_START, _EARLY_INGEST_END,
-                                   error='ingest failed for table-early')
-    late = _ingest_table_snapshot('table-late@1', JobStatus.FAILED,
-                                  _LATE_INGEST_START, _LATE_INGEST_END,
-                                  error='ingest failed for table-late')
+    early = _ingest_table_snapshot(
+        'table-early@1',
+        JobStatus.FAILED,
+        _EARLY_INGEST_START,
+        _EARLY_INGEST_END,
+        error='ingest failed for table-early',
+    )
+    late = _ingest_table_snapshot(
+        'table-late@1',
+        JobStatus.FAILED,
+        _LATE_INGEST_START,
+        _LATE_INGEST_END,
+        error='ingest failed for table-late',
+    )
     snapshots = [early, late] if early_first else [late, early]
 
     merged = _merge_table_ingest_job_states(snapshots)
@@ -1599,8 +1673,9 @@ def test_merge_table_ingest_job_states_failed_keeps_true_span(
 
 
 def test_merge_table_ingest_job_states_single_table_passthrough() -> None:
-    snapshot = _ingest_table_snapshot('table-solo@1', JobStatus.DONE,
-                                      _EARLY_INGEST_START, _EARLY_INGEST_END)
+    snapshot = _ingest_table_snapshot(
+        'table-solo@1', JobStatus.DONE, _EARLY_INGEST_START, _EARLY_INGEST_END
+    )
 
     merged = _merge_table_ingest_job_states([snapshot])
 
@@ -1629,9 +1704,9 @@ def _refresh_result(
 
 @pytest.mark.asyncio
 async def test_table_snapshot_cancels_full_stats_after_min_stats_failure(
-        monkeypatch) -> None:
-    table = _make_s3_table(connector_id='connector_a',
-                           source_table_name='ACCOUNT')
+    monkeypatch,
+) -> None:
+    table = _make_s3_table(connector_id='connector_a', source_table_name='ACCOUNT')
     entry = _make_table_entry(table)
     failure = _refresh_result(
         stage=TableRefreshStage.COMPUTE_MIN_COL_STATS,
@@ -1640,7 +1715,8 @@ async def test_table_snapshot_cancels_full_stats_after_min_stats_failure(
     )
     driver = DataSnapshotApiDriver(MagicMock())
     driver._get_required_table_entry = AsyncMock(  # type: ignore[method-assign]
-        return_value=entry)
+        return_value=entry
+    )
     monkeypatch.setattr(
         'rest.driver.data_snapshot_api_driver.get_active_cache',
         lambda: SimpleNamespace(get_table_stats=lambda *_args: {}),
@@ -1648,11 +1724,13 @@ async def test_table_snapshot_cancels_full_stats_after_min_stats_failure(
     monkeypatch.setattr(
         DataBackend,
         'get_many_table_refresh_results',
-        AsyncMock(side_effect=[
-            [failure],
-            [_refresh_result(stage=TableRefreshStage.INGEST_TABLE)],
-            [failure],
-        ]),
+        AsyncMock(
+            side_effect=[
+                [failure],
+                [_refresh_result(stage=TableRefreshStage.INGEST_TABLE)],
+                [failure],
+            ]
+        ),
     )
 
     snapshot = await driver._get_kumo_table_snapshot(
@@ -1661,17 +1739,21 @@ async def test_table_snapshot_cancels_full_stats_after_min_stats_failure(
         TableDataVersion('tv1'),
     )
 
-    assert (snapshot.stages[snapshot_interfaces.TableSnapshotStage.
-                            MIN_COL_STATS].status == JobStatus.FAILED)
-    assert (snapshot.stages[snapshot_interfaces.TableSnapshotStage.
-                            FULL_COL_STATS].status == JobStatus.CANCELLED)
+    assert (
+        snapshot.stages[snapshot_interfaces.TableSnapshotStage.MIN_COL_STATS].status
+        == JobStatus.FAILED
+    )
+    assert (
+        snapshot.stages[snapshot_interfaces.TableSnapshotStage.FULL_COL_STATS].status
+        == JobStatus.CANCELLED
+    )
 
 
 @pytest.mark.asyncio
 async def test_table_snapshot_surfaces_completed_validation_warnings(
-        monkeypatch) -> None:
-    table = _make_s3_table(connector_id='connector_a',
-                           source_table_name='ACCOUNT')
+    monkeypatch,
+) -> None:
+    table = _make_s3_table(connector_id='connector_a', source_table_name='ACCOUNT')
     entry = _make_table_entry(table)
     warning = ValidationWarning(
         title='Duplicate primary keys',
@@ -1679,7 +1761,8 @@ async def test_table_snapshot_surfaces_completed_validation_warnings(
     )
     driver = DataSnapshotApiDriver(MagicMock())
     driver._get_required_table_entry = AsyncMock(  # type: ignore[method-assign]
-        return_value=entry)
+        return_value=entry
+    )
     monkeypatch.setattr(
         'rest.driver.data_snapshot_api_driver.get_active_cache',
         lambda: SimpleNamespace(get_table_stats=lambda *_args: {}),
@@ -1687,14 +1770,17 @@ async def test_table_snapshot_surfaces_completed_validation_warnings(
     monkeypatch.setattr(
         DataBackend,
         'get_many_table_refresh_results',
-        AsyncMock(side_effect=[
-            [
-                _refresh_result(stage=TableRefreshStage.COMPLETED,
-                                warnings=[warning])
-            ],
-            [_refresh_result(stage=TableRefreshStage.INGEST_TABLE)],
-            [None],
-        ]),
+        AsyncMock(
+            side_effect=[
+                [
+                    _refresh_result(
+                        stage=TableRefreshStage.COMPLETED, warnings=[warning]
+                    )
+                ],
+                [_refresh_result(stage=TableRefreshStage.INGEST_TABLE)],
+                [None],
+            ]
+        ),
     )
 
     snapshot = await driver._get_kumo_table_snapshot(
@@ -1703,18 +1789,16 @@ async def test_table_snapshot_surfaces_completed_validation_warnings(
         TableDataVersion('tv1'),
     )
 
-    assert snapshot.stages[
-        snapshot_interfaces.TableSnapshotStage.INGEST].warnings == [
-            'Duplicate primary keys: '
-            '4,423 rows in Customer_Accounts are duplicated'
-        ]
+    assert snapshot.stages[snapshot_interfaces.TableSnapshotStage.INGEST].warnings == [
+        'Duplicate primary keys: 4,423 rows in Customer_Accounts are duplicated'
+    ]
 
 
 @pytest.mark.asyncio
 async def test_graph_table_snapshot_surfaces_completed_validation_warnings(
-        monkeypatch) -> None:
-    table = _make_s3_table(connector_id='connector_a',
-                           source_table_name='ACCOUNT')
+    monkeypatch,
+) -> None:
+    table = _make_s3_table(connector_id='connector_a', source_table_name='ACCOUNT')
     entry = _make_table_entry(table)
     warning = ValidationWarning(
         title='Duplicate primary keys',
@@ -1722,17 +1806,21 @@ async def test_graph_table_snapshot_surfaces_completed_validation_warnings(
     )
     driver = DataSnapshotApiDriver(MagicMock())
     driver._get_many_table_entries = AsyncMock(  # type: ignore[method-assign]
-        return_value=[entry])
+        return_value=[entry]
+    )
     monkeypatch.setattr(
         DataBackend,
         'get_many_table_refresh_results',
-        AsyncMock(side_effect=[
-            [
-                _refresh_result(stage=TableRefreshStage.COMPLETED,
-                                warnings=[warning])
-            ],
-            [_refresh_result(stage=TableRefreshStage.INGEST_TABLE)],
-        ]),
+        AsyncMock(
+            side_effect=[
+                [
+                    _refresh_result(
+                        stage=TableRefreshStage.COMPLETED, warnings=[warning]
+                    )
+                ],
+                [_refresh_result(stage=TableRefreshStage.INGEST_TABLE)],
+            ]
+        ),
     )
 
     snapshots = await driver._get_many_kumo_table_snapshots(

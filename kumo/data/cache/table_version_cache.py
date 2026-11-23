@@ -33,6 +33,7 @@ class TableIngestionStatus(Enum):
     to described the various type of versions that may be associated with a
     source table.
     """
+
     # The most recent successfully ingested data version
     SUCCESSFUL = 'SUCCESSFUL'
     # The most recently failed ingested data version
@@ -48,18 +49,19 @@ class TableIngestionStatus(Enum):
     def s3_file_name(self) -> str:
         # The name of the file containing the version string on s3
         if self == TableIngestionStatus.SUCCESSFUL:
-            return "version"
+            return 'version'
         if self == TableIngestionStatus.FAILED:
-            return "failure_version"
+            return 'failure_version'
         if self == TableIngestionStatus.COMPLETED:
-            return "completed_version"
-        raise RuntimeError(f"Invalid TableIngestionStatus {self}")
+            return 'completed_version'
+        raise RuntimeError(f'Invalid TableIngestionStatus {self}')
 
 
-class TableVersionCache():
+class TableVersionCache:
     """The backend cache for everything related to a table version, include:
     table_versions and table_versions_for_job_id.
     """
+
     def __init__(self, cache_dir: str):
         self._cache_dir = cache_dir
 
@@ -80,9 +82,11 @@ class TableVersionCache():
     # Persistent object-store I/O must not hold the in-memory cache lock.
     # Transfer workers can finalize connectors and call remove(), which needs
     # the same lock.
-    @blocking_method(DATA_BACKEND_THREAD_POOL,
-                     tracing_options=TraceOptions(trace_params=True),
-                     fut_dedupe_option=FutureDedupeOption.DISABLED)
+    @blocking_method(
+        DATA_BACKEND_THREAD_POOL,
+        tracing_options=TraceOptions(trace_params=True),
+        fut_dedupe_option=FutureDedupeOption.DISABLED,
+    )
     def save_for_job(
         self,
         job_id: str,
@@ -102,11 +106,17 @@ class TableVersionCache():
             table_source_name (str): Source name of the table
             data_version (str): Data version of the table to be cached
         """
-        self._save(job_id, connector_name, table_source_name,
-                   TableIngestionStatus.SUCCESSFUL, data_version)
+        self._save(
+            job_id,
+            connector_name,
+            table_source_name,
+            TableIngestionStatus.SUCCESSFUL,
+            data_version,
+        )
 
-    @blocking_method(DATA_BACKEND_THREAD_POOL,
-                     fut_dedupe_option=FutureDedupeOption.DISABLED)
+    @blocking_method(
+        DATA_BACKEND_THREAD_POOL, fut_dedupe_option=FutureDedupeOption.DISABLED
+    )
     def get_for_job(
         self,
         job_id: str,
@@ -126,28 +136,36 @@ class TableVersionCache():
             Optional[str]: The cached data version. None if not present.
         """
         table_key = table_source_key(table_source_name, connector_name, '')
-        file_path = self._version_file_path(job_id, connector_name,
-                                            table_source_name,
-                                            TableIngestionStatus.SUCCESSFUL)
+        file_path = self._version_file_path(
+            job_id, connector_name, table_source_name, TableIngestionStatus.SUCCESSFUL
+        )
 
         value = load_json(file_path, str, default=None, raise_on_missing=False)
         if value is None:
             logger.warning(f'No table versions found at {file_path}')
             return None
         else:
-            logger.info(f'Loading table {table_key} version for {job_id} '
-                        f'from {file_path}')
+            logger.info(
+                f'Loading table {table_key} version for {job_id} from {file_path}'
+            )
             return value
 
-    def _save(self, job_id: str, connector_name: str, source_name: str,
-              version_type: TableIngestionStatus,
-              table_version: Optional[str]) -> None:
+    def _save(
+        self,
+        job_id: str,
+        connector_name: str,
+        source_name: str,
+        version_type: TableIngestionStatus,
+        table_version: Optional[str],
+    ) -> None:
         table_key = table_source_key(source_name, connector_name, '')
-        file_path = self._version_file_path(job_id, connector_name, source_name,
-                                            version_type)
+        file_path = self._version_file_path(
+            job_id, connector_name, source_name, version_type
+        )
         logger.info(
             f'Saving table_version={table_version} for table_key={table_key} '
-            f'with version_type={version_type} to {file_path}')
+            f'with version_type={version_type} to {file_path}'
+        )
         save_json(table_version, file_path)
 
     @synchronized
@@ -195,13 +213,18 @@ class TableVersionCache():
         version_type = TableIngestionStatus.SUCCESSFUL
         if not is_version_ingestion_successful:
             version_type = TableIngestionStatus.FAILED
-        self._save('latest', connector_name, source_name, version_type,
-                   table_version)
-        self._save('latest', connector_name, source_name,
-                   TableIngestionStatus.COMPLETED, table_version)
+        self._save('latest', connector_name, source_name, version_type, table_version)
+        self._save(
+            'latest',
+            connector_name,
+            source_name,
+            TableIngestionStatus.COMPLETED,
+            table_version,
+        )
 
-    @blocking_method(DATA_BACKEND_THREAD_POOL,
-                     fut_dedupe_option=FutureDedupeOption.DISABLED)
+    @blocking_method(
+        DATA_BACKEND_THREAD_POOL, fut_dedupe_option=FutureDedupeOption.DISABLED
+    )
     def get(self, connector_name: str, table_source_name: str) -> Optional[str]:
         """
         Get the most recent ingested version for a table.
@@ -227,19 +250,22 @@ class TableVersionCache():
         # transfer deadlocks the caller and finalizer.
         ret = self._get_in_memory(connector_name, table_source_name)
         if ret is None:
-            file_path = self._version_file_path('latest', connector_name,
-                                                table_source_name,
-                                                TableIngestionStatus.SUCCESSFUL)
+            file_path = self._version_file_path(
+                'latest',
+                connector_name,
+                table_source_name,
+                TableIngestionStatus.SUCCESSFUL,
+            )
 
-            value = load_json(file_path, str, default=None,
-                              raise_on_missing=False)
+            value = load_json(file_path, str, default=None, raise_on_missing=False)
             if value is None:
                 logger.warning(f'No table versions found at {file_path}')
                 return None
 
             logger.info(
                 f'Loading latest ingested version for table {connector_name}'
-                f'.{table_source_name} from {file_path}')
+                f'.{table_source_name} from {file_path}'
+            )
             self.save_in_memory(connector_name, table_source_name, value)
             return value
         return ret
@@ -248,9 +274,7 @@ class TableVersionCache():
     def remove(self, connector_name: str):
         r"""Remove the cached table data versions for a connector from
         memory."""
-        to_be_delete = [
-            key for key in self._table_versions if key[0] == connector_name
-        ]
+        to_be_delete = [key for key in self._table_versions if key[0] == connector_name]
         for key in to_be_delete:
             try:
                 del self._table_versions[key]
@@ -258,8 +282,9 @@ class TableVersionCache():
                 # Ignore exception if the key is expired.
                 pass
 
-    @blocking_method(DATA_BACKEND_THREAD_POOL,
-                     tracing_options=TraceOptions(trace_params=True))
+    @blocking_method(
+        DATA_BACKEND_THREAD_POOL, tracing_options=TraceOptions(trace_params=True)
+    )
     def get_many(
         self,
         tables: List[SourceTableID],
@@ -289,8 +314,7 @@ class TableVersionCache():
             if version is None:
                 results.append(None)
                 continue
-            results.append(table.make_versioned_id(fast_from_json(version,
-                                                                  str)))
+            results.append(table.make_versioned_id(fast_from_json(version, str)))
 
         return results
 
@@ -301,6 +325,11 @@ class TableVersionCache():
         source_table_name: str,
         version_type: TableIngestionStatus,
     ):
-        return osp.join(self._cache_dir, 'versions', job_id, connector_name,
-                        table_source_path_component(source_table_name),
-                        version_type.s3_file_name)
+        return osp.join(
+            self._cache_dir,
+            'versions',
+            job_id,
+            connector_name,
+            table_source_path_component(source_table_name),
+            version_type.s3_file_name,
+        )

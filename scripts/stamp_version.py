@@ -22,7 +22,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 _NUMBER = r'(?:0|[1-9][0-9]*)'
 VERSION_PATTERN = re.compile(
     rf'(?P<release>{_NUMBER}\.{_NUMBER}\.{_NUMBER})'
-    rf'(?:(?P<pre>b|rc)(?P<prenum>{_NUMBER})|\.dev(?P<dev>{_NUMBER}))?')
+    rf'(?:(?P<pre>b|rc)(?P<prenum>{_NUMBER})|\.dev(?P<dev>{_NUMBER}))?'
+)
 
 # Charts whose version and appVersion are the release version. kumo-temporal
 # only takes the chart version: its appVersion names the Temporal server.
@@ -44,6 +45,7 @@ YAML_APP_VERSION = re.compile(r'^appVersion: "(?P<value>[^"]*)"$', re.MULTILINE)
 class Site:
     r"""A version field: the ``value`` group of the single match of
     :obj:`pattern` in :obj:`path`, written in SemVer when :obj:`semver`."""
+
     path: str
     field: str
     pattern: re.Pattern[str]
@@ -52,37 +54,55 @@ class Site:
 
 # A Python ``__version__ = '1.2.3'`` line; either quote style is kept as is.
 PYTHON_VERSION = re.compile(
-    r"""^__version__ = (?P<quote>['"])(?P<value>[^'"]*)(?P=quote)$""",
-    re.MULTILINE)
+    r"""^__version__ = (?P<quote>['"])(?P<value>[^'"]*)(?P=quote)$""", re.MULTILINE
+)
 
 SITES = (
     # kumo-engine's wheel metadata reads this (setuptools `attr`).
-    Site('packages/kumo-engine/kumo/engine/_version.py', '__version__',
-         PYTHON_VERSION, semver=False),
+    Site(
+        'packages/kumo-engine/kumo/engine/_version.py',
+        '__version__',
+        PYTHON_VERSION,
+        semver=False,
+    ),
     # kumo-sdk's wheel metadata reads this; its release workflow rewrites it
     # through packages/kumo-sdk/scripts/set_version.py, which sets VERSION.
-    Site('packages/kumo-sdk/kumoai_studio/_version.py', '__version__',
-         PYTHON_VERSION, semver=False),
+    Site(
+        'packages/kumo-sdk/kumoai_studio/_version.py',
+        '__version__',
+        PYTHON_VERSION,
+        semver=False,
+    ),
     # The platform's version provider (`kumo_core.version_providers`).
     Site(
         'common_utils/version_file.py',
         'RELEASE_VERSION',
-        re.compile(r'^RELEASE_VERSION = "(?P<value>[^"]*)"$', re.MULTILINE),
+        re.compile(
+            r"""^RELEASE_VERSION = (?P<quote>['"])(?P<value>[^'"]*)(?P=quote)$""",
+            re.MULTILINE,
+        ),
         semver=False,
     ),
-    *(Site(f'helm/{chart}/Chart.yaml', field, pattern, semver=True)
-      for chart in RELEASE_CHARTS
-      for field, pattern in (('version', YAML_VERSION),
-                             ('appVersion', YAML_APP_VERSION))),
+    *(
+        Site(f'helm/{chart}/Chart.yaml', field, pattern, semver=True)
+        for chart in RELEASE_CHARTS
+        for field, pattern in (
+            ('version', YAML_VERSION),
+            ('appVersion', YAML_APP_VERSION),
+        )
+    ),
     Site('helm/kumo-temporal/Chart.yaml', 'version', YAML_VERSION, semver=True),
-    Site('helm/kumo-helm/conformance/contract.yaml', 'version', YAML_VERSION,
-         semver=True),
+    Site(
+        'helm/kumo-helm/conformance/contract.yaml', 'version', YAML_VERSION, semver=True
+    ),
     Site(
         'helm/kumo-stack/renderer/values.yaml',
         'images.kumo.tag',
         re.compile(
             r'^images:\n  kumo:\n(?:    (?!tag:).*\n)*    tag: '
-            r'(?P<value>\S+)$', re.MULTILINE),
+            r'(?P<value>\S+)$',
+            re.MULTILINE,
+        ),
         semver=True,
     ),
 )
@@ -93,12 +113,13 @@ def read_versions() -> tuple[str, str]:
     version = (REPO_ROOT / 'VERSION').read_text(encoding='utf-8').strip()
     match = VERSION_PATTERN.fullmatch(version)
     if match is None:
-        raise SystemExit('VERSION must be X.Y.Z, X.Y.ZbN, X.Y.ZrcN or '
-                         f'X.Y.Z.devN, found {version!r}')
+        raise SystemExit(
+            f'VERSION must be X.Y.Z, X.Y.ZbN, X.Y.ZrcN or X.Y.Z.devN, found {version!r}'
+        )
     if match['pre'] is not None:
-        return version, f"{match['release']}-{match['pre']}.{match['prenum']}"
+        return version, f'{match["release"]}-{match["pre"]}.{match["prenum"]}'
     if match['dev'] is not None:
-        return version, f"{match['release']}-dev.{match['dev']}"
+        return version, f'{match["release"]}-dev.{match["dev"]}'
     return version, version
 
 
@@ -112,18 +133,17 @@ def stamp(check: bool) -> list[str]:
         text = path.read_text(encoding='utf-8')
         matches = list(site.pattern.finditer(text))
         if len(matches) != 1:
-            raise SystemExit(f'{site.path}: expected one {site.field} field, '
-                             f'found {len(matches)}')
+            raise SystemExit(
+                f'{site.path}: expected one {site.field} field, found {len(matches)}'
+            )
         match = matches[0]
         expected = semver if site.semver else pep440
         if match['value'] == expected:
             continue
-        stale.append(
-            f'{site.path} {site.field}: {match["value"]} -> {expected}')
+        stale.append(f'{site.path} {site.field}: {match["value"]} -> {expected}')
         if not check:
             path.write_text(
-                text[:match.start('value')] + expected +
-                text[match.end('value'):],
+                text[: match.start('value')] + expected + text[match.end('value') :],
                 encoding='utf-8',
             )
     return stale
@@ -141,8 +161,9 @@ def main() -> None:
     for line in stale:
         print(line)
     if args.check and stale:
-        raise SystemExit('Versions differ from VERSION; run '
-                         'scripts/stamp_version.py to update them.')
+        raise SystemExit(
+            'Versions differ from VERSION; run scripts/stamp_version.py to update them.'
+        )
 
 
 if __name__ == '__main__':

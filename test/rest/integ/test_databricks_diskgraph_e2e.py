@@ -7,13 +7,13 @@ A physical table is staged as Kumo parquet during ingest; a Custom SQL table
 is read straight from Databricks by DiskGraph. The same run trains over both
 and writes predictions and embeddings back to Databricks.
 """
+
 import asyncio
 import dataclasses
 import os
 import time
 import uuid
 from pathlib import Path
-from test.rest.integ.seed_helpers import seed_and_train
 
 import kumoapi.data_source as data_source_api
 import kumoapi.jobs as jobs_api
@@ -62,13 +62,18 @@ from statedb.config.common import (
     ProjectID,
     TrainingJobID,
 )
+from test.rest.integ.seed_helpers import seed_and_train
 
 if 'DEPLOY_ENV_CONFIG_FILE' not in os.environ:
     os.environ['DEPLOY_ENV_CONFIG_FILE'] = str(
-        Path(__file__).resolve().parents[3] / 'rest' / 'devserver' / 'configs' /
-        'diskgraph-test.json')
+        Path(__file__).resolve().parents[3]
+        / 'rest'
+        / 'devserver'
+        / 'configs'
+        / 'diskgraph-test.json'
+    )
 
-pytestmark = pytest.mark.usefixtures("_pool_subprocesses")
+pytestmark = pytest.mark.usefixtures('_pool_subprocesses')
 
 _SOURCE_CONNECTOR = 'databricks_source'
 _CUSTOMERS = 'hm_customers_small'
@@ -88,17 +93,16 @@ def storage_backend():
 def _fixture(connector_id: str) -> FixtureDefinition:
     customers = TableDefinition(
         cols=[
-            table_api.Column(name='customer_id', stype=Stype.ID,
-                             dtype=Dtype.string),
-            table_api.Column(name='age', stype=Stype.numerical,
-                             dtype=Dtype.float),
+            table_api.Column(name='customer_id', stype=Stype.ID, dtype=Dtype.string),
+            table_api.Column(name='age', stype=Stype.numerical, dtype=Dtype.float),
         ],
         source_table=CustomSQLSourceTable(
             connector_id=connector_id,
             connector_type=data_source_api.ConnectorType.DATABRICKS,
             table=f'{_CUSTOMERS}_query',
-            sql=('SELECT customer_id, age FROM '
-                 f'hive_mapped_uc.test_schema.{_CUSTOMERS}'),
+            sql=(
+                f'SELECT customer_id, age FROM hive_mapped_uc.test_schema.{_CUSTOMERS}'
+            ),
             referenced_tables=[
                 f'hive_mapped_uc.test_schema.{_CUSTOMERS}',
             ],
@@ -107,8 +111,7 @@ def _fixture(connector_id: str) -> FixtureDefinition:
     )
     articles = TableDefinition(
         cols=[
-            table_api.Column(name='article_id', stype=Stype.ID,
-                             dtype=Dtype.int),
+            table_api.Column(name='article_id', stype=Stype.ID, dtype=Dtype.int),
         ],
         source_table=DatabricksSourceTable(
             databricks_connector_id=connector_id,
@@ -118,16 +121,13 @@ def _fixture(connector_id: str) -> FixtureDefinition:
     )
     transactions = TableDefinition(
         cols=[
-            table_api.Column(name='t_dat', stype=Stype.timestamp,
-                             dtype=Dtype.time),
-            table_api.Column(name='customer_id', stype=Stype.ID,
-                             dtype=Dtype.string),
-            table_api.Column(name='article_id', stype=Stype.ID,
-                             dtype=Dtype.int),
-            table_api.Column(name='price', stype=Stype.numerical,
-                             dtype=Dtype.float),
-            table_api.Column(name='sales_channel_id', stype=Stype.numerical,
-                             dtype=Dtype.int),
+            table_api.Column(name='t_dat', stype=Stype.timestamp, dtype=Dtype.time),
+            table_api.Column(name='customer_id', stype=Stype.ID, dtype=Dtype.string),
+            table_api.Column(name='article_id', stype=Stype.ID, dtype=Dtype.int),
+            table_api.Column(name='price', stype=Stype.numerical, dtype=Dtype.float),
+            table_api.Column(
+                name='sales_channel_id', stype=Stype.numerical, dtype=Dtype.int
+            ),
         ],
         source_table=DatabricksSourceTable(
             databricks_connector_id=connector_id,
@@ -137,6 +137,7 @@ def _fixture(connector_id: str) -> FixtureDefinition:
     )
 
     from kumoapi.graph import ColumnKey, ColumnKeyGroup
+
     graph = GraphDefinition(
         tables={
             'customers': customers,
@@ -144,14 +145,18 @@ def _fixture(connector_id: str) -> FixtureDefinition:
             'transactions': transactions,
         },
         col_groups=[
-            ColumnKeyGroup(columns=(
-                ColumnKey(table_name='customers', col_name='customer_id'),
-                ColumnKey(table_name='transactions', col_name='customer_id'),
-            )),
-            ColumnKeyGroup(columns=(
-                ColumnKey(table_name='articles', col_name='article_id'),
-                ColumnKey(table_name='transactions', col_name='article_id'),
-            )),
+            ColumnKeyGroup(
+                columns=(
+                    ColumnKey(table_name='customers', col_name='customer_id'),
+                    ColumnKey(table_name='transactions', col_name='customer_id'),
+                )
+            ),
+            ColumnKeyGroup(
+                columns=(
+                    ColumnKey(table_name='articles', col_name='article_id'),
+                    ColumnKey(table_name='transactions', col_name='article_id'),
+                )
+            ),
         ],
     )
     return FixtureDefinition(
@@ -159,8 +164,7 @@ def _fixture(connector_id: str) -> FixtureDefinition:
         graphs=[graph],
         queries=[
             FixturePQueryRecord(
-                query_str=('PREDICT customers.age '
-                           'FOR EACH customers.customer_id'),
+                query_str=('PREDICT customers.age FOR EACH customers.customer_id'),
                 graph_fpid=graph.fpid,
                 pquery_name=_PQUERY,
             )
@@ -231,14 +235,15 @@ def _assert_every_source_is_staged_as_parquet(
             data_version,
             MaterializationStage.INGEST,
         )
-        parquet_files = ([
-            path for path in fsutil.listdir(ingest_path)
-            if path.endswith('.parquet')
-        ] if fsutil.exists(ingest_path) else [])
+        parquet_files = (
+            [path for path in fsutil.listdir(ingest_path) if path.endswith('.parquet')]
+            if fsutil.exists(ingest_path)
+            else []
+        )
         staged.append(table_name)
         assert parquet_files, (
-            f'Databricks source {table_name!r} left no Parquet under '
-            f'{ingest_path}')
+            f'Databricks source {table_name!r} left no Parquet under {ingest_path}'
+        )
         for path in parquet_files:
             assert (fsutil.filesize(path) or 0) > 0, f'empty shard {path}'
     assert sorted(staged) == sorted(snapshot.definition.tables)
@@ -269,7 +274,8 @@ async def test_databricks_table_and_query_train_and_export(
 ):
     fixture = randomize_fixture_ids_v2(_fixture(_SOURCE_CONNECTOR))
     randomized_source_id = str(
-        next(iter(fixture.graphs[0].tables.values())).get_connector_id())
+        next(iter(fixture.graphs[0].tables.values())).get_connector_id()
+    )
     source_identity, credentials = databricks_test_identity()
     source_setup = create_identity_backed_connector(
         client,
@@ -281,7 +287,8 @@ async def test_databricks_table_and_query_train_and_export(
         ),
     )
     fixture = remap_fixture_connector_ids_v2(
-        fixture, {randomized_source_id: source_setup.connector_id})
+        fixture, {randomized_source_id: source_setup.connector_id}
+    )
 
     suffix = uuid.uuid4().hex[:12]
     output_config = dataclasses.replace(
@@ -307,8 +314,7 @@ async def test_databricks_table_and_query_train_and_export(
         provision_connectors=False,
         project_id=source_setup.project_id,
     )
-    training = _wait_for_training(client, training_job_id,
-                                  source_setup.project_id)
+    training = _wait_for_training(client, training_job_id, source_setup.project_id)
     assert training.execution.status == JobStatus.DONE, training.execution
     await wait_for_training_workflow_to_finish(training_job_id, temporal_client)
 
@@ -318,8 +324,7 @@ async def test_databricks_table_and_query_train_and_export(
         {'project_id': source_setup.project_id},
         TrainingWorkflowResponse,
     )
-    _assert_every_source_is_staged_as_parquet(client, workflow,
-                                              source_setup.project_id)
+    _assert_every_source_is_staged_as_parquet(client, workflow, source_setup.project_id)
     assert workflow.legacy_graph_id is not None
     graph_fpid = GraphIDv2.from_public(workflow.legacy_graph_id).fpid
     assert graph_fpid is not None
@@ -353,20 +358,22 @@ async def test_databricks_table_and_query_train_and_export(
         IDResponse,
     )
     prediction_job_id = BatchPredictionJobID(response.id)
-    prediction = _wait_for_prediction(client, prediction_job_id,
-                                      source_setup.project_id)
+    prediction = _wait_for_prediction(
+        client, prediction_job_id, source_setup.project_id
+    )
     assert prediction.execution.status == JobStatus.DONE, prediction.execution
 
     info = DatabricksConnectionInfo.get()
-    verifier = output_config.as_connector(info.host,
-                                          require_explicit_credentials=True)
+    verifier = output_config.as_connector(info.host, require_explicit_credentials=True)
     verifier.set_credentials(info.credentials)
     await asyncio.to_thread(verifier.open)
     try:
-        predictions = await asyncio.to_thread(_read_nonempty_table, verifier,
-                                              prediction_table)
-        embeddings = await asyncio.to_thread(_read_nonempty_table, verifier,
-                                             embedding_table)
+        predictions = await asyncio.to_thread(
+            _read_nonempty_table, verifier, prediction_table
+        )
+        embeddings = await asyncio.to_thread(
+            _read_nonempty_table, verifier, embedding_table
+        )
         assert len(predictions) > 0
         assert len(embeddings) > 0
         assert any('EMBED' in column.upper() for column in embeddings.columns)

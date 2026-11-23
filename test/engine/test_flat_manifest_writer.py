@@ -10,6 +10,7 @@ expected shape (PR #251): single file, ``kind: diskgraph_task_dataset``,
 raw TT-gen column names (``ENTITY1``/``TARGET1``), per-stage
 ``table_name``/``index_path``/``row_count``.
 """
+
 from __future__ import annotations
 
 import json
@@ -45,26 +46,22 @@ def _make_spec(**overrides) -> TaskDatasetMaterializeSpec:
             'node_types': {
                 'USERS': {
                     'feature_columns': ['AGE'],
-                    'mapper_key':
-                    'USERS',
-                    'time_column':
-                    None,
-                    'column_specs': [{
-                        'column_name': 'AGE',
-                        'dtype': 'float',
-                        'stype': 'numerical',
-                        'encoder': {
-                            'name': 'Numerical'
-                        },
-                        'stats': {
-                            'MEAN': 0.0
-                        },
-                    }],
+                    'mapper_key': 'USERS',
+                    'time_column': None,
+                    'column_specs': [
+                        {
+                            'column_name': 'AGE',
+                            'dtype': 'float',
+                            'stype': 'numerical',
+                            'encoder': {'name': 'Numerical'},
+                            'stats': {'MEAN': 0.0},
+                        }
+                    ],
                 },
             },
             'target_encoder_input': None,
         },
-        graph_node_types=('USERS', ),
+        graph_node_types=('USERS',),
         graph_edge_types=(),
     )
     defaults.update(overrides)
@@ -73,15 +70,9 @@ def _make_spec(**overrides) -> TaskDatasetMaterializeSpec:
 
 _STAGE_COUNTS = {'train': 6, 'val': 3, 'test': 3}
 _STAGE_TABLE_REFS = {
-    'train': {
-        'table_name': 'TT_USERS__train'
-    },
-    'val': {
-        'table_name': 'TT_USERS__val'
-    },
-    'test': {
-        'table_name': 'TT_USERS__test'
-    },
+    'train': {'table_name': 'TT_USERS__train'},
+    'val': {'table_name': 'TT_USERS__val'},
+    'test': {'table_name': 'TT_USERS__test'},
 }
 
 
@@ -91,8 +82,7 @@ def _write(bundle_dir: str, **overrides) -> str:
         spec,
         bundle_dir=bundle_dir,
         graph_index_path=overrides.pop('graph_index_path', '/idx'),
-        stage_index_path=overrides.pop('stage_index_path',
-                                       '/idx/train_tables/tt_abc'),
+        stage_index_path=overrides.pop('stage_index_path', '/idx/train_tables/tt_abc'),
         stage_counts=overrides.pop('stage_counts', _STAGE_COUNTS),
         stage_table_refs=overrides.pop('stage_table_refs', _STAGE_TABLE_REFS),
         has_time=overrides.pop('has_time', False),
@@ -115,8 +105,9 @@ def test_no_stray_staging_files_left_behind(bundle_dir: str) -> None:
     """Atomic write must clean up its temp file."""
     _write(bundle_dir)
     entries = os.listdir(bundle_dir)
-    assert entries == ['runtime_manifest.json'
-                       ], (f'unexpected files in bundle dir: {entries}')
+    assert entries == ['runtime_manifest.json'], (
+        f'unexpected files in bundle dir: {entries}'
+    )
 
 
 def test_top_level_shape(bundle_dir: str) -> None:
@@ -186,7 +177,7 @@ def test_graph_block(bundle_dir: str) -> None:
         bundle_dir,
         spec_overrides=dict(
             graph_node_types=('USERS', 'PRODUCTS'),
-            graph_edge_types=(('USERS', 'BOUGHT', 'PRODUCTS'), ),
+            graph_edge_types=(('USERS', 'BOUGHT', 'PRODUCTS'),),
             feature_schema=schema,
         ),
         graph_index_path='/data/g/v1',
@@ -219,8 +210,9 @@ def test_stages_dict_per_stage(bundle_dir: str) -> None:
 def test_runtime_manifest_omits_encoder_statistics(bundle_dir: str) -> None:
     before = Path(_write(bundle_dir)).read_bytes()
     schema = _make_spec().feature_schema
-    schema['node_types']['USERS']['column_specs'][0]['stats'][
-        'CATEGORY_COUNTS'] = [[str(i), i] for i in range(10_000)]
+    schema['node_types']['USERS']['column_specs'][0]['stats']['CATEGORY_COUNTS'] = [
+        [str(i), i] for i in range(10_000)
+    ]
     path = _write(bundle_dir, spec_overrides={'feature_schema': schema})
     after = Path(path).read_bytes()
 

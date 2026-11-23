@@ -76,11 +76,11 @@ def create_task_data(
         if schema.end_time_col is not None:
             df[schema.end_time_col] = pd.to_datetime(df[schema.end_time_col])
 
-    if "TIME" in train_table_df:
-        train_table_df["TIME"] = pd.to_datetime(train_table_df["TIME"])
+    if 'TIME' in train_table_df:
+        train_table_df['TIME'] = pd.to_datetime(train_table_df['TIME'])
 
-    encoders["TRAIN_TABLE"] = {}
-    if "TARGET" in train_table_df:
+    encoders['TRAIN_TABLE'] = {}
+    if 'TARGET' in train_table_df:
         assert encoders.target is not None
 
     mappers = {
@@ -105,14 +105,14 @@ def create_task_data(
     feature_store = MagicMock(
         spec=FeatureStore,
         table_names=list(schema_dict),
-        train_table_name="TRAIN_TABLE",
+        train_table_name='TRAIN_TABLE',
         entity_table_names=[name for _, name in train_fkeys],
         train_fkey_names=[column for column, _ in train_fkeys],
         time_col_dict=time_columns,
-        has_train_table_time_col="TIME" in train_table_df,
+        has_train_table_time_col='TIME' in train_table_df,
         has_train_table_target_col=encoders.target is not None,
         has_train_table_weight_col=weight_col is not None,
-        has_train_table_test_mask="TEST_MASK" in train_table_df,
+        has_train_table_test_mask='TEST_MASK' in train_table_df,
     )
     feature_store.get_target_tensor_mapper.return_value = (
         TensorMapper.from_encoder(encoders.target.encoder)
@@ -124,15 +124,15 @@ def create_task_data(
     ]
     feature_store.get_pkey_name.side_effect = lambda table: schema_dict[table].pkey_name
     feature_store.get_time_col_name.side_effect = lambda table: (
-        ("TIME" if "TIME" in train_table_df else None)
-        if table == "TRAIN_TABLE"
+        ('TIME' if 'TIME' in train_table_df else None)
+        if table == 'TRAIN_TABLE'
         else time_columns.get(table)
     )
     feature_store.get_end_time_col_name.side_effect = lambda table: (
         schema_dict[table].end_time_col if table in schema_dict else None
     )
     feature_store.get_tensor_size.side_effect = lambda table, *_args, **_kwargs: (
-        len(train_table_df) if table == "TRAIN_TABLE" else len(df_dict[table]),
+        len(train_table_df) if table == 'TRAIN_TABLE' else len(df_dict[table]),
     )
     feature_store.safe_batch_mode.side_effect = lambda *_args, **_kwargs: nullcontext()
 
@@ -140,8 +140,8 @@ def create_task_data(
         query: tuple[str, str, Tensor | slice | None],
     ) -> np.ndarray:
         table_name, attribute, index = query
-        if attribute != "pkey":
-            raise KeyError(f"This fixture only reads primary keys, got {attribute!r}")
+        if attribute != 'pkey':
+            raise KeyError(f'This fixture only reads primary keys, got {attribute!r}')
         pkey_name = schema_dict[table_name].pkey_name
         assert pkey_name is not None
         values = df_dict[table_name][pkey_name].to_numpy()
@@ -157,8 +157,8 @@ def create_task_data(
         for fkey, dst_table in schema.fkeys:
             fkeys.append(
                 (
-                    f"{table_name}.{fkey}",
-                    f"{dst_table}.{schema_dict[dst_table].pkey_name}",
+                    f'{table_name}.{fkey}',
+                    f'{dst_table}.{schema_dict[dst_table].pkey_name}',
                 )
             )
 
@@ -168,7 +168,7 @@ def create_task_data(
         for column, destination in schema.fkeys
         for edge_type in (
             (table_name, column, destination),
-            (destination, f"rev_{column}", table_name),
+            (destination, f'rev_{column}', table_name),
         )
     ]
     graph_schema = DiskgraphSchema(
@@ -189,17 +189,18 @@ def create_task_data(
 
 
 @pytest.fixture()
-def user_store_graph(
-) -> tuple[dict[str, pd.DataFrame], dict[str, TestTableSchema]]:
+def user_store_graph() -> tuple[dict[str, pd.DataFrame], dict[str, TestTableSchema]]:
     df_dict: dict[str, pd.DataFrame] = {}
     schema_dict: dict[str, TestTableSchema] = {}
 
     # USERS TABLE #############################################################
-    df_dict['USERS'] = pd.DataFrame({
-        'USER_ID': [0, 1, 2, 3],
-        'AGE': [20, 30, 40, 50],
-        'GENDER': ['male', 'female', 'female', 'female'],
-    })
+    df_dict['USERS'] = pd.DataFrame(
+        {
+            'USER_ID': [0, 1, 2, 3],
+            'AGE': [20, 30, 40, 50],
+            'GENDER': ['male', 'female', 'female', 'female'],
+        }
+    )
     schema_dict['USERS'] = TestTableSchema(
         stypes={
             'AGE': Stype.numerical,
@@ -209,13 +210,15 @@ def user_store_graph(
     )
 
     # ORDERS TABLE ############################################################
-    df_dict['ORDERS'] = pd.DataFrame({
-        'ORDER_ID': [0, 1, 2, 3, 4, 5],
-        'USER_ID': [0, 0, 1, 1, 1, 3],
-        'STORE_ID': [0, 1, 0, 1, 2, 2],
-        'AMOUNT': [10.0, 15.0, float('NaN'), 20.0, 25.0, 30.0],
-        'TIME': ['1990', '1991', '1992', '1991', '1990', '1990'],
-    })
+    df_dict['ORDERS'] = pd.DataFrame(
+        {
+            'ORDER_ID': [0, 1, 2, 3, 4, 5],
+            'USER_ID': [0, 0, 1, 1, 1, 3],
+            'STORE_ID': [0, 1, 0, 1, 2, 2],
+            'AMOUNT': [10.0, 15.0, float('NaN'), 20.0, 25.0, 30.0],
+            'TIME': ['1990', '1991', '1992', '1991', '1990', '1990'],
+        }
+    )
     schema_dict['ORDERS'] = TestTableSchema(
         stypes={
             'AMOUNT': Stype.numerical,
@@ -227,13 +230,15 @@ def user_store_graph(
     )
 
     # STORES TABLE ############################################################
-    df_dict['STORES'] = pd.DataFrame({
-        'STORE_ID': [0, 1, 2],
-        'CAT': ['burger', 'burger', 'pizza'],
-        'MULTI_CAT': ['burger|fries', 'burger|pizza', 'pizza'],
-        'TEXT': ['best burger in town', 'italian', 'hot pizza'],
-        'EMBEDDING': [[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]],
-    })
+    df_dict['STORES'] = pd.DataFrame(
+        {
+            'STORE_ID': [0, 1, 2],
+            'CAT': ['burger', 'burger', 'pizza'],
+            'MULTI_CAT': ['burger|fries', 'burger|pizza', 'pizza'],
+            'TEXT': ['best burger in town', 'italian', 'hot pizza'],
+            'EMBEDDING': [[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]],
+        }
+    )
     schema_dict['STORES'] = TestTableSchema(
         stypes={
             'CAT': Stype.categorical,
@@ -247,52 +252,56 @@ def user_store_graph(
     return df_dict, schema_dict
 
 
-def _temporal_task(user_store_graph, task_type) -> tuple[
-        FeatureStore,
-        DiskgraphSchema,
-        EncodersConfig,
+def _temporal_task(
+    user_store_graph, task_type
+) -> tuple[
+    FeatureStore,
+    DiskgraphSchema,
+    EncodersConfig,
 ]:
-    train_table_df = pd.DataFrame({
-        'USER_ID': [0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3],
-        'TIME': ['1993'] * 4 + ['1994'] * 4 + ['1995'] * 4,
-        'TRAIN_MASK': [True] * 4 + [False] * 4 + [False] * 4,
-        'VAL_MASK': [False] * 4 + [True] * 4 + [False] * 4,
-        'TEST_MASK': [False] * 4 + [False] * 4 + [True] * 4,
-    })
+    train_table_df = pd.DataFrame(
+        {
+            'USER_ID': [0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3],
+            'TIME': ['1993'] * 4 + ['1994'] * 4 + ['1995'] * 4,
+            'TRAIN_MASK': [True] * 4 + [False] * 4 + [False] * 4,
+            'VAL_MASK': [False] * 4 + [True] * 4 + [False] * 4,
+            'TEST_MASK': [False] * 4 + [False] * 4 + [True] * 4,
+        }
+    )
 
     encoders = EncodersConfig(
         encoders={
-            "USERS": {
-                "AGE": Numerical(_stats={ColStatType.MEAN: 35.0}),
-                "GENDER": Index(
-                    _stats={ColStatType.CATEGORY_COUNTS: [["female", 3], ["male", 1]]}
+            'USERS': {
+                'AGE': Numerical(_stats={ColStatType.MEAN: 35.0}),
+                'GENDER': Index(
+                    _stats={ColStatType.CATEGORY_COUNTS: [['female', 3], ['male', 1]]}
                 ),
             },
-            "ORDERS": {
-                "AMOUNT": Numerical(_stats={ColStatType.MEAN: 20.0}),
-                "TIME": Datetime(
+            'ORDERS': {
+                'AMOUNT': Numerical(_stats={ColStatType.MEAN: 20.0}),
+                'TIME': Datetime(
                     _stats={
-                        ColStatType.MIN: "kumo_timestamp_1990-01-01 00:00:00",
-                        ColStatType.MAX: "kumo_timestamp_1992-01-01 00:00:00",
+                        ColStatType.MIN: 'kumo_timestamp_1990-01-01 00:00:00',
+                        ColStatType.MAX: 'kumo_timestamp_1992-01-01 00:00:00',
                     }
                 ),
             },
-            "STORES": {
-                "CAT": Index(
-                    _stats={ColStatType.CATEGORY_COUNTS: [["burger", 2], ["pizza", 1]]}
+            'STORES': {
+                'CAT': Index(
+                    _stats={ColStatType.CATEGORY_COUNTS: [['burger', 2], ['pizza', 1]]}
                 ),
-                "MULTI_CAT": MultiCategorical(
+                'MULTI_CAT': MultiCategorical(
                     _stats={
-                        ColStatType.MULTI_CATEGORIES_SEPARATOR: "|",
+                        ColStatType.MULTI_CATEGORIES_SEPARATOR: '|',
                         ColStatType.MULTI_CATEGORY_COUNTS: [
-                            ["burger", 2],
-                            ["pizza", 2],
-                            ["fries", 1],
+                            ['burger', 2],
+                            ['pizza', 2],
+                            ['fries', 1],
                         ],
                     }
                 ),
-                "TEXT": TextEmbedding(),
-                "EMBEDDING": NumericalList(
+                'TEXT': TextEmbedding(),
+                'EMBEDDING': NumericalList(
                     _stats={
                         ColStatType.SEQUENCE_MIN_LENGTH: 2,
                         ColStatType.SEQUENCE_MAX_LENGTH: 2,
@@ -304,31 +313,41 @@ def _temporal_task(user_store_graph, task_type) -> tuple[
 
     if task_type == TaskType.BINARY_CLASSIFICATION:
         encoders.target = TargetEncoderConfig(
-            "TARGET",
+            'TARGET',
             Index(_stats={ColStatType.CATEGORY_COUNTS: [[True, 8], [False, 4]]}),
         )
         train_table_df['TARGET'] = [
-            True, True, False, True, False, True, False, True, True, True,
-            False, True
+            True,
+            True,
+            False,
+            True,
+            False,
+            True,
+            False,
+            True,
+            True,
+            True,
+            False,
+            True,
         ]
 
     elif task_type == TaskType.MULTICLASS_CLASSIFICATION:
         encoders.target = TargetEncoderConfig(
-            "TARGET",
+            'TARGET',
             Index(_stats={ColStatType.CATEGORY_COUNTS: [[0, 4], [1, 4], [2, 4]]}),
         )
         train_table_df['TARGET'] = [0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2]
 
     elif task_type.is_multilabel:
         encoders.target = TargetEncoderConfig(
-            "TARGET",
+            'TARGET',
             MultiCategorical(
                 na_strategy=NAStrategy.ZERO,
                 _stats={
                     ColStatType.MULTI_CATEGORIES_SEPARATOR: None
                     if allow_array_targets()
-                    else "|",
-                    ColStatType.MULTI_CATEGORY_COUNTS: [["A", 6], ["C", 6], ["B", 4]],
+                    else '|',
+                    ColStatType.MULTI_CATEGORY_COUNTS: [['A', 6], ['C', 6], ['B', 4]],
                 },
             ),
         )
@@ -365,10 +384,21 @@ def _temporal_task(user_store_graph, task_type) -> tuple[
 
     elif task_type in {TaskType.REGRESSION, TaskType.FORECASTING}:
         encoders.target = TargetEncoderConfig(
-            "TARGET", Numerical(_stats={ColStatType.MEAN: 0.2})
+            'TARGET', Numerical(_stats={ColStatType.MEAN: 0.2})
         )
         train_table_df['TARGET'] = [
-            0.1, 0.2, 0.3, 0.1, 0.2, 0.3, 0.1, 0.2, 0.3, 0.1, 0.2, 0.3
+            0.1,
+            0.2,
+            0.3,
+            0.1,
+            0.2,
+            0.3,
+            0.1,
+            0.2,
+            0.3,
+            0.1,
+            0.2,
+            0.3,
         ]
 
     elif task_type == TaskType.TEMPORAL_LINK_PREDICTION:
@@ -387,9 +417,11 @@ def _temporal_task(user_store_graph, task_type) -> tuple[
 
 
 @pytest.fixture()
-def temporal_task(user_store_graph, task_type) -> tuple[
-        FeatureStore,
-        DiskgraphSchema,
-        EncodersConfig,
+def temporal_task(
+    user_store_graph, task_type
+) -> tuple[
+    FeatureStore,
+    DiskgraphSchema,
+    EncodersConfig,
 ]:
     return _temporal_task(user_store_graph, task_type)

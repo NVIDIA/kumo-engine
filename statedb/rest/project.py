@@ -15,8 +15,8 @@ from statedb.config.common import DBEntry, GroupID, ProjectID
 class ProjectStatus(str, Enum):
     """Lifecycle states for a Project."""
 
-    ACTIVE = "active"
-    ARCHIVED = "archived"
+    ACTIVE = 'active'
+    ARCHIVED = 'archived'
 
 
 @kumo_dataclass
@@ -35,11 +35,11 @@ class ProjectDBEntry(DBEntry):
     id: ProjectID  # Auto-generated UUID if not provided
     group_id: GroupID
     slug: ResourceSlug
-    display_name: str = ""
-    normalized_display_name: str = ""
-    created_by: str = ""  # user_id of creator/owner
-    created_by_name: str = ""  # display name of creator/owner
-    description: str = ""
+    display_name: str = ''
+    normalized_display_name: str = ''
+    created_by: str = ''  # user_id of creator/owner
+    created_by_name: str = ''  # display name of creator/owner
+    description: str = ''
     is_private: bool = False  # True = owner-only; False = shared with group
     status: ProjectStatus = ProjectStatus.ACTIVE
 

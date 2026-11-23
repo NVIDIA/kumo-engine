@@ -54,20 +54,23 @@ def groups_router() -> tuple[GroupsRouter, MagicMock]:
 @pytest.mark.parametrize(
     ('error', 'status'),
     [
-        (GroupInputError('principal_id cannot be empty'),
-         HTTPStatus.BAD_REQUEST),
-        (GroupRelationConflictError('membership changed concurrently'),
-         HTTPStatus.CONFLICT),
+        (GroupInputError('principal_id cannot be empty'), HTTPStatus.BAD_REQUEST),
+        (
+            GroupRelationConflictError('membership changed concurrently'),
+            HTTPStatus.CONFLICT,
+        ),
     ],
 )
 async def test_add_member_maps_input_and_concurrency_errors(
-        groups_router, error, status) -> None:
+    groups_router, error, status
+) -> None:
     router, driver = groups_router
     driver.add_member = AsyncMock(side_effect=error)
 
     with pytest.raises(HTTPException) as caught:
-        await router.add_member(GroupID.generate(),
-                                AddGroupMemberRequest(principal_id='user'))
+        await router.add_member(
+            GroupID.generate(), AddGroupMemberRequest(principal_id='user')
+        )
 
     assert caught.value.status_code == status
 
@@ -76,15 +79,20 @@ async def test_add_member_maps_input_and_concurrency_errors(
 @pytest.mark.parametrize(
     ('error', 'status'),
     [
-        (GroupInputError('identity_provider_id cannot be empty'),
-         HTTPStatus.BAD_REQUEST),
-        (GroupRelationConflictError('external group already mapped'),
-         HTTPStatus.CONFLICT),
+        (
+            GroupInputError('identity_provider_id cannot be empty'),
+            HTTPStatus.BAD_REQUEST,
+        ),
+        (
+            GroupRelationConflictError('external group already mapped'),
+            HTTPStatus.CONFLICT,
+        ),
         (GroupNotFoundError('group not found'), HTTPStatus.NOT_FOUND),
     ],
 )
 async def test_external_mapping_maps_input_and_concurrency_errors(
-        groups_router, error, status) -> None:
+    groups_router, error, status
+) -> None:
     router, driver = groups_router
     driver.create_external_mapping = AsyncMock(side_effect=error)
 
@@ -104,15 +112,17 @@ async def test_external_mapping_maps_input_and_concurrency_errors(
 @pytest.mark.parametrize(
     ('error', 'status'),
     [
-        (GroupInputError('external_group_id cannot be empty'),
-         HTTPStatus.BAD_REQUEST),
-        (GroupRelationConflictError('external group already mapped'),
-         HTTPStatus.CONFLICT),
+        (GroupInputError('external_group_id cannot be empty'), HTTPStatus.BAD_REQUEST),
+        (
+            GroupRelationConflictError('external group already mapped'),
+            HTTPStatus.CONFLICT,
+        ),
         (GroupNotFoundError('group not found'), HTTPStatus.NOT_FOUND),
     ],
 )
 async def test_replace_external_mappings_maps_atomic_service_errors(
-        groups_router, error, status) -> None:
+    groups_router, error, status
+) -> None:
     router, driver = groups_router
     driver.replace_external_mappings = AsyncMock(side_effect=error)
 
@@ -129,15 +139,14 @@ async def test_replace_external_mappings_maps_atomic_service_errors(
 @pytest.mark.parametrize(
     ('error', 'status'),
     [
-        (GroupInputError('principal_id cannot be empty'),
-         HTTPStatus.BAD_REQUEST),
-        (GroupRelationConflictError('direct membership changed'),
-         HTTPStatus.CONFLICT),
+        (GroupInputError('principal_id cannot be empty'), HTTPStatus.BAD_REQUEST),
+        (GroupRelationConflictError('direct membership changed'), HTTPStatus.CONFLICT),
         (GroupNotFoundError('group not found'), HTTPStatus.NOT_FOUND),
     ],
 )
 async def test_replace_members_maps_atomic_service_errors(
-        groups_router, error, status) -> None:
+    groups_router, error, status
+) -> None:
     router, driver = groups_router
     driver.replace_members = AsyncMock(side_effect=error)
 
@@ -165,8 +174,7 @@ def test_bulk_replacement_routes_are_admin_only() -> None:
     router = GroupsRouter(auth, driver).v1_router
 
     assert {
-        (route.path, method)
-        for route in router.routes for method in route.methods
+        (route.path, method) for route in router.routes for method in route.methods
     } >= {
         ('/v1/groups/{group_id}/members', 'PUT'),
         ('/v1/groups/{group_id}/external-mappings', 'PUT'),

@@ -14,8 +14,9 @@ from kumo.engine._scratch import get_scratch_dir
 from kumo.engine.tracking import Event
 
 
-def test_fit_reports_progress_events(table_and_snapshot, quick_plan,
-                                     monkeypatch, caplog):
+def test_fit_reports_progress_events(
+    table_and_snapshot, quick_plan, monkeypatch, caplog
+):
     from kumo_core.automl.optuna_searcher import TPESearcher
 
     update = TPESearcher.update
@@ -38,8 +39,9 @@ def test_fit_reports_progress_events(table_and_snapshot, quick_plan,
         broken_calls.append(event)
         raise RuntimeError('callback bug')
 
-    result = kumo.Trainer(plan).fit(table, snapshot=snapshot,
-                                    callbacks=[broken, events.append])
+    result = kumo.Trainer(plan).fit(
+        table, snapshot=snapshot, callbacks=[broken, events.append]
+    )
 
     assert len(broken_calls) == 1
     assert 'callback bug' in caplog.text
@@ -47,13 +49,23 @@ def test_fit_reports_progress_events(table_and_snapshot, quick_plan,
     names = [event.name for event in events]
     assert names == [
         'fit_started',
-        'trial_started', 'epoch_ended', 'epoch_ended', 'trial_ended',
-        'trial_started', 'epoch_ended', 'epoch_ended', 'trial_ended',
+        'trial_started',
+        'epoch_ended',
+        'epoch_ended',
+        'trial_ended',
+        'trial_started',
+        'epoch_ended',
+        'epoch_ended',
+        'trial_ended',
         'fit_ended',
     ]
     assert set(events[0].params) == {'snapshot_id', 'query_sha256'}
-    assert [(e.trial, e.epoch) for e in events if e.name == 'epoch_ended'
-            ] == [(1, 1), (1, 2), (2, 1), (2, 2)]
+    assert [(e.trial, e.epoch) for e in events if e.name == 'epoch_ended'] == [
+        (1, 1),
+        (1, 2),
+        (2, 1),
+        (2, 2),
+    ]
     assert any(name.startswith('val_') for name in events[2].metrics)
     assert events[2].metrics['train_epoch_seconds'] > 0
     assert events[1].params['attempt'] == 1
@@ -62,13 +74,16 @@ def test_fit_reports_progress_events(table_and_snapshot, quick_plan,
     assert events[8].params == {
         'status': 'failed',
         'attempt': 1,
-        'error': 'RuntimeError: searcher down'
+        'error': 'RuntimeError: searcher down',
     }
-    assert events[-1].metrics == {**result.metrics,
-                                  'seconds': events[-1].metrics['seconds']}
+    assert events[-1].metrics == {
+        **result.metrics,
+        'seconds': events[-1].metrics['seconds'],
+    }
     assert events[-1].params == {'status': 'succeeded'}
-    assert [json.loads(json.dumps(event.to_dict()))['name']
-            for event in events] == names
+    assert [
+        json.loads(json.dumps(event.to_dict()))['name'] for event in events
+    ] == names
 
 
 def test_failed_fit_reports_fit_ended(table_and_snapshot, monkeypatch):
@@ -77,25 +92,23 @@ def test_failed_fit_reports_fit_ended(table_and_snapshot, monkeypatch):
     def fail(*args, **kwargs):
         raise ValueError('stop')
 
-    monkeypatch.setattr(trainer_module, 'build_generated_training_task_dataset',
-                        fail)
+    monkeypatch.setattr(trainer_module, 'build_generated_training_task_dataset', fail)
     table, snapshot = table_and_snapshot
     events = []
 
     with pytest.raises(ValueError, match='stop'):
-        kumo.Trainer(ModelPlan()).fit(table, snapshot=snapshot,
-                                      callbacks=[events.append])
+        kumo.Trainer(ModelPlan()).fit(
+            table, snapshot=snapshot, callbacks=[events.append]
+        )
 
     assert [event.name for event in events] == ['fit_started', 'fit_ended']
-    assert events[-1].params == {
-        'status': 'failed',
-        'error': 'ValueError: stop'
-    }
+    assert events[-1].params == {'status': 'failed', 'error': 'ValueError: stop'}
 
 
 @pytest.mark.parametrize('on_error', ['warn', 'raise'])
 def test_an_unfinished_tracker_is_reported_by_the_error_policy(
-        table_and_snapshot, quick_plan, tmp_path, monkeypatch, on_error):
+    table_and_snapshot, quick_plan, tmp_path, monkeypatch, on_error
+):
     import kumo.engine._tracking as tracking
 
     monkeypatch.setattr(tracking, 'FINISH_SECONDS', 0.5)
@@ -113,14 +126,18 @@ def test_an_unfinished_tracker_is_reported_by_the_error_policy(
 
     table, snapshot = table_and_snapshot
     trainer = kumo.Trainer(quick_plan)
-    cfg = kumo.MLOps(str(tmp_path / 'root'), tracking=Blocked(), store=False,
-                     on_error=on_error)
+    cfg = kumo.MLOps(
+        str(tmp_path / 'root'), tracking=Blocked(), store=False, on_error=on_error
+    )
     try:
         if on_error == 'warn':
-            with pytest.warns(UserWarning, match='TimeoutError: experiment '
-                              'tracking did not finish within 0.5s'):
-                assert trainer.fit(table, snapshot=snapshot,
-                                   mlops=cfg) is trainer.result
+            with pytest.warns(
+                UserWarning,
+                match='TimeoutError: experiment tracking did not finish within 0.5s',
+            ):
+                assert (
+                    trainer.fit(table, snapshot=snapshot, mlops=cfg) is trainer.result
+                )
         else:
             with pytest.raises(RuntimeError) as raised:
                 trainer.fit(table, snapshot=snapshot, mlops=cfg)
@@ -135,8 +152,9 @@ def test_event_metrics_keep_finite_numbers():
 
     received = []
     EventEmitter([received.append]).emit(
-        'epoch_ended', metrics={'val_loss': 'n/a', 'val_auc': float('nan'),
-                                'val_mae': 0.5})
+        'epoch_ended',
+        metrics={'val_loss': 'n/a', 'val_auc': float('nan'), 'val_mae': 0.5},
+    )
 
     assert received[0].metrics == {'val_mae': 0.5}
 
@@ -151,12 +169,15 @@ def test_epoch_event_without_recorded_metrics_does_not_raise(tmp_path):
 
     received = []
     logger = AutoTrainingProgressLogger(
-        str(tmp_path), 1, on_event=lambda *a, **k: received.append(a))
-    progress = SimpleNamespace(num_epochs_completed=1, metrics=[],
-                               estimated_train_time=0.0)
+        str(tmp_path), 1, on_event=lambda *a, **k: received.append(a)
+    )
+    progress = SimpleNamespace(
+        num_epochs_completed=1, metrics=[], estimated_train_time=0.0
+    )
     logger.set_current_trainer(
-        SimpleNamespace(training_progress_logger=SimpleNamespace(
-            progress=progress)), trial=1)
+        SimpleNamespace(training_progress_logger=SimpleNamespace(progress=progress)),
+        trial=1,
+    )
     logger.progress.start_time = datetime.now(timezone.utc)
 
     logger.on_train_epoch_end(None, None)
@@ -175,9 +196,12 @@ def test_a_snapshot_reports_progress_events(graph, tmp_path):
         kumo.configure(scratch_dir=previous)
 
     assert [event.name for event in events] == [
-        'snapshot_started', 'table_staged', 'table_staged', 'snapshot_ended']
-    assert [event.params['table'] for event in events[1:3]] == [
-        'users', 'events']
+        'snapshot_started',
+        'table_staged',
+        'table_staged',
+        'snapshot_ended',
+    ]
+    assert [event.params['table'] for event in events[1:3]] == ['users', 'events']
     assert events[-1].params['snapshot_id'] == snapshot.id
     assert events[-1].params['reused'] is False
     assert again[-1].params['reused'] is True
@@ -207,9 +231,12 @@ def test_kumo_calls_drop_lightning_tips_and_only_those(caplog):
 
 
 def test_an_event_prints_as_its_name_and_fields():
-    event = Event(name='table_staged', time=1.0,
-                  params={'table': 'users', 'seconds': 12.0})
+    event = Event(
+        name='table_staged', time=1.0, params={'table': 'users', 'seconds': 12.0}
+    )
     assert str(event) == 'table_staged table=users seconds=12.0'
-    assert str(Event(name='epoch_ended', time=1.0, trial=1, epoch=2,
-                     metrics={'val_auroc': 0.5})) == (
-        'epoch_ended trial=1 epoch=2 val_auroc=0.5')
+    assert str(
+        Event(
+            name='epoch_ended', time=1.0, trial=1, epoch=2, metrics={'val_auroc': 0.5}
+        )
+    ) == ('epoch_ended trial=1 epoch=2 val_auroc=0.5')

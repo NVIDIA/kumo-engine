@@ -28,15 +28,17 @@ def test_staged_user_key_can_discover_canonical_default_project(
             name='sdk-integration-bootstrap',
             user_id='phase1b-api-key-staging',
             user_name='phase1b-api-key-staging',
-        ))
+        )
+    )
 
     headers = {'X-API-Key': created.value}
     listed = public_api_client.get('/v1/projects', headers=headers)
     assert listed.status_code == HTTPStatus.OK, listed.text
     assert DEFAULT_PROJECT_ID in {project['id'] for project in listed.json()}
 
-    response = public_api_client.get(f'/v1/projects/{DEFAULT_PROJECT_ID}',
-                                     headers=headers)
+    response = public_api_client.get(
+        f'/v1/projects/{DEFAULT_PROJECT_ID}', headers=headers
+    )
     assert response.status_code == HTTPStatus.OK, response.text
     assert response.json()['group_id'] == DEFAULT_GROUP_ID
 
@@ -61,7 +63,7 @@ def test_disabled_auth_request_sees_all_projects_including_private(
             Permissions.WRITE.compose(),
             Permissions.ADMIN.compose(),
         ],
-        kumo_group_ids=(DEFAULT_GROUP_ID, ),
+        kumo_group_ids=(DEFAULT_GROUP_ID,),
     )
     private_project = asyncio.run(
         state_services.projects.create_project(
@@ -69,16 +71,15 @@ def test_disabled_auth_request_sees_all_projects_including_private(
             group_id=DEFAULT_GROUP_ID,
             is_private=True,
             user_authorization=admin,
-        ))
+        )
+    )
 
-    private_default = unauthenticated_client.get(
-        f'/v0/projects/{DEFAULT_PROJECT_ID}')
+    private_default = unauthenticated_client.get(f'/v0/projects/{DEFAULT_PROJECT_ID}')
     public_default = public_api_client.get(f'/v1/projects/{DEFAULT_PROJECT_ID}')
     assert private_default.status_code == HTTPStatus.OK, private_default.text
     assert public_default.status_code == HTTPStatus.OK, public_default.text
 
-    private_visible = unauthenticated_client.get(
-        f'/v0/projects/{private_project.id}')
+    private_visible = unauthenticated_client.get(f'/v0/projects/{private_project.id}')
     public_visible = public_api_client.get(f'/v1/projects/{private_project.id}')
     assert private_visible.status_code == HTTPStatus.OK, private_visible.text
     assert public_visible.status_code == HTTPStatus.OK, public_visible.text

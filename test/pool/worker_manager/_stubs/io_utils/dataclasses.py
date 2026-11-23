@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Stub: kumo_dataclass → dataclasses.dataclass."""
+
 from dataclasses import dataclass as _stdlib_dataclass
 
 

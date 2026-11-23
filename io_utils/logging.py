@@ -28,6 +28,7 @@ because f-strings are initialized eagerly and incur the cost of initialization
 _regardless of whether logs are printed_, whereas printf-style formats are
 initialized lazily and therefore do not incur this cost if logs aren't printed.
 """
+
 import atexit
 import json
 import logging
@@ -70,11 +71,11 @@ DEBUG = logging.DEBUG
 
 Logger: TypeAlias = logging.Logger
 
-LOGGING_DIR = ""
+LOGGING_DIR = ''
 LOGGING_FILE_NAME = 'kumo.log'
 LOGGING_INITIALIZED = False
-LOG_GROUP_NAME = ""
-LOG_STREAM_NAME = ""
+LOG_GROUP_NAME = ''
+LOG_STREAM_NAME = ''
 _PYTEST_ENABLE_FSUTIL_DEBUG_LOGS_ENV = 'KUMO_PYTEST_ENABLE_FSUTIL_DEBUG_LOGS'
 
 
@@ -141,12 +142,13 @@ class LoggingMode(Enum):
     to other modes (e.g. LoggingMode.VERBOSE_L1, etc. that all allow for more
     controlled outputs).)
     """
+
     DEBUG = 0
     DEVELOPMENT = 1
     PRODUCTION = 2
 
     @classmethod
-    def to_level_str(cls, mode: "LoggingMode"):
+    def to_level_str(cls, mode: 'LoggingMode'):
         """Converts a LoggingMode to a logging level string."""
         return {
             LoggingMode.DEBUG: 'DEBUG',
@@ -157,6 +159,7 @@ class LoggingMode(Enum):
 
 class MultiProcessingLog(logging.Handler):
     """Write records from multiple processes through one file handler."""
+
     class _Listener(logging.handlers.QueueListener):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
@@ -186,12 +189,14 @@ class MultiProcessingLog(logging.Handler):
         self._record_queue = multiprocessing.Queue(-1)
         self._owner_pid = os.getpid()
         self._file_handler = RotatingFileHandler(path, mode, maxsize, rotate)
-        self._listener = self._Listener(self._record_queue, self._file_handler,
-                                        respect_handler_level=True)
+        self._listener = self._Listener(
+            self._record_queue, self._file_handler, respect_handler_level=True
+        )
         self._listener.start()
         # Drain records before multiprocessing tears down the queue at exit.
         self._exit_finalizer = multiprocessing.util.Finalize(
-            None, self.close, exitpriority=11)
+            None, self.close, exitpriority=11
+        )
 
     def setFormatter(self, fmt):
         super().setFormatter(fmt)
@@ -202,8 +207,7 @@ class MultiProcessingLog(logging.Handler):
         prepared.msg = prepared.getMessage()
         prepared.args = None
         if prepared.exc_info and not prepared.exc_text:
-            prepared.exc_text = logging.Formatter().formatException(
-                prepared.exc_info)
+            prepared.exc_text = logging.Formatter().formatException(prepared.exc_info)
         prepared.exc_info = None
         return prepared
 
@@ -248,6 +252,7 @@ class LoggingFormatterConfig:
     Specification:
         https://docs.python.org/3/library/logging.html#formatter-objects
     """
+
     format: Optional[str] = None
     cls: Optional[str] = None
 
@@ -289,11 +294,16 @@ class LoggingHandlerConfig:
     version: Optional[str] = None
 
     def __post_init__(self):
-        if (self.stream is None and self.path is None
-                and self.log_group_name is None and self.url is None):
+        if (
+            self.stream is None
+            and self.path is None
+            and self.log_group_name is None
+            and self.url is None
+        ):
             raise Exception(
-                "Neither an output stream nor an output path nor a log "
-                "group nor an export url have been set.")
+                'Neither an output stream nor an output path nor a log '
+                'group nor an export url have been set.'
+            )
 
 
 # Union of LoggingMode enum; could also be int value or name of
@@ -309,6 +319,7 @@ class LoggerConfig:
     Specification:
         https://docs.python.org/3/library/logging.html#logger-objects
     """
+
     level: str
     handlers: List[str]
     propagate: bool
@@ -333,6 +344,7 @@ class LoggingConfig:
     Specification:
         https://docs.python.org/3/library/logging.config.html
     """
+
     formatters: Dict[str, LoggingFormatterConfig]
     handlers: Dict[str, LoggingHandlerConfig]
     loggers: Dict[str, LoggerConfig]
@@ -361,14 +373,20 @@ def _get_output_format() -> str:
     """Resolve desired output format from DeployEnvConfig when available."""
     try:
         from service_framework.deploy_env_config import deploy_env
+
         return deploy_env().logging_config.output_format
     except Exception:  # pylint: disable=broad-except
         return 'text'
 
 
-def _get_config(mode: LoggingMode, log_to_console: bool, log_to_file: bool,
-                log_to_cloud_watch: bool, log_process_id: bool,
-                logging_level_overrides: Mapping[str, LoggingLevel]):
+def _get_config(
+    mode: LoggingMode,
+    log_to_console: bool,
+    log_to_file: bool,
+    log_to_cloud_watch: bool,
+    log_process_id: bool,
+    logging_level_overrides: Mapping[str, LoggingLevel],
+):
     """
     Obtains a logging configuration from a LoggingMode.
 
@@ -399,16 +417,19 @@ def _get_config(mode: LoggingMode, log_to_console: bool, log_to_file: bool,
     error_formatter_name = 'json' if use_json_format else 'error'
 
     handlers = {
-        'console':
-        LoggingHandlerConfig(cls='logging.StreamHandler', level=level,
-                             formatter=standard_formatter_name,
-                             stream='ext://sys.stdout'),
-        'error_console':
-        LoggingHandlerConfig(cls='logging.StreamHandler', level='ERROR',
-                             formatter=error_formatter_name,
-                             stream='ext://sys.stderr'),
-        'file_handler':
-        LoggingHandlerConfig(
+        'console': LoggingHandlerConfig(
+            cls='logging.StreamHandler',
+            level=level,
+            formatter=standard_formatter_name,
+            stream='ext://sys.stdout',
+        ),
+        'error_console': LoggingHandlerConfig(
+            cls='logging.StreamHandler',
+            level='ERROR',
+            formatter=error_formatter_name,
+            stream='ext://sys.stderr',
+        ),
+        'file_handler': LoggingHandlerConfig(
             cls='io_utils.logging.MultiProcessingLog',
             level=level,
             formatter=standard_formatter_name,
@@ -416,7 +437,7 @@ def _get_config(mode: LoggingMode, log_to_console: bool, log_to_file: bool,
             mode='a',
             maxsize=10485760,
             rotate=20,
-        )
+        ),
     }
     if log_to_cloud_watch:
         handlers['cloud_watch'] = LoggingHandlerConfig(
@@ -439,8 +460,8 @@ def _get_config(mode: LoggingMode, log_to_console: bool, log_to_file: bool,
             snowflake_database = os.environ.get('SNOWFLAKE_DATABASE')
             snowflake_schema = os.environ.get('SNOWFLAKE_SCHEMA')
             tags['snowflake_account'] = (
-                f'{snowflake_account}_{snowflake_database}_'
-                f'{snowflake_schema}')
+                f'{snowflake_account}_{snowflake_database}_{snowflake_schema}'
+            )
         handlers['loki'] = LoggingHandlerConfig(
             cls='logging_loki.LokiHandler',
             level=level,
@@ -448,20 +469,24 @@ def _get_config(mode: LoggingMode, log_to_console: bool, log_to_file: bool,
             url=_LOKI_URL,
             tags=tags,
             auth=(_LOKI_USER, _LOKI_PASSWORD),
-            version="1",
+            version='1',
         )
 
     handlers = {k: v for k, v in handlers.items() if k in handler_names}
 
     if not log_process_id:
-        standard_format = ('%(asctime)s - %(levelname)-8s '
-                           '[%(funcName)s:%(filename)s:%(lineno)d] '
-                           '%(message)s')
+        standard_format = (
+            '%(asctime)s - %(levelname)-8s '
+            '[%(funcName)s:%(filename)s:%(lineno)d] '
+            '%(message)s'
+        )
     else:
-        standard_format = ('%(asctime)s - %(levelname)-8s '
-                           '<PID %(process)d::%(processName)s>'
-                           '[%(funcName)s:%(filename)s:%(lineno)d] '
-                           '%(message)s')
+        standard_format = (
+            '%(asctime)s - %(levelname)-8s '
+            '<PID %(process)d::%(processName)s>'
+            '[%(funcName)s:%(filename)s:%(lineno)d] '
+            '%(message)s'
+        )
 
     # Define loggers for top-level kumo code paths and for __main__
     loggers = {
@@ -490,25 +515,24 @@ def _get_config(mode: LoggingMode, log_to_console: bool, log_to_file: bool,
 
     if use_json_format:
         formatters = {
-            'json':
-            LoggingFormatterConfig(cls='io_utils.logging_json.JsonLogFormatter')
+            'json': LoggingFormatterConfig(cls='io_utils.logging_json.JsonLogFormatter')
         }
     else:
         # Define a standard formatter and a custom formatter for more
         # information (e.g. PID, processName, funcName) in the case that an
         # error is logged.
         formatters = {
-            'standard':
-            LoggingFormatterConfig(format=standard_format),
-            'error':
-            LoggingFormatterConfig(
-                format=('%(asctime)s - %(levelname)-8s '
-                        '<PID %(process)d::%(processName)s>'
-                        '%(name)s.%(funcName)s(): %(message)s'))
+            'standard': LoggingFormatterConfig(format=standard_format),
+            'error': LoggingFormatterConfig(
+                format=(
+                    '%(asctime)s - %(levelname)-8s '
+                    '<PID %(process)d::%(processName)s>'
+                    '%(name)s.%(funcName)s(): %(message)s'
+                )
+            ),
         }
 
-    return LoggingConfig(formatters=formatters, handlers=handlers,
-                         loggers=loggers)
+    return LoggingConfig(formatters=formatters, handlers=handlers, loggers=loggers)
 
 
 def _env_var_enabled(name: str) -> bool:
@@ -516,10 +540,12 @@ def _env_var_enabled(name: str) -> bool:
 
 
 def _with_pytest_logging_level_overrides(
-        logging_level_overrides: Mapping[str, LoggingLevel]):
+    logging_level_overrides: Mapping[str, LoggingLevel],
+):
     overrides = dict(logging_level_overrides)
-    if (_PYTEST_ENABLE_FSUTIL_DEBUG_LOGS_ENV in os.environ
-            and not _env_var_enabled(_PYTEST_ENABLE_FSUTIL_DEBUG_LOGS_ENV)):
+    if _PYTEST_ENABLE_FSUTIL_DEBUG_LOGS_ENV in os.environ and not _env_var_enabled(
+        _PYTEST_ENABLE_FSUTIL_DEBUG_LOGS_ENV
+    ):
         overrides['io_utils.fsutil'] = logging.INFO
     return overrides
 
@@ -531,14 +557,20 @@ def getLogger(name: str) -> logging.Logger:  # pylint: disable
 
 def initialize_logging(
     mode: LoggingMode = LoggingMode.DEVELOPMENT,
-    logging_dir: Optional[str] = None, logging_file_name: Optional[str] = None,
-    *, log_to_console: bool = True, log_to_file: bool = True,
-    log_to_cloud_watch: bool = False, log_group_name: Optional[str] = None,
-    log_stream_name: Optional[str] = None, aws_region: Optional[str] = None,
+    logging_dir: Optional[str] = None,
+    logging_file_name: Optional[str] = None,
+    *,
+    log_to_console: bool = True,
+    log_to_file: bool = True,
+    log_to_cloud_watch: bool = False,
+    log_group_name: Optional[str] = None,
+    log_stream_name: Optional[str] = None,
+    aws_region: Optional[str] = None,
     log_process_id: bool = False,
     logging_level_overrides: Mapping[str, LoggingLevel] = {
         'monitoring': logging.WARNING
-    }):
+    },
+):
     """
     Initializes logging by defining the requisite logging handlers and
     other specifications as in the config YAML. The user just
@@ -590,6 +622,7 @@ def initialize_logging(
         # Set boto3 default region to allow proper initialization of boto3
         # client for cloud watch log handler
         import boto3
+
         if aws_region is None:
             aws_region = os.environ.get('AWS_REGION', 'us-west-2')
         boto3.setup_default_session(region_name=aws_region)
@@ -599,8 +632,13 @@ def initialize_logging(
         _set_log_stream_name(log_stream_name)
 
     config = _get_config(
-        mode, log_to_console, log_to_file, log_to_cloud_watch, log_process_id,
-        _with_pytest_logging_level_overrides(logging_level_overrides))
+        mode,
+        log_to_console,
+        log_to_file,
+        log_to_cloud_watch,
+        log_process_id,
+        _with_pytest_logging_level_overrides(logging_level_overrides),
+    )
     # Restore direct handlers first: dictConfig does not reconfigure a logger
     # this call omits, which would leave it holding a dead queue.
     drain_logs()
@@ -614,7 +652,8 @@ def initialize_logging(
     logging.getLogger(__name__).info(
         f'Logging (mode={mode}) successfully initialized at '
         f'{osp.join(LOGGING_DIR, LOGGING_FILE_NAME)}, '
-        f'log_to_file={log_to_file}, log_process_id={log_process_id}')
+        f'log_to_file={log_to_file}, log_process_id={log_process_id}'
+    )
 
 
 _LISTENER_JOIN_TIMEOUT_S = 5.0
@@ -706,9 +745,16 @@ class _RecordQueueListener(logging.handlers.QueueListener):
         self._next_drop_report = now + _DROP_REPORT_INTERVAL_S
         _REPORTED_DROPS += dropped
         self._handle(
-            logging.LogRecord(__name__, logging.WARNING, __file__, 0,
-                              'logging queue full: dropped %d records',
-                              (dropped, ), None))
+            logging.LogRecord(
+                __name__,
+                logging.WARNING,
+                __file__,
+                0,
+                'logging queue full: dropped %d records',
+                (dropped,),
+                None,
+            )
+        )
 
     def stop(self) -> None:
         if self._thread is not None:
@@ -732,9 +778,9 @@ def _route_handlers_through_queue(logger_names: Iterable[str]) -> None:
         seen: set = set()
         for name in logger_names:
             handlers = [
-                handler for handler in logging.getLogger(name).handlers
-                if not isinstance(handler, (logging.NullHandler,
-                                            _RecordQueueHandler))
+                handler
+                for handler in logging.getLogger(name).handlers
+                if not isinstance(handler, (logging.NullHandler, _RecordQueueHandler))
             ]
             if not handlers:
                 continue
@@ -754,7 +800,8 @@ def _route_handlers_through_queue(logger_names: Iterable[str]) -> None:
         for name in _ROUTED_HANDLERS:
             logger = logging.getLogger(name)
             logger.handlers = [
-                handler for handler in logger.handlers
+                handler
+                for handler in logger.handlers
                 if isinstance(handler, logging.NullHandler)
             ]
             logger.addHandler(queue_handler)
@@ -765,7 +812,8 @@ def _restore_direct_handlers() -> None:
         for name, handlers in _ROUTED_HANDLERS.items():
             logger = logging.getLogger(name)
             logger.handlers = [
-                handler for handler in logger.handlers
+                handler
+                for handler in logger.handlers
                 if not isinstance(handler, _RecordQueueHandler)
             ] + handlers
         _ROUTED_HANDLERS.clear()
@@ -820,8 +868,9 @@ def _acquire_routed_handler_locks_before_fork() -> None:
                     continue
                 seen.add(id(handler))
                 handler_lock = handler.lock
-                if (handler_lock is None or not handler_lock.acquire(
-                        timeout=max(0.0, deadline - time.monotonic()))):
+                if handler_lock is None or not handler_lock.acquire(
+                    timeout=max(0.0, deadline - time.monotonic())
+                ):
                     state.failure_reason = b'logging handler lock timed out'
                     return
                 state.acquired_handlers.append(handler)
@@ -863,9 +912,12 @@ def _discard_inherited_routed_handlers_after_unsafe_fork() -> None:
     for name in _ROUTED_HANDLERS:
         logger = logging.getLogger(name)
         logger.handlers = [
-            handler for handler in logger.handlers
-            if (not isinstance(handler, _RecordQueueHandler)
-                and id(handler) not in handler_ids)
+            handler
+            for handler in logger.handlers
+            if (
+                not isinstance(handler, _RecordQueueHandler)
+                and id(handler) not in handler_ids
+            )
         ]
     _ROUTED_HANDLERS.clear()
 

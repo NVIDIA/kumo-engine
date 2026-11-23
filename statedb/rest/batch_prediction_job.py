@@ -30,6 +30,7 @@ log = logging.getLogger(__name__)
 @kumo_dataclass
 class BatchPredictionJobConfig:
     """Captures persisted user options for initiating a batch prediction job."""
+
     predictive_query_id: PredictiveQueryID
     training_job_id: TrainingJobID
     task_type: TaskType
@@ -83,31 +84,44 @@ class BatchPredictionJobConfig:
             TaskType.MULTILABEL_CLASSIFICATION,
         }
 
-        if (task_type in thresholded_task_types
-                and binary_classification_threshold is None):
+        if (
+            task_type in thresholded_task_types
+            and binary_classification_threshold is None
+        ):
             self.binary_classification_threshold = 0.5
             binary_classification_threshold = 0.5
-            log.warning("`binary_classification_threshold` is not set "
-                        "for a thresholded classification task. "
-                        "Use 0.5 as the default value.")
+            log.warning(
+                '`binary_classification_threshold` is not set '
+                'for a thresholded classification task. '
+                'Use 0.5 as the default value.'
+            )
 
-        if (task_type in thresholded_task_types
-                and binary_classification_threshold is not None
-                and not 0 <= binary_classification_threshold <= 1):
+        if (
+            task_type in thresholded_task_types
+            and binary_classification_threshold is not None
+            and not 0 <= binary_classification_threshold <= 1
+        ):
             raise ValueError(
-                '`binary_classification_threshold` must be between 0 and 1.')
+                '`binary_classification_threshold` must be between 0 and 1.'
+            )
 
-        if (task_type not in thresholded_task_types
-                and binary_classification_threshold is not None):
+        if (
+            task_type not in thresholded_task_types
+            and binary_classification_threshold is not None
+        ):
             raise ValueError(
-                "`binary_classification_threshold` may not be present "
-                "for non-thresholded task types.")
+                '`binary_classification_threshold` may not be present '
+                'for non-thresholded task types.'
+            )
 
-        if (self.generate_pred_table_job_id
-                and self.custom_pred_table_source is not None):
+        if (
+            self.generate_pred_table_job_id
+            and self.custom_pred_table_source is not None
+        ):
             raise ValueError(
                 '"custom_pred_table_source" and '
                 '"generate_pred_table_job_id" cannot be set at the same time '
-                'in BatchPredictionJobConfig.')
+                'in BatchPredictionJobConfig.'
+            )
 
         return self

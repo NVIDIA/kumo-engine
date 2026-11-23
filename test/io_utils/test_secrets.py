@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Tests for io_utils.secrets — provider dispatch and chain fallback."""
+
 from unittest.mock import MagicMock
 
 import boto3
@@ -29,6 +30,7 @@ from service_framework._raw_deploy_config import SecretBackend
 
 class FakeProvider(SecretProvider):
     """In-memory provider for testing."""
+
     def __init__(self, secrets=None):
         self._secrets = dict(secrets or {})
 
@@ -44,6 +46,7 @@ class FakeProvider(SecretProvider):
 
 class BrokenProvider(SecretProvider):
     """Provider that always raises SecretAccessException."""
+
     def get_secret(self, name):
         raise SecretAccessException('backend unreachable')
 
@@ -82,21 +85,23 @@ def test_aws_invalid_response_redacts_secret_binary(monkeypatch, caplog):
         provider.get_secret('test-secret')
 
     assert str(error.value) == (
-        'AWS Secrets Manager response did not include SecretString')
+        'AWS Secrets Manager response did not include SecretString'
+    )
     assert secret_binary.decode() not in str(error.value)
     assert secret_binary.decode() not in repr(error.value)
     assert secret_binary.decode() not in caplog.text
 
 
-def test_aws_provider_error_is_sanitized_at_secret_boundary(
-        monkeypatch, caplog):
+def test_aws_provider_error_is_sanitized_at_secret_boundary(monkeypatch, caplog):
     canary = 'aws-provider-body password=secret-manager-canary'
     client = MagicMock()
     client.get_secret_value.side_effect = ClientError(
-        {'Error': {
-            'Code': 'AccessDenied',
-            'Message': canary,
-        }},
+        {
+            'Error': {
+                'Code': 'AccessDenied',
+                'Message': canary,
+            }
+        },
         'GetSecretValue',
     )
     monkeypatch.setattr(boto3, 'client', lambda **_kwargs: client)
@@ -114,8 +119,7 @@ def test_aws_provider_error_is_sanitized_at_secret_boundary(
     assert 'secret-manager-canary' not in rendered
 
 
-def test_gcp_provider_error_is_sanitized_at_secret_boundary(
-        monkeypatch, caplog):
+def test_gcp_provider_error_is_sanitized_at_secret_boundary(monkeypatch, caplog):
     canary = 'gcp-provider-body token=secret-manager-canary'
     client = MagicMock()
     client.access_secret_version.side_effect = GoogleAPIError(canary)

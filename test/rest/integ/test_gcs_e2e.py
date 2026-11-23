@@ -6,17 +6,11 @@
 Tests the full GCS workflow: connector creation, table ingestion, training,
 and batch prediction with output to GCS through the internal REST API.
 """
+
 import dataclasses
 import os
 import uuid
 from http import HTTPStatus
-from test.rest.integ import fixture_connector_args
-from test.rest.integ.gcs_connector_helpers import (
-    create_gcs_connector_in_project,
-    create_identity_backed_gcs_connector,
-    get_gcs_source_table,
-    load_gcs_test_identity,
-)
 from typing import List, Optional, Tuple
 
 import kumoapi.data_source as data_source_api
@@ -57,6 +51,13 @@ from statedb.config.common import (
     TrainingJobID,
 )
 from temporalio_commons import TemporalClient
+from test.rest.integ import fixture_connector_args
+from test.rest.integ.gcs_connector_helpers import (
+    create_gcs_connector_in_project,
+    create_identity_backed_gcs_connector,
+    get_gcs_source_table,
+    load_gcs_test_identity,
+)
 
 # Pool fixtures (storage_backend, _diskgraph_deploy_config, _pool_subprocesses)
 # live in ``test/rest/integ/conftest.py``. Without ``_pool_subprocesses`` the
@@ -66,8 +67,8 @@ from temporalio_commons import TemporalClient
 # This suite covers GCS-connector e2e, not storage-backend coverage —
 # only test_diskgraph_e2e.py needs the [s3] parametrize.
 pytestmark = [
-    pytest.mark.usefixtures("_pool_subprocesses"),
-    pytest.mark.parametrize("storage_backend", ["local"], indirect=True),
+    pytest.mark.usefixtures('_pool_subprocesses'),
+    pytest.mark.parametrize('storage_backend', ['local'], indirect=True),
 ]
 
 # GCS test bucket and paths
@@ -77,12 +78,12 @@ GCS_INTEG_TEST_PATH = 'integ_tests'
 
 def _get_gcs_financial_path() -> str:
     """Get the GCS path for FINANCIAL test data."""
-    return f"gs://{GCS_TEST_BUCKET}/{GCS_INTEG_TEST_PATH}/FINANCIAL"
+    return f'gs://{GCS_TEST_BUCKET}/{GCS_INTEG_TEST_PATH}/FINANCIAL'
 
 
 def _get_gcs_financial_e2e_path() -> str:
     """Get the GCS path for FINANCIAL_E2E test data."""
-    return f"gs://{GCS_TEST_BUCKET}/{GCS_INTEG_TEST_PATH}/FINANCIAL_E2E"
+    return f'gs://{GCS_TEST_BUCKET}/{GCS_INTEG_TEST_PATH}/FINANCIAL_E2E'
 
 
 def _generate_unique_suffix() -> str:
@@ -141,8 +142,8 @@ async def _create_table_from_connector(
         end_time_col=None,
     )
     assert table_def is not None, (
-        "TableDefinition._build_from_inputs returned None "
-        f"for {source_table_name!r}")
+        f'TableDefinition._build_from_inputs returned None for {source_table_name!r}'
+    )
     post_and_expect_success(
         client,
         '/v1/tables/',
@@ -157,6 +158,7 @@ async def _create_table_from_connector(
 @pytest.mark.asyncio
 class TestGCSE2EFlow:
     """End-to-end tests for GCS using internal API flow."""
+
     @withGCSCredentials
     async def test_gcs_full_e2e_flow(
         self,
@@ -185,7 +187,8 @@ class TestGCSE2EFlow:
         # authenticated test principal access through the project's immutable
         # group before exercising public training and prediction routes.
         membership_response = client.put(
-            f'/v0/groups/{output_setup.group_id}/all-authenticated-users')
+            f'/v0/groups/{output_setup.group_id}/all-authenticated-users'
+        )
         assert membership_response.status_code == HTTPStatus.NO_CONTENT
 
         # Step 1: Create GCS connectors
@@ -207,18 +210,17 @@ class TestGCSE2EFlow:
             identity_id=output_setup.identity_id,
         )
         project_id = str(project_id)
-        fixture_connector_args.bind_test_client_project(public_api_client,
-                                                        project_id)
+        fixture_connector_args.bind_test_client_project(public_api_client, project_id)
 
         # Step 2: Wait for source tables to be discovered
-        source_tables = _wait_for_source_tables(client, project_id,
-                                                financial_connector)
+        source_tables = _wait_for_source_tables(client, project_id, financial_connector)
         table_names = set(source_tables.table_names)
         assert 'ACCOUNT' in table_names
         assert 'TRANS' in table_names
 
-        source_tables_e2e = _wait_for_source_tables(client, project_id,
-                                                    financial_e2e_connector)
+        source_tables_e2e = _wait_for_source_tables(
+            client, project_id, financial_e2e_connector
+        )
         e2e_table_names = set(source_tables_e2e.table_names)
         assert 'LOAN' in e2e_table_names
 
@@ -261,11 +263,13 @@ class TestGCSE2EFlow:
                 loan_name: loan_table_def,
             },
             col_groups=[
-                ColumnKeyGroup(columns=(
-                    ColumnKey(table_name=account_name, col_name='ACCOUNT_ID'),
-                    ColumnKey(table_name=trans_name, col_name='ACCOUNT_ID'),
-                    ColumnKey(table_name=loan_name, col_name='ACCOUNT_ID'),
-                )),
+                ColumnKeyGroup(
+                    columns=(
+                        ColumnKey(table_name=account_name, col_name='ACCOUNT_ID'),
+                        ColumnKey(table_name=trans_name, col_name='ACCOUNT_ID'),
+                        ColumnKey(table_name=loan_name, col_name='ACCOUNT_ID'),
+                    )
+                ),
             ],
         )
         graph_id = post_and_expect_success(
@@ -279,15 +283,14 @@ class TestGCSE2EFlow:
         # Step 5: Create predictive query (v2)
         # Note: Table names in query must match the created table names (with suffix)
         pquery_name = f'gcs_pquery_{suffix}'
-        graph_def_internal = RestGraphDefinition(
-            **dataclasses.asdict(graph_def))
+        graph_def_internal = RestGraphDefinition(**dataclasses.asdict(graph_def))
         post_and_expect_success(
             client,
             '/v1/predictive_queries/',
             pquery_api.PQueryResource(
                 name=pquery_name,
                 query_string=f"PREDICT LAST(LOAN_{suffix}.STATUS, 0, 30) = 'A' "
-                f"FOR EACH ACCOUNT_{suffix}.ACCOUNT_ID",
+                f'FOR EACH ACCOUNT_{suffix}.ACCOUNT_ID',
                 graph=graph_def_internal,
                 desc='gcs e2e',
             ),
@@ -311,8 +314,9 @@ class TestGCSE2EFlow:
         )
         assert training_job.job_status_report.status.is_submitted
 
-        await wait_for_training_job_to_finish(TrainingJobID(training_job_id),
-                                              temporal_client)
+        await wait_for_training_job_to_finish(
+            TrainingJobID(training_job_id), temporal_client
+        )
 
         # Verify training completed
         training_job = get_and_expect_success(
@@ -326,28 +330,36 @@ class TestGCSE2EFlow:
         # Step 6b: Verify train table presigned URLs work for GCS
         # This exercises presign_parquet_table_data() with a GCS path
         train_table_job_id = GenerateTrainTableJobID.as_child_of(
-            TrainingJobID(training_job.job_id))
+            TrainingJobID(training_job.job_id)
+        )
         train_table_urls = get_and_expect_success(
             public_api_client,
             f'/v1/gentraintable_jobs/{train_table_job_id}/table_data',
             {},
             List[str],
         )
-        assert len(train_table_urls) > 0, \
-            "Expected at least one presigned URL for train table data"
+        assert len(train_table_urls) > 0, (
+            'Expected at least one presigned URL for train table data'
+        )
 
         # Step 8: Run batch prediction with GCS output (predictions + embeddings)
-        gcs_predictions_path = (f"gs://{GCS_TEST_BUCKET}/{GCS_INTEG_TEST_PATH}/"
-                                f"predictions/{suffix}/")
-        gcs_embeddings_path = (f"gs://{GCS_TEST_BUCKET}/{GCS_INTEG_TEST_PATH}/"
-                               f"embeddings/{suffix}/")
+        gcs_predictions_path = (
+            f'gs://{GCS_TEST_BUCKET}/{GCS_INTEG_TEST_PATH}/predictions/{suffix}/'
+        )
+        gcs_embeddings_path = (
+            f'gs://{GCS_TEST_BUCKET}/{GCS_INTEG_TEST_PATH}/embeddings/{suffix}/'
+        )
 
         # The v2 batch-prediction path requires an explicit graph snapshot.
         bp_snapshot_id = GraphSnapshotID(
             post_and_expect_success(
                 public_api_client,
                 f'/v1/graphsnapshots?graph_id={graph_id}&refresh_source=true',
-                {}, IDResponse, project_id=project_id).id)
+                {},
+                IDResponse,
+                project_id=project_id,
+            ).id
+        )
 
         predict_request = api.BatchPredictionRequest(
             {},
@@ -384,7 +396,8 @@ class TestGCSE2EFlow:
         # The v2 path does not set `current_batch_prediction_job_id` on the
         # pquery, so wait on the returned job id directly.
         await wait_for_prediction_job_to_finish(
-            BatchPredictionJobID(predict_job_id), temporal_client)
+            BatchPredictionJobID(predict_job_id), temporal_client
+        )
 
         # Verify prediction completed
         predict_job = get_and_expect_success(
@@ -396,17 +409,18 @@ class TestGCSE2EFlow:
         assert predict_job.job_status_report.status == JobStatus.DONE
 
         # Step 9: Verify prediction output exists in customer-specified GCS path
-        assert fsutil.exists(gcs_predictions_path), \
-            f"Prediction output not found: {gcs_predictions_path}"
+        assert fsutil.exists(gcs_predictions_path), (
+            f'Prediction output not found: {gcs_predictions_path}'
+        )
 
         # Read and verify prediction output from GCS
         prediction_files = fsutil.listdir(gcs_predictions_path)
         parquet_files = [f for f in prediction_files if f.endswith('.parquet')]
-        assert len(parquet_files) > 0, "Expected at least one parquet file"
+        assert len(parquet_files) > 0, 'Expected at least one parquet file'
 
         # Read the first parquet file to verify content (listdir returns full paths)
         df = pd.read_parquet(parquet_files[0])
-        assert len(df) > 0, "Prediction output should have rows"
+        assert len(df) > 0, 'Prediction output should have rows'
 
         # Step 10: Get prediction results via presigned URLs from internal storage
         # Kumo stores predictions internally, then copies to customer location.
@@ -417,14 +431,14 @@ class TestGCSE2EFlow:
             {},
             api.GetPredictionsDfUrlResponse,
         )
-        assert len(prediction_urls_response.prediction_partitions) > 0, \
-            "Expected at least one prediction URL from internal storage"
+        assert len(prediction_urls_response.prediction_partitions) > 0, (
+            'Expected at least one prediction URL from internal storage'
+        )
 
         # Verify we can read predictions via presigned URL
         for url in prediction_urls_response.prediction_partitions[:1]:
             df = pd.read_parquet(url)
-            assert len(
-                df) > 0, "Prediction from internal storage should have rows"
+            assert len(df) > 0, 'Prediction from internal storage should have rows'
 
         # Step 11: Verify embeddings output via public API
         # This tests the embeddings functionality that SDK uses via predictions_job.embeddings_df()
@@ -434,17 +448,16 @@ class TestGCSE2EFlow:
             {},
             api.GetEmbeddingsDfUrlResponse,
         )
-        assert len(embeddings_urls_response.embedding_partitions) > 0, \
-            "Expected at least one embeddings URL from internal storage"
+        assert len(embeddings_urls_response.embedding_partitions) > 0, (
+            'Expected at least one embeddings URL from internal storage'
+        )
 
         # Verify we can read embeddings via presigned URL
         for url in embeddings_urls_response.embedding_partitions[:1]:
             df = pd.read_parquet(url)
-            assert len(
-                df) > 0, "Embeddings from internal storage should have rows"
+            assert len(df) > 0, 'Embeddings from internal storage should have rows'
             # Embeddings should have many columns (one per dimension)
-            assert len(
-                df.columns) > 1, "Embeddings should have multiple columns"
+            assert len(df.columns) > 1, 'Embeddings should have multiple columns'
 
     @withGCSCredentials
     async def test_gcs_connector_invalid_bucket(
@@ -471,13 +484,14 @@ class TestGCSE2EFlow:
                 ),
             ),
             HTTPStatus.UNPROCESSABLE_ENTITY,
-            "Connector target validation failed",
+            'Connector target validation failed',
         )
 
 
 @pytest.mark.asyncio
 class TestGCSConnectorOnly:
     """Tests for GCS connector creation and source table operations."""
+
     @withGCSCredentials
     async def test_gcs_connector_source_tables(
         self,
@@ -496,14 +510,16 @@ class TestGCSConnectorOnly:
             identity_credentials=identity_credentials,
         )
 
-        source_tables = _wait_for_source_tables(client, setup.project_id,
-                                                setup.connector_id)
+        source_tables = _wait_for_source_tables(
+            client, setup.project_id, setup.connector_id
+        )
         assert len(source_tables.table_names) > 0
 
         table_names = set(source_tables.table_names)
         expected_tables = {'ACCOUNT', 'LOAN', 'TRANS', 'CLIENT', 'DISP'}
-        assert expected_tables.issubset(table_names), \
-            f"Missing tables: {expected_tables - table_names}"
+        assert expected_tables.issubset(table_names), (
+            f'Missing tables: {expected_tables - table_names}'
+        )
 
     @withGCSCredentials
     async def test_gcs_connector_sample_rows(
@@ -525,8 +541,7 @@ class TestGCSConnectorOnly:
 
         sample_response = get_and_expect_success(
             client,
-            (f'/v0/projects/{setup.project_id}/connectors/'
-             f'{setup.connector_id}/sample'),
+            (f'/v0/projects/{setup.project_id}/connectors/{setup.connector_id}/sample'),
             {'table_name': 'LOAN'},
             SourceTableDataResponse,
         )
@@ -535,5 +550,6 @@ class TestGCSConnectorOnly:
 
         col_names = {c.name for c in sample_response.cols}
         expected_cols = {'LOAN_ID', 'ACCOUNT_ID', 'AMOUNT', 'STATUS'}
-        assert expected_cols.issubset(col_names), \
-            f"Missing columns: {expected_cols - col_names}"
+        assert expected_cols.issubset(col_names), (
+            f'Missing columns: {expected_cols - col_names}'
+        )

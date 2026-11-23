@@ -13,18 +13,18 @@ from kumo_s3.session import AWS_NAMESPACE, ambient_session, bucket_region, files
 #: those: everything eager above is the binding the platform uses too, and
 #: stays cheap for it.
 _LAZY_EXPORTS = {
-    "S3SourceBackend": "backend",
-    "S3SinkBackend": "sink",
-    "probe": "backend",
-    "source_access": "access",
+    'S3SourceBackend': 'backend',
+    'S3SinkBackend': 'sink',
+    'probe': 'backend',
+    'source_access': 'access',
 }
 
 __all__ = [
-    "AWS_NAMESPACE",
-    "ambient_session",
-    "bucket_region",
-    "filesystem",
-    "translated",
+    'AWS_NAMESPACE',
+    'ambient_session',
+    'bucket_region',
+    'filesystem',
+    'translated',
     *sorted(_LAZY_EXPORTS),
 ]
 

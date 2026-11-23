@@ -20,18 +20,18 @@ from temporalio_commons.error_utils import (
 
 def _make_timeout_error(timeout_type):
     """Create a TimeoutError with the given type."""
-    return TimeoutError("timeout", type=timeout_type, last_heartbeat_details=[])
+    return TimeoutError('timeout', type=timeout_type, last_heartbeat_details=[])
 
 
 def _wrap_in_activity_error(cause):
     """Wrap an exception in an ActivityError."""
     err = ActivityError(
-        message="activity failed",
+        message='activity failed',
         scheduled_event_id=1,
         started_event_id=2,
-        identity="",
-        activity_type="generate_training_table",
-        activity_id="1",
+        identity='',
+        activity_type='generate_training_table',
+        activity_id='1',
         retry_state=None,
     )
     err.__cause__ = cause
@@ -41,11 +41,11 @@ def _wrap_in_activity_error(cause):
 def _wrap_in_child_workflow_error(cause):
     """Wrap an exception in a ChildWorkflowError."""
     err = ChildWorkflowError(
-        message="child workflow failed",
-        namespace="default",
-        workflow_id="wf-123",
-        run_id="run-456",
-        workflow_type="GenerateTrainingTableWorkflow",
+        message='child workflow failed',
+        namespace='default',
+        workflow_id='wf-123',
+        run_id='run-456',
+        workflow_type='GenerateTrainingTableWorkflow',
         initiated_event_id=1,
         started_event_id=2,
         retry_state=None,
@@ -57,6 +57,7 @@ def _wrap_in_child_workflow_error(cause):
 class TestExtractPublicExceptionTimeout:
     """Tests that extract_public_exception handles TimeoutError correctly,
     producing user-friendly messages instead of raw Temporal strings."""
+
     def test_schedule_to_close_timeout_via_activity_error(self):
         timeout = _make_timeout_error(TimeoutType.SCHEDULE_TO_CLOSE)
         activity_err = _wrap_in_activity_error(timeout)
@@ -136,8 +137,7 @@ class TestExtractPublicExceptionTimeout:
         assert 'timed out' in result.get_user_message()
 
     def test_timeout_with_no_type(self):
-        timeout = TimeoutError("unknown timeout", type=None,
-                               last_heartbeat_details=[])
+        timeout = TimeoutError('unknown timeout', type=None, last_heartbeat_details=[])
 
         result = extract_public_exception(timeout)
 
@@ -146,7 +146,7 @@ class TestExtractPublicExceptionTimeout:
 
     def test_application_error_still_works(self):
         """Existing ApplicationError handling is not broken."""
-        app_err = ApplicationError(message="Something went wrong")
+        app_err = ApplicationError(message='Something went wrong')
         activity_err = _wrap_in_activity_error(app_err)
 
         result = extract_public_exception(activity_err)
@@ -165,11 +165,11 @@ class TestExtractPublicExceptionTimeout:
         """
         # Simulate the prior failure: ApplicationError wrapping a PublicException
         # Note: ApplicationError takes details as *args, not keyword
-        public_ex = PublicException(message="DiskGraph worker OOM")
+        public_ex = PublicException(message='DiskGraph worker OOM')
         prior_app_err = ApplicationError(
-            "activity failed",
+            'activity failed',
             public_ex.to_dict(),
-            type="DiskGraphError",
+            type='DiskGraphError',
         )
         prior_activity_err = _wrap_in_activity_error(prior_app_err)
 
@@ -188,7 +188,7 @@ class TestExtractPublicExceptionTimeout:
         """TimeoutError.__cause__ without PublicException falls back to
         generic timeout message."""
         timeout = _make_timeout_error(TimeoutType.SCHEDULE_TO_CLOSE)
-        timeout.__cause__ = ValueError("some internal error")
+        timeout.__cause__ = ValueError('some internal error')
 
         result = extract_public_exception(timeout)
 
@@ -197,7 +197,7 @@ class TestExtractPublicExceptionTimeout:
 
     def test_none_for_unknown_error(self):
         """Non-Temporal errors without PublicException still return None."""
-        cause = ValueError("bad input")
+        cause = ValueError('bad input')
         activity_err = _wrap_in_activity_error(cause)
 
         result = extract_public_exception(activity_err)
@@ -207,6 +207,7 @@ class TestExtractPublicExceptionTimeout:
 
 class TestWfFailureToTemporalTrace:
     """Tests for the internal trace builder used in JobFailureInfo."""
+
     def test_heartbeat_timeout_trace_matches_public_semantics(self):
         """The heartbeat-timeout trace states that the worker process died
         or was restarted (commonly OOM) and does not advise a plain retry,

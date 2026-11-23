@@ -6,4 +6,4 @@ from kumo.utils.text import Tokenizer
 
 
 def test_tokenizer_remains_service_independent():
-    assert Tokenizer()("Hello, world!") == ["hello", "world"]
+    assert Tokenizer()('Hello, world!') == ['hello', 'world']

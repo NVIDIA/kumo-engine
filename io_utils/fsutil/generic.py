@@ -5,6 +5,7 @@
 This file is deprecated. Add new functionality to api.py
 and filesystem-specific implementations to impl_*.py
 """
+
 import logging
 import multiprocessing as mp
 import os
@@ -73,8 +74,9 @@ def is_gcs(path: str) -> bool:
 
 def is_adls(path: str) -> bool:
     """Check if path is an ADLS URI (abfss:// or abfs://)"""
-    return isinstance(path, str) and (path.startswith('abfss://')
-                                      or path.startswith('abfs://'))
+    return isinstance(path, str) and (
+        path.startswith('abfss://') or path.startswith('abfs://')
+    )
 
 
 # TODO (min) Move the s3 specific utility functions into a separate
@@ -159,8 +161,13 @@ def _rewrite_uri(path: str) -> tuple[uri.AnyURI, str]:
 
 
 @generic_logging_policy(allowed_exceptions=FileNotFoundError)
-@retry(exceptions=(RuntimeError, BlockingIOError), tries=2, delay=1, backoff=2,
-       logger=logger)
+@retry(
+    exceptions=(RuntimeError, BlockingIOError),
+    tries=2,
+    delay=1,
+    backoff=2,
+    logger=logger,
+)
 def copy_file(
     src: str,
     dst: str,
@@ -179,7 +186,7 @@ def copy_file(
         dst = os.path.join(dst, os.path.basename(src))
     if not overwrite and api.exists(dst):
         if raise_on_exists:
-            raise FileExistsError(f"File {dst} already exists")
+            raise FileExistsError(f'File {dst} already exists')
         return
 
     src_uri, src = _rewrite_uri(src)
@@ -191,39 +198,42 @@ def copy_file(
         if isinstance(src_uri, uri.UCURI) or isinstance(dst_uri, uri.UCURI):
             # Runtime import UCV
             from io_utils.fsutil import impl_ucv
+
             impl_ucv.copy_file(src, dst)
         elif isinstance(src_uri, uri.S3URI) and isinstance(dst_uri, uri.S3URI):
             from io_utils.fsutil import s3_filesystem as s3_util
+
             s3_util.copy_file(src, dst)
-        elif isinstance(src_uri, uri.S3URI) and isinstance(
-                dst_uri, uri.LocalURI):
+        elif isinstance(src_uri, uri.S3URI) and isinstance(dst_uri, uri.LocalURI):
             from io_utils.fsutil import s3_filesystem as s3_util
+
             s3_util.download_file(src, dst)
-        elif isinstance(src_uri, uri.LocalURI) and isinstance(
-                dst_uri, uri.S3URI):
+        elif isinstance(src_uri, uri.LocalURI) and isinstance(dst_uri, uri.S3URI):
             from io_utils.fsutil import s3_filesystem as s3_util
+
             s3_util.put_file(src, dst)
         elif isinstance(src_uri, uri.GCSURI) or isinstance(dst_uri, uri.GCSURI):
             from io_utils.fsutil.impl_gcs import copy_file as _gcs_copy_file
+
             _gcs_copy_file(src, dst)
-        elif isinstance(src_uri, uri.ADLSURI) or isinstance(
-                dst_uri, uri.ADLSURI):
+        elif isinstance(src_uri, uri.ADLSURI) or isinstance(dst_uri, uri.ADLSURI):
             # ADLS handling
             from io_utils.fsutil.impl_adls import copy_file
+
             copy_file(src, dst)
         else:
             shutil.copyfile(src, dst)
     except FileNotFoundError:
-        logger.error('Source file copy failed '
-                     '(error_type=FileNotFoundError)')
+        logger.error('Source file copy failed (error_type=FileNotFoundError)')
         source_missing = True
     except Exception as error:
         logger.error('File copy failed (error_type=%s)', type(error).__name__)
         try:
             api.rm(dst)  # cleanup before retry
         except Exception as cleanup_error:
-            logger.error('File copy cleanup failed (error_type=%s)',
-                         type(cleanup_error).__name__)
+            logger.error(
+                'File copy cleanup failed (error_type=%s)', type(cleanup_error).__name__
+            )
         copy_failed = True
 
     # Raise outside the provider exception handler so the stable exception has
@@ -277,40 +287,64 @@ def copy(
     del enable_multi_process, pool
     if src_path == dst_path:
         return
-    logger.info("Copying %s to %s", src_path, dst_path)
-    if (is_s3(src_path) and is_s3(dst_path) and api.isdir(src_path)
-            and overwrite is True and raise_on_exists is False):
+    logger.info('Copying %s to %s', src_path, dst_path)
+    if (
+        is_s3(src_path)
+        and is_s3(dst_path)
+        and api.isdir(src_path)
+        and overwrite is True
+        and raise_on_exists is False
+    ):
         # Use highly optimized S3 copy, if overwrite is allowed
         if include or exclude:
-            raise NotImplementedError("include and exclude are currently not "
-                                      "supported for s3 to s3 copy")
+            raise NotImplementedError(
+                'include and exclude are currently not supported for s3 to s3 copy'
+            )
         from io_utils.fsutil import s3_filesystem as s3_util
+
         s3_util.copydir(src_path, dst_path)
         return
-    if (is_adls(src_path) and is_adls(dst_path) and api.isdir(src_path)
-            and overwrite is True and raise_on_exists is False):
+    if (
+        is_adls(src_path)
+        and is_adls(dst_path)
+        and api.isdir(src_path)
+        and overwrite is True
+        and raise_on_exists is False
+    ):
         if include or exclude:
-            raise NotImplementedError("include and exclude are currently not "
-                                      "supported for adls to adls copy")
+            raise NotImplementedError(
+                'include and exclude are currently not supported for adls to adls copy'
+            )
         from io_utils.fsutil.impl_adls import copydir
+
         copydir(src_path, dst_path)
         return
-    if (is_gcs(src_path) and is_gcs(dst_path) and api.isdir(src_path)
-            and overwrite is True and raise_on_exists is False):
+    if (
+        is_gcs(src_path)
+        and is_gcs(dst_path)
+        and api.isdir(src_path)
+        and overwrite is True
+        and raise_on_exists is False
+    ):
         if include or exclude:
-            raise NotImplementedError("include and exclude are currently not "
-                                      "supported for gcs to gcs copy")
+            raise NotImplementedError(
+                'include and exclude are currently not supported for gcs to gcs copy'
+            )
         from io_utils.fsutil.impl_gcs import copydir as gcs_copydir
+
         gcs_copydir(src_path, dst_path)
         return
 
     # TODO(dong): use shutil.copytree, s3 copy, put, get when exclude is empty.
     # For files, copy the file.
-    if not api.isdir(src_path) and not should_exclude(
-            src_path, exclude=exclude) and should_include(
-                src_path, include=include):
-        copy_file(src_path, dst_path, overwrite=overwrite,
-                  raise_on_exists=raise_on_exists)
+    if (
+        not api.isdir(src_path)
+        and not should_exclude(src_path, exclude=exclude)
+        and should_include(src_path, include=include)
+    ):
+        copy_file(
+            src_path, dst_path, overwrite=overwrite, raise_on_exists=raise_on_exists
+        )
         return
 
     if not api.exists(dst_path):
@@ -320,21 +354,30 @@ def copy(
 
     def _entry_filter(name: str) -> bool:
         return not should_exclude(name, exclude=exclude) and should_include(
-            name, include=include)
+            name, include=include
+        )
 
     # 32 matches _copy_files_with_scoped_threads' default concurrency: on a
     # 2,426-file/10.45GB GCS tree, serial listing + transfer took 414.7s
     # (25.2 MB/s); walking and transferring concurrently at this width took
     # 25.7s (406.4 MB/s).
     max_workers = 32
-    transfers = api.walk_directory_tree(src_path.rstrip('/'), dst_path,
-                                        max_workers=max_workers,
-                                        entry_filter=_entry_filter)
+    transfers = api.walk_directory_tree(
+        src_path.rstrip('/'),
+        dst_path,
+        max_workers=max_workers,
+        entry_filter=_entry_filter,
+    )
     if not transfers:
         return
 
-    logger.info("copy: %d files %s -> %s (workers=%d)", len(transfers),
-                src_path, dst_path, max_workers)
+    logger.info(
+        'copy: %d files %s -> %s (workers=%d)',
+        len(transfers),
+        src_path,
+        dst_path,
+        max_workers,
+    )
     _copy_files_with_scoped_threads(
         [(src, dst, overwrite, raise_on_exists) for src, dst in transfers],
         max_workers=max_workers,
@@ -406,7 +449,8 @@ def copy_tree_threaded(
         # copy() takes list-pattern excludes only, not a callable predicate.
         assert exclude is None, (
             'copy_tree_threaded: a callable `exclude` predicate is not '
-            'supported for remote sources.')
+            'supported for remote sources.'
+        )
         copy(
             src_dir,
             dst_dir,
@@ -423,13 +467,12 @@ def copy_tree_threaded(
     transfers: List[tuple] = []
     for root, _dirs, files in os.walk(src_root):
         rel = osp.relpath(root, src_root)
-        is_top = (rel == '.')
+        is_top = rel == '.'
         for fname in files:
             src = osp.join(root, fname)
             if exclude is not None and exclude(src):
                 continue
-            dst = (osp.join(dst_dir, fname) if is_top else osp.join(
-                dst_dir, rel, fname))
+            dst = osp.join(dst_dir, fname) if is_top else osp.join(dst_dir, rel, fname)
             transfers.append((src, dst))
 
     if not transfers:
@@ -445,13 +488,16 @@ def copy_tree_threaded(
     for parent in sorted(parent_dirs):
         api.makedirs(parent, exist_ok=True)
 
-    logger.info("copy_tree_threaded: %d files %s -> %s (workers=%d)",
-                len(transfers), src_dir, dst_dir, max_workers)
+    logger.info(
+        'copy_tree_threaded: %d files %s -> %s (workers=%d)',
+        len(transfers),
+        src_dir,
+        dst_dir,
+        max_workers,
+    )
 
     with ContextPropagatingThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = [
-            pool.submit(copy_file, src, dst, True) for src, dst in transfers
-        ]
+        futures = [pool.submit(copy_file, src, dst, True) for src, dst in transfers]
         for fut in as_completed(futures):
             fut.result()  # surfaces the first failure
 
@@ -462,13 +508,16 @@ def _terminate_pool_best_effort(pool: Optional[Pool]) -> None:
     try:
         pool.terminate()
     except Exception as error:
-        logger.error('Directory copy pool termination failed (error_type=%s)',
-                     type(error).__name__)
+        logger.error(
+            'Directory copy pool termination failed (error_type=%s)',
+            type(error).__name__,
+        )
     try:
         pool.join()
     except Exception as error:
-        logger.error('Directory copy pool join failed (error_type=%s)',
-                     type(error).__name__)
+        logger.error(
+            'Directory copy pool join failed (error_type=%s)', type(error).__name__
+        )
 
 
 def _copy_files_with_scoped_threads(
@@ -487,11 +536,10 @@ def _copy_files_with_scoped_threads(
         return
     futures = []
     with ContextPropagatingThreadPoolExecutor(
-            max_workers=min(max_workers, len(transfers))) as executor:
+        max_workers=min(max_workers, len(transfers))
+    ) as executor:
         try:
-            futures = [
-                executor.submit(copy_file, *transfer) for transfer in transfers
-            ]
+            futures = [executor.submit(copy_file, *transfer) for transfer in transfers]
             for future in as_completed(futures):
                 future.result()
         except BaseException:
@@ -542,13 +590,16 @@ def copy_one_level_directory(
     """
     if src_path == dst_path:
         return
-    logger.info("Copying %s to %s", src_path, dst_path)
+    logger.info('Copying %s to %s', src_path, dst_path)
 
-    if not api.isdir(src_path) and not should_exclude(
-            src_path, exclude=exclude) and should_include(
-                src_path, include=include):
-        copy_file(src_path, dst_path, overwrite=overwrite,
-                  raise_on_exists=raise_on_exists)
+    if (
+        not api.isdir(src_path)
+        and not should_exclude(src_path, exclude=exclude)
+        and should_include(src_path, include=include)
+    ):
+        copy_file(
+            src_path, dst_path, overwrite=overwrite, raise_on_exists=raise_on_exists
+        )
         return
 
     pool = None
@@ -556,15 +607,15 @@ def copy_one_level_directory(
     destination_exists = False
     try:
         api.makedirs(dst_path, exist_ok=not raise_on_exists)
-        src_path = (src_path +
-                    os.sep if not src_path.endswith(os.sep) else src_path)
+        src_path = src_path + os.sep if not src_path.endswith(os.sep) else src_path
 
         # For directories, copy the files in the directory recursively.
         transfers: List[tuple[str, str, bool, bool]] = []
         for src_entry in api.listdir(src_path):  # type: ignore
             entry = os.path.basename(src_entry)
-            if should_exclude(entry, exclude) or \
-                    not should_include(entry, include=include):
+            if should_exclude(entry, exclude) or not should_include(
+                entry, include=include
+            ):
                 continue
 
             dst_entry = os.path.join(dst_path, entry)
@@ -575,11 +626,9 @@ def copy_one_level_directory(
             _copy_files_with_scoped_threads(transfers)
         else:
             processes = min(32, mp.cpu_count())
-            logger.info(f"Copy {src_path} to {dst_path} with {processes=}")
+            logger.info(f'Copy {src_path} to {dst_path} with {processes=}')
             pool = Pool(processes=processes)
-            futures = [
-                pool.apply_async(copy_file, transfer) for transfer in transfers
-            ]
+            futures = [pool.apply_async(copy_file, transfer) for transfer in transfers]
             pool.close()
             pool.join()
             # Handle any errors from the worker processes
@@ -587,8 +636,7 @@ def copy_one_level_directory(
                 future.get()
     except Exception as error:
         _terminate_pool_best_effort(pool)
-        logger.error('Directory copy failed (error_type=%s)',
-                     type(error).__name__)
+        logger.error('Directory copy failed (error_type=%s)', type(error).__name__)
         if isinstance(error, FileExistsError):
             destination_exists = True
         else:
@@ -626,13 +674,16 @@ def copy_two_level_directory(
     """
     if src_path == dst_path:
         return
-    logger.info("Copying %s to %s", src_path, dst_path)
+    logger.info('Copying %s to %s', src_path, dst_path)
 
-    if not api.isdir(src_path) and not should_exclude(
-            src_path, exclude=exclude) and should_include(
-                src_path, include=include):
-        copy_file(src_path, dst_path, overwrite=overwrite,
-                  raise_on_exists=raise_on_exists)
+    if (
+        not api.isdir(src_path)
+        and not should_exclude(src_path, exclude=exclude)
+        and should_include(src_path, include=include)
+    ):
+        copy_file(
+            src_path, dst_path, overwrite=overwrite, raise_on_exists=raise_on_exists
+        )
         return
 
     pool = None
@@ -641,14 +692,14 @@ def copy_two_level_directory(
     try:
         api.makedirs(dst_path, exist_ok=not raise_on_exists)
 
-        src_path = (src_path +
-                    os.sep if not src_path.endswith(os.sep) else src_path)
+        src_path = src_path + os.sep if not src_path.endswith(os.sep) else src_path
         # For directories, copy the files in the directory recursively.
         transfers: List[tuple[str, str, bool, bool]] = []
         for src_entry in api.listdir(src_path):  # type: ignore
             entry = os.path.basename(src_entry)
-            if (should_exclude(entry, exclude)
-                    or not should_include(entry, include=include)):
+            if should_exclude(entry, exclude) or not should_include(
+                entry, include=include
+            ):
                 continue
 
             dst_entry = os.path.join(dst_path, entry)
@@ -657,34 +708,34 @@ def copy_two_level_directory(
                 api.makedirs(dst_entry, exist_ok=not raise_on_exists)
                 for src_entry_2 in api.listdir(src_entry):  # type: ignore
                     filename = os.path.basename(src_entry_2)
-                    if (should_exclude(filename, exclude)
-                            or not should_include(filename, include=include)):
+                    if should_exclude(filename, exclude) or not should_include(
+                        filename, include=include
+                    ):
                         continue
                     dst_entry_2 = os.path.join(dst_entry, filename)
                     transfers.append(
-                        (src_entry_2, dst_entry_2, overwrite, raise_on_exists))
+                        (src_entry_2, dst_entry_2, overwrite, raise_on_exists)
+                    )
             else:
-                transfers.append(
-                    (src_entry, dst_entry, overwrite, raise_on_exists))
+                transfers.append((src_entry, dst_entry, overwrite, raise_on_exists))
 
         if has_filesystem_credential_scope():
             logger.info('Copy %s to %s with scoped threads', src_path, dst_path)
             _copy_files_with_scoped_threads(transfers)
         else:
             processes = min(32, mp.cpu_count())
-            logger.info(f"Copy {src_path} to {dst_path} with {processes=}")
+            logger.info(f'Copy {src_path} to {dst_path} with {processes=}')
             pool = Pool(processes=processes)
-            results = [
-                pool.apply_async(copy_file, transfer) for transfer in transfers
-            ]
+            results = [pool.apply_async(copy_file, transfer) for transfer in transfers]
             pool.close()
             pool.join()
             for result in results:
                 result.get()
     except Exception as error:
         _terminate_pool_best_effort(pool)
-        logger.error('Two-level directory copy failed (error_type=%s)',
-                     type(error).__name__)
+        logger.error(
+            'Two-level directory copy failed (error_type=%s)', type(error).__name__
+        )
         if isinstance(error, FileExistsError):
             destination_exists = True
         else:
@@ -729,11 +780,12 @@ def torch_save(obj: Any, path: str, **kwargs):
         path (str): Can be S3 or a local filesystem path.
     """
     import torch
+
     if is_local(path):
         torch.save(obj, path, **kwargs)
     else:
         with TemporaryDirectory() as tmp_dir:
-            tmp_path = os.path.join(tmp_dir, "tmp_file")
+            tmp_path = os.path.join(tmp_dir, 'tmp_file')
             torch.save(obj, tmp_path, **kwargs)
             copy_file(tmp_path, path, overwrite=True)
 
@@ -746,22 +798,23 @@ def torch_load(path: str, **kwargs):
         path (str): Can be S3 or a local filesystem path.
     """
     import torch
-    logger.info(f"torch_load {path}")
+
+    logger.info(f'torch_load {path}')
     if is_local(path):
         return torch.load(path, **kwargs)
 
-    if "mmap" in kwargs:
-        raise ValueError("Cannot mmap against non-local path")
+    if 'mmap' in kwargs:
+        raise ValueError('Cannot mmap against non-local path')
 
     with TemporaryDirectory() as tmp_dir:
-        tmp_path = os.path.join(tmp_dir, "tmp_file")
+        tmp_path = os.path.join(tmp_dir, 'tmp_file')
         copy_file(path, tmp_path)
         return torch.load(tmp_path, **kwargs)
 
 
 def file_tree(path: str, *, eol='\n', level=0) -> str:
-    tree = f"{'--' * level}> {osp.basename(path)}"
+    tree = f'{"--" * level}> {osp.basename(path)}'
     if api.isdir(path):
         for sub in api.listdir(path):
-            tree += f"{eol}{file_tree(sub, eol=eol, level=level+1)}"
+            tree += f'{eol}{file_tree(sub, eol=eol, level=level + 1)}'
     return tree

@@ -45,14 +45,14 @@ from statedb.rest import rest_api_db_entries as rest_db
 class JobSortField(str, Enum):
     """Enum for job list sorting fields."""
 
-    JOB_ID = "job_id"
-    JOB_TYPE = "metadata.job_type"
-    START_TIME = "metadata.start_time"
-    STATUS = "metadata.status"
-    SOURCE = "source"
-    DURATION = "duration"
-    TAGS = "metadata.tags"
-    TUNE_METRIC = "test_metric"
+    JOB_ID = 'job_id'
+    JOB_TYPE = 'metadata.job_type'
+    START_TIME = 'metadata.start_time'
+    STATUS = 'metadata.status'
+    SOURCE = 'source'
+    DURATION = 'duration'
+    TAGS = 'metadata.tags'
+    TUNE_METRIC = 'test_metric'
 
 
 @kumo_dataclass
@@ -92,8 +92,10 @@ class GenericJob:
     test_metric: Optional[Metric] = None
 
     def __lt__(self, other: 'GenericJob') -> bool:
-        return (self.metadata.ordering_and_filter_time
-                > other.metadata.ordering_and_filter_time)
+        return (
+            self.metadata.ordering_and_filter_time
+            > other.metadata.ordering_and_filter_time
+        )
 
 
 @kumo_dataclass
@@ -107,7 +109,7 @@ class ListJobsQuery:
     job_type: List[JobType] = field(default_factory=list)
     tags: Dict[str, str] = field(default_factory=dict)
     tags_filter: List[str] = field(default_factory=list)
-    search_keyword: Optional[str] = ""
+    search_keyword: Optional[str] = ''
     sort_by: Optional[JobSortField] = None
     sort_desc: bool = False
 
@@ -123,9 +125,9 @@ class ListJobsProcessor:
     r"""Utility class to handle filtering, sorting and pagination of job
     lists.
     """
+
     @staticmethod
-    def apply_filters(query: ListJobsQuery,
-                      jobs: List[GenericJob]) -> List[GenericJob]:
+    def apply_filters(query: ListJobsQuery, jobs: List[GenericJob]) -> List[GenericJob]:
         """Apply filters to list of jobs based on query parameters.
         Filters jobs by:
             - Time range (start and end)
@@ -146,20 +148,20 @@ class ListJobsProcessor:
         # Apply filters
         if query.time_range_start is not None:
             jobs = [
-                job for job in jobs if job.metadata.ordering_and_filter_time >=
-                query.time_range_start
+                job
+                for job in jobs
+                if job.metadata.ordering_and_filter_time >= query.time_range_start
             ]
         if query.time_range_end is not None:
             jobs = [
-                job for job in jobs
+                job
+                for job in jobs
                 if job.metadata.ordering_and_filter_time <= query.time_range_end
             ]
         if len(query.status) > 0:
             jobs = [job for job in jobs if job.metadata.status in query.status]
         if len(query.job_type) > 0:
-            jobs = [
-                job for job in jobs if job.metadata.job_type in query.job_type
-            ]
+            jobs = [job for job in jobs if job.metadata.job_type in query.job_type]
         if len(query.tags_filter) > 0:
             jobs_out = []
             # job id set to keep track of jobs already appended to jobs_out
@@ -175,21 +177,22 @@ class ListJobsProcessor:
             jobs = jobs_out
         want_archived = TAG_VALUE_ARCHIVED in query.tags_filter
         jobs = [
-            job for job in jobs
-            if (job.metadata.tags.get(TAG_KEY_ARCHIVED) == TAG_VALUE_ARCHIVED
-                ) == want_archived
+            job
+            for job in jobs
+            if (job.metadata.tags.get(TAG_KEY_ARCHIVED) == TAG_VALUE_ARCHIVED)
+            == want_archived
         ]
-        if query.search_keyword is not None and query.search_keyword != "":
+        if query.search_keyword is not None and query.search_keyword != '':
             search_term = query.search_keyword.lower()
             jobs = [
-                job for job in jobs
+                job
+                for job in jobs
                 if ListJobsProcessor._matches_search_criteria(job, search_term)
             ]
         return jobs
 
     @staticmethod
-    def apply_sorting(query: ListJobsQuery,
-                      jobs: List[GenericJob]) -> List[GenericJob]:
+    def apply_sorting(query: ListJobsQuery, jobs: List[GenericJob]) -> List[GenericJob]:
         """Apply sorting to list of jobs based on query parameters.
 
         Args:
@@ -221,14 +224,12 @@ class ListJobsProcessor:
                     # Put jobs with no end_time at the start/end based on sort
                     # order
                     return float('-inf')
-                return (job.metadata.end_time -
-                        job.metadata.start_time).total_seconds()
+                return (job.metadata.end_time - job.metadata.start_time).total_seconds()
             elif sort_by == JobSortField.START_TIME:
                 return job.metadata.ordering_and_filter_time
             elif sort_by == JobSortField.TAGS:
                 # For tags, sort by concatenated dictionary values
-                return ",".join(
-                    sorted(str(v) for v in job.metadata.tags.values()))
+                return ','.join(sorted(str(v) for v in job.metadata.tags.values()))
             elif sort_by == JobSortField.TUNE_METRIC:
                 test_metric = job.test_metric
                 if test_metric is None or test_metric.val is None:
@@ -249,8 +250,9 @@ class ListJobsProcessor:
         return jobs
 
     @staticmethod
-    def apply_pagination(query: ListJobsQuery,
-                         jobs: List[GenericJob]) -> List[GenericJob]:
+    def apply_pagination(
+        query: ListJobsQuery, jobs: List[GenericJob]
+    ) -> List[GenericJob]:
         """Apply pagination to list of jobs based on query parameters.
 
         Args:
@@ -296,24 +298,30 @@ class ListJobsProcessor:
 
         # Match job type
         matches_job_type = search_term in job.metadata.job_type.lower().replace(
-            "_", " ")
-
-        # Match job source
-        matches_source = job.source is not None and search_term in job.source.lower(
+            '_', ' '
         )
 
+        # Match job source
+        matches_source = job.source is not None and search_term in job.source.lower()
+
         # Match user (if available)
-        matches_user = (job.user is not None
-                        and search_term in job.user.lower())
+        matches_user = job.user is not None and search_term in job.user.lower()
 
         # Match any tag value
         # NOTE: we add tags in keyword search to unblock for now, if we decided
         # to add tags search in the UI, we need to deprecate this logic.
-        matches_tags = any(search_term in str(tag_value).lower()
-                           for tag_value in job.metadata.tags.values())
+        matches_tags = any(
+            search_term in str(tag_value).lower()
+            for tag_value in job.metadata.tags.values()
+        )
 
-        return (matches_job_id or matches_job_type or matches_source
-                or matches_user or matches_tags)
+        return (
+            matches_job_id
+            or matches_job_type
+            or matches_source
+            or matches_user
+            or matches_tags
+        )
 
 
 @kumo_dataclass
@@ -323,8 +331,9 @@ class TrainingJobDBEntry(DBEntry):
     project_id: ProjectID
     # NOTE: Order is important, ModelPlan must go first due to pydantic
     # resolution
-    advanced_options: Optional[ModelPlan
-                               | rest_db.DeprecatedAdvancedAutoTrainerOptions] = None
+    advanced_options: Optional[
+        ModelPlan | rest_db.DeprecatedAdvancedAutoTrainerOptions
+    ] = None
 
     # Record which graph data version this training job was executing over.
     graph_data_version: Optional[str] = None
@@ -374,12 +383,17 @@ class TrainingJobDBEntry(DBEntry):
         tune_test_metric = None
         if isinstance(self.advanced_options, ModelPlan):
             tune_metric = self.advanced_options.training_job.tune_metric
-            test_metrics = (self.execution.results.test_metrics
-                            if self.execution.results is not None else None)
+            test_metrics = (
+                self.execution.results.test_metrics
+                if self.execution.results is not None
+                else None
+            )
             if tune_metric and test_metrics:
                 # When refit_trainval is enabled, prefer the refit metric over the regular test metric
                 refit_trainval = self.advanced_options.training_job.refit_trainval
-                target_metric_name = f"refit_{tune_metric}" if refit_trainval else tune_metric
+                target_metric_name = (
+                    f'refit_{tune_metric}' if refit_trainval else tune_metric
+                )
 
                 for metric in test_metrics:
                     if metric.name == target_metric_name:
@@ -393,7 +407,8 @@ class TrainingJobDBEntry(DBEntry):
             metadata=JobFilterMetadata(
                 start_time=self.execution.start_time,
                 end_time=self.execution.last_updated_at
-                if self.execution.status.is_terminal else None,
+                if self.execution.status.is_terminal
+                else None,
                 created_at=self.timestamps.created_at,
                 job_type=JobType.TRAINING_JOB,
                 status=self.execution.status,
@@ -447,7 +462,7 @@ class GenerateTrainTableJobOutput(JobExecution):
         stacktrace: Optional[str] = None,
         exception: Optional[Exception] = None,
         validation: Optional['ValidationResponse'] = None,
-        workflow_end_state: Optional["WorkflowExecutionStatus"] = None,
+        workflow_end_state: Optional['WorkflowExecutionStatus'] = None,
     ) -> 'GenerateTrainTableJobOutput':
         """Create failed job output with proper failure_info.
 
@@ -471,7 +486,7 @@ class GenerateTrainTableJobOutput(JobExecution):
         )
 
         if not failure_info.message:
-            failure_info.message = "Generating train table failed"
+            failure_info.message = 'Generating train table failed'
 
         return cls(
             status=JobStatus.FAILED,
@@ -524,7 +539,8 @@ class GenerateTrainTableJobDBEntry(DBEntry):
             metadata=JobFilterMetadata(
                 start_time=self.execution.start_time,
                 end_time=self.execution.last_updated_at
-                if self.execution.status.is_terminal else None,
+                if self.execution.status.is_terminal
+                else None,
                 created_at=self.timestamps.created_at,
                 job_type=JobType.GENERATE_TRAIN_TABLE_JOB,
                 status=self.execution.status,
@@ -561,7 +577,7 @@ class GeneratePredTableJobOutput(JobExecution):
         stacktrace: Optional[str] = None,
         exception: Optional[Exception] = None,
         validation: Optional['ValidationResponse'] = None,
-        workflow_end_state: Optional["WorkflowExecutionStatus"] = None,
+        workflow_end_state: Optional['WorkflowExecutionStatus'] = None,
     ) -> 'GeneratePredTableJobOutput':
         """Create failed job output with proper failure_info.
 
@@ -585,7 +601,7 @@ class GeneratePredTableJobOutput(JobExecution):
         )
 
         if not failure_info.message:
-            failure_info.message = "Generating prediction table failed"
+            failure_info.message = 'Generating prediction table failed'
 
         return cls(
             status=JobStatus.FAILED,
@@ -625,7 +641,8 @@ class GeneratePredTableJobDBEntry(DBEntry):
             metadata=JobFilterMetadata(
                 start_time=self.execution.start_time,
                 end_time=self.execution.last_updated_at
-                if self.execution.status.is_terminal else None,
+                if self.execution.status.is_terminal
+                else None,
                 created_at=self.timestamps.created_at,
                 job_type=JobType.GENERATE_PREDICTION_TABLE_JOB,
                 status=self.execution.status,

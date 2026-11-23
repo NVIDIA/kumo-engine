@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Reuse pinned test-stage assets, or seed verified local copies."""
+
 import hashlib
 import json
 from pathlib import Path
@@ -21,7 +22,8 @@ def prepare(root, key_file, fixture_archive=None, pdf_wheel=None):
     root = Path(root)
     root.mkdir(mode=0o700, parents=True, exist_ok=False)
     fixture = json.loads(
-        Path(__file__).parent.parent.joinpath('pr172/inputs.json').read_text())
+        Path(__file__).parent.parent.joinpath('pr172/inputs.json').read_text()
+    )
     if ASSETS['fixture']['sha256'] != fixture['sha256']:
         raise ValueError('Staged fixture differs from shared input manifest')
     local = {'fixture': fixture_archive, 'pdf': pdf_wheel}
@@ -34,12 +36,15 @@ def prepare(root, key_file, fixture_archive=None, pdf_wheel=None):
         for name, asset in ASSETS.items():
             if local[name]:
                 if Path(local[name]).name != asset['name']:
-                    raise ValueError('Use the pinned test asset filename: ' +
-                                     asset['name'])
+                    raise ValueError(
+                        'Use the pinned test asset filename: ' + asset['name']
+                    )
                 assets[name] = launch.ensure_cached_file(
-                    cursor, Path(local[name]), asset['sha256'], root)
+                    cursor, Path(local[name]), asset['sha256'], root
+                )
             else:
                 assets[name] = launch.existing_remote_asset(
-                    cursor, asset['name'], asset)
+                    cursor, asset['name'], asset
+                )
     (root / 'assets.json').write_text(json.dumps(assets, indent=2) + '\n')
     return assets

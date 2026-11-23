@@ -66,16 +66,21 @@ def _stype_from_dtype(dtype: Dtype) -> Optional[Stype]:
     return infer_stype_from_dtype(dtype)
 
 
-def _stype_from_stats(dtype: Dtype, num_unique: int, unique_fraction: float,
-                      num_unique_multi: Optional[int] = None,
-                      multicategorical_proven: bool = False) -> Optional[Stype]:
+def _stype_from_stats(
+    dtype: Dtype,
+    num_unique: int,
+    unique_fraction: float,
+    num_unique_multi: Optional[int] = None,
+    multicategorical_proven: bool = False,
+) -> Optional[Stype]:
     r"""Returns the stype a column's statistics imply. Ported from
     `kumoai/backend/local/table.py`'s `_stype_from_stats`.
     """
     from kumo_core.stype_inference import infer_stype_from_stats
 
-    return infer_stype_from_stats(dtype, num_unique, unique_fraction,
-                                  num_unique_multi, multicategorical_proven)
+    return infer_stype_from_stats(
+        dtype, num_unique, unique_fraction, num_unique_multi, multicategorical_proven
+    )
 
 
 def _stype_for_column(
@@ -84,7 +89,7 @@ def _stype_for_column(
     num_unique_multi: Optional[int] = None,
     multicategorical_proven: bool = False,
     *,
-    name: str = "",
+    name: str = '',
 ) -> Optional[Stype]:
     r"""Returns the stype implied by one column's dtype, falling back to its
     sampled statistics. Identifier and numerical names use the shared rules;
@@ -99,8 +104,7 @@ def _stype_for_column(
         return implied
     if stats is None:
         return None
-    return _stype_from_stats(dtype, *stats, num_unique_multi,
-                             multicategorical_proven)
+    return _stype_from_stats(dtype, *stats, num_unique_multi, multicategorical_proven)
 
 
 def _column_statistics(frame) -> Dict[str, Tuple[int, float]]:
@@ -131,15 +135,15 @@ def _sample(
     `_statistics`.
     """
     try:
-        response = source_backend.get_sample(connector, table_name,
-                                             _SAMPLE_ROWS, sql=sql)
+        response = source_backend.get_sample(
+            connector, table_name, _SAMPLE_ROWS, sql=sql
+        )
     except Exception:
         return {}, {}, None, False
     dtypes = {col.name: col.dtype for col in response.cols}
     frame = _sample_frame(response.sample_rows)
     is_empty = frame is not None and len(frame) == 0
-    return dtypes, ({} if frame is None else _column_statistics(frame)), \
-        frame, is_empty
+    return dtypes, ({} if frame is None else _column_statistics(frame)), frame, is_empty
 
 
 def infer_source_columns(
@@ -159,13 +163,11 @@ def infer_source_columns(
     Raises:
         ValueError: if the source reports no columns.
     """
-    response = connector.source_backend.get_columns(connector, table_name,
-                                                    sql=sql)
+    response = connector.source_backend.get_columns(connector, table_name, sql=sql)
     if not response.cols:
-        raise ValueError(f"Table {table_name!r} has no columns.")
+        raise ValueError(f'Table {table_name!r} has no columns.')
     return {
-        col.name:
-        SourceColumn(
+        col.name: SourceColumn(
             name=col.name,
             stype=col.stype or _stype_from_dtype(col.dtype),
             dtype=col.dtype,
@@ -176,8 +178,9 @@ def infer_source_columns(
     }
 
 
-def refuse_unsupported_columns(connector: Connector, table_name: str,
-                               columns: List[Column]) -> None:
+def refuse_unsupported_columns(
+    connector: Connector, table_name: str, columns: List[Column]
+) -> None:
     r"""Raises for columns whose source type has no Kumo dtype and that no
     declared dtype resolved.
     """
@@ -187,16 +190,20 @@ def refuse_unsupported_columns(connector: Connector, table_name: str,
     if not names:
         return
     backend = connector.source_backend
-    types = (backend.source_types(connector, table_name) if isinstance(
-        backend, ObjectStoreSourceBackend) else {})
+    types = (
+        backend.source_types(connector, table_name)
+        if isinstance(backend, ObjectStoreSourceBackend)
+        else {}
+    )
     listed = ', '.join(
-        f"{name!r} ({types[name]})" if name in types else repr(name)
-        for name in names)
+        f'{name!r} ({types[name]})' if name in types else repr(name) for name in names
+    )
     raise ValueError(
-        f"Table {table_name!r} has columns whose source type Kumo cannot "
-        f"read: {listed}. Declare a dtype for them (`dtypes=` or "
-        f"`with_column(name, dtype=...)`), leave them out of `column_names`, "
-        f"or cast them at the source.")
+        f'Table {table_name!r} has columns whose source type Kumo cannot '
+        f'read: {listed}. Declare a dtype for them (`dtypes=` or '
+        f'`with_column(name, dtype=...)`), leave them out of `column_names`, '
+        f'or cast them at the source.'
+    )
 
 
 def resolve_table_columns(
@@ -245,47 +252,68 @@ def resolve_table_columns(
             generic "cannot be resolved" guidance above.
     """
     selected = [
-        col for name, col in columns.items()
+        col
+        for name, col in columns.items()
         if column_names is None or name in column_names
     ]
     if not selected:
-        raise ValueError(f"Table {table_name!r} has no columns to resolve "
-                         f"(column_names={column_names!r} matched none of "
-                         f"{sorted(columns)!r}).")
+        raise ValueError(
+            f'Table {table_name!r} has no columns to resolve '
+            f'(column_names={column_names!r} matched none of '
+            f'{sorted(columns)!r}).'
+        )
     unknown = sorted(set(dtypes or {}) - {col.name for col in selected})
     if unknown:
-        raise ValueError(f"Table {table_name!r} has no selected column "
-                         f"{', '.join(map(repr, unknown))} to declare a "
-                         f"dtype for.")
+        raise ValueError(
+            f'Table {table_name!r} has no selected column '
+            f'{", ".join(map(repr, unknown))} to declare a '
+            f'dtype for.'
+        )
     selected = [
-        replace(col, dtype=dtypes[col.name], stype=None,
-                multicategorical_delimiter=None)
-        if dtypes and col.name in dtypes else col for col in selected
+        replace(
+            col, dtype=dtypes[col.name], stype=None, multicategorical_delimiter=None
+        )
+        if dtypes and col.name in dtypes
+        else col
+        for col in selected
     ]
 
     resolved: Dict[str, Tuple[Optional[Dtype], Optional[Stype]]] = {
-        col.name:
-        (col.dtype, Stype.ID if col.name == primary_key else
-         Stype.timestamp if col.name in (time_column, end_time_column) else
-         col.stype or _stype_for_column(col.dtype, None, name=col.name))
+        col.name: (
+            col.dtype,
+            Stype.ID
+            if col.name == primary_key
+            else Stype.timestamp
+            if col.name in (time_column, end_time_column)
+            else col.stype or _stype_for_column(col.dtype, None, name=col.name),
+        )
         for col in selected
     }
     delimiters = {col.name: col.multicategorical_delimiter for col in selected}
-    if any(stype is None or (stype == Stype.multicategorical and dtype ==
-                             Dtype.string and delimiters[name] is None)
-           for name, (dtype, stype) in resolved.items()):
+    if any(
+        stype is None
+        or (
+            stype == Stype.multicategorical
+            and dtype == Dtype.string
+            and delimiters[name] is None
+        )
+        for name, (dtype, stype) in resolved.items()
+    ):
         source_backend = connector.source_backend
-        sampled, statistics, frame, is_empty = _sample(source_backend,
-                                                       connector, table_name,
-                                                       sql)
+        sampled, statistics, frame, is_empty = _sample(
+            source_backend, connector, table_name, sql
+        )
         for col in selected:
             dtype, stype = resolved[col.name]
             dtype = dtype or sampled.get(col.name)
             num_unique_multi = None
             delimiter = delimiters[col.name]
-            if (dtype == Dtype.string and frame is not None
-                    and col.name in frame
-                    and stype in (None, Stype.multicategorical)):
+            if (
+                dtype == Dtype.string
+                and frame is not None
+                and col.name in frame
+                and stype in (None, Stype.multicategorical)
+            ):
                 from kumo_core.stype_inference import (
                     multicategorical_separator,
                     multicategorical_token_counts,
@@ -295,38 +323,47 @@ def resolve_table_columns(
                 delimiter = delimiter or multicategorical_separator(values)
                 if delimiter is not None:
                     num_unique_multi = len(
-                        multicategorical_token_counts(values, delimiter))
+                        multicategorical_token_counts(values, delimiter)
+                    )
             if stype is None:
-                stype = _stype_for_column(dtype, statistics.get(col.name),
-                                          num_unique_multi, delimiter
-                                          is not None, name=col.name)
+                stype = _stype_for_column(
+                    dtype,
+                    statistics.get(col.name),
+                    num_unique_multi,
+                    delimiter is not None,
+                    name=col.name,
+                )
             if stype == Stype.multicategorical and dtype == Dtype.string:
                 delimiters[col.name] = delimiter
             resolved[col.name] = (dtype, stype)
         if is_empty and any(stype is None for _, stype in resolved.values()):
             from kumo_core.sources.errors import PermanentSourceError
+
             raise PermanentSourceError(
-                f"Table {table_name!r} returned no rows. An empty source "
-                f"table cannot be ingested; DiskGraph needs at least one "
-                f"row to infer an encoding.")
+                f'Table {table_name!r} returned no rows. An empty source '
+                f'table cannot be ingested; DiskGraph needs at least one '
+                f'row to infer an encoding.'
+            )
 
     result: List[Column] = []
     for col in selected:
         dtype, stype = resolved[col.name]
         if dtype is None or stype is None:
             raise ValueError(
-                f"Column {col.name!r} in table {table_name!r} cannot be "
-                "resolved: it has "
-                f"{'no dtype' if dtype is None else f'dtype {dtype}'} and "
-                f"no stype, and the source returned no statistics to infer "
-                f"one from. Check the column exists and is reachable, or "
-                f"supply its stype explicitly (e.g. via `Table.with_column`"
-                f" after construction).")
+                f'Column {col.name!r} in table {table_name!r} cannot be '
+                'resolved: it has '
+                f'{"no dtype" if dtype is None else f"dtype {dtype}"} and '
+                f'no stype, and the source returned no statistics to infer '
+                f'one from. Check the column exists and is reachable, or '
+                f'supply its stype explicitly (e.g. via `Table.with_column`'
+                f' after construction).'
+            )
         result.append(
             Column(
                 name=col.name,
                 stype=stype,
                 dtype=dtype,
                 multicategorical_delimiter=delimiters[col.name],
-            ))
+            )
+        )
     return result

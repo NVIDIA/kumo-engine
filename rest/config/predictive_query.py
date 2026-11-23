@@ -17,15 +17,13 @@ from kumo.pquery.predictive_query import PredictiveQueryV2
 from rest.config.graph_v2 import GraphDefinition
 from rest.config.ml_backend import MaterializationTaskInfo
 from statedb.config.common import GraphID, PredictiveQueryID
-from statedb.config.predictive_query import \
-    PQueryDefinition as PQueryDefinition
-from statedb.config.predictive_query import \
-    PQueryRuntimeOptions as PQueryRuntimeOptions
+from statedb.config.predictive_query import PQueryDefinition as PQueryDefinition
+from statedb.config.predictive_query import PQueryRuntimeOptions as PQueryRuntimeOptions
 from statedb.config.predictive_query import QueryDialect as QueryDialect
-from statedb.config.predictive_query import \
-    compute_pquery_fpid as compute_pquery_fpid
-from statedb.config.predictive_query import \
-    pquery_runtime_options_or_none as pquery_runtime_options_or_none
+from statedb.config.predictive_query import compute_pquery_fpid as compute_pquery_fpid
+from statedb.config.predictive_query import (
+    pquery_runtime_options_or_none as pquery_runtime_options_or_none,
+)
 
 __all__ = [
     'PQueryDefinition',

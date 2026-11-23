@@ -44,8 +44,7 @@ def test_fit_records_a_self_contained_manifest(fitted):
 
 def test_manifest_round_trips_unchanged(fitted, tmp_path):
     trainer, _, _ = fitted
-    newer = json.loads(
-        (trainer.result.bundle_dir / '_provenance.json').read_text())
+    newer = json.loads((trainer.result.bundle_dir / '_provenance.json').read_text())
     newer['future'] = True
     newer['fit']['gpu_seconds'] = 1.5
     table = newer['parents']['training_table']
@@ -65,16 +64,14 @@ def test_manifest_round_trips_unchanged(fitted, tmp_path):
     assert table.parents.snapshot.environment.extra == {'cuda': '13.0'}
 
 
-def test_bundle_without_a_manifest_loads_and_predicts_identically(
-        fitted, tmp_path):
+def test_bundle_without_a_manifest_loads_and_predicts_identically(fitted, tmp_path):
     trainer, prediction_table, snapshot = fitted
     result = trainer.result
     old = tmp_path / 'old'
     shutil.copytree(result.bundle_dir, old)
     manifest = json.loads((old / MANIFEST_FILE).read_text())
     manifest['artifacts'] = [
-        entry for entry in manifest['artifacts']
-        if entry['role'] != 'provenance'
+        entry for entry in manifest['artifacts'] if entry['role'] != 'provenance'
     ]
     (old / MANIFEST_FILE).write_text(json.dumps(manifest))
     (old / '_provenance.json').unlink()
@@ -83,10 +80,13 @@ def test_bundle_without_a_manifest_loads_and_predicts_identically(
     assert restored.result.manifest is None
 
     def predict(model):
-        return model.predict(
-            prediction_table, snapshot=snapshot,
-            binary_classification_threshold=.5).frame.sort_values(
-                'ENTITY').reset_index(drop=True)
+        return (
+            model.predict(
+                prediction_table, snapshot=snapshot, binary_classification_threshold=0.5
+            )
+            .frame.sort_values('ENTITY')
+            .reset_index(drop=True)
+        )
 
     pd.testing.assert_frame_equal(predict(restored), predict(trainer))
 
@@ -96,8 +96,11 @@ def test_each_fit_returns_a_new_result(fitted):
     first = trainer.result
     second = trainer._finish_fit(
         TrainingResult({}, dict(first.artifact_paths), first.bundle_dir),
-        predictive_query='PREDICT x', snapshot_id='snap', export_config=None,
-        training_table_generation=TrainingTableGenerationPlan())
+        predictive_query='PREDICT x',
+        snapshot_id='snap',
+        export_config=None,
+        training_table_generation=TrainingTableGenerationPlan(),
+    )
     assert second is not first and trainer.result is second
 
 
@@ -109,11 +112,15 @@ def _finish_stub_fit(bundle, trainer=None, warm_start=None, settings=None):
     add_bundle_file(bundle, 'trainer_config', 'model/config.json')
     table = SimpleNamespace(tt_id='tt-raw', id='tt-1', manifest=None)
     result = trainer._finish_fit(
-        TrainingResult({}, {}, bundle), predictive_query='PREDICT x',
-        snapshot_id='snap', export_config=None,
+        TrainingResult({}, {}, bundle),
+        predictive_query='PREDICT x',
+        snapshot_id='snap',
+        export_config=None,
         training_table_generation=TrainingTableGenerationPlan(),
-        provenance=FitRecord(table, warm_start, datetime.now(timezone.utc),
-                             None, holdout_truncated=False))
+        provenance=FitRecord(
+            table, warm_start, datetime.now(timezone.utc), None, holdout_truncated=False
+        ),
+    )
     _store_and_register(result.bundle_dir, result.manifest, settings)
     return result
 
@@ -121,17 +128,26 @@ def _finish_stub_fit(bundle, trainer=None, warm_start=None, settings=None):
 def test_missing_parents_are_stubs_and_retrain_chains_stay_flat(tmp_path):
     first = _finish_stub_fit(tmp_path / 'one')
     assert first.manifest.parents.training_table.to_dict() == {
-        'kind': 'training_table', 'schema_version': 1, 'id': 'tt-1',
-        'created_at': None, 'environment': None, 'reconstructed': True,
-        'parents': None, 'query': None, 'generation_plan': None,
-        'task_type': None, 'split_seed': None}
+        'kind': 'training_table',
+        'schema_version': 1,
+        'id': 'tt-1',
+        'created_at': None,
+        'environment': None,
+        'reconstructed': True,
+        'parents': None,
+        'query': None,
+        'generation_plan': None,
+        'task_type': None,
+        'split_seed': None,
+    }
     second = _finish_stub_fit(tmp_path / 'two', warm_start=first.manifest)
     third = _finish_stub_fit(tmp_path / 'three', warm_start=second.manifest)
     parent = third.manifest.parents.warm_start
     assert parent == embedded_model(second.manifest)
     assert parent.parents == ModelParents(
         training_table=second.manifest.parents.training_table,
-        warm_start=ModelManifest(id=first.id, reconstructed=True))
+        warm_start=ModelManifest(id=first.id, reconstructed=True),
+    )
 
 
 def test_a_mlops_block_stores_each_model_once(tmp_path):

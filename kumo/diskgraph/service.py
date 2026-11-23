@@ -26,7 +26,6 @@ from pathlib import Path
 from typing import Any, Callable, List, Optional, Tuple
 from urllib.parse import urlparse
 
-from diskgraph import TimeUnit
 from kumo_core.task_dataset import (
     with_resolved_target_encoder_input,
     write_flat_manifest,
@@ -34,8 +33,10 @@ from kumo_core.task_dataset import (
 )
 
 from async_utils.sync import blocking_method
+from diskgraph import TimeUnit
 from io_utils import kumo_dataclass
 from io_utils.json import from_json_dict, to_json_dict
+
 # DiskgraphHandle lives in kumo.diskgraph._backend (so GlobalEngineState can type
 # it); re-exported here as the canonical import path.
 from kumo.diskgraph._backend import DiskgraphHandle
@@ -60,15 +61,17 @@ _RESTORE_HEARTBEAT_INTERVAL_SECS = 30.0
 
 
 def _start_heartbeat_ticker(
-        heartbeat: Callable[[], None]) -> Tuple[threading.Thread, threading.Event]:
+    heartbeat: Callable[[], None],
+) -> Tuple[threading.Thread, threading.Event]:
     stop = threading.Event()
 
     def _tick() -> None:
         while not stop.wait(_RESTORE_HEARTBEAT_INTERVAL_SECS):
             heartbeat()
 
-    ticker = threading.Thread(target=_tick, name='diskgraph-restore-heartbeat',
-                              daemon=True)
+    ticker = threading.Thread(
+        target=_tick, name='diskgraph-restore-heartbeat', daemon=True
+    )
     ticker.start()
     return ticker, stop
 
@@ -103,12 +106,19 @@ def _copy_dataplane_mirror(
 
     start = time.monotonic()
     try:
-        fsutil.copy(dataplane_dir, output_dir, overwrite=True,
-                    raise_on_exists=False, exclude=[_RESTORE_SUCCESS_FILENAME])
+        fsutil.copy(
+            dataplane_dir,
+            output_dir,
+            overwrite=True,
+            raise_on_exists=False,
+            exclude=[_RESTORE_SUCCESS_FILENAME],
+        )
         fsutil.copy_file(
             f'{dataplane_dir}/{_RESTORE_SUCCESS_FILENAME}',
             os.path.join(output_dir, _RESTORE_SUCCESS_FILENAME),
-            overwrite=True, raise_on_exists=False)
+            overwrite=True,
+            raise_on_exists=False,
+        )
     finally:
         if stop_ticker is not None:
             stop_ticker.set()
@@ -125,13 +135,18 @@ def _copy_dataplane_mirror(
             total_bytes += os.path.getsize(os.path.join(root, filename))
             num_files += 1
     logger.info(
-        'restore_snapshot: copied %d files / %d bytes into %s took %.1fs '
-        '(%.1f MB/s)', num_files, total_bytes, output_dir, elapsed,
-        total_bytes / elapsed / 1e6)
+        'restore_snapshot: copied %d files / %d bytes into %s took %.1fs (%.1f MB/s)',
+        num_files,
+        total_bytes,
+        output_dir,
+        elapsed,
+        total_bytes / elapsed / 1e6,
+    )
 
 
-def _download_inventory_context(alias: str, table: Any,
-                                data_version: Any) -> dict[str, str]:
+def _download_inventory_context(
+    alias: str, table: Any, data_version: Any
+) -> dict[str, str]:
     return {
         'alias': str(alias),
         'connector_id': str(table.get_connector_id()),
@@ -146,20 +161,21 @@ def _local_download_inventory(local_dest: str) -> list[dict[str, Any]]:
     inventory = []
     if os.path.islink(local_dest):
         raise RuntimeError(
-            f'DiskGraph staged source root is a symlink: {local_dest!r}.')
+            f'DiskGraph staged source root is a symlink: {local_dest!r}.'
+        )
     root = os.path.realpath(local_dest)
     for directory, subdirs, filenames in os.walk(local_dest, followlinks=False):
         for subdir in subdirs:
             path = os.path.join(directory, subdir)
             if os.path.islink(path):
                 raise RuntimeError(
-                    f'DiskGraph staged source contains a symlink directory: '
-                    f'{path!r}.')
+                    f'DiskGraph staged source contains a symlink directory: {path!r}.'
+                )
             resolved = os.path.realpath(path)
             if os.path.commonpath((root, resolved)) != root:
                 raise RuntimeError(
-                    f'DiskGraph staged source directory escapes its root: '
-                    f'{path!r}.')
+                    f'DiskGraph staged source directory escapes its root: {path!r}.'
+                )
         subdirs.sort()
         for filename in sorted(filenames):
             path = os.path.join(directory, filename)
@@ -167,41 +183,51 @@ def _local_download_inventory(local_dest: str) -> list[dict[str, Any]]:
                 continue
             if os.path.islink(path):
                 raise RuntimeError(
-                    f'DiskGraph staged source contains a symlink: {path!r}.')
+                    f'DiskGraph staged source contains a symlink: {path!r}.'
+                )
             relative_path = os.path.relpath(path, local_dest)
             resolved = os.path.realpath(path)
             if os.path.commonpath((root, resolved)) != root:
                 raise RuntimeError(
-                    f'DiskGraph staged source escapes its root: {path!r}.')
+                    f'DiskGraph staged source escapes its root: {path!r}.'
+                )
             file_stat = os.stat(path, follow_symlinks=False)
             if not stat.S_ISREG(file_stat.st_mode):
                 raise RuntimeError(
-                    f'DiskGraph staged source is not a regular file: {path!r}.')
+                    f'DiskGraph staged source is not a regular file: {path!r}.'
+                )
             is_control_marker = (
                 filename in _EMPTY_SOURCE_CONTROL_FILENAMES
-                or filename.startswith(_EMPTY_SOURCE_CONTROL_PREFIXES))
+                or filename.startswith(_EMPTY_SOURCE_CONTROL_PREFIXES)
+            )
             if file_stat.st_size <= 0 and not is_control_marker:
                 raise RuntimeError(
-                    f'DiskGraph staged source contains an empty file: {path!r}.')
-            inventory.append({
-                'path': relative_path,
-                'size_bytes': file_stat.st_size,
-                'device': file_stat.st_dev,
-                'inode': file_stat.st_ino,
-                'mtime_ns': file_stat.st_mtime_ns,
-            })
+                    f'DiskGraph staged source contains an empty file: {path!r}.'
+                )
+            inventory.append(
+                {
+                    'path': relative_path,
+                    'size_bytes': file_stat.st_size,
+                    'device': file_stat.st_dev,
+                    'inode': file_stat.st_ino,
+                    'mtime_ns': file_stat.st_mtime_ns,
+                }
+            )
             if len(inventory) > _MAX_DOWNLOAD_FILES:
                 raise RuntimeError(
                     f'DiskGraph staged source exceeds the {_MAX_DOWNLOAD_FILES} '
-                    'file inventory limit.')
+                    'file inventory limit.'
+                )
     if not inventory:
         raise RuntimeError(
-            f'DiskGraph staged source at {local_dest!r} contains no files.')
+            f'DiskGraph staged source at {local_dest!r} contains no files.'
+        )
     return inventory
 
 
-def _download_inventory_payload(alias: str, table: Any, data_version: Any,
-                                local_dest: str) -> dict[str, Any]:
+def _download_inventory_payload(
+    alias: str, table: Any, data_version: Any, local_dest: str
+) -> dict[str, Any]:
     return {
         'schema_version': _DOWNLOAD_INVENTORY_SCHEMA,
         'context': _download_inventory_context(alias, table, data_version),
@@ -209,9 +235,9 @@ def _download_inventory_payload(alias: str, table: Any, data_version: Any,
     }
 
 
-def _validate_download_inventory(marker: str, alias: str, table: Any,
-                                 data_version: Any,
-                                 local_dest: str) -> tuple[bool, str]:
+def _validate_download_inventory(
+    marker: str, alias: str, table: Any, data_version: Any, local_dest: str
+) -> tuple[bool, str]:
     try:
         with open(marker, 'rb') as source:
             raw = source.read(_MAX_DOWNLOAD_MARKER_BYTES + 1)
@@ -223,7 +249,8 @@ def _validate_download_inventory(marker: str, alias: str, table: Any,
         if payload.get('schema_version') != _DOWNLOAD_INVENTORY_SCHEMA:
             return False, 'missing or unsupported marker schema'
         if payload.get('context') != _download_inventory_context(
-                alias, table, data_version):
+            alias, table, data_version
+        ):
             return False, 'marker belongs to a different table attempt'
         declared = payload.get('files')
         if not isinstance(declared, list):
@@ -238,13 +265,12 @@ def _validate_download_inventory(marker: str, alias: str, table: Any,
     return True, ''
 
 
-def _write_download_inventory_marker(marker: str, payload: dict[str,
-                                                                Any]) -> None:
+def _write_download_inventory_marker(marker: str, payload: dict[str, Any]) -> None:
     encoded = json.dumps(payload, sort_keys=True).encode()
     if len(encoded) > _MAX_DOWNLOAD_MARKER_BYTES:
         raise RuntimeError(
-            'DiskGraph staged source inventory exceeds the bounded marker '
-            'byte limit.')
+            'DiskGraph staged source inventory exceeds the bounded marker byte limit.'
+        )
     fd, temporary = tempfile.mkstemp(
         prefix=f'.{_DOWNLOAD_SUCCESS_FILENAME}.',
         suffix='.tmp',
@@ -298,9 +324,9 @@ def _fsync_parent(path: str) -> None:
         os.close(directory_fd)
 
 
-def _recover_interrupted_download_swap(alias: str, table: Any,
-                                       data_version: Any,
-                                       local_dest: str) -> None:
+def _recover_interrupted_download_swap(
+    alias: str, table: Any, data_version: Any, local_dest: str
+) -> None:
     """Resolve the deterministic backup left by a process-level crash."""
     backup = f'{local_dest}{_DOWNLOAD_BACKUP_SUFFIX}'
     if not os.path.lexists(backup):
@@ -324,13 +350,15 @@ def _recover_interrupted_download_swap(alias: str, table: Any,
     _fsync_parent(local_dest)
 
 
-def _publish_download_attempt(alias: str, table: Any, data_version: Any,
-                              attempt_dir: str, local_dest: str) -> None:
+def _publish_download_attempt(
+    alias: str, table: Any, data_version: Any, attempt_dir: str, local_dest: str
+) -> None:
     """Swap a complete attempt into place with exception-safe rollback."""
     backup = f'{local_dest}{_DOWNLOAD_BACKUP_SUFFIX}'
     if os.path.lexists(backup):
         raise RuntimeError(
-            f'DiskGraph staged source backup was not recovered: {backup!r}.')
+            f'DiskGraph staged source backup was not recovered: {backup!r}.'
+        )
     had_previous = os.path.lexists(local_dest)
     if had_previous:
         os.replace(local_dest, backup)
@@ -376,8 +404,9 @@ def _to_diskgraph_dataplane_path(path: str) -> str:
     key = parsed.path.lstrip('/')
     if not container or not account:
         return path
-    return f"az://{account}/{container}/{key}" if key else (
-        f"az://{account}/{container}")
+    return (
+        f'az://{account}/{container}/{key}' if key else (f'az://{account}/{container}')
+    )
 
 
 def _normalize_direct_object_source(source: dict[str, Any]) -> dict[str, Any]:
@@ -396,10 +425,13 @@ def _normalize_direct_object_source(source: dict[str, Any]) -> dict[str, Any]:
         return source
     return {
         **source,
-        'objects': [{
-            **obj,
-            'path': _to_diskgraph_dataplane_path(obj['path']),
-        } for obj in objects],
+        'objects': [
+            {
+                **obj,
+                'path': _to_diskgraph_dataplane_path(obj['path']),
+            }
+            for obj in objects
+        ],
     }
 
 
@@ -420,7 +452,8 @@ def _prepare_direct_object_source(
         ) from error
     if source_size <= 0:
         raise RuntimeError(
-            f'Direct object manifest for graph table {alias!r} is empty.')
+            f'Direct object manifest for graph table {alias!r} is empty.'
+        )
     return source, source_size
 
 
@@ -464,21 +497,21 @@ def _validate_ttng_ingest_binding(
     expected_graph_index = _normalized_local_path(graph_index_path)
     expected_extension = _normalized_local_path(tt_extension_path)
 
-    def _require_path(container: dict[str, Any], field: str,
-                      expected: str) -> None:
+    def _require_path(container: dict[str, Any], field: str, expected: str) -> None:
         value = container.get(field)
-        if not isinstance(value,
-                          str) or _normalized_local_path(value) != expected:
+        if not isinstance(value, str) or _normalized_local_path(value) != expected:
             raise RuntimeError(
                 'TT-NG ingest manifest binding mismatch for '
                 f'{field!r}; expected {expected!r}, got {value!r}. '
-                'Re-ingest this task dataset for the current graph snapshot.')
+                'Re-ingest this task dataset for the current graph snapshot.'
+            )
 
     if ingest_manifest.get('tt_id') != tt_id:
         raise RuntimeError(
-            'TT-NG ingest manifest binding mismatch for \'tt_id\'; expected '
+            "TT-NG ingest manifest binding mismatch for 'tt_id'; expected "
             f'{tt_id!r}, got {ingest_manifest.get("tt_id")!r}. Re-ingest this '
-            'task dataset for the current graph snapshot.')
+            'task dataset for the current graph snapshot.'
+        )
     _require_path(ingest_manifest, 'graph_index_path', expected_graph_index)
     _require_path(ingest_manifest, 'tt_extension_path', expected_extension)
     _require_path(task_dataset, 'graph_index_path', expected_graph_index)
@@ -486,25 +519,30 @@ def _validate_ttng_ingest_binding(
 
     diskgraph_manifest_path = ingest_manifest.get('diskgraph_manifest_path')
     expected_manifest = _normalized_local_path(
-        os.path.join(tt_extension_path, 'diskgraph_manifest.json'))
-    if (not isinstance(diskgraph_manifest_path, str)
-            or _normalized_local_path(diskgraph_manifest_path)
-            != expected_manifest):
+        os.path.join(tt_extension_path, 'diskgraph_manifest.json')
+    )
+    if (
+        not isinstance(diskgraph_manifest_path, str)
+        or _normalized_local_path(diskgraph_manifest_path) != expected_manifest
+    ):
         raise RuntimeError(
             'TT-NG ingest manifest binding mismatch for '
             "'diskgraph_manifest_path'; re-ingest this task dataset for the "
-            'current graph snapshot.')
+            'current graph snapshot.'
+        )
 
     stages = task_dataset.get('stages')
     if not isinstance(stages, dict) or not stages:
         raise RuntimeError(
             'TT-NG ingest manifest is missing task_dataset.stages; re-ingest '
-            'this task dataset for the current graph snapshot.')
+            'this task dataset for the current graph snapshot.'
+        )
     for stage_name, stage in stages.items():
         if not isinstance(stage, dict):
             raise RuntimeError(
                 'TT-NG ingest manifest has malformed task_dataset stage '
-                f'{stage_name!r}; re-ingest this task dataset.')
+                f'{stage_name!r}; re-ingest this task dataset.'
+            )
         _require_path(stage, 'index_path', expected_extension)
 
 
@@ -520,6 +558,7 @@ class IngestResult:
     The four fields are filesystem paths under the configured
     ``data_root``.
     """
+
     index_path: str
     col_stats_path: str
     ingest_stats_path: str
@@ -540,6 +579,7 @@ class MaterializeResult:
     ``manifest_path`` is the sidecar index; ``runtime_manifest_path`` is the
     flat manifest the wheel iterator opens.
     """
+
     manifest_path: str
     runtime_manifest_path: str
     bundle_dir: str
@@ -563,6 +603,7 @@ class DiskgraphService:
     * :mod:`kumo.data.generic.diskgraph_train_table` — training-table
       generation
     """
+
     def __init__(self, config: DiskgraphConfig) -> None:
         self._config = config
 
@@ -580,8 +621,10 @@ class DiskgraphService:
         marker. Inverse of :meth:`local_snapshot_path`; callers should cache the
         result rather than rescanning.
         """
-        from diskgraph import DiskgraphSystemError
         from kumo_core.diskgraph.snapshot import check_diskgraph_output
+
+        from diskgraph import DiskgraphSystemError
+
         data_root = self._config.data_root
         ready: 'list[DiskgraphHandle]' = []
         try:
@@ -612,13 +655,12 @@ class DiskgraphService:
                 if result is None:
                     continue
                 ready.append(
-                    DiskgraphHandle(graph_key=graph_key,
-                                    graph_data_version=version))
+                    DiskgraphHandle(graph_key=graph_key, graph_data_version=version)
+                )
         return ready
 
     @staticmethod
-    def dataplane_snapshot_path(handle: DiskgraphHandle,
-                                dataplane_root: str) -> str:
+    def dataplane_snapshot_path(handle: DiskgraphHandle, dataplane_root: str) -> str:
         """Resolve a handle to its dataplane mirror path
         ``<dataplane_root>/diskgraph_snapshots/<graph_key>/<graph_data_version>/``.
         Owning the convention here keeps Rust dumb about layout.
@@ -631,11 +673,13 @@ class DiskgraphService:
         )
 
     @staticmethod
-    def diskgraph_dataplane_snapshot_path(handle: DiskgraphHandle,
-                                          dataplane_root: str) -> str:
+    def diskgraph_dataplane_snapshot_path(
+        handle: DiskgraphHandle, dataplane_root: str
+    ) -> str:
         """Resolve the dataplane mirror path in DiskGraph object-store form."""
         return _to_diskgraph_dataplane_path(
-            DiskgraphService.dataplane_snapshot_path(handle, dataplane_root))
+            DiskgraphService.dataplane_snapshot_path(handle, dataplane_root)
+        )
 
     # Internal aliases so existing callers in this module keep working.
     _resolve = local_snapshot_path
@@ -677,7 +721,8 @@ class DiskgraphService:
             kumo_stats_dir=os.path.join(output_dir, 'kumo_col_stats'),
         )
         output_dataplane_dir = self.diskgraph_dataplane_snapshot_path(
-            handle, dataplane_root)
+            handle, dataplane_root
+        )
         success_marker_content = json.dumps(to_json_dict(predicted))
         dg = run_diskgraph_ingest(
             graph_config=graph_config,
@@ -742,11 +787,11 @@ class DiskgraphService:
                         source = decision.source
                         if source is None:
                             continue
-                        source, source_size = (
-                            _prepare_direct_object_source(source, alias))
+                        source, source_size = _prepare_direct_object_source(
+                            source, alias
+                        )
                         expected_size = source_size_bytes_by_table.get(alias)
-                        if expected_size is None or int(
-                                expected_size) != source_size:
+                        if expected_size is None or int(expected_size) != source_size:
                             raise RuntimeError(
                                 f'Frozen direct source size for graph '
                                 f'table {alias!r} is {source_size}, but '
@@ -764,19 +809,16 @@ class DiskgraphService:
                 if connector_id not in connector_by_id:
                     reference = connector_specs[connector_id]
                     connector = get_connector_from_spec(reference)
-                    connector_stack.callback(_close_connector_quietly,
-                                             connector)
+                    connector_stack.callback(_close_connector_quietly, connector)
                     connector_by_id[connector_id] = connector
                 connector = connector_by_id[connector_id]
                 if not isinstance(connector, FileConnector):
                     continue
                 source_name = table.get_source_table_name()
-                if not connector.uses_direct_diskgraph_source_for(
-                        source_name):
+                if not connector.uses_direct_diskgraph_source_for(source_name):
                     continue
                 source = connector.diskgraph_source(source_name=source_name)
-                source, source_size = _prepare_direct_object_source(
-                    source, alias)
+                source, source_size = _prepare_direct_object_source(source, alias)
 
                 source_specs[alias] = {
                     'source': source,
@@ -821,11 +863,10 @@ class DiskgraphService:
             # Retry: recover the frozen refresh-time decision rather than
             # re-probing every table against current connector state.
             direct_source_aliases = set()
-            source_decisions = ReadThroughTableCache[
-                DirectDiskgraphSourceDecision](
-                    os.path.join(data_persist_dir, CACHE_DIR),
-                    name=DIRECT_DISKGRAPH_SOURCE_DECISION,
-                )
+            source_decisions = ReadThroughTableCache[DirectDiskgraphSourceDecision](
+                os.path.join(data_persist_dir, CACHE_DIR),
+                name=DIRECT_DISKGRAPH_SOURCE_DECISION,
+            )
             for alias, table in all_graph_tables.items():
                 if table.is_sql or not is_file_source_table(table):
                     continue
@@ -845,10 +886,11 @@ class DiskgraphService:
         deployment_environment = s3_subprocess_environment()
         ambient_s3_dataplane = (
             not deployment_environment
-            and urlparse(
-                deploy_env().data_plane_storage_root).scheme.lower() == 's3')
+            and urlparse(deploy_env().data_plane_storage_root).scheme.lower() == 's3'
+        )
         environment: dict[str, Optional[str]] = (
-            {} if ambient_s3_dataplane else scrubbed_s3_environment())
+            {} if ambient_s3_dataplane else scrubbed_s3_environment()
+        )
         environment.update(deployment_environment)
         direct_s3_environment: dict[str, str] | None = None
         prepared_connectors: set[str] = set()
@@ -856,46 +898,48 @@ class DiskgraphService:
             for alias, table in all_graph_tables.items():
                 if table.is_sql:
                     continue
-                if (alias not in direct_source_aliases
-                        and alias not in compatibility_aliases):
+                if (
+                    alias not in direct_source_aliases
+                    and alias not in compatibility_aliases
+                ):
                     continue
                 connector_id = str(table.get_connector_id())
                 if connector_id in prepared_connectors:
                     continue
                 if connector_id not in connectors:
-                    connector = get_connector_from_spec(
-                        connector_specs[connector_id])
-                    connector_stack.callback(_close_connector_quietly,
-                                             connector)
+                    connector = get_connector_from_spec(connector_specs[connector_id])
+                    connector_stack.callback(_close_connector_quietly, connector)
                     connectors[connector_id] = connector
                 connector = connectors[connector_id]
                 if not isinstance(connector, FileConnector):
                     prepared_connectors.add(connector_id)
                     continue
                 source_name = table.get_source_table_name()
-                if (alias in compatibility_aliases
-                        and not connector.uses_direct_diskgraph_source_for(
-                            source_name)):
+                if (
+                    alias in compatibility_aliases
+                    and not connector.uses_direct_diskgraph_source_for(source_name)
+                ):
                     continue
-                candidate = connector.diskgraph_subprocess_environment(
-                    source_name)
-                ambient_s3_candidate = (bool(candidate) and set(candidate) <= {
+                candidate = connector.diskgraph_subprocess_environment(source_name)
+                ambient_s3_candidate = bool(candidate) and set(candidate) <= {
                     'AWS_REGION',
                     'AWS_DEFAULT_REGION',
-                })
-                if any(key.startswith(('AWS_', 'S3_'))
-                       for key in candidate):
-                    if (deployment_environment
-                            and candidate != deployment_environment):
+                }
+                if any(key.startswith(('AWS_', 'S3_')) for key in candidate):
+                    if deployment_environment and candidate != deployment_environment:
                         raise RuntimeError(
                             'Direct S3 source and deployment storage require '
                             'different connections; stage the source before '
-                            'DiskGraph ingest.')
-                    if (direct_s3_environment is not None
-                            and direct_s3_environment != candidate):
+                            'DiskGraph ingest.'
+                        )
+                    if (
+                        direct_s3_environment is not None
+                        and direct_s3_environment != candidate
+                    ):
                         raise RuntimeError(
                             'Direct S3 sources require different connector '
-                            'connections in one DiskGraph job.')
+                            'connections in one DiskGraph job.'
+                        )
                     direct_s3_environment = candidate
                     if not deployment_environment:
                         if ambient_s3_candidate:
@@ -908,7 +952,8 @@ class DiskgraphService:
                             # Instance-role refresh requires metadata access.
                             environment['AWS_EC2_METADATA_DISABLED'] = None
                             environment.update(
-                                AWS_WORKLOAD_CREDENTIAL_PROFILE_ISOLATION_ENVIRONMENT)
+                                AWS_WORKLOAD_CREDENTIAL_PROFILE_ISOLATION_ENVIRONMENT
+                            )
                         else:
                             environment.update(scrubbed_s3_environment())
                 for key, value in candidate.items():
@@ -916,7 +961,8 @@ class DiskgraphService:
                     if existing is not None and existing != value:
                         raise RuntimeError(
                             'Direct object sources require conflicting '
-                            f'subprocess values for {key}.')
+                            f'subprocess values for {key}.'
+                        )
                     environment[key] = value
                 prepared_connectors.add(connector_id)
         return environment
@@ -945,9 +991,9 @@ class DiskgraphService:
         ``DiskgraphCorruptionError`` if the mirror exists but the
         local copy fails ``verify_snapshot_integrity``.
         """
-        from diskgraph import read_success_marker, verify_snapshot_integrity
         from kumo_core.diskgraph.snapshot import DiskgraphIngestResult
 
+        from diskgraph import read_success_marker, verify_snapshot_integrity
         from io_utils import fsutil
 
         dataplane_dir = self._dataplane_path(handle, dataplane_root)
@@ -961,6 +1007,7 @@ class DiskgraphService:
         # stripped assert would fall through to ``json.loads(None)``.
         if raw is None:
             from statedb.utils.errors import DiskgraphError
+
             raise DiskgraphError(f'_SUCCESS missing at {output_dir}')
         dg = from_json_dict(json.loads(raw), DiskgraphIngestResult)
         return IngestResult(
@@ -977,8 +1024,9 @@ class DiskgraphService:
         ``IngestResult`` from ``_SUCCESS``. Read-only — must not touch the
         marker (eviction is the pool daemon's job).
         """
-        from diskgraph import read_success_marker, verify_snapshot_integrity
         from kumo_core.diskgraph.snapshot import DiskgraphIngestResult
+
+        from diskgraph import read_success_marker, verify_snapshot_integrity
 
         path = self._resolve(handle)
         verify_snapshot_integrity(path)
@@ -987,9 +1035,10 @@ class DiskgraphService:
         # ``python -O`` — see ``restore_snapshot`` for the same pattern.
         if raw is None:
             from statedb.utils.errors import DiskgraphError
+
             raise DiskgraphError(
-                f'verify_snapshot_integrity passed but _SUCCESS missing '
-                f'at {path}')
+                f'verify_snapshot_integrity passed but _SUCCESS missing at {path}'
+            )
         dg = from_json_dict(json.loads(raw), DiskgraphIngestResult)
         return IngestResult(
             index_path=dg.index_path,
@@ -1026,18 +1075,21 @@ class DiskgraphService:
             table = all_graph_tables[alias]
             data_version = table_data_versions[alias]
             _remove_stale_download_attempts(local_dest)
-            _recover_interrupted_download_swap(
-                alias, table, data_version, local_dest)
+            _recover_interrupted_download_swap(alias, table, data_version, local_dest)
             marker = os.path.join(local_dest, _DOWNLOAD_SUCCESS_FILENAME)
             if os.path.exists(marker):
                 valid, reason = _validate_download_inventory(
-                    marker, alias, table, data_version, local_dest)
+                    marker, alias, table, data_version, local_dest
+                )
                 if valid:
                     skipped += 1
                     continue
                 log.warning(
                     'download_table_files: rejecting staged source for %s: %s; '
-                    'downloading a fresh owned copy', alias, reason)
+                    'downloading a fresh owned copy',
+                    alias,
+                    reason,
+                )
             connector_id = table.get_connector_id()
             if connector_id not in connectors:
                 spec = connector_specs.get(connector_id)
@@ -1067,7 +1119,8 @@ class DiskgraphService:
                 # untouched, while a crash before the final rename exposes no
                 # reusable partial copy at ``local_dest``.
                 payload = _download_inventory_payload(
-                    alias, table, data_version, attempt_dir)
+                    alias, table, data_version, attempt_dir
+                )
                 _write_download_inventory_marker(
                     os.path.join(attempt_dir, _DOWNLOAD_SUCCESS_FILENAME),
                     payload,
@@ -1083,8 +1136,7 @@ class DiskgraphService:
                 if os.path.isdir(attempt_dir):
                     shutil.rmtree(attempt_dir)
             downloaded += 1
-        log.info('download_table_files: downloaded=%d skipped=%d', downloaded,
-                 skipped)
+        log.info('download_table_files: downloaded=%d skipped=%d', downloaded, skipped)
 
     @blocking_method()
     def has_resumable_ingest(self, handle: DiskgraphHandle) -> bool:
@@ -1092,11 +1144,10 @@ class DiskgraphService:
         from diskgraph import has_resumable_ingest
 
         root = self._resolve(handle)
-        return (has_resumable_ingest(root)
-                and self._has_valid_persisted_ingest_config(
-                    handle,
-                    check_local_paths=False,
-                ))
+        return has_resumable_ingest(root) and self._has_valid_persisted_ingest_config(
+            handle,
+            check_local_paths=False,
+        )
 
     @blocking_method()
     def has_persisted_ingest_config(self, handle: DiskgraphHandle) -> bool:
@@ -1129,8 +1180,10 @@ class DiskgraphService:
             return True
         for table in tables:
             source = table.get('source') if isinstance(table, dict) else None
-            if (not isinstance(source, dict)
-                    or source.get('type') not in ('parquet', 'csv')):
+            if not isinstance(source, dict) or source.get('type') not in (
+                'parquet',
+                'csv',
+            ):
                 continue
             paths = source.get('paths')
             if not isinstance(paths, list) or not paths:
@@ -1184,8 +1237,8 @@ class DiskgraphService:
             table_data_versions: Map of source table name to data
                 version string used to key the cache entries.
         """
-        from kumo.diskgraph.ingest_stats_cache import \
-            copy_ingest_stats_to_backend_cache  # isort:skip
+        from kumo.diskgraph.ingest_stats_cache import copy_ingest_stats_to_backend_cache  # isort:skip
+
         return copy_ingest_stats_to_backend_cache(
             index_path=index_path,
             ingest_stats_path=ingest_stats_path,
@@ -1251,7 +1304,7 @@ class DiskgraphService:
         """
         import kumo.data.generic.diskgraph_train_table as train_table_mod
 
-        out, manifest = (train_table_mod.generate_train_table_via_diskgraph(
+        out, manifest = train_table_mod.generate_train_table_via_diskgraph(
             query=query,
             graph=graph,
             timestamps=timestamps,
@@ -1269,7 +1322,7 @@ class DiskgraphService:
             downsampling=downsampling,
             train_table_edges_config=train_table_edges_config,
             index_path=index_path or self._resolve(handle),
-        ))
+        )
         return TrainTableResult(output_path=out, manifest_path=manifest)
 
     # ------------------------------------------------------------------
@@ -1309,19 +1362,23 @@ class DiskgraphService:
                 f'TT-NG ingest manifest missing at {dg_manifest_path}: the '
                 'durable ingest extension is incomplete or stale. (Re)ingest '
                 'the TT-NG extension from its persisted staging before '
-                'materialization.')
+                'materialization.'
+            )
         try:
             dg_manifest = json.loads(fsutil.read_binary(dg_manifest_path))
         except (ValueError, OSError) as ex:
             raise RuntimeError(
                 f'TT-NG ingest manifest at {dg_manifest_path} is unreadable or '
-                'corrupt; re-ingest the TT-NG extension.') from ex
-        task_dataset: Any = (dg_manifest.get('task_dataset') if isinstance(
-            dg_manifest, dict) else None)
+                'corrupt; re-ingest the TT-NG extension.'
+            ) from ex
+        task_dataset: Any = (
+            dg_manifest.get('task_dataset') if isinstance(dg_manifest, dict) else None
+        )
         if not isinstance(task_dataset, dict):
             raise RuntimeError(
                 f'TT-NG ingest manifest at {dg_manifest_path} is missing '
-                '``task_dataset``; re-ingest the TT-NG extension.')
+                '``task_dataset``; re-ingest the TT-NG extension.'
+            )
 
         _validate_ttng_ingest_binding(
             dg_manifest,
@@ -1330,16 +1387,17 @@ class DiskgraphService:
             tt_extension_path=manifest_dir,
             tt_id=os.path.basename(os.path.normpath(manifest_dir)),
         )
-        spec = with_resolved_target_encoder_input(spec, dg_manifest,
-                                                  manifest_dir)
+        spec = with_resolved_target_encoder_input(spec, dg_manifest, manifest_dir)
 
         if not fsutil.exists(durable_stats_path):
             raise RuntimeError(
                 f'TT-NG ingest stats sidecar missing at {durable_stats_path}: '
                 'the durable ingest bundle is incomplete; re-ingest the TT-NG '
-                'extension.')
-        parsed_stats: Any = (diskgraph_native_tt_artifacts.parse_stats_artifact(
-            durable_stats_path))
+                'extension.'
+            )
+        parsed_stats: Any = diskgraph_native_tt_artifacts.parse_stats_artifact(
+            durable_stats_path
+        )
 
         # Stage row_counts + seed_times in ``task_dataset.stages`` (split.bin removed).
         # Seed times are int64-ns ``[min, max]`` pairs, emitted for temporal LP.
@@ -1357,12 +1415,14 @@ class DiskgraphService:
             if isinstance(rc, int):
                 stage_counts[stage_name] = rc
             st = info.get('seed_time')
-            if (isinstance(st, (list, tuple)) and len(st) == 2
-                    and all(isinstance(v, int) for v in st)):
+            if (
+                isinstance(st, (list, tuple))
+                and len(st) == 2
+                and all(isinstance(v, int) for v in st)
+            ):
                 stage_seed_times[stage_name] = (int(st[0]), int(st[1]))
         if not stage_counts:
-            raise RuntimeError(
-                'TT manifest task_dataset.stages has no row_counts')
+            raise RuntimeError('TT manifest task_dataset.stages has no row_counts')
         if not stage_seed_times:
             stage_seed_times = None
 
@@ -1375,22 +1435,21 @@ class DiskgraphService:
         if not isinstance(tt_extension_path, str) or not tt_extension_path:
             raise RuntimeError(
                 'TT manifest task_dataset block is malformed; expected '
-                'non-empty tt_extension_path')
+                'non-empty tt_extension_path'
+            )
         stage_table_refs: dict[str, dict[str, Any]] = {}
         for stage in stage_counts:
             stage_info = wheel_stages.get(stage)
             if not isinstance(stage_info, dict):
                 raise RuntimeError(
-                    'TT manifest task_dataset.stages missing entry for '
-                    f'stage={stage!r}')
+                    f'TT manifest task_dataset.stages missing entry for stage={stage!r}'
+                )
             table_name = stage_info.get('table_name')
             index_path = stage_info.get('index_path')
             if not isinstance(table_name, str) or not table_name:
-                raise RuntimeError(
-                    f'task_dataset.stages[{stage!r}].table_name missing')
+                raise RuntimeError(f'task_dataset.stages[{stage!r}].table_name missing')
             if not isinstance(index_path, str) or not index_path:
-                raise RuntimeError(
-                    f'task_dataset.stages[{stage!r}].index_path missing')
+                raise RuntimeError(f'task_dataset.stages[{stage!r}].index_path missing')
             stage_table_refs[stage] = {
                 'table_name': table_name,
                 'index_path': index_path,
@@ -1398,12 +1457,10 @@ class DiskgraphService:
             }
             binary_label_index = stage_info.get('binary_label_index')
             if isinstance(binary_label_index, dict):
-                stage_table_refs[stage][
-                    'binary_label_index'] = binary_label_index
+                stage_table_refs[stage]['binary_label_index'] = binary_label_index
             sample_weight_index = stage_info.get('sample_weight_index')
             if isinstance(sample_weight_index, dict):
-                stage_table_refs[stage][
-                    'sample_weight_index'] = sample_weight_index
+                stage_table_refs[stage]['sample_weight_index'] = sample_weight_index
 
         # Sidecar bundle (Kumo metadata index); downstream callers read stats.
         manifest_path = write_thin_manifest(
@@ -1466,13 +1523,13 @@ class DiskgraphService:
             tt_id=tt_id,
             predict_stage_name='predict',
         )
-        expected_extension_path = os.path.join(graph_index_path, 'train_tables',
-                                               tt_id)
+        expected_extension_path = os.path.join(graph_index_path, 'train_tables', tt_id)
         td = ingest_result.get('task_dataset')
         if not isinstance(td, dict):
             raise RuntimeError(
                 'execute_tt_ingest (predict) result missing '
-                'task_dataset; re-ingest the prediction task dataset.')
+                'task_dataset; re-ingest the prediction task dataset.'
+            )
         _validate_ttng_ingest_binding(
             ingest_result,
             td,
@@ -1484,6 +1541,7 @@ class DiskgraphService:
         # hard-fail via KUMO_TTNG_ORPHAN_FAIL_PCT) on references this graph
         # can't resolve — a silent skip here means missing prediction rows.
         from kumo.data.generic import diskgraph_staging
+
         diskgraph_staging.check_ingest_orphan_skips(ingest_result, 'predict')
 
         # The published ingest manifest is the sole authority for the
@@ -1494,17 +1552,20 @@ class DiskgraphService:
         if not isinstance(predict_stage, dict):
             raise RuntimeError(
                 'TT-NG ingest manifest missing predict stage; re-ingest '
-                'the prediction task dataset.')
+                'the prediction task dataset.'
+            )
         predict_table_name = predict_stage.get('table_name')
         predict_row_count = predict_stage.get('row_count')
         if not isinstance(predict_table_name, str) or not predict_table_name:
             raise RuntimeError(
                 'TT-NG ingest manifest predict stage missing table_name; '
-                're-ingest the prediction task dataset.')
-        if (not isinstance(predict_row_count, int) or predict_row_count < 0):
+                're-ingest the prediction task dataset.'
+            )
+        if not isinstance(predict_row_count, int) or predict_row_count < 0:
             raise RuntimeError(
                 'TT-NG ingest manifest predict stage has invalid row_count; '
-                're-ingest the prediction task dataset.')
+                're-ingest the prediction task dataset.'
+            )
         tt_extension_path = td['tt_extension_path']
 
         stage_counts = {'predict': predict_row_count}
@@ -1606,15 +1667,16 @@ class DiskgraphService:
         """
         from diskgraph import read_index_metadata as _read_index_metadata
 
-        return json.loads(
-            _read_index_metadata(index_path or self._resolve(handle)))
+        return json.loads(_read_index_metadata(index_path or self._resolve(handle)))
 
     def validate_manifest(self, manifest_path: str) -> Any:
         """Validate a diskgraph-native artifact manifest and return the
         parsed bundle.
         """
-        from kumo.diskgraph.diskgraph_native_tt_artifacts import \
-            get_validated_artifact_bundle  # isort:skip
+        from kumo.diskgraph.diskgraph_native_tt_artifacts import (
+            get_validated_artifact_bundle,  # isort:skip
+        )
+
         return get_validated_artifact_bundle(manifest_path)
 
     # ------------------------------------------------------------------
@@ -1638,9 +1700,9 @@ class DiskgraphService:
             if not job_id:
                 continue
             for subdir in (
-                    'rehydration_cache',
-                    'edge_persist',
-                    'pred_artifact_cache',
+                'rehydration_cache',
+                'edge_persist',
+                'pred_artifact_cache',
             ):
                 staging_dir = os.path.join(data_root, subdir, job_id)
                 if os.path.isdir(staging_dir):
@@ -1671,6 +1733,7 @@ class DiskgraphService:
             ``(full_json, min_json)`` — the full map and its min variant.
         """
         from diskgraph import compute_col_stats_for_parquet
+
         return compute_col_stats_for_parquet(
             parquet_paths=parquet_paths,
             kumo_column_specs_json=json.dumps(kumo_column_specs),

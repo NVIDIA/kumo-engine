@@ -45,14 +45,20 @@ def _fake_sql_connector(scan_estimate_bytes=None):
         BaseColumnConfig(name='id', dtype=Dtype.string),
         BaseColumnConfig(name='val', dtype=Dtype.float32),
     ]
-    sample = pd.DataFrame({
-        'id': [f'id{i}' for i in range(50)],
-        'val': [float(i) for i in range(50)],
-    })
+    sample = pd.DataFrame(
+        {
+            'id': [f'id{i}' for i in range(50)],
+            'val': [float(i) for i in range(50)],
+        }
+    )
     # Only a warehouse that gates is asked for an estimate.
-    return _FakeSQLConnector('wh', query_cols, sample,
-                             scan_estimate_bytes=scan_estimate_bytes,
-                             gates_query_scan=scan_estimate_bytes is not None)
+    return _FakeSQLConnector(
+        'wh',
+        query_cols,
+        sample,
+        scan_estimate_bytes=scan_estimate_bytes,
+        gates_query_scan=scan_estimate_bytes is not None,
+    )
 
 
 def test_get_query_columns_response_discovers_without_scan():
@@ -61,9 +67,9 @@ def test_get_query_columns_response_discovers_without_scan():
     physical table."""
     connector = _fake_sql_connector()
 
-    resp = get_query_columns_response(connector,
-                                      'SELECT id, val FROM transactions',
-                                      ConnectorType.SNOWFLAKE)
+    resp = get_query_columns_response(
+        connector, 'SELECT id, val FROM transactions', ConnectorType.SNOWFLAKE
+    )
 
     by_name = {c.name: c for c in resp.source_cols}
     assert list(by_name) == ['id', 'val']
@@ -81,8 +87,9 @@ def test_get_query_columns_response_rejects_obvious_write():
     connector = _fake_sql_connector()
 
     with pytest.raises(ConnectorValidationError, match='single SQL statement'):
-        get_query_columns_response(connector, 'SELECT 1; DROP TABLE t',
-                                   ConnectorType.SNOWFLAKE)
+        get_query_columns_response(
+            connector, 'SELECT 1; DROP TABLE t', ConnectorType.SNOWFLAKE
+        )
 
     assert connector.get_query_metadata_calls == []
 
@@ -91,9 +98,11 @@ def test_get_query_columns_response_rejects_cross_namespace_read():
     connector = _fake_sql_connector()
 
     with pytest.raises(ConnectorValidationError, match='outside'):
-        get_query_columns_response(connector,
-                                   'SELECT * FROM OTHER.PRIVATE.transactions',
-                                   ConnectorType.SNOWFLAKE)
+        get_query_columns_response(
+            connector,
+            'SELECT * FROM OTHER.PRIVATE.transactions',
+            ConnectorType.SNOWFLAKE,
+        )
 
     assert connector.get_query_metadata_calls == []
 
@@ -104,9 +113,12 @@ def test_get_query_sample_rows_response_bounded():
     read."""
     connector = _fake_sql_connector()
 
-    resp = get_query_sample_rows_response(connector,
-                                          'SELECT id, val FROM transactions',
-                                          ConnectorType.SNOWFLAKE, num_rows=5)
+    resp = get_query_sample_rows_response(
+        connector,
+        'SELECT id, val FROM transactions',
+        ConnectorType.SNOWFLAKE,
+        num_rows=5,
+    )
 
     assert [c.name for c in resp.columns] == ['id', 'val']
     assert len(resp.rows) == 5
@@ -121,10 +133,13 @@ def test_get_query_sample_rows_response_serializes_for_router():
     sample path, so the response is UI-shape-compatible."""
     connector = _fake_sql_connector()
 
-    resp = get_query_sample_rows_response(connector,
-                                          'SELECT id, val FROM transactions',
-                                          ConnectorType.SNOWFLAKE, num_rows=5,
-                                          serialize_to_json=True)
+    resp = get_query_sample_rows_response(
+        connector,
+        'SELECT id, val FROM transactions',
+        ConnectorType.SNOWFLAKE,
+        num_rows=5,
+        serialize_to_json=True,
+    )
 
     assert resp.sample_df_serialized is not None
     assert resp.rows == []
@@ -132,8 +147,8 @@ def test_get_query_sample_rows_response_serializes_for_router():
 
 def test_stringify_sample_dataframe_handles_non_utf8_binary():
     rows = stringify_sample_dataframe(
-        pd.DataFrame({'binary': [b'\xff\x00',
-                                 bytearray(b'\x01'), None]}))
+        pd.DataFrame({'binary': [b'\xff\x00', bytearray(b'\x01'), None]})
+    )
 
     assert rows.values.tolist() == [['0xff00'], ['0x01'], [None]]
 
@@ -144,15 +159,19 @@ def test_get_query_response_strips_trailing_terminator_for_subquery():
     SQL when embedded as `SELECT * FROM (<sql>) LIMIT n`."""
     connector = _fake_sql_connector()
 
-    get_query_columns_response(connector, 'SELECT id, val FROM transactions;',
-                               ConnectorType.SNOWFLAKE)
-    get_query_sample_rows_response(connector,
-                                   'SELECT id, val FROM transactions;',
-                                   ConnectorType.SNOWFLAKE, num_rows=3)
+    get_query_columns_response(
+        connector, 'SELECT id, val FROM transactions;', ConnectorType.SNOWFLAKE
+    )
+    get_query_sample_rows_response(
+        connector,
+        'SELECT id, val FROM transactions;',
+        ConnectorType.SNOWFLAKE,
+        num_rows=3,
+    )
 
-    assert connector.get_query_metadata_calls == [
-        'SELECT id, val FROM transactions'
-    ] * 2
+    assert (
+        connector.get_query_metadata_calls == ['SELECT id, val FROM transactions'] * 2
+    )
     assert connector.sample_query_calls == ['SELECT id, val FROM transactions']
 
 
@@ -162,12 +181,14 @@ def test_get_query_sample_rows_response_cost_gated_returns_columns_only():
     "Load sample" button can't trigger a full scan of an arbitrary query."""
     from kumo.graph.table import SQL_SAMPLE_MAX_SCAN_BYTES
 
-    connector = _fake_sql_connector(
-        scan_estimate_bytes=SQL_SAMPLE_MAX_SCAN_BYTES + 1)
+    connector = _fake_sql_connector(scan_estimate_bytes=SQL_SAMPLE_MAX_SCAN_BYTES + 1)
 
-    resp = get_query_sample_rows_response(connector,
-                                          'SELECT id, val FROM transactions',
-                                          ConnectorType.SNOWFLAKE, num_rows=5)
+    resp = get_query_sample_rows_response(
+        connector,
+        'SELECT id, val FROM transactions',
+        ConnectorType.SNOWFLAKE,
+        num_rows=5,
+    )
 
     assert [c.name for c in resp.columns] == ['id', 'val']
     assert resp.rows == []
@@ -180,8 +201,9 @@ def test_get_query_sample_rows_response_rejects_obvious_write():
     connector = _fake_sql_connector()
 
     with pytest.raises(ConnectorValidationError, match='read-only'):
-        get_query_sample_rows_response(connector, 'DELETE FROM t',
-                                       ConnectorType.SNOWFLAKE, num_rows=5)
+        get_query_sample_rows_response(
+            connector, 'DELETE FROM t', ConnectorType.SNOWFLAKE, num_rows=5
+        )
 
     assert connector.sample_query_calls == []
 
@@ -191,12 +213,13 @@ def test_get_query_sample_rows_response_clamps_oversized_num_rows():
     so the pushed-down ``LIMIT`` can never be unbounded."""
     connector = _fake_sql_connector()
 
-    with patch.object(connector, 'sample_query',
-                      wraps=connector.sample_query) as spy:
-        get_query_sample_rows_response(connector,
-                                       'SELECT id, val FROM transactions',
-                                       ConnectorType.SNOWFLAKE,
-                                       num_rows=NUM_SAMPLE_ROWS + 10_000)
+    with patch.object(connector, 'sample_query', wraps=connector.sample_query) as spy:
+        get_query_sample_rows_response(
+            connector,
+            'SELECT id, val FROM transactions',
+            ConnectorType.SNOWFLAKE,
+            num_rows=NUM_SAMPLE_ROWS + 10_000,
+        )
 
     assert spy.call_args.args[1] == NUM_SAMPLE_ROWS
 
@@ -211,19 +234,18 @@ def test_get_query_columns_response_surfaces_warehouse_describe_error():
     function) surfaces the warehouse's own reason as a ``CustomSqlQueryError``,
     not the misleading generic "Connector source access failed"."""
     connector = _fake_sql_connector()
-    reason = "SQL compilation error: Unknown function AI_GEN"
-    connector.get_query_metadata = MagicMock(
-        side_effect=_WarehouseError(reason))
+    reason = 'SQL compilation error: Unknown function AI_GEN'
+    connector.get_query_metadata = MagicMock(side_effect=_WarehouseError(reason))
 
     with pytest.raises(CustomSqlQueryError) as caught:
-        get_query_columns_response(connector,
-                                   "SELECT ai_gen('hi') AS ai FROM t",
-                                   ConnectorType.SNOWFLAKE)
+        get_query_columns_response(
+            connector, "SELECT ai_gen('hi') AS ai FROM t", ConnectorType.SNOWFLAKE
+        )
 
     message = str(caught.value)
     assert reason in message  # the warehouse's actionable reason is preserved
-    assert message.startswith("The warehouse could not run this query.")
-    assert "source access" not in message.lower()
+    assert message.startswith('The warehouse could not run this query.')
+    assert 'source access' not in message.lower()
     # A CustomSqlQueryError is on the activity-boundary allowlist.
     assert isinstance(caught.value, ConnectorValidationError)
     # The raw error stays chained for the server log, not flattened away.
@@ -234,18 +256,21 @@ def test_get_query_sample_rows_response_surfaces_warehouse_sample_error():
     """A warehouse that rejects the bounded sample (after a successful describe)
     surfaces the warehouse's reason as a ``CustomSqlQueryError``."""
     connector = _fake_sql_connector()
-    reason = "Statement reached its statement timeout"
+    reason = 'Statement reached its statement timeout'
     connector.sample_query = MagicMock(side_effect=_WarehouseError(reason))
 
     with pytest.raises(CustomSqlQueryError) as caught:
-        get_query_sample_rows_response(connector,
-                                       "SELECT id, val FROM transactions",
-                                       ConnectorType.SNOWFLAKE, num_rows=5)
+        get_query_sample_rows_response(
+            connector,
+            'SELECT id, val FROM transactions',
+            ConnectorType.SNOWFLAKE,
+            num_rows=5,
+        )
 
     message = str(caught.value)
     assert reason in message
-    assert message.startswith("The warehouse could not run this query.")
-    assert "source access" not in message.lower()
+    assert message.startswith('The warehouse could not run this query.')
+    assert 'source access' not in message.lower()
 
 
 def test_get_query_sample_rows_response_surfaces_scan_estimate_error():
@@ -253,14 +278,18 @@ def test_get_query_sample_rows_response_surfaces_scan_estimate_error():
     failure there is surfaced as a ``CustomSqlQueryError`` rather than flattened
     to a generic access error."""
     connector = _fake_sql_connector()
-    reason = "Query would process an unbounded amount of data"
+    reason = 'Query would process an unbounded amount of data'
     connector.get_query_scan_estimate_bytes = MagicMock(
-        side_effect=_WarehouseError(reason))
+        side_effect=_WarehouseError(reason)
+    )
 
     with pytest.raises(CustomSqlQueryError) as caught:
-        get_query_sample_rows_response(connector,
-                                       "SELECT id, val FROM transactions",
-                                       ConnectorType.BIGQUERY, num_rows=5)
+        get_query_sample_rows_response(
+            connector,
+            'SELECT id, val FROM transactions',
+            ConnectorType.BIGQUERY,
+            num_rows=5,
+        )
 
     assert reason in str(caught.value)
     assert connector.sample_query_calls == []  # never reached the sample scan
@@ -271,13 +300,13 @@ def test_get_query_columns_response_open_failure_stays_unwrapped():
     so it propagates unwrapped (the activity boundary keeps classifying it as
     "source access"), never mislabeled as a query failure."""
     connector = _fake_sql_connector()
-    connector.open = MagicMock(side_effect=_WarehouseError("auth token secret"))
+    connector.open = MagicMock(side_effect=_WarehouseError('auth token secret'))
     connector.get_query_metadata = MagicMock()
 
     with pytest.raises(_WarehouseError):
-        get_query_columns_response(connector,
-                                   "SELECT id, val FROM transactions",
-                                   ConnectorType.SNOWFLAKE)
+        get_query_columns_response(
+            connector, 'SELECT id, val FROM transactions', ConnectorType.SNOWFLAKE
+        )
 
     # The query was never described: the failure is pre-query, not a query
     # rejection, so it must not be turned into a CustomSqlQueryError here.
@@ -290,25 +319,24 @@ def test_query_advisory_read_only_message_has_no_warehouse_prefix():
     connector = _fake_sql_connector()
 
     with pytest.raises(ConnectorValidationError) as caught:
-        get_query_columns_response(connector, "DELETE FROM t",
-                                   ConnectorType.SNOWFLAKE)
+        get_query_columns_response(connector, 'DELETE FROM t', ConnectorType.SNOWFLAKE)
 
     message = str(caught.value)
-    assert "read-only" in message
+    assert 'read-only' in message
     assert not isinstance(caught.value, CustomSqlQueryError)
-    assert "warehouse could not run" not in message.lower()
+    assert 'warehouse could not run' not in message.lower()
 
 
 def test_sql_query_error_message_sanitizes_reason():
     """The shared sanitizer collapses whitespace and bounds length so a
     multi-line/oversized provider dump can never reach the client verbatim."""
-    short = sql_query_error_message(_WarehouseError("line one\n  line two"))
-    assert short == "The warehouse could not run this query. line one line two"
+    short = sql_query_error_message(_WarehouseError('line one\n  line two'))
+    assert short == 'The warehouse could not run this query. line one line two'
 
-    long = sql_query_error_message(_WarehouseError("x" * 1000))
+    long = sql_query_error_message(_WarehouseError('x' * 1000))
     # Prefix + space + <=400 chars of reason + single-char ellipsis.
-    assert long.endswith("…")
-    assert len(long) <= len("The warehouse could not run this query. ") + 401
+    assert long.endswith('…')
+    assert len(long) <= len('The warehouse could not run this query. ') + 401
 
 
 def test_get_table_cols_preserves_inferred_multicategorical_delimiter():
@@ -336,8 +364,7 @@ def test_get_sample_rows_response():
     root_dir = osp.join(root_dir, '..', '..', 'parquet_data', 'FINANCIAL')
     connector = ParquetConnector('parquet', root_dir=root_dir)
 
-    sample, _ = get_sample_rows_response(connector, 'TRANS', 12,
-                                         skip_cache=True)
+    sample, _ = get_sample_rows_response(connector, 'TRANS', 12, skip_cache=True)
     assert len(sample.columns) == 10
     assert sample.columns[0].name == 'TRANS_ID'
     assert sample.columns[2].name == 'DATE'
@@ -354,16 +381,21 @@ def test_get_sample_rows_response():
 def test_get_sample_rows_response_snowflake():
     credentials = {
         'user': os.getenv(snowflake_connector._ENV_SNOWFLAKE_USER),
-        'private_key': os.getenv(snowflake_connector._ENV_SNOWFLAKE_PRIVATE_KEY)
+        'private_key': os.getenv(snowflake_connector._ENV_SNOWFLAKE_PRIVATE_KEY),
     }
 
-    connector = SnowflakeConnector('snowflake', account='xva19026',
-                                   warehouse='WH_L', database='KUMO',
-                                   schema_name='SPARK_SCALE_TEST')
+    connector = SnowflakeConnector(
+        'snowflake',
+        account='xva19026',
+        warehouse='WH_L',
+        database='KUMO',
+        schema_name='SPARK_SCALE_TEST',
+    )
     connector.open(credentials=credentials)
 
-    sample, _ = get_sample_rows_response(connector, 'TEST300G1024', 10000,
-                                         skip_cache=True)
+    sample, _ = get_sample_rows_response(
+        connector, 'TEST300G1024', 10000, skip_cache=True
+    )
     assert len(sample.columns) == 1024
     assert len(sample.rows) == 10000
     assert sample.response_token == ''
@@ -374,20 +406,26 @@ def test_get_sample_rows_async():
     root_dir = osp.join(root_dir, '..', '..', 'parquet_data', 'FINANCIAL')
     connector = ParquetConnector('parquet', root_dir=root_dir)
 
-    sample_rows, fut = get_sample_rows_response(connector, 'TRANS', 12,
-                                                skip_cache=True, is_async=True)
+    sample_rows, fut = get_sample_rows_response(
+        connector, 'TRANS', 12, skip_cache=True, is_async=True
+    )
     response_token = sample_rows.response_token
     assert response_token != ''
     assert len(response_token) == 32
 
     with pytest.raises(ValueError):
-        _, _ = get_sample_rows_response(connector, 'TRANS', 12, skip_cache=True,
-                                        response_token=response_token + '1')
+        _, _ = get_sample_rows_response(
+            connector, 'TRANS', 12, skip_cache=True, response_token=response_token + '1'
+        )
 
-    sample, _ = get_sample_rows_response(connector, 'TRANS', 12,
-                                         skip_cache=True,
-                                         response_token=response_token,
-                                         is_async=True)
+    sample, _ = get_sample_rows_response(
+        connector,
+        'TRANS',
+        12,
+        skip_cache=True,
+        response_token=response_token,
+        is_async=True,
+    )
     if sample.response_token != '':
         assert sample.response_token == response_token
 
@@ -395,10 +433,14 @@ def test_get_sample_rows_async():
         if fut is not None:
             fut.result()
         time.sleep(0.1)
-        sample, _ = get_sample_rows_response(connector, 'TRANS', 12,
-                                             skip_cache=True,
-                                             response_token=response_token,
-                                             is_async=True)
+        sample, _ = get_sample_rows_response(
+            connector,
+            'TRANS',
+            12,
+            skip_cache=True,
+            response_token=response_token,
+            is_async=True,
+        )
 
     assert len(sample.columns) == 10
     assert sample.columns[0].name == 'TRANS_ID'
@@ -416,29 +458,42 @@ def test_get_sample_rows_failure(caplog):
 
     provider_secret = 'known-provider-error-secret'
     sample_rows, fut = get_sample_rows_response(
-        connector, 'TRANS', 12, skip_cache=True, is_async=True,
-        mock_error=FileNotFoundError(provider_secret))
+        connector,
+        'TRANS',
+        12,
+        skip_cache=True,
+        is_async=True,
+        mock_error=FileNotFoundError(provider_secret),
+    )
     response_token = sample_rows.response_token
     assert response_token != ''
     assert len(response_token) == 32
 
-    with pytest.raises(ValueError,
-                       match='Unable to prepare sample rows') as error:
+    with pytest.raises(ValueError, match='Unable to prepare sample rows') as error:
         if fut is not None:
             fut.result()
-        _, _ = get_sample_rows_response(connector, 'TRANS', 12, skip_cache=True,
-                                        response_token=response_token,
-                                        is_async=True)
+        _, _ = get_sample_rows_response(
+            connector,
+            'TRANS',
+            12,
+            skip_cache=True,
+            response_token=response_token,
+            is_async=True,
+        )
     assert provider_secret not in str(error.value)
     assert provider_secret not in caplog.text
 
     root_dir = osp.join(root_dir, '..', '..', 'parquet_data', 'SYNTHETIC')
-    connector = ParquetConnector('parquet_connector_2', root_dir=root_dir,
-                                 file_type='parquet')
+    connector = ParquetConnector(
+        'parquet_connector_2', root_dir=root_dir, file_type='parquet'
+    )
 
     sample_rows, fut = get_sample_rows_response(
-        connector, source_table_name='unsupported_nested_schema', num_rows=2,
-        is_async=True)
+        connector,
+        source_table_name='unsupported_nested_schema',
+        num_rows=2,
+        is_async=True,
+    )
     response_token = sample_rows.response_token
     assert response_token != ''
     assert len(response_token) == 32
@@ -447,5 +502,9 @@ def test_get_sample_rows_failure(caplog):
         if fut is not None:
             fut.result()
         _, _ = get_sample_rows_response(
-            connector, source_table_name='unsupported_nested_schema',
-            num_rows=2, response_token=response_token, is_async=True)
+            connector,
+            source_table_name='unsupported_nested_schema',
+            num_rows=2,
+            response_token=response_token,
+            is_async=True,
+        )

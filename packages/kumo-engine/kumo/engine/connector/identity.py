@@ -98,7 +98,7 @@ class Identity:
         # data_source's validate_resource_slug: 3-48 lowercase ASCII
         # letters/digits/hyphens, starting with a letter, ending with a
         # letter or digit).
-        self._slug = "identity-" + uuid.uuid4().hex
+        self._slug = 'identity-' + uuid.uuid4().hex
         # Always a fresh name in practice (birthday collision on a random
         # 128-bit value) -- but unlike the earlier credential-derived slug,
         # a collision here is never expected to be the *same* registration,
@@ -115,7 +115,8 @@ class Identity:
                 slug=self._slug,
                 config=self._config,
                 credentials=self._credentials,
-            ))
+            )
+        )
 
     @property
     def slug(self) -> str:
@@ -125,7 +126,7 @@ class Identity:
         return self._slug
 
     def __repr__(self) -> str:
-        return f"{self.__class__.__name__}(slug={self._slug!r})"
+        return f'{self.__class__.__name__}(slug={self._slug!r})'
 
 
 class SnowflakeIdentity(Identity):
@@ -149,8 +150,7 @@ class SnowflakeIdentity(Identity):
         token_path: Optional[str] = None,
     ) -> None:
         if password is not None and private_key is not None:
-            raise ValueError(
-                "Specify at most one of password or private_key.")
+            raise ValueError('Specify at most one of password or private_key.')
         credentials: Optional[IdentityCredentials]
         if password is not None:
             authentication = SnowflakeAuthenticationKind.PASSWORD
@@ -197,8 +197,8 @@ class S3Identity(Identity):
         if access_key_id is not None or secret_access_key is not None:
             if access_key_id is None or secret_access_key is None:
                 raise ValueError(
-                    "access_key_id and secret_access_key must be given "
-                    "together.")
+                    'access_key_id and secret_access_key must be given together.'
+                )
             authentication = S3AccessKeyAuthentication()
             credentials = S3AccessKeyCredentials(
                 access_key_id=access_key_id,
@@ -207,13 +207,13 @@ class S3Identity(Identity):
             )
         elif role_arn is not None:
             authentication = S3AssumeRoleAuthentication(
-                partition=partition, role_arn=role_arn)
+                partition=partition, role_arn=role_arn
+            )
             credentials = None
         else:
             authentication = S3AmbientAuthentication()
             credentials = None
-        config = S3IdentityConfig(authentication=authentication,
-                                  connection=connection)
+        config = S3IdentityConfig(authentication=authentication, connection=connection)
         super().__init__(config, credentials)
 
 
@@ -230,15 +230,15 @@ def _google_authentication(
             auth_uri=service_account_key['auth_uri'],
             token_uri=service_account_key['token_uri'],
         )
-        credentials: Optional[IdentityCredentials] = (
-            GoogleServiceAccountKeyCredentials(
-                private_key_id=service_account_key['private_key_id'],
-                private_key=service_account_key['private_key'],
-            ))
+        credentials: Optional[IdentityCredentials] = GoogleServiceAccountKeyCredentials(
+            private_key_id=service_account_key['private_key_id'],
+            private_key=service_account_key['private_key'],
+        )
         return authentication, credentials
     if workload_service_account_email is not None:
         return GoogleWorkloadIdentityAuthentication(
-            service_account_email=workload_service_account_email), None
+            service_account_email=workload_service_account_email
+        ), None
     return GoogleAmbientAuthentication(), None
 
 
@@ -304,15 +304,16 @@ class DatabricksIdentity(Identity):
     ) -> None:
         explicit = (host, client_id, client_secret)
         if any(value is not None for value in explicit) and not all(
-                value is not None for value in explicit):
+            value is not None for value in explicit
+        ):
             raise ValueError(
-                "host, client_id, and client_secret must be given together, "
-                "or all omitted to defer to the ambient auth chain.")
+                'host, client_id, and client_secret must be given together, '
+                'or all omitted to defer to the ambient auth chain.'
+            )
         credentials: Optional[IdentityCredentials]
         if host is not None:
             authentication = DatabricksAuthenticationKind.OAUTH
-            credentials = DatabricksOAuthCredentials(
-                client_secret=client_secret)
+            credentials = DatabricksOAuthCredentials(client_secret=client_secret)
         else:
             authentication = DatabricksAuthenticationKind.AMBIENT
             credentials = None
@@ -332,8 +333,9 @@ class ADLSIdentity(Identity):
     Identity probing validates token acquisition, not storage permissions.
     """
 
-    def __init__(self, *, tenant_id: str, client_id: str,
-                 cloud: AzureCloud = AzureCloud.PUBLIC) -> None:
+    def __init__(
+        self, *, tenant_id: str, client_id: str, cloud: AzureCloud = AzureCloud.PUBLIC
+    ) -> None:
         super().__init__(
-            ADLSIdentityConfig(tenant_id=tenant_id, client_id=client_id,
-                               cloud=cloud))
+            ADLSIdentityConfig(tenant_id=tenant_id, client_id=client_id, cloud=cloud)
+        )

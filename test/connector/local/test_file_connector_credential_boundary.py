@@ -80,22 +80,25 @@ def _assert_deployment_scope() -> None:
     assert credentials_for_provider('s3') is None
 
 
-def test_direct_manifest_uses_exact_ambient_identity_and_never_stages(
-        monkeypatch):
-    connector = CompositeFileConnector('ambient_files',
-                                       root_dir='s3://customer-bucket/root')
+def test_direct_manifest_uses_exact_ambient_identity_and_never_stages(monkeypatch):
+    connector = CompositeFileConnector(
+        'ambient_files', root_dir='s3://customer-bucket/root'
+    )
     ambient_session = object()
     connector.require_explicit_credentials()
-    connector.set_credentials({
-        'provider': 's3',
-        'ambient_session': ambient_session,
-    })
+    connector.set_credentials(
+        {
+            'provider': 's3',
+            'ambient_session': ambient_session,
+        }
+    )
     paths = [
         's3://customer-bucket/root/events/a.parquet',
         's3://customer-bucket/root/events/b.parquet',
     ]
-    resolve_paths = MagicMock(side_effect=lambda source_name: paths
-                              if source_name == 'events' else None)
+    resolve_paths = MagicMock(
+        side_effect=lambda source_name: paths if source_name == 'events' else None
+    )
     monkeypatch.setattr(connector, '_direct_parquet_paths', resolve_paths)
     identities = {
         paths[0]: ObjectIdentity(11, 'etag-a', None),
@@ -108,18 +111,18 @@ def test_direct_manifest_uses_exact_ambient_identity_and_never_stages(
         assert scope.credentials['ambient_session'] is ambient_session
         return identities[path]
 
-    monkeypatch.setattr('kumo.connector.file_connector.fsutil.object_identity',
-                        identity)
+    monkeypatch.setattr(
+        'kumo.connector.file_connector.fsutil.object_identity', identity
+    )
     copy_file = MagicMock(
-        side_effect=AssertionError('direct manifest must not copy bytes'))
-    monkeypatch.setattr('kumo.connector.file_connector.fsutil.copy_file',
-                        copy_file)
+        side_effect=AssertionError('direct manifest must not copy bytes')
+    )
+    monkeypatch.setattr('kumo.connector.file_connector.fsutil.copy_file', copy_file)
 
     assert connector.uses_direct_diskgraph_source_for('events')
     source = connector.diskgraph_source(source_name='events')
     assert source == {
-        'type':
-        'object_store_parquet',
+        'type': 'object_store_parquet',
         'objects': [
             {
                 'path': paths[0],
@@ -134,21 +137,23 @@ def test_direct_manifest_uses_exact_ambient_identity_and_never_stages(
                 'version': None,
             },
         ],
-        'auth_profile':
-        'ambient',
+        'auth_profile': 'ambient',
     }
     resolve_paths.assert_called_once_with('events')
     copy_file.assert_not_called()
 
 
 def test_ambient_s3_source_stages_for_separate_minio_dataplane(monkeypatch):
-    connector = CompositeFileConnector('ambient_files',
-                                       root_dir='s3://customer-bucket/root')
+    connector = CompositeFileConnector(
+        'ambient_files', root_dir='s3://customer-bucket/root'
+    )
     connector.require_explicit_credentials()
-    connector.set_credentials({
-        'provider': 's3',
-        'ambient_session': object(),
-    })
+    connector.set_credentials(
+        {
+            'provider': 's3',
+            'ambient_session': object(),
+        }
+    )
     monkeypatch.setattr(
         connector,
         '_direct_parquet_paths',
@@ -158,15 +163,13 @@ def test_ambient_s3_source_stages_for_separate_minio_dataplane(monkeypatch):
         'io_utils.fsutil.s3_connection.deployment_s3_connection',
         lambda: object(),
     )
-    environment = SimpleNamespace(
-        data_plane_storage_root='s3://deployment-bucket/root')
+    environment = SimpleNamespace(data_plane_storage_root='s3://deployment-bucket/root')
     monkeypatch.setattr(file_connector, 'deploy_env', lambda: environment)
 
     assert not connector.uses_direct_diskgraph_source_for('events')
 
 
-def test_direct_s3_subprocess_environment_preserves_authorized_session(
-        monkeypatch):
+def test_direct_s3_subprocess_environment_preserves_authorized_session(monkeypatch):
     connector = CompositeFileConnector(
         'ambient_files',
         root_dir='s3://customer-bucket/root',
@@ -174,19 +177,17 @@ def test_direct_s3_subprocess_environment_preserves_authorized_session(
     session = MagicMock(region_name=None)
     source = MagicMock(method='container-role')
     session.get_credentials.return_value = source
-    session.client.return_value.head_bucket.return_value = {
-        'BucketRegion': 'us-west-2'
-    }
-    monkeypatch.setenv('AWS_CONTAINER_CREDENTIALS_RELATIVE_URI',
-                       '/v2/credentials/pod')
+    session.client.return_value.head_bucket.return_value = {'BucketRegion': 'us-west-2'}
+    monkeypatch.setenv('AWS_CONTAINER_CREDENTIALS_RELATIVE_URI', '/v2/credentials/pod')
     connector.require_explicit_credentials()
-    connector.set_credentials({
-        'provider': 's3',
-        'ambient_session': session,
-    })
+    connector.set_credentials(
+        {
+            'provider': 's3',
+            'ambient_session': session,
+        }
+    )
     path = 's3://customer-bucket/root/events/part.parquet'
-    monkeypatch.setattr(connector, '_direct_parquet_paths',
-                        lambda _source_name: [path])
+    monkeypatch.setattr(connector, '_direct_parquet_paths', lambda _source_name: [path])
 
     environment = connector.diskgraph_subprocess_environment('events')
 
@@ -197,22 +198,32 @@ def test_direct_s3_subprocess_environment_preserves_authorized_session(
     assert session.get_credentials.call_count >= 1
     source.get_frozen_credentials.assert_not_called()
     session.client.return_value.head_bucket.assert_called_once_with(
-        Bucket='customer-bucket')
+        Bucket='customer-bucket'
+    )
 
 
-@pytest.mark.parametrize('method,selectors', [
-    ('assume-role-with-web-identity', {
-        'AWS_ROLE_ARN': 'arn:aws:iam::123456789012:role/kumo-runtime',
-        'AWS_WEB_IDENTITY_TOKEN_FILE':
-        '/var/run/secrets/eks.amazonaws.com/token',
-    }),
-    ('container-role', {
-        'AWS_CONTAINER_CREDENTIALS_RELATIVE_URI': '/v2/credentials/pod',
-    }),
-    ('iam-role', {}),
-])
+@pytest.mark.parametrize(
+    'method,selectors',
+    [
+        (
+            'assume-role-with-web-identity',
+            {
+                'AWS_ROLE_ARN': 'arn:aws:iam::123456789012:role/kumo-runtime',
+                'AWS_WEB_IDENTITY_TOKEN_FILE': '/var/run/secrets/eks.amazonaws.com/token',
+            },
+        ),
+        (
+            'container-role',
+            {
+                'AWS_CONTAINER_CREDENTIALS_RELATIVE_URI': '/v2/credentials/pod',
+            },
+        ),
+        ('iam-role', {}),
+    ],
+)
 def test_explicit_ambient_s3_hands_off_renewable_workload_provider(
-        monkeypatch, method, selectors):
+    monkeypatch, method, selectors
+):
     connector = CompositeFileConnector(
         'ambient_files',
         root_dir='s3://customer-bucket/root',
@@ -221,10 +232,12 @@ def test_explicit_ambient_s3_hands_off_renewable_workload_provider(
     session = MagicMock(region_name='us-west-2')
     session.get_credentials.return_value = source
     connector.require_explicit_credentials()
-    connector.set_credentials({
-        'provider': 's3',
-        'ambient_session': session,
-    })
+    connector.set_credentials(
+        {
+            'provider': 's3',
+            'ambient_session': session,
+        }
+    )
     for name, value in selectors.items():
         monkeypatch.setenv(name, value)
     monkeypatch.setattr(
@@ -255,10 +268,12 @@ def test_profile_only_web_identity_retains_direct_static_handoff(monkeypatch):
     )
     session.get_credentials.return_value = source
     connector.require_explicit_credentials()
-    connector.set_credentials({
-        'provider': 's3',
-        'ambient_session': session,
-    })
+    connector.set_credentials(
+        {
+            'provider': 's3',
+            'ambient_session': session,
+        }
+    )
     monkeypatch.delenv('AWS_ROLE_ARN', raising=False)
     monkeypatch.delenv('AWS_WEB_IDENTITY_TOKEN_FILE', raising=False)
     monkeypatch.setattr(
@@ -292,8 +307,7 @@ def test_implicit_s3_retains_frozen_workload_credential_handoff(monkeypatch):
     )
     session.get_credentials.return_value = source
     monkeypatch.setattr('boto3.Session', lambda: session)
-    monkeypatch.setenv('AWS_CONTAINER_CREDENTIALS_RELATIVE_URI',
-                       '/v2/credentials/pod')
+    monkeypatch.setenv('AWS_CONTAINER_CREDENTIALS_RELATIVE_URI', '/v2/credentials/pod')
     monkeypatch.setattr(
         connector,
         '_direct_parquet_paths',
@@ -312,8 +326,7 @@ def test_implicit_s3_retains_frozen_workload_credential_handoff(monkeypatch):
     source.get_frozen_credentials.assert_called_once_with()
 
 
-def test_implicit_static_s3_credentials_still_require_a_session_token(
-        monkeypatch):
+def test_implicit_static_s3_credentials_still_require_a_session_token(monkeypatch):
     connector = CompositeFileConnector(
         'ambient_files',
         root_dir='s3://customer-bucket/root',
@@ -357,16 +370,17 @@ def test_connector_access_key_uses_authorized_staging(monkeypatch):
         rotation_id='rotation-1',
     )
     connector.require_explicit_credentials()
-    connector.set_credentials({
-        'provider': 's3',
-        'aws_access_key_id': 'connector-access-key',
-        'aws_secret_access_key': 'connector-secret-key',
-        'region': 'us-east-1',
-        's3_connection': connection,
-    })
+    connector.set_credentials(
+        {
+            'provider': 's3',
+            'aws_access_key_id': 'connector-access-key',
+            'aws_secret_access_key': 'connector-secret-key',
+            'region': 'us-east-1',
+            's3_connection': connection,
+        }
+    )
     path = 's3://customer-bucket/root/events/part.parquet'
-    monkeypatch.setattr(connector, '_direct_parquet_paths',
-                        lambda _source_name: [path])
+    monkeypatch.setattr(connector, '_direct_parquet_paths', lambda _source_name: [path])
 
     assert not connector.uses_direct_diskgraph_source_for('events')
     with pytest.raises(ConnectorError, match='authorized direct object'):
@@ -374,8 +388,7 @@ def test_connector_access_key_uses_authorized_staging(monkeypatch):
     assert 'connector-secret-key' not in repr(connection)
 
 
-def test_direct_s3_subprocess_environment_uses_deployment_long_lived_key(
-        monkeypatch):
+def test_direct_s3_subprocess_environment_uses_deployment_long_lived_key(monkeypatch):
     connector = CompositeFileConnector(
         'ambient_files',
         root_dir='s3://deployment-bucket/root',
@@ -386,16 +399,16 @@ def test_direct_s3_subprocess_environment_uses_deployment_long_lived_key(
         token='worker-role-session-token',
     )
     session = MagicMock(region_name='us-east-1')
-    session.get_credentials.return_value.get_frozen_credentials.return_value = (
-        frozen)
+    session.get_credentials.return_value.get_frozen_credentials.return_value = frozen
     connector.require_explicit_credentials()
-    connector.set_credentials({
-        'provider': 's3',
-        'ambient_session': session,
-    })
+    connector.set_credentials(
+        {
+            'provider': 's3',
+            'ambient_session': session,
+        }
+    )
     path = 's3://deployment-bucket/root/events/part.parquet'
-    monkeypatch.setattr(connector, '_direct_parquet_paths',
-                        lambda _source_name: [path])
+    monkeypatch.setattr(connector, '_direct_parquet_paths', lambda _source_name: [path])
     connection = SimpleNamespace(
         access_key='deployment-access-key',
         secret_key='deployment-secret-key',
@@ -414,8 +427,10 @@ def test_direct_s3_subprocess_environment_uses_deployment_long_lived_key(
         lambda: expected,
     )
     monkeypatch.setattr(
-        file_connector, 'deploy_env', lambda: SimpleNamespace(
-            data_plane_storage_root='s3://deployment-bucket/root'))
+        file_connector,
+        'deploy_env',
+        lambda: SimpleNamespace(data_plane_storage_root='s3://deployment-bucket/root'),
+    )
 
     environment = connector.diskgraph_subprocess_environment('events')
 
@@ -435,13 +450,14 @@ def test_other_long_lived_s3_source_stages_before_diskgraph(monkeypatch):
         token=None,
     )
     session = MagicMock(region_name='us-east-1')
-    session.get_credentials.return_value.get_frozen_credentials.return_value = (
-        frozen)
+    session.get_credentials.return_value.get_frozen_credentials.return_value = frozen
     connector.require_explicit_credentials()
-    connector.set_credentials({
-        'provider': 's3',
-        'ambient_session': session,
-    })
+    connector.set_credentials(
+        {
+            'provider': 's3',
+            'ambient_session': session,
+        }
+    )
     monkeypatch.setattr(
         connector,
         '_direct_parquet_paths',
@@ -455,8 +471,10 @@ def test_other_long_lived_s3_source_stages_before_diskgraph(monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        file_connector, 'deploy_env', lambda: SimpleNamespace(
-            data_plane_storage_root='s3://deployment-bucket/root'))
+        file_connector,
+        'deploy_env',
+        lambda: SimpleNamespace(data_plane_storage_root='s3://deployment-bucket/root'),
+    )
 
     assert not connector.uses_direct_diskgraph_source_for('events')
 
@@ -469,15 +487,18 @@ def test_direct_s3_subprocess_environment_uses_deployment_provider(monkeypatch):
     session = MagicMock(region_name=None)
     session.get_credentials.return_value = None
     connector.require_explicit_credentials()
-    connector.set_credentials({
-        'provider': 's3',
-        'ambient_session': session,
-    })
+    connector.set_credentials(
+        {
+            'provider': 's3',
+            'ambient_session': session,
+        }
+    )
     monkeypatch.setattr(
         connector,
         '_direct_parquet_paths',
-        lambda _source_name:
-        ['s3://deployment-bucket/root/uploaded-datasets/default/part.parquet'],
+        lambda _source_name: [
+            's3://deployment-bucket/root/uploaded-datasets/default/part.parquet'
+        ],
     )
     monkeypatch.setattr(
         'io_utils.fsutil.s3_connection.deployment_s3_connection',
@@ -492,8 +513,10 @@ def test_direct_s3_subprocess_environment_uses_deployment_provider(monkeypatch):
         lambda: expected,
     )
     monkeypatch.setattr(
-        file_connector, 'deploy_env', lambda: SimpleNamespace(
-            data_plane_storage_root='s3://deployment-bucket/root'))
+        file_connector,
+        'deploy_env',
+        lambda: SimpleNamespace(data_plane_storage_root='s3://deployment-bucket/root'),
+    )
 
     assert connector.diskgraph_subprocess_environment('events') == expected
     session.get_credentials.assert_not_called()
@@ -507,10 +530,12 @@ def test_other_ambient_s3_source_stages_before_diskgraph(monkeypatch):
     session = MagicMock(region_name=None)
     session.get_credentials.return_value = None
     connector.require_explicit_credentials()
-    connector.set_credentials({
-        'provider': 's3',
-        'ambient_session': session,
-    })
+    connector.set_credentials(
+        {
+            'provider': 's3',
+            'ambient_session': session,
+        }
+    )
     monkeypatch.setattr(
         connector,
         '_direct_parquet_paths',
@@ -524,8 +549,10 @@ def test_other_ambient_s3_source_stages_before_diskgraph(monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        file_connector, 'deploy_env', lambda: SimpleNamespace(
-            data_plane_storage_root='s3://deployment-bucket/root'))
+        file_connector,
+        'deploy_env',
+        lambda: SimpleNamespace(data_plane_storage_root='s3://deployment-bucket/root'),
+    )
 
     assert not connector.uses_direct_diskgraph_source_for('events')
 
@@ -538,8 +565,9 @@ def test_explicit_file_identity_never_falls_back_to_ambient_direct(monkeypatch):
         lambda _source_name: ['s3://customer-bucket/root/events/part.parquet'],
     )
     identity = MagicMock()
-    monkeypatch.setattr('kumo.connector.file_connector.fsutil.object_identity',
-                        identity)
+    monkeypatch.setattr(
+        'kumo.connector.file_connector.fsutil.object_identity', identity
+    )
 
     assert not connector.uses_direct_diskgraph_source_for('events')
     with pytest.raises(ConnectorError, match='ambient connector identity'):
@@ -576,15 +604,13 @@ def test_explicit_file_identity_never_falls_back_to_ambient_direct(monkeypatch):
             False,
         ),
         (
-            'abfss://container@account.dfs.core.windows.net/events/'
-            'part.parquet',
+            'abfss://container@account.dfs.core.windows.net/events/part.parquet',
             {},
             False,
             True,
         ),
         (
-            'abfss://container@account.dfs.core.windows.net/events/'
-            'part.parquet',
+            'abfss://container@account.dfs.core.windows.net/events/part.parquet',
             AzureFederatedCredentials(credential=object()).as_dict(),
             True,
             False,
@@ -592,14 +618,14 @@ def test_explicit_file_identity_never_falls_back_to_ambient_direct(monkeypatch):
     ],
 )
 def test_direct_provider_boundary_accepts_only_current_ambient_products(
-        monkeypatch, path, credentials, require_explicit, expected):
+    monkeypatch, path, credentials, require_explicit, expected
+):
     connector = CompositeFileConnector('files', root_dir=path)
     if require_explicit:
         connector.require_explicit_credentials()
     if credentials:
         connector.set_credentials(credentials)
-    monkeypatch.setattr(connector, '_direct_parquet_paths',
-                        lambda _source_name: [path])
+    monkeypatch.setattr(connector, '_direct_parquet_paths', lambda _source_name: [path])
 
     assert connector.uses_direct_diskgraph_source_for('events') is expected
 
@@ -622,7 +648,8 @@ def test_direct_provider_boundary_accepts_only_current_ambient_products(
     ],
 )
 def test_any_uri_ambient_flat_parquet_builds_direct_manifest(
-        monkeypatch, connector_type, uri):
+    monkeypatch, connector_type, uri
+):
     connector = connector_type('ambient_files')
     version = '123' if connector_type is AnyURIGCSConnector else None
 
@@ -630,12 +657,13 @@ def test_any_uri_ambient_flat_parquet_builds_direct_manifest(
         assert connector_type is AnyURIS3Connector
         assert path == uri
 
-    monkeypatch.setattr('io_utils.fsutil.s3_filesystem.select_s3_region',
-                        select_region)
-    monkeypatch.setattr('kumo.connector.any_uri_file_connector.fsutil.isdir',
-                        lambda path: False)
-    monkeypatch.setattr('kumo.connector.any_uri_file_connector.fsutil.exists',
-                        lambda path: path == uri)
+    monkeypatch.setattr('io_utils.fsutil.s3_filesystem.select_s3_region', select_region)
+    monkeypatch.setattr(
+        'kumo.connector.any_uri_file_connector.fsutil.isdir', lambda path: False
+    )
+    monkeypatch.setattr(
+        'kumo.connector.any_uri_file_connector.fsutil.exists', lambda path: path == uri
+    )
     monkeypatch.setattr(
         'kumo.connector.file_connector.fsutil.object_identity',
         lambda path: ObjectIdentity(17, f'etag:{path}', version),
@@ -643,17 +671,18 @@ def test_any_uri_ambient_flat_parquet_builds_direct_manifest(
 
     assert connector.uses_direct_diskgraph_source_for(uri)
     assert connector.diskgraph_source(source_name=uri) == {
-        'type':
-        'object_store_parquet',
-        'objects': [{
-            'path': uri,
-            'size': 17,
-            'e_tag':
-            None if connector_type is AnyURIGCSConnector else f'etag:{uri}',
-            'version': version,
-        }],
-        'auth_profile':
-        'ambient',
+        'type': 'object_store_parquet',
+        'objects': [
+            {
+                'path': uri,
+                'size': 17,
+                'e_tag': None
+                if connector_type is AnyURIGCSConnector
+                else f'etag:{uri}',
+                'version': version,
+            }
+        ],
+        'auth_profile': 'ambient',
     }
 
 
@@ -677,7 +706,8 @@ def test_flat_parquet_classifier_rejects_hive_and_accepts_flat(tmp_path):
 
 
 def test_composite_direct_parquet_resolution_reuses_one_scan_per_identity(
-        monkeypatch, tmp_path):
+    monkeypatch, tmp_path
+):
     from kumo.connector import composite_file_connector
 
     events = tmp_path / 'events'
@@ -751,7 +781,8 @@ def _mock_remote_file(monkeypatch, tmp_path, external_path):
             assert threading.get_ident() != caller_thread
             ancestor = destination
             while not os.path.basename(ancestor).startswith(
-                ('kumo-file-source-', 'kumo-raw-source-')):
+                ('kumo-file-source-', 'kumo-raw-source-')
+            ):
                 ancestor = os.path.dirname(ancestor)
                 assert ancestor != '/'
             assert stat.S_IMODE(os.stat(ancestor).st_mode) == 0o700
@@ -793,8 +824,7 @@ def _mock_remote_file(monkeypatch, tmp_path, external_path):
         _assert_deployment_scope()
         assert kwargs['exist_ok']
 
-    monkeypatch.setattr('kumo.connector.object_store_access.source_access',
-                        access)
+    monkeypatch.setattr('kumo.connector.object_store_access.source_access', access)
     monkeypatch.setattr(file_connector.fsutil, 'isdir', isdir)
     monkeypatch.setattr(file_connector.fsutil, 'copy_file', copy_file)
     monkeypatch.setattr('io_utils.fsutil.generic.copy_file', copy_file)
@@ -807,12 +837,14 @@ def _mock_remote_file(monkeypatch, tmp_path, external_path):
 
 @pytest.mark.parametrize('suffix', ['parquet', 'csv'])
 def test_composite_export_separates_customer_and_internal_s3(
-        monkeypatch, tmp_path, suffix):
+    monkeypatch, tmp_path, suffix
+):
     connector = _connector(suffix=suffix)
     source_name = f'deep/nested/events.{suffix}'
     external_path = f's3://customer-bucket/root/{source_name}'
-    payload, events, scratch, sizes = _mock_remote_file(monkeypatch, tmp_path,
-                                                        external_path)
+    payload, events, scratch, sizes = _mock_remote_file(
+        monkeypatch, tmp_path, external_path
+    )
 
     def resolve(name):
         _assert_customer_scope()
@@ -820,24 +852,28 @@ def test_composite_export_separates_customer_and_internal_s3(
         return external_path
 
     monkeypatch.setattr(connector, '_get_path', resolve)
-    monkeypatch.setattr('kumo.data.utils.get_materialize_path',
-                        lambda *_a, **_k: 's3://example-internal/ingest/events')
-    metrics = connector.export_table(source_name, _fingerprint(source_name),
-                                     'v1')
+    monkeypatch.setattr(
+        'kumo.data.utils.get_materialize_path',
+        lambda *_a, **_k: 's3://example-internal/ingest/events',
+    )
+    metrics = connector.export_table(source_name, _fingerprint(source_name), 'v1')
     assert metrics.num_rows == (2 if suffix == 'csv' else None)
-    assert metrics.source_size == (sum(sizes) if suffix == 'csv' else
-                                   payload.stat().st_size)
+    assert metrics.source_size == (
+        sum(sizes) if suffix == 'csv' else payload.stat().st_size
+    )
     assert events == ['download', 'clear', 'publish']
     assert scratch and all(not os.path.exists(path) for path in scratch)
 
 
 def test_composite_download_never_uses_customer_scope_or_external_source(
-        monkeypatch, tmp_path):
+    monkeypatch, tmp_path
+):
     connector = _connector(suffix='parquet')
     internal_path = 's3://example-internal/ingest/events'
     local_destination = str(tmp_path / 'events')
     external_resolve = MagicMock(
-        side_effect=AssertionError('download must not resolve customer data'))
+        side_effect=AssertionError('download must not resolve customer data')
+    )
 
     def isdir(path):
         _assert_deployment_scope()
@@ -854,8 +890,7 @@ def test_composite_download_never_uses_customer_scope_or_external_source(
 
     monkeypatch.setattr(connector, '_get_path', external_resolve)
     monkeypatch.setattr('kumo.connector.file_connector.fsutil.isdir', isdir)
-    monkeypatch.setattr('kumo.connector.file_connector.fsutil.copy_file',
-                        copy_file)
+    monkeypatch.setattr('kumo.connector.file_connector.fsutil.copy_file', copy_file)
     monkeypatch.setattr(
         'kumo.data.utils.get_materialize_path',
         lambda *_args, **_kwargs: internal_path,
@@ -871,8 +906,7 @@ def test_composite_download_never_uses_customer_scope_or_external_source(
     external_resolve.assert_not_called()
 
 
-def test_parquet_dataset_directory_still_round_trips_through_local_stage(
-        tmp_path):
+def test_parquet_dataset_directory_still_round_trips_through_local_stage(tmp_path):
     source_root = tmp_path / 'source'
     source_dir = source_root / 'deep' / 'events'
     source_dir.mkdir(parents=True)
@@ -901,10 +935,7 @@ def _custom_spec(connector_ref=None, *, table_name='deep/events.parquet'):
     return SimpleNamespace(
         source_table=S3SourceTable(
             connector_id=connector_id,
-            source={
-                'mode': 'relative',
-                'path': table_name
-            },
+            source={'mode': 'relative', 'path': table_name},
             file_type=FileType.PARQUET,
             data_source_type=DataSourceType.S3,
         ),
@@ -926,7 +957,8 @@ def _ingest(spec, destination):
 
 @pytest.mark.parametrize('as_dataset', [False, True])
 def test_custom_training_csv_is_converted_to_real_parquet(
-        monkeypatch, tmp_path, as_dataset):
+    monkeypatch, tmp_path, as_dataset
+):
     source_root = tmp_path / 'source'
     source_root.mkdir()
     if as_dataset:
@@ -951,8 +983,9 @@ def test_custom_training_csv_is_converted_to_real_parquet(
         )
 
     connector = CompositeFileConnector('customer_files', str(source_root))
-    monkeypatch.setattr(custom_train_table, 'get_connector_from_spec',
-                        lambda _ref: connector)
+    monkeypatch.setattr(
+        custom_train_table, 'get_connector_from_spec', lambda _ref: connector
+    )
     destination = str(tmp_path / 'custom-training')
 
     result_path, response = _ingest(
@@ -963,11 +996,13 @@ def test_custom_training_csv_is_converted_to_real_parquet(
     assert result_path == destination
     assert response.ok
     output = pq.read_table(destination)
-    assert output.schema == pa.schema([
-        pa.field('id', pa.int64()),
-        pa.field('label', pa.string()),
-        pa.field('weight', pa.float64()),
-    ])
+    assert output.schema == pa.schema(
+        [
+            pa.field('id', pa.int64()),
+            pa.field('label', pa.string()),
+            pa.field('weight', pa.float64()),
+        ]
+    )
     assert output.to_pydict() == {
         'id': [1, 2, 3],
         'label': ['one', 'two', 'three'],
@@ -976,15 +1011,16 @@ def test_custom_training_csv_is_converted_to_real_parquet(
 
 
 def test_custom_training_activity_stages_before_same_provider_write(
-        monkeypatch, tmp_path):
+    monkeypatch, tmp_path
+):
     connector = _connector(suffix='parquet')
     connector.close = MagicMock()
     external_path = 's3://customer-bucket/root/deep/events.parquet'
-    _, events, scratch, _ = _mock_remote_file(monkeypatch, tmp_path,
-                                              external_path)
+    _, events, scratch, _ = _mock_remote_file(monkeypatch, tmp_path, external_path)
     monkeypatch.setattr(connector, '_get_path', lambda _name: external_path)
-    monkeypatch.setattr(custom_train_table, 'get_connector_from_spec',
-                        lambda _ref: connector)
+    monkeypatch.setattr(
+        custom_train_table, 'get_connector_from_spec', lambda _ref: connector
+    )
     internal_path = 's3://example-internal/custom-training'
     result_path, response = _ingest(_custom_spec(), internal_path)
     assert result_path == internal_path
@@ -994,8 +1030,7 @@ def test_custom_training_activity_stages_before_same_provider_write(
     assert scratch and all(not os.path.exists(path) for path in scratch)
 
 
-def test_custom_training_rechecks_binding_before_external_read(
-        monkeypatch, caplog):
+def test_custom_training_rechecks_binding_before_external_read(monkeypatch, caplog):
     poison = 'provider-secret-from-unbound-identity'
     reference = ConnectorExecutionRef(
         connector_id=ConnectorID.generate(),
@@ -1005,9 +1040,9 @@ def test_custom_training_rechecks_binding_before_external_read(
     monkeypatch.setattr(custom_train_table.fsutil, 'copy_file', external_read)
 
     with patch(
-            'rest.backends.data_backend.connector_broker.'
-            'connector_credential_broker.resolve',
-            side_effect=PermissionError(poison),
+        'rest.backends.data_backend.connector_broker.'
+        'connector_credential_broker.resolve',
+        side_effect=PermissionError(poison),
     ):
         _, response = _ingest(_custom_spec(reference), '/internal/custom')
 
@@ -1019,18 +1054,19 @@ def test_custom_training_rechecks_binding_before_external_read(
 
 
 def test_custom_training_sanitizes_provider_failure_and_closes_connector(
-        monkeypatch, caplog):
+    monkeypatch, caplog
+):
     connector = _connector(suffix='parquet')
     connector.close = MagicMock()
     poison = 'provider-secret-from-staging-failure'
     external_path = 's3://customer-bucket/root/deep/events.parquet'
     monkeypatch.setattr(connector, '_get_path', lambda _name: external_path)
-    monkeypatch.setattr(custom_train_table, 'get_connector_from_spec',
-                        lambda _ref: connector)
+    monkeypatch.setattr(
+        custom_train_table, 'get_connector_from_spec', lambda _ref: connector
+    )
     monkeypatch.setattr(custom_train_table.fsutil, 'isdir', lambda _path: False)
     access = MagicMock(side_effect=RuntimeError(poison))
-    monkeypatch.setattr('kumo.connector.object_store_access.source_access',
-                        access)
+    monkeypatch.setattr('kumo.connector.object_store_access.source_access', access)
 
     _, response = _ingest(_custom_spec(), '/internal/custom')
 
@@ -1042,12 +1078,12 @@ def test_custom_training_sanitizes_provider_failure_and_closes_connector(
 
 
 def test_custom_training_cancellation_cleans_stage_and_closes_connector(
-        monkeypatch, tmp_path):
+    monkeypatch, tmp_path
+):
     connector = _connector(suffix='parquet')
     connector.close = MagicMock()
     external_path = 's3://customer-bucket/root/deep/events.parquet'
-    _, events, scratch, _ = _mock_remote_file(monkeypatch, tmp_path,
-                                              external_path)
+    _, events, scratch, _ = _mock_remote_file(monkeypatch, tmp_path, external_path)
     copy_file = file_connector.fsutil.copy_file
 
     def cancel_publication(source, destination, *args, **kwargs):
@@ -1058,8 +1094,9 @@ def test_custom_training_cancellation_cleans_stage_and_closes_connector(
         raise asyncio.CancelledError()
 
     monkeypatch.setattr(connector, '_get_path', lambda _name: external_path)
-    monkeypatch.setattr(custom_train_table, 'get_connector_from_spec',
-                        lambda _ref: connector)
+    monkeypatch.setattr(
+        custom_train_table, 'get_connector_from_spec', lambda _ref: connector
+    )
     monkeypatch.setattr(file_connector.fsutil, 'copy_file', cancel_publication)
     monkeypatch.setattr('io_utils.fsutil.generic.copy_file', cancel_publication)
     with pytest.raises(asyncio.CancelledError):
@@ -1073,8 +1110,9 @@ def test_custom_training_unsupported_connector_still_closes(monkeypatch):
     connector = MagicMock()
     del connector.export_table_read_only
     del connector.export_table_to_blob_storage
-    monkeypatch.setattr(custom_train_table, 'get_connector_from_spec',
-                        lambda _ref: connector)
+    monkeypatch.setattr(
+        custom_train_table, 'get_connector_from_spec', lambda _ref: connector
+    )
 
     with pytest.raises(UnsupportedInDiskgraphError):
         _ingest(_custom_spec(), '/internal/custom')
@@ -1084,7 +1122,8 @@ def test_custom_training_unsupported_connector_still_closes(monkeypatch):
 
 @pytest.mark.parametrize('export_fails', [False, True])
 def test_custom_training_warehouse_connector_closes_on_every_path(
-        monkeypatch, tmp_path, export_fails):
+    monkeypatch, tmp_path, export_fails
+):
     connector = MagicMock()
     # A bare MagicMock synthesizes every attribute on access. Remove the
     # higher-priority read-only export explicitly so this exercises the blob
@@ -1096,12 +1135,15 @@ def test_custom_training_warehouse_connector_closes_on_every_path(
         if export_fails:
             raise RuntimeError('sanitized-provider-failure')
         os.makedirs(destination, exist_ok=True)
-        pq.write_table(pa.table({'ENTITY1': [1], 'TARGET1': [0]}),
-                       os.path.join(destination, 'part-0.parquet'))
+        pq.write_table(
+            pa.table({'ENTITY1': [1], 'TARGET1': [0]}),
+            os.path.join(destination, 'part-0.parquet'),
+        )
 
     connector.export_table_to_blob_storage.side_effect = export
-    monkeypatch.setattr(custom_train_table, 'get_connector_from_spec',
-                        lambda _ref: connector)
+    monkeypatch.setattr(
+        custom_train_table, 'get_connector_from_spec', lambda _ref: connector
+    )
     monkeypatch.setattr(custom_train_table.fsutil, 'rm', lambda *_a, **_k: None)
 
     destination = tmp_path / 'custom'
@@ -1113,7 +1155,8 @@ def test_custom_training_warehouse_connector_closes_on_every_path(
 
 @pytest.mark.parametrize(('scheme', 'provider'), [('s3', 's3'), ('gs', 'gcs')])
 def test_source_versions_share_recursive_reader_under_customer_scope(
-        tmp_path, monkeypatch, scheme, provider):
+    tmp_path, monkeypatch, scheme, provider
+):
     from kumo_core.sources.object_store import ObjectStoreSourceReader
     from kumo_core.sources.object_store_access import ObjectStoreAccess
     from pyarrow.fs import FileSelector, LocalFileSystem, SubTreeFileSystem
@@ -1138,11 +1181,12 @@ def test_source_versions_share_recursive_reader_under_customer_scope(
             return filesystem.get_file_info(target)
 
     metadata = MetadataOnlyFilesystem()
-    credentials = (_credentials()
-                   if provider == 's3' else GoogleCloudCredentials(
-                       provider='gcs', credential=object()).as_dict())
-    connector = CompositeFileConnector('version_source',
-                                       f'{scheme}://bucket/root')
+    credentials = (
+        _credentials()
+        if provider == 's3'
+        else GoogleCloudCredentials(provider='gcs', credential=object()).as_dict()
+    )
+    connector = CompositeFileConnector('version_source', f'{scheme}://bucket/root')
     connector.set_credentials(credentials)
     connector.require_explicit_credentials()
     monkeypatch.setattr(connector, '_open', lambda *_args, **_kwargs: None)
@@ -1154,18 +1198,17 @@ def test_source_versions_share_recursive_reader_under_customer_scope(
         return ObjectStoreAccess(metadata)
 
     def forbidden(*_args, **_kwargs):
-        pytest.fail(
-            'Version lookup must not use fsutil timestamps or format discovery')
+        pytest.fail('Version lookup must not use fsutil timestamps or format discovery')
 
     monkeypatch.setattr(object_store_access, 'source_access', access)
-    monkeypatch.setattr(file_connector.fsutil, 'get_last_modified_time',
-                        forbidden)
+    monkeypatch.setattr(file_connector.fsutil, 'get_last_modified_time', forbidden)
     monkeypatch.setattr(connector, '_resolve_table', forbidden)
     local_reader = ObjectStoreSourceReader(metadata, root='bucket/root')
 
     def version():
-        return connector.get_data_version('events', skip_cache=True,
-                                          save_to_cache=False)
+        return connector.get_data_version(
+            'events', skip_cache=True, save_to_cache=False
+        )
 
     original = version()
     assert original == local_reader.data_version('events')
@@ -1182,5 +1225,4 @@ def test_source_versions_share_recursive_reader_under_customer_scope(
     os.utime(nested / 'part.parquet', (3_000_000_001, 3_000_000_001))
     assert version() == local_reader.data_version('events') != removed
     with pytest.raises(SourceTableNotFoundError):
-        connector.get_data_version('missing', skip_cache=True,
-                                   save_to_cache=False)
+        connector.get_data_version('missing', skip_cache=True, save_to_cache=False)

@@ -8,4 +8,5 @@ from io_utils.locate import locate
 def test_locate():
     cls = locate('torch_geometric.nn.SAGEConv')
     from torch_geometric.nn import SAGEConv
+
     assert issubclass(cls, SAGEConv)

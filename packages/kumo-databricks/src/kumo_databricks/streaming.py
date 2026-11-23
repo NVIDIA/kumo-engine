@@ -50,7 +50,7 @@ def arrow_pages(
     cursor.execute(query)
     result = cursor.active_result_set
     if result is None or cursor.active_command_id is None:
-        raise PermanentSourceError("databricks returned no result set to page")
+        raise PermanentSourceError('databricks returned no result set to page')
     projected = tuple(column[0] for column in cursor.description or ())
     chunk, more = result.results, result.has_more_rows
     chunk_id, received = result.num_chunks, 0
@@ -77,8 +77,7 @@ def arrow_pages(
         chunk_id += links
 
 
-def _same_shape(page: pa.Table,
-                arriving: tuple[str, ...] | None) -> tuple[str, ...]:
+def _same_shape(page: pa.Table, arriving: tuple[str, ...] | None) -> tuple[str, ...]:
     """Every page of one result must arrive under the same Arrow schema.
 
     `_projected` renames by position, which is only sound while the column
@@ -87,9 +86,10 @@ def _same_shape(page: pa.Table,
     names = tuple(page.schema.names)
     if arriving is not None and names != arriving:
         raise SchemaChangedError(
-            f"databricks changed the result schema mid-read: pages arrived as "
-            f"{list(arriving)} and then {list(names)}. Columns are matched by "
-            f"position, so continuing would relabel them.")
+            f'databricks changed the result schema mid-read: pages arrived as '
+            f'{list(arriving)} and then {list(names)}. Columns are matched by '
+            f'position, so continuing would relabel them.'
+        )
     return names
 
 
@@ -117,11 +117,12 @@ def stream_to_parquet(
     count = _encoder_count(max_bytes, worker_ceiling)
     relay = PageRelay(count)
     pages = arrow_pages(cursor, query, max_bytes=max_bytes)
-    producer = threading.Thread(target=relay.feed, args=(pages, ), daemon=True)
+    producer = threading.Thread(target=relay.feed, args=(pages,), daemon=True)
     producer.start()
     try:
-        return materialize_arrow_streams([relay.stream() for _ in range(count)],
-                                         dest, worker_ceiling=count)
+        return materialize_arrow_streams(
+            [relay.stream() for _ in range(count)], dest, worker_ceiling=count
+        )
     finally:
         relay.abandon()
         producer.join()
@@ -130,6 +131,7 @@ def stream_to_parquet(
 class PageRelay:
     """The queue is bounded because an unbounded one accumulates the whole
     table, which is what paging by bytes exists to prevent."""
+
     def __init__(self, capacity: int) -> None:
         self.capacity = capacity
         self.pages: queue.Queue = queue.Queue(maxsize=capacity)
@@ -177,8 +179,7 @@ class PageRelay:
 def _encoder_count(max_bytes: int, worker_ceiling: int | None) -> int:
     """Every encoder holds a page and so does every queue slot, so more
     encoders than the queue can feed only costs memory."""
-    return max(
-        1, min(encode_workers(worker_ceiling), QUEUED_PAGE_BYTES // max_bytes))
+    return max(1, min(encode_workers(worker_ceiling), QUEUED_PAGE_BYTES // max_bytes))
 
 
 def _drain(chunk: Any) -> pa.Table:
@@ -193,8 +194,9 @@ def _drain(chunk: Any) -> pa.Table:
         chunk.close()
     if not isinstance(page, pa.Table):
         raise PermanentSourceError(
-            "databricks answered with a column-based result set; a streamed "
-            "read needs arrow")
+            'databricks answered with a column-based result set; a streamed '
+            'read needs arrow'
+        )
     if advertised is not None and page.num_rows < advertised:
         raise RowCountMismatchError(expected=advertised, actual=page.num_rows)
     return page
@@ -203,7 +205,7 @@ def _drain(chunk: Any) -> pa.Table:
 def _advertised_rows(chunk: Any) -> int | None:
     """CloudFetch states each file's rows before downloading it; an inline
     page states nothing, and can only be counted from what arrived."""
-    links = getattr(chunk, "result_links", None)
+    links = getattr(chunk, 'result_links', None)
     if not links:
         return None
     return sum(link.rowCount for link in links)
@@ -212,4 +214,4 @@ def _advertised_rows(chunk: Any) -> int | None:
 def _schema_bytes(result: Any) -> bytes | None:
     """A page carries Arrow data without its schema, and the driver keeps the
     statement's schema private to the result set."""
-    return getattr(result, "_arrow_schema_bytes", None)
+    return getattr(result, '_arrow_schema_bytes', None)

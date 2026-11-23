@@ -48,122 +48,119 @@ class TableRouter:
         self._table_driver = table_driver
 
         self.router = APIRouter(
-            prefix="/v1/tables",
+            prefix='/v1/tables',
             route_class=StrictQueryAPIRoute,
-            tags=["API v1 (Under Development): Tables"],
+            tags=['API v1 (Under Development): Tables'],
             dependencies=[Depends(auth.authenticate_request_header)],
-            responses={HTTPStatus.NOT_FOUND: {
-                "description": "Not found"
-            }},
+            responses={HTTPStatus.NOT_FOUND: {'description': 'Not found'}},
         )
 
         self.router.add_api_route(
-            "/",
+            '/',
             self.create_table_v2,
             response_model=IDResponse,
             methods=['POST'],
         )
 
         self.router.add_api_route(
-            "/{table_alias}",
+            '/{table_alias}',
             self.delete_table_v2_alias,
             response_model=IDResponse,
             methods=['DELETE'],
         )
 
         self.router.add_api_route(
-            "/{table_id_or_name}",
+            '/{table_id_or_name}',
             self.get_table_v2,
             response_model=TableResourceResponse,
             methods=['GET'],
         )
 
         self.router.add_api_route(
-            "/",
+            '/',
             self.list_table_names,
             response_model=List[ListResponse],
             methods=['GET'],
-            summary="List all of the tables " + "for the Tables page.",
-            response_description="A list of all the names and " +
-            "creation dates for all table templates.",
+            summary='List all of the tables ' + 'for the Tables page.',
+            response_description='A list of all the names and '
+            + 'creation dates for all table templates.',
         )
 
         self.router.add_api_route(
-            "/validate",
+            '/validate',
             self.validate_table_v2,
             response_model=ValidationResponse,
             methods=['POST'],
-            summary="Validate a V2 table.",
+            summary='Validate a V2 table.',
         )
 
         self.router.add_api_route(
-            "/resolve_sql",
+            '/resolve_sql',
             self.resolve_sql,
             response_model=api.SqlTableResolveResponse,
             methods=['POST'],
-            summary="Resolve a Custom SQL query into a table definition.",
+            summary='Resolve a Custom SQL query into a table definition.',
         )
 
         self.router.add_api_route(
-            "/infer_metadata",
+            '/infer_metadata',
             self.infer_metadata,
             response_model=api.TableMetadataResponse,
             methods=['POST'],
-            summary="Infer stats-based metadata for a table from its data "
-            "source.",
+            summary='Infer stats-based metadata for a table from its data source.',
         )
 
         self.router.add_api_route(
-            "/{table_id}/col_stats",
+            '/{table_id}/col_stats',
             self.get_col_stats,
             response_model=ColStatsResponse,
             methods=['GET'],
-            summary="Get exact column stats for the specified table",
+            summary='Get exact column stats for the specified table',
         )
 
         self.router.add_api_route(
-            "/{connector_id}/list_tables",
+            '/{connector_id}/list_tables',
             self.list_v2_tables_in_connector,
             response_model=List[TableResourceResponse],
             methods=['GET'],
-            summary="Get all tables in a connector.",
+            summary='Get all tables in a connector.',
         )
 
         self.router.add_api_route(
-            "/{table_id}/refresh",
+            '/{table_id}/refresh',
             self.refresh_table_v2,
             response_model=EmptyResponse,
             methods=['POST'],
         )
 
         self.router.add_api_route(
-            "/{table_id}/last_refreshed",
+            '/{table_id}/last_refreshed',
             self.get_last_ingested_timestamp,
             response_model=LastIngestedTimestamp,
             methods=['GET'],
-            summary="Get the time at which the table was last ingested.",
+            summary='Get the time at which the table was last ingested.',
         )
 
         self.router.add_api_route(
-            "/{table_name}/validate_name",
+            '/{table_name}/validate_name',
             self.validate_v2_table_name,
             response_model=ValidateNameResponse,
             methods=['GET'],
         )
 
         self.router.add_api_route(
-            "/{table_id}/sdk",
+            '/{table_id}/sdk',
             self.table_to_sdk,
             response_model=str,
             methods=['GET'],
         )
 
         self.router.add_api_route(
-            "/{table_id}/validation",
+            '/{table_id}/validation',
             self.get_vals,
             response_model=Optional[TableDataTaskResult],
             methods=['GET'],
-            summary="If table is ingested, get any warnings or errors.",
+            summary='If table is ingested, get any warnings or errors.',
         )
 
     async def create_table_v2(
@@ -234,10 +231,13 @@ class TableRouter:
         """
         project_id = require_project_id(project_id)
 
-        with wrap_validation_exceptions(
-                not_exists_error=TableDoesNotExistError), wrap_driver_errors():
+        with (
+            wrap_validation_exceptions(not_exists_error=TableDoesNotExistError),
+            wrap_driver_errors(),
+        ):
             entry = await self._table_driver.resolve_project_table(
-                project_id, table_id_or_name)
+                project_id, table_id_or_name
+            )
             return await self._table_driver.get_table(entry.id, project_id)
 
     async def list_table_names(
@@ -251,7 +251,6 @@ class TableRouter:
             table template name and timestamps.
         """
         with wrap_validation_exceptions():
-
             return await self._table_driver.list_project_table_names(project_id)
 
     async def validate_table_v2(
@@ -266,7 +265,8 @@ class TableRouter:
         """
         with wrap_driver_errors():
             return await self._table_driver.validate_table(
-                request, project_id=project_id)
+                request, project_id=project_id
+            )
 
     async def resolve_sql(
         self,
@@ -274,8 +274,7 @@ class TableRouter:
         project_id: Annotated[str, Query()],
     ) -> api.SqlTableResolveResponse:
         with wrap_driver_errors():
-            return await self._table_driver.resolve_sql(request,
-                                                        project_id=project_id)
+            return await self._table_driver.resolve_sql(request, project_id=project_id)
 
     async def infer_metadata(
         self,
@@ -296,7 +295,8 @@ class TableRouter:
         """
         with wrap_driver_errors():
             return await self._table_driver.infer_table_metadata(
-                request, project_id=project_id)
+                request, project_id=project_id
+            )
 
     async def get_col_stats(
         self,
@@ -312,14 +312,11 @@ class TableRouter:
             table_id (TableIDv2): The unique ID of the table.
             Usually `NA.NA-fpid`.
         """
-        with wrap_validation_exceptions(
-                not_exists_error=TableDoesNotExistError):
-
-            entry = await self._table_driver.resolve_project_table(
-                project_id, table_id)
+        with wrap_validation_exceptions(not_exists_error=TableDoesNotExistError):
+            entry = await self._table_driver.resolve_project_table(project_id, table_id)
             table_id = TableIDv2.public(
                 pquery_id=None,
-                table_name=TableName("NA"),
+                table_name=TableName('NA'),
                 fpid=entry.id,
             )
             return await self._table_driver.get_col_stats_and_sample_rows(
@@ -334,8 +331,7 @@ class TableRouter:
         fetch_column_stats: bool = True,
     ) -> List[TableResourceResponse]:
         # NOTE (jana): potentially not currently used in the UI and can be removed
-        with wrap_validation_exceptions(
-                not_exists_error=ConnectorDoesNotExistError):
+        with wrap_validation_exceptions(not_exists_error=ConnectorDoesNotExistError):
             return await self._table_driver.list_tables(
                 project_id=project_id,
                 connector_id=connector_id,
@@ -356,19 +352,17 @@ class TableRouter:
         Args:
             table_id (TableIDv2): The unique ID of the table.
         """
-        with wrap_validation_exceptions(
-                not_exists_error=TableDoesNotExistError):
-
+        with wrap_validation_exceptions(not_exists_error=TableDoesNotExistError):
             project_id = require_project_id(project_id)
             entry = await self._table_driver.resolve_project_table(
-                project_id, str(table_id))
+                project_id, str(table_id)
+            )
             table_id = TableIDv2.public(
                 pquery_id=None,
-                table_name=TableName("NA"),
+                table_name=TableName('NA'),
                 fpid=entry.id,
             )
-            await self._table_driver.refresh_table(table_id,
-                                                   project_id=project_id)
+            await self._table_driver.refresh_table(table_id, project_id=project_id)
         return EmptyResponse()
 
     async def get_last_ingested_timestamp(
@@ -386,18 +380,16 @@ class TableRouter:
             LastIngestedTimestamp: Timestamp if successfully ingested, else
             a wrapper around None.
         """
-        with wrap_validation_exceptions(
-                not_exists_error=TableDoesNotExistError):
-
-            entry = await self._table_driver.resolve_project_table(
-                project_id, table_id)
+        with wrap_validation_exceptions(not_exists_error=TableDoesNotExistError):
+            entry = await self._table_driver.resolve_project_table(project_id, table_id)
             table_id = TableIDv2.public(
                 pquery_id=None,
-                table_name=TableName("NA"),
+                table_name=TableName('NA'),
                 fpid=entry.id,
             )
             ts = await self._table_driver.get_table_last_ingested_timestamp(
-                table_id, project_id)
+                table_id, project_id
+            )
             return LastIngestedTimestamp(ts)
 
     async def validate_v2_table_name(
@@ -441,20 +433,21 @@ class TableRouter:
 
         A table ID that is not present in the project returns HTTP 404.
         """
-        with wrap_driver_errors(), wrap_validation_exceptions(
-                not_exists_error=TableDoesNotExistError):
-            entry = await self._table_driver.resolve_project_table(
-                project_id, table_id)
+        with (
+            wrap_driver_errors(),
+            wrap_validation_exceptions(not_exists_error=TableDoesNotExistError),
+        ):
+            entry = await self._table_driver.resolve_project_table(project_id, table_id)
             canonical_id = TableIDv2.public(
                 pquery_id=None,
-                table_name=TableName("NA"),
+                table_name=TableName('NA'),
                 fpid=entry.id,
             )
-            script = await self._table_driver.table_to_sdk(
-                canonical_id, project_id)
+            script = await self._table_driver.table_to_sdk(canonical_id, project_id)
         if not script:
-            raise ValueError("Could not generate SDK script for table " +
-                             f"with ID {table_id}.")
+            raise ValueError(
+                'Could not generate SDK script for table ' + f'with ID {table_id}.'
+            )
         return script
 
     async def get_vals(
@@ -463,15 +456,16 @@ class TableRouter:
         project_id: str,
         data_version: Optional[str] = None,
     ) -> Optional[TableDataTaskResult]:
-        with wrap_driver_errors(), wrap_validation_exceptions(
-                not_exists_error=TableDoesNotExistError):
-
-            entry = await self._table_driver.resolve_project_table(
-                project_id, table_id)
+        with (
+            wrap_driver_errors(),
+            wrap_validation_exceptions(not_exists_error=TableDoesNotExistError),
+        ):
+            entry = await self._table_driver.resolve_project_table(project_id, table_id)
             table_id = TableIDv2.public(
                 pquery_id=None,
-                table_name=TableName("NA"),
+                table_name=TableName('NA'),
                 fpid=entry.id,
             )
             return await self._table_driver.get_table_validation(
-                table_id, project_id, data_version)
+                table_id, project_id, data_version
+            )

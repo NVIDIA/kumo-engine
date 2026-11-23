@@ -27,12 +27,14 @@ from statedb.config.common import (
 def extract_public_exception(error):
     """Load workflow-specific error traversal only when it is requested."""
     from temporalio_commons.error_utils import extract_public_exception as impl
+
     return impl(error)
 
 
 def is_error_non_retryable(error):
     """Load Temporal retry classification only on an error handling path."""
     from temporalio_commons.error_utils import is_error_non_retryable as impl
+
     return impl(error)
 
 
@@ -44,51 +46,72 @@ def _import_optional(module_path: str):
 
 
 # Import error types needed to error message parsing
-SnowflakeErrors = _import_optional("snowflake.connector.errors")
-DatabricksErrors = _import_optional("databricks.sql.exc")
+SnowflakeErrors = _import_optional('snowflake.connector.errors')
+DatabricksErrors = _import_optional('databricks.sql.exc')
 # Databricks SDK platform errors (`databricks.sdk.errors.*`) are a different
 # package from the SQL connector errors (`databricks.sql.exc`) imported above.
 # Unity Catalog file connectors still use the Files API, so retain separate
 # classifiers for those source/file-connector operations.
-DatabricksSdkErrors = _import_optional("databricks.sdk.errors")
-DatabricksSdkError = getattr(DatabricksSdkErrors, "DatabricksError",
-                             None) if DatabricksSdkErrors else None
-DatabricksSdkPlatform = _import_optional("databricks.sdk.errors.platform")
-DatabricksSdkPermissionDenied = getattr(DatabricksSdkPlatform,
-                                        "PermissionDenied",
-                                        None) if DatabricksSdkPlatform else None
-DatabricksSdkUnauthenticated = getattr(DatabricksSdkPlatform, "Unauthenticated",
-                                       None) if DatabricksSdkPlatform else None
-DatabricksSdkNotFound = getattr(DatabricksSdkPlatform, "NotFound",
-                                None) if DatabricksSdkPlatform else None
-RequestsErrors = _import_optional("requests.exceptions")
-RequestsHTTPError = (getattr(RequestsErrors, "HTTPError", None)
-                     if RequestsErrors else None)
-RequestsRetryError = (getattr(RequestsErrors, "RetryError", None)
-                      if RequestsErrors else None)
-GoogleAPIErrors = _import_optional("google.api_core.exceptions")
-GoogleAuthErrors = _import_optional("google.auth.exceptions")
-BotocoreErrors = _import_optional("botocore.exceptions")
-BotocoreError = (getattr(BotocoreErrors, "BotoCoreError", None)
-                 if BotocoreErrors else None)
-BotocoreClientError = (getattr(BotocoreErrors, "ClientError", None)
-                       if BotocoreErrors else None)
-AzureErrors = _import_optional("azure.core.exceptions")
-AzureError = (getattr(AzureErrors, "AzureError", None) if AzureErrors else None)
-Py4JProtocol = _import_optional("py4j.protocol")
-Py4JJavaError = getattr(Py4JProtocol, "Py4JJavaError",
-                        None) if Py4JProtocol else None
+DatabricksSdkErrors = _import_optional('databricks.sdk.errors')
+DatabricksSdkError = (
+    getattr(DatabricksSdkErrors, 'DatabricksError', None)
+    if DatabricksSdkErrors
+    else None
+)
+DatabricksSdkPlatform = _import_optional('databricks.sdk.errors.platform')
+DatabricksSdkPermissionDenied = (
+    getattr(DatabricksSdkPlatform, 'PermissionDenied', None)
+    if DatabricksSdkPlatform
+    else None
+)
+DatabricksSdkUnauthenticated = (
+    getattr(DatabricksSdkPlatform, 'Unauthenticated', None)
+    if DatabricksSdkPlatform
+    else None
+)
+DatabricksSdkNotFound = (
+    getattr(DatabricksSdkPlatform, 'NotFound', None) if DatabricksSdkPlatform else None
+)
+RequestsErrors = _import_optional('requests.exceptions')
+RequestsHTTPError = (
+    getattr(RequestsErrors, 'HTTPError', None) if RequestsErrors else None
+)
+RequestsRetryError = (
+    getattr(RequestsErrors, 'RetryError', None) if RequestsErrors else None
+)
+GoogleAPIErrors = _import_optional('google.api_core.exceptions')
+GoogleAuthErrors = _import_optional('google.auth.exceptions')
+BotocoreErrors = _import_optional('botocore.exceptions')
+BotocoreError = (
+    getattr(BotocoreErrors, 'BotoCoreError', None) if BotocoreErrors else None
+)
+BotocoreClientError = (
+    getattr(BotocoreErrors, 'ClientError', None) if BotocoreErrors else None
+)
+AzureErrors = _import_optional('azure.core.exceptions')
+AzureError = getattr(AzureErrors, 'AzureError', None) if AzureErrors else None
+Py4JProtocol = _import_optional('py4j.protocol')
+Py4JJavaError = getattr(Py4JProtocol, 'Py4JJavaError', None) if Py4JProtocol else None
 
-DiskgraphCErrors = _import_optional("diskgraph._c")
-DiskgraphDataError = getattr(DiskgraphCErrors, "DiskgraphDataError",
-                             None) if DiskgraphCErrors else None
-DiskgraphTargetCategoryLimitError = getattr(
-    DiskgraphCErrors, "DiskgraphTargetCategoryLimitError",
-    None) if DiskgraphCErrors else None
-DiskgraphConfigError = getattr(DiskgraphCErrors, "DiskgraphConfigError",
-                               None) if DiskgraphCErrors else None
-DiskgraphSystemError = getattr(DiskgraphCErrors, "DiskgraphSystemError",
-                               None) if DiskgraphCErrors else None
+DiskgraphCErrors = _import_optional('diskgraph._c')
+DiskgraphDataError = (
+    getattr(DiskgraphCErrors, 'DiskgraphDataError', None) if DiskgraphCErrors else None
+)
+DiskgraphTargetCategoryLimitError = (
+    getattr(DiskgraphCErrors, 'DiskgraphTargetCategoryLimitError', None)
+    if DiskgraphCErrors
+    else None
+)
+DiskgraphConfigError = (
+    getattr(DiskgraphCErrors, 'DiskgraphConfigError', None)
+    if DiskgraphCErrors
+    else None
+)
+DiskgraphSystemError = (
+    getattr(DiskgraphCErrors, 'DiskgraphSystemError', None)
+    if DiskgraphCErrors
+    else None
+)
 
 logger = logging.getLogger(__name__)
 
@@ -125,12 +148,12 @@ class EntityDoesNotExistError(ValueError):
 
 class ConnectorDoesNotExistError(EntityDoesNotExistError):
     def __init__(self, id: ConnectorID) -> None:
-        return super().__init__("Connector", id)
+        return super().__init__('Connector', id)
 
 
 class IdentityDoesNotExistError(EntityDoesNotExistError):
     def __init__(self, id: IdentityID) -> None:
-        return super().__init__("Identity", id)
+        return super().__init__('Identity', id)
 
 
 class IdentityForbiddenError(ForbiddenError):
@@ -226,8 +249,7 @@ class ConnectorValidationDiagnosticCode(str, Enum):
     response data.
     """
 
-    DATABRICKS_SAMPLE_TABLE_PERMISSIONS = (
-        'databricks_sample_table_permissions')
+    DATABRICKS_SAMPLE_TABLE_PERMISSIONS = 'databricks_sample_table_permissions'
 
     #: The configured target (schema / dataset / catalog) does not exist or is
     #: not visible to the selected identity.
@@ -245,13 +267,13 @@ class ConnectorValidationDiagnosticCode(str, Enum):
 
 class ConnectorValidationDiagnosticError(Exception):
     """A connector validation failure with an allowlisted safe category."""
+
     def __init__(self, code: ConnectorValidationDiagnosticCode) -> None:
         self.code = code
         super().__init__('Connector target validation failed')
 
 
-def connector_validation_diagnostic_value(
-        error: BaseException) -> Optional[str]:
+def connector_validation_diagnostic_value(error: BaseException) -> Optional[str]:
     """Return the safe diagnostic-code string for a connector target-validation
     failure, or ``None`` when the failure is unclassified.
 
@@ -264,8 +286,11 @@ def connector_validation_diagnostic_value(
     enum *value* is returned; callers must never surface the exception message
     itself, which may embed provider response data.
     """
-    code = (error.code if isinstance(error, ConnectorValidationDiagnosticError)
-            else getattr(error, 'diagnostic_code', None))
+    code = (
+        error.code
+        if isinstance(error, ConnectorValidationDiagnosticError)
+        else getattr(error, 'diagnostic_code', None)
+    )
     # Enforce the allowlist for both shapes: only a genuine enum member — never
     # an arbitrary attribute value — is ever surfaced through a masking boundary.
     if isinstance(code, ConnectorValidationDiagnosticCode):
@@ -301,42 +326,42 @@ class ConnectorInUseError(ValueError):
 
 class PredictiveQueryDoesNotExistError(EntityDoesNotExistError):
     def __init__(self, id: PredictiveQueryID) -> None:
-        return super().__init__("Predictive Query", id)
+        return super().__init__('Predictive Query', id)
 
 
 class TableDoesNotExistError(EntityDoesNotExistError):
     def __init__(self, id: TableID) -> None:
-        return super().__init__("Table", id)
+        return super().__init__('Table', id)
 
 
 class GraphDoesNotExistError(EntityDoesNotExistError):
     def __init__(self, id: GraphID) -> None:
-        return super().__init__("Graph", id)
+        return super().__init__('Graph', id)
 
 
 class BatchPredictionDoesNotExistError(EntityDoesNotExistError):
     def __init__(self, id: BatchPredictionJobID) -> None:
-        return super().__init__("Batch Prediction", id)
+        return super().__init__('Batch Prediction', id)
 
 
 class BatchPredictionWorkflowDoesNotExistError(EntityDoesNotExistError):
     def __init__(self, id: BatchPredictionWorkflowID) -> None:
-        return super().__init__("Batch Prediction", id)
+        return super().__init__('Batch Prediction', id)
 
 
 class TrainingJobDoesNotExistError(EntityDoesNotExistError):
     def __init__(self, id: TrainingJobID) -> None:
-        return super().__init__("Training Job", id)
+        return super().__init__('Training Job', id)
 
 
 class GraphSnapshotDoesNotExistError(EntityDoesNotExistError):
     def __init__(self, id: GraphSnapshotID) -> None:
-        return super().__init__("Graph Snapshot", id)
+        return super().__init__('Graph Snapshot', id)
 
 
 class TableSnapshotDoesNotExistError(EntityDoesNotExistError):
     def __init__(self, id: TableSnapshotID) -> None:
-        return super().__init__("Table Snapshot", id)
+        return super().__init__('Table Snapshot', id)
 
 
 def rethrow_or_wrap(
@@ -363,26 +388,28 @@ def maybe_get_public_message(error: BaseException) -> str:
     ``BaseException``; ``extract_public_exception`` already takes it.
     """
     public_ex = extract_public_exception(error)
-    return public_ex.get_user_message() if public_ex else ""
+    return public_ex.get_user_message() if public_ex else ''
 
 
-Classifier = Tuple[str, Type[Exception], Optional[Callable[[Exception],
-                                                           ErrorInfo]]]
+Classifier = Tuple[str, Type[Exception], Optional[Callable[[Exception], ErrorInfo]]]
 
 
-def _classifiers(*classifiers: Optional[Classifier], ) -> List[Classifier]:
+def _classifiers(
+    *classifiers: Optional[Classifier],
+) -> List[Classifier]:
     return [classifier for classifier in classifiers if classifier is not None]
 
 
 # Friendly messages for Databricks Files API errors used by UC file connectors.
 def _databricks_sdk_permission_denied_info(err: Exception) -> ErrorInfo:
     return ErrorInfo(
-        source="Databricks",
+        source='Databricks',
         exception_msg=(
-            "Databricks denied access to the Unity Catalog volume over the "
+            'Databricks denied access to the Unity Catalog volume over the '
             "Files API. Verify the connector's Databricks token has the "
             "Files API ('files') scope and the required USE CATALOG, USE "
-            "SCHEMA, and READ VOLUME or WRITE VOLUME privileges."),
+            'SCHEMA, and READ VOLUME or WRITE VOLUME privileges.'
+        ),
         friendly=None,
         stop_chain=True,
     )
@@ -390,11 +417,12 @@ def _databricks_sdk_permission_denied_info(err: Exception) -> ErrorInfo:
 
 def _databricks_sdk_not_found_info(err: Exception) -> ErrorInfo:
     return ErrorInfo(
-        source="Databricks",
+        source='Databricks',
         exception_msg=(
-            "Databricks could not find the requested Unity Catalog volume or "
-            "path. Verify it exists and the connector principal has USE "
-            "CATALOG, USE SCHEMA, and the required volume privilege."),
+            'Databricks could not find the requested Unity Catalog volume or '
+            'path. Verify it exists and the connector principal has USE '
+            'CATALOG, USE SCHEMA, and the required volume privilege.'
+        ),
         friendly=None,
         stop_chain=True,
     )
@@ -406,9 +434,10 @@ def _fixed_provider_error_info(
     friendly: str,
 ) -> Callable[[Exception], ErrorInfo]:
     """Build a classifier that never reads an untrusted provider message."""
+
     def classify(err: Exception) -> ErrorInfo:
         logger.error(
-            "%s provider operation failed (error_type=%s)",
+            '%s provider operation failed (error_type=%s)',
             source,
             type(err).__name__,
         )
@@ -423,92 +452,100 @@ def _fixed_provider_error_info(
 
 
 _databricks_provider_error_info = _fixed_provider_error_info(
-    "Databricks",
-    "Databricks could not complete the connector operation.",
+    'Databricks',
+    'Databricks could not complete the connector operation.',
     "Verify the selected identity's Databricks permissions and connector "
-    "target, then retry.",
+    'target, then retry.',
 )
 
 
 def _snowflake_provider_error_info(err: Exception) -> ErrorInfo:
     """Classify a Snowflake failure using only allowlisted scalar fields."""
     safe_fields = []
-    errno = getattr(err, "errno", None)
+    errno = getattr(err, 'errno', None)
     if isinstance(errno, int):
-        safe_fields.append(f"code={errno}")
-    sqlstate = getattr(err, "sqlstate", None)
-    if isinstance(sqlstate, str) and re.fullmatch(r"[0-9A-Z]{5}", sqlstate):
-        safe_fields.append(f"sqlstate={sqlstate}")
-    query_id = getattr(err, "sfqid", None) or getattr(err, "query_id", None)
+        safe_fields.append(f'code={errno}')
+    sqlstate = getattr(err, 'sqlstate', None)
+    if isinstance(sqlstate, str) and re.fullmatch(r'[0-9A-Z]{5}', sqlstate):
+        safe_fields.append(f'sqlstate={sqlstate}')
+    query_id = getattr(err, 'sfqid', None) or getattr(err, 'query_id', None)
     if isinstance(query_id, str) and re.fullmatch(
-            r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-"
-            r"[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}", query_id):
-        safe_fields.append(f"query_id={query_id}")
+        r'[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-'
+        r'[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}',
+        query_id,
+    ):
+        safe_fields.append(f'query_id={query_id}')
 
     logger.error(
-        "Snowflake provider operation failed (error_type=%s%s)",
+        'Snowflake provider operation failed (error_type=%s%s)',
         type(err).__name__,
-        f" {' '.join(safe_fields)}" if safe_fields else "",
+        f' {" ".join(safe_fields)}' if safe_fields else '',
     )
-    details = f" ({', '.join(safe_fields)})" if safe_fields else ""
+    details = f' ({", ".join(safe_fields)})' if safe_fields else ''
     return ErrorInfo(
-        source="Snowflake",
-        exception_msg=f"Snowflake could not complete the operation{details}.",
-        friendly=("Verify the selected identity's Snowflake permissions and "
-                  "connector target, then retry."),
+        source='Snowflake',
+        exception_msg=f'Snowflake could not complete the operation{details}.',
+        friendly=(
+            "Verify the selected identity's Snowflake permissions and "
+            'connector target, then retry.'
+        ),
         stop_chain=True,
     )
 
 
 _google_api_error_info = _fixed_provider_error_info(
-    "Google Cloud",
-    "The Google Cloud provider rejected or could not complete the connector "
-    "operation.",
+    'Google Cloud',
+    'The Google Cloud provider rejected or could not complete the connector operation.',
     "Verify the selected identity's Google Cloud permissions and the "
-    "connector target, then retry.",
+    'connector target, then retry.',
 )
 _aws_provider_error_info = _fixed_provider_error_info(
-    "AWS",
-    "AWS could not complete the connector operation.",
-    "Verify the selected identity's AWS permissions and connector target, "
-    "then retry.",
+    'AWS',
+    'AWS could not complete the connector operation.',
+    "Verify the selected identity's AWS permissions and connector target, then retry.",
 )
 _azure_provider_error_info = _fixed_provider_error_info(
-    "Azure",
-    "Azure could not complete the connector operation.",
+    'Azure',
+    'Azure could not complete the connector operation.',
     "Verify the selected identity's Azure permissions and connector target, "
-    "then retry.",
+    'then retry.',
 )
 
 
 class ProviderBackendError(PublicException):
     """Provider-safe base for errors that can wrap connector or fsutil I/O."""
+
     CLASSIFIERS = _classifiers(
-        SnowflakeErrors and
-        ("Snowflake", SnowflakeErrors.Error, _snowflake_provider_error_info),
-        DatabricksErrors and
-        ("Databricks", DatabricksErrors.Error, _databricks_provider_error_info),
+        SnowflakeErrors
+        and ('Snowflake', SnowflakeErrors.Error, _snowflake_provider_error_info),
+        DatabricksErrors
+        and ('Databricks', DatabricksErrors.Error, _databricks_provider_error_info),
         # Databricks SDK platform errors (UC Files API, most specific first).
-        DatabricksSdkPermissionDenied and
-        ("Databricks", DatabricksSdkPermissionDenied,
-         _databricks_sdk_permission_denied_info),
+        DatabricksSdkPermissionDenied
+        and (
+            'Databricks',
+            DatabricksSdkPermissionDenied,
+            _databricks_sdk_permission_denied_info,
+        ),
         DatabricksSdkUnauthenticated
-        and ("Databricks", DatabricksSdkUnauthenticated,
-             _databricks_sdk_permission_denied_info),
-        DatabricksSdkNotFound and
-        ("Databricks", DatabricksSdkNotFound, _databricks_sdk_not_found_info),
+        and (
+            'Databricks',
+            DatabricksSdkUnauthenticated,
+            _databricks_sdk_permission_denied_info,
+        ),
+        DatabricksSdkNotFound
+        and ('Databricks', DatabricksSdkNotFound, _databricks_sdk_not_found_info),
         # Broad SDK base last: retain a fixed provider summary rather than
         # exposing a response body or request payload from the SDK exception.
-        DatabricksSdkError and
-        ("Databricks", DatabricksSdkError, _databricks_provider_error_info),
-        GoogleAPIErrors and ("Google Cloud", GoogleAPIErrors.GoogleAPIError,
-                             _google_api_error_info),
-        GoogleAuthErrors and ("Google Cloud", GoogleAuthErrors.GoogleAuthError,
-                              _google_api_error_info),
-        BotocoreClientError
-        and ("AWS", BotocoreClientError, _aws_provider_error_info),
-        BotocoreError and ("AWS", BotocoreError, _aws_provider_error_info),
-        AzureError and ("Azure", AzureError, _azure_provider_error_info),
+        DatabricksSdkError
+        and ('Databricks', DatabricksSdkError, _databricks_provider_error_info),
+        GoogleAPIErrors
+        and ('Google Cloud', GoogleAPIErrors.GoogleAPIError, _google_api_error_info),
+        GoogleAuthErrors
+        and ('Google Cloud', GoogleAuthErrors.GoogleAuthError, _google_api_error_info),
+        BotocoreClientError and ('AWS', BotocoreClientError, _aws_provider_error_info),
+        BotocoreError and ('AWS', BotocoreError, _aws_provider_error_info),
+        AzureError and ('Azure', AzureError, _azure_provider_error_info),
     )
 
     def __init__(self, *args, **kwargs):
@@ -521,8 +558,7 @@ class ProviderBackendError(PublicException):
             if marked_error is not error:
                 kwargs['error'] = marked_error
             logger.debug(
-                'Restricted raw provider failure (wrapper=%s, '
-                'error_type=%s)',
+                'Restricted raw provider failure (wrapper=%s, error_type=%s)',
                 type(self).__name__,
                 type(error).__name__,
                 exc_info=(type(error), error, error.__traceback__),
@@ -664,21 +700,39 @@ class DiskgraphError(PublicException):
     CLASSIFIERS: List[Classifier] = list(
         filter(
             None,
-            (DiskgraphDataError and
-             ("DiskGraph", DiskgraphDataError, lambda e: ErrorInfo(
-                 source="DiskGraph Data",
-                 exception_msg=str(e),
-                 friendly="The requested data is invalid or not found in the "
-                 "DiskGraph index. Please check your schema.",
-             )), DiskgraphConfigError and
-             ("DiskGraph", DiskgraphConfigError, lambda e: ErrorInfo(
-                 source="DiskGraph Config",
-                 exception_msg=str(e),
-                 friendly="The DiskGraph job configuration is invalid.",
-             )), DiskgraphSystemError and
-             ("DiskGraph", DiskgraphSystemError,
-              lambda e: ErrorInfo(source="DiskGraph System", exception_msg=str(
-                  e), friendly=None)))))
+            (
+                DiskgraphDataError
+                and (
+                    'DiskGraph',
+                    DiskgraphDataError,
+                    lambda e: ErrorInfo(
+                        source='DiskGraph Data',
+                        exception_msg=str(e),
+                        friendly='The requested data is invalid or not found in the '
+                        'DiskGraph index. Please check your schema.',
+                    ),
+                ),
+                DiskgraphConfigError
+                and (
+                    'DiskGraph',
+                    DiskgraphConfigError,
+                    lambda e: ErrorInfo(
+                        source='DiskGraph Config',
+                        exception_msg=str(e),
+                        friendly='The DiskGraph job configuration is invalid.',
+                    ),
+                ),
+                DiskgraphSystemError
+                and (
+                    'DiskGraph',
+                    DiskgraphSystemError,
+                    lambda e: ErrorInfo(
+                        source='DiskGraph System', exception_msg=str(e), friendly=None
+                    ),
+                ),
+            ),
+        )
+    )
 
 
 class UnsupportedInDiskgraphError(PublicException):
@@ -791,17 +845,21 @@ class MissingTrainingJobError(PublicException):
 class EmptyPredictionTableError(PublicException):
     """Raised when custom prediction table is empty."""
 
-    template = ("The custom prediction table at '{path}' is empty. "
-                "Please provide a table containing at least one row of data "
-                "to generate predictions.")
+    template = (
+        "The custom prediction table at '{path}' is empty. "
+        'Please provide a table containing at least one row of data '
+        'to generate predictions.'
+    )
 
 
 class InvalidPredictionTableError(ProviderBackendError):
     """Raised when custom prediction table cannot be read or validated."""
 
-    template = ("Unable to read the custom prediction table at '{path}'. "
-                "Please verify the path is correct, the table exists, "
-                "and you have read permissions.")
+    template = (
+        "Unable to read the custom prediction table at '{path}'. "
+        'Please verify the path is correct, the table exists, '
+        'and you have read permissions.'
+    )
 
 
 # =============================================================================
@@ -816,22 +874,26 @@ class ArtifactExportError(ProviderBackendError):
 class ArtifactNotFoundError(PublicException):
     """Raised when a required artifact file or directory is not found."""
 
-    template = ("Unable to find the expected artifact at '{path}'. "
-                "Please verify the job completed successfully.")
+    template = (
+        "Unable to find the expected artifact at '{path}'. "
+        'Please verify the job completed successfully.'
+    )
 
 
 class TrainingJobStartError(PublicException):
     """Raised when training job fails to start within timeout."""
 
     template = (
-        "Training job failed to start within {timeout_seconds} seconds. "
-        "Check compute capacity, job queue status, or try re-running the job.")
+        'Training job failed to start within {timeout_seconds} seconds. '
+        'Check compute capacity, job queue status, or try re-running the job.'
+    )
 
 
 class BestTrainerCfgFileMissingError(PublicException):
     """Raised when best trainer config file is missing after training."""
 
     template = (
-        "Training job completed but did not produce a valid model "
-        "configuration. Please re-run the training job or contact support "
-        "if the issue persists.")
+        'Training job completed but did not produce a valid model '
+        'configuration. Please re-run the training job or contact support '
+        'if the issue persists.'
+    )

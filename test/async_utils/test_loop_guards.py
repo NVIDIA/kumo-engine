@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """install_loop_guards wires up both event-loop guards from one call."""
+
 import pytest
 
 from async_utils import event_loop_watchdog

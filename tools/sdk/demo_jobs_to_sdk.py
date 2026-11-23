@@ -51,12 +51,12 @@ from statedb.db.config import open_state_db_from_deploy_config
 from statedb.db.services import StateServices
 from statedb.rest import rest_api_db_entries
 
-DEFAULT_CUSTOMER = "demo"
-DEFAULT_DATAPLANE = "s3://kumo-prod-dataplane-bucket"
-DEFAULT_API_URL = "http://localhost:8000"
-DEFAULT_AUTH_ENV_VAR = "KUMO_API_KEY"
-DEFAULT_BP_OUTPUT_ROOT = "s3://kumocloud-test-bucket/demo_jobs_to_sdk_outputs"
-DEFAULT_BP_OUTPUT_RUN_ID_ENV = "KUMO_DEMO_SDK_OUTPUT_RUN_ID"
+DEFAULT_CUSTOMER = 'demo'
+DEFAULT_DATAPLANE = 's3://kumo-prod-dataplane-bucket'
+DEFAULT_API_URL = 'http://localhost:8000'
+DEFAULT_AUTH_ENV_VAR = 'KUMO_API_KEY'
+DEFAULT_BP_OUTPUT_ROOT = 's3://kumocloud-test-bucket/demo_jobs_to_sdk_outputs'
+DEFAULT_BP_OUTPUT_RUN_ID_ENV = 'KUMO_DEMO_SDK_OUTPUT_RUN_ID'
 MISSING = object()
 SourceExistsFn = Callable[[str], bool]
 
@@ -116,31 +116,32 @@ class ExportError(RuntimeError):
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Export demo StateDB jobs as Kumo SDK scripts.")
-    parser.add_argument("--customer", default=DEFAULT_CUSTOMER)
-    parser.add_argument("--dataplane", default=DEFAULT_DATAPLANE)
-    parser.add_argument("--state-db-root")
+        description='Export demo StateDB jobs as Kumo SDK scripts.'
+    )
+    parser.add_argument('--customer', default=DEFAULT_CUSTOMER)
+    parser.add_argument('--dataplane', default=DEFAULT_DATAPLANE)
+    parser.add_argument('--state-db-root')
     parser.add_argument(
-        "--project-id",
+        '--project-id',
         required=True,
-        help="Project whose jobs and canonical table/graph metadata to export",
+        help='Project whose jobs and canonical table/graph metadata to export',
     )
-    parser.add_argument("--output-dir", default="demo_sdk_jobs")
-    parser.add_argument("--dry-run", "--list", action="store_true")
-    parser.add_argument("--job-id", action="append", default=[])
+    parser.add_argument('--output-dir', default='demo_sdk_jobs')
+    parser.add_argument('--dry-run', '--list', action='store_true')
+    parser.add_argument('--job-id', action='append', default=[])
     parser.add_argument(
-        "--job-type",
-        choices=("all", "training", "batch_prediction"),
-        default="all",
+        '--job-type',
+        choices=('all', 'training', 'batch_prediction'),
+        default='all',
     )
-    parser.add_argument("--api-url", default=DEFAULT_API_URL)
-    parser.add_argument("--api-key-env", dest="auth_env_var",
-                        default=DEFAULT_AUTH_ENV_VAR)
-    parser.add_argument("--bp-output-root", default=DEFAULT_BP_OUTPUT_ROOT)
-    parser.add_argument("--bp-output-run-id-env",
-                        default=DEFAULT_BP_OUTPUT_RUN_ID_ENV)
-    parser.add_argument("--skip-source-table-check", action="store_true")
-    parser.add_argument("--limit", type=int)
+    parser.add_argument('--api-url', default=DEFAULT_API_URL)
+    parser.add_argument(
+        '--api-key-env', dest='auth_env_var', default=DEFAULT_AUTH_ENV_VAR
+    )
+    parser.add_argument('--bp-output-root', default=DEFAULT_BP_OUTPUT_ROOT)
+    parser.add_argument('--bp-output-run-id-env', default=DEFAULT_BP_OUTPUT_RUN_ID_ENV)
+    parser.add_argument('--skip-source-table-check', action='store_true')
+    parser.add_argument('--limit', type=int)
     return parser.parse_args()
 
 
@@ -164,10 +165,11 @@ async def main_async() -> None:
             args.job_type,
             args.job_id,
             source_exists_fn=source_exists_fn,
-        ))
+        )
+    )
     for status in statuses:
-        prefix = "OK" if status.exportable else "SKIP"
-        print(f"{prefix}\t{status.job_type}\t{status.job_id}\t{status.reason}")
+        prefix = 'OK' if status.exportable else 'SKIP'
+        print(f'{prefix}\t{status.job_type}\t{status.job_id}\t{status.reason}')
 
     if args.dry_run:
         return
@@ -191,19 +193,19 @@ async def main_async() -> None:
             bp_output_run_id_env=args.bp_output_run_id_env,
             source_exists_fn=source_exists_fn,
         )
-        output_path = output_dir / f"{status.job_id}.py"
+        output_path = output_dir / f'{status.job_id}.py'
         # Replay scripts are local artifacts and use environment variables for credentials.
         # codeql[py/clear-text-storage-sensitive-data]
         output_path.write_text(script)
-        print(f"WROTE\t{status.job_type}\t{status.job_id}\t{output_path}")
+        print(f'WROTE\t{status.job_type}\t{status.job_id}\t{output_path}')
         written += 1
-    print(f"Exported {written} script(s) to {output_dir}")
+    print(f'Exported {written} script(s) to {output_dir}')
 
 
 def resolve_state_db_root(args: argparse.Namespace) -> str:
     if args.state_db_root:
-        return args.state_db_root.rstrip("/")
-    return (f"{args.dataplane.rstrip('/')}/{args.customer}/prod/db")
+        return args.state_db_root.rstrip('/')
+    return f'{args.dataplane.rstrip("/")}/{args.customer}/prod/db'
 
 
 async def load_metadata(
@@ -225,50 +227,44 @@ async def load_metadata(
             (str(project_id), str(definition.fpid)): definition
             for definition in pquery_definitions
         },
-        graphs_v2_map={
-            (str(project_id), str(graph.id)): graph
-            for graph in graphs
-        },
-        tables_v2_map={
-            (str(project_id), str(table.id)): table
-            for table in tables
-        },
+        graphs_v2_map={(str(project_id), str(graph.id)): graph for graph in graphs},
+        tables_v2_map={(str(project_id), str(table.id)): table for table in tables},
     )
 
     training_ids = [
-        TrainingJobID(str(job_id)) for job_id in await
-        services.ml_jobs.list_job_ids_by_type(JobType.TRAINING_JOB)
+        TrainingJobID(str(job_id))
+        for job_id in await services.ml_jobs.list_job_ids_by_type(JobType.TRAINING_JOB)
     ]
     batch_prediction_ids = [
-        BatchPredictionJobID(str(job_id)) for job_id in await
-        services.ml_jobs.list_job_ids_by_type(JobType.BATCH_PREDICTION_JOB)
+        BatchPredictionJobID(str(job_id))
+        for job_id in await services.ml_jobs.list_job_ids_by_type(
+            JobType.BATCH_PREDICTION_JOB
+        )
     ]
     generate_train_table_ids = [
-        GenerateTrainTableJobID(str(job_id)) for job_id in await
-        services.ml_jobs.list_job_ids_by_type(JobType.GENERATE_TRAIN_TABLE_JOB)
+        GenerateTrainTableJobID(str(job_id))
+        for job_id in await services.ml_jobs.list_job_ids_by_type(
+            JobType.GENERATE_TRAIN_TABLE_JOB
+        )
     ]
     training_jobs = [
-        job for job in await services.ml_jobs.get_training_jobs(training_ids)
+        job
+        for job in await services.ml_jobs.get_training_jobs(training_ids)
         if job.project_id == project_id
     ]
     batch_prediction_jobs = await services.ml_jobs.get_batch_prediction_jobs(
-        batch_prediction_ids, project_ids={project_id})
-    generate_train_table_jobs = (await
-                                 services.ml_jobs.get_generate_train_table_jobs(
-                                     generate_train_table_ids,
-                                     project_ids={project_id},
-                                 ))
+        batch_prediction_ids, project_ids={project_id}
+    )
+    generate_train_table_jobs = await services.ml_jobs.get_generate_train_table_jobs(
+        generate_train_table_ids,
+        project_ids={project_id},
+    )
 
     ml_db = MLJobSnapshot(
-        training_job_map={str(job.id): job
-                          for job in training_jobs},
-        batch_prediction_jobs_map={
-            str(job.id): job
-            for job in batch_prediction_jobs
-        },
+        training_job_map={str(job.id): job for job in training_jobs},
+        batch_prediction_jobs_map={str(job.id): job for job in batch_prediction_jobs},
         generate_train_table_jobs_map={
-            str(job.id): job
-            for job in generate_train_table_jobs
+            str(job.id): job for job in generate_train_table_jobs
         },
     )
     return rest_db, ml_db
@@ -283,26 +279,30 @@ def iter_statuses(
     source_exists_fn: Optional[SourceExistsFn] = fsutil.exists,
 ) -> Iterable[ExportStatus]:
     selected = set(job_ids)
-    if job_type in ("all", "training"):
+    if job_type in ('all', 'training'):
         yield from dedupe_statuses(
             ml_db.training_job_map,
             selected,
-            "training",
-            lambda job: training_skip_reason(rest_db, ml_db, job,
-                                             source_exists_fn=source_exists_fn),
+            'training',
+            lambda job: training_skip_reason(
+                rest_db, ml_db, job, source_exists_fn=source_exists_fn
+            ),
             lambda job: training_dataset_pquery_key(
-                rest_db, job, source_exists_fn=source_exists_fn),
+                rest_db, job, source_exists_fn=source_exists_fn
+            ),
         )
 
-    if job_type in ("all", "batch_prediction"):
+    if job_type in ('all', 'batch_prediction'):
         yield from dedupe_statuses(
             ml_db.batch_prediction_jobs_map,
             selected,
-            "batch_prediction",
+            'batch_prediction',
             lambda job: batch_prediction_skip_reason(
-                rest_db, ml_db, job, source_exists_fn=source_exists_fn),
+                rest_db, ml_db, job, source_exists_fn=source_exists_fn
+            ),
             lambda job: batch_prediction_dataset_pquery_key(
-                rest_db, ml_db, job, source_exists_fn=source_exists_fn),
+                rest_db, ml_db, job, source_exists_fn=source_exists_fn
+            ),
         )
 
 
@@ -327,10 +327,11 @@ def dedupe_statuses(
             continue
         group_key = group_key_fn(job)
         group_keys[job_id] = group_key
-        statuses[job_id] = ExportStatus(job_type, job_id, True, "exportable")
+        statuses[job_id] = ExportStatus(job_type, job_id, True, 'exportable')
         kept_job_id = keep_by_group.get(group_key)
         if kept_job_id is None or job_sort_value(job) > job_sort_value(
-                jobs_by_id[kept_job_id]):
+            jobs_by_id[kept_job_id]
+        ):
             keep_by_group[group_key] = job_id
 
     for job_id, status in sorted(statuses.items()):
@@ -345,7 +346,7 @@ def dedupe_statuses(
                 job_type,
                 job_id,
                 False,
-                f"older successful duplicate of {kept_job_id} for dataset/pquery",
+                f'older successful duplicate of {kept_job_id} for dataset/pquery',
             )
 
 
@@ -356,8 +357,9 @@ def training_dataset_pquery_key(
     source_exists_fn: Optional[SourceExistsFn] = fsutil.exists,
 ) -> tuple[Any, str]:
     assert job.pquery_def_fpid is not None
-    graph = build_graph_bundle(rest_db, str(job.pquery_def_fpid),
-                               source_exists_fn=source_exists_fn)
+    graph = build_graph_bundle(
+        rest_db, str(job.pquery_def_fpid), source_exists_fn=source_exists_fn
+    )
     return graph_dataset_key(graph), graph.query
 
 
@@ -372,21 +374,29 @@ def batch_prediction_dataset_pquery_key(
     training_job = ml_db.training_job_map[str(job.config.training_job_id)]
     pquery_def_fpid = job.config.pquery_def_fpid or training_job.pquery_def_fpid
     assert pquery_def_fpid is not None
-    graph = build_graph_bundle(rest_db, str(pquery_def_fpid),
-                               source_exists_fn=source_exists_fn)
+    graph = build_graph_bundle(
+        rest_db, str(pquery_def_fpid), source_exists_fn=source_exists_fn
+    )
     # Two BP runs against the same dataset+pquery may still differ in
     # prediction parameters (anchor time, filters, forecast horizon, output
     # destinations). Include those so distinct replays are not deduped away.
     config = job.config
     prediction_time = config.prediction_time
-    prediction_time_key = (prediction_time.isoformat()
-                           if prediction_time is not None else None)
+    prediction_time_key = (
+        prediction_time.isoformat() if prediction_time is not None else None
+    )
     filter_overrides = config.filter_override_args
-    filter_overrides_key = (tuple(sorted(
-        to_primitive(filter_overrides).items())) if filter_overrides else None)
+    filter_overrides_key = (
+        tuple(sorted(to_primitive(filter_overrides).items()))
+        if filter_overrides
+        else None
+    )
     output_paths = tuple(
-        sorted((str(output.artifact_type.value), str(output.file_path))
-               for output in config.outputs))
+        sorted(
+            (str(output.artifact_type.value), str(output.file_path))
+            for output in config.outputs
+        )
+    )
     return (
         graph_dataset_key(graph),
         graph.query,
@@ -401,26 +411,28 @@ def batch_prediction_dataset_pquery_key(
 
 
 def graph_dataset_key(graph: GraphBundle) -> tuple[tuple[str, str, str], ...]:
-    return tuple((ref.graph_name, ref.connector_root_dir, ref.source_table_name)
-                 for ref in graph.table_refs)
+    return tuple(
+        (ref.graph_name, ref.connector_root_dir, ref.source_table_name)
+        for ref in graph.table_refs
+    )
 
 
 def job_sort_value(job: Any) -> str:
-    execution = getattr(job, "execution", None)
+    execution = getattr(job, 'execution', None)
     for value in (
-            getattr(execution, "last_updated_at", None),
-            getattr(execution, "start_time", None),
-            getattr(getattr(job, "timestamps", None), "updated_at", None),
-            getattr(getattr(job, "timestamps", None), "created_at", None),
-            getattr(job, "id", ""),
+        getattr(execution, 'last_updated_at', None),
+        getattr(execution, 'start_time', None),
+        getattr(getattr(job, 'timestamps', None), 'updated_at', None),
+        getattr(getattr(job, 'timestamps', None), 'created_at', None),
+        getattr(job, 'id', ''),
     ):
         if value is not None:
             return str(value)
-    return ""
+    return ''
 
 
 def job_status(job: Any) -> Any:
-    return getattr(getattr(job, "execution", None), "status", None)
+    return getattr(getattr(job, 'execution', None), 'status', None)
 
 
 def is_successful_job(job: Any) -> bool:
@@ -428,27 +440,26 @@ def is_successful_job(job: Any) -> bool:
     return status == JobStatus.DONE or str(status) == JobStatus.DONE.value
 
 
-def unsupported_forecasting_reason(query: str, plan: Any,
-                                   job_type: str) -> Optional[str]:
+def unsupported_forecasting_reason(
+    query: str, plan: Any, job_type: str
+) -> Optional[str]:
     reasons: list[str] = []
-    if re.search(r"\bFORECAST\b", query, flags=re.IGNORECASE):
-        reasons.append("explicit FORECAST query")
+    if re.search(r'\bFORECAST\b', query, flags=re.IGNORECASE):
+        reasons.append('explicit FORECAST query')
 
-    forecast_length = plan_field(plan, "forecast_length")
-    if int_or_none(forecast_length) is not None and int_or_none(
-            forecast_length) > 1:
-        reasons.append(f"forecast_length={forecast_length}")
+    forecast_length = plan_field(plan, 'forecast_length')
+    if int_or_none(forecast_length) is not None and int_or_none(forecast_length) > 1:
+        reasons.append(f'forecast_length={forecast_length}')
 
-    if bool_or_false(plan_field(plan, "year_over_year")):
-        reasons.append("year_over_year=True")
+    if bool_or_false(plan_field(plan, 'year_over_year')):
+        reasons.append('year_over_year=True')
 
     if reasons:
-        return f"unsupported forecasting-style {job_type}: " + ", ".join(
-            reasons)
+        return f'unsupported forecasting-style {job_type}: ' + ', '.join(reasons)
 
-    lag_timesteps = plan_field(plan, "lag_timesteps")
+    lag_timesteps = plan_field(plan, 'lag_timesteps')
     if int_or_none(lag_timesteps) not in (None, 0):
-        return f"unsupported lag-timesteps {job_type}: lag_timesteps={lag_timesteps}"
+        return f'unsupported lag-timesteps {job_type}: lag_timesteps={lag_timesteps}'
     return None
 
 
@@ -459,7 +470,7 @@ def plan_field(plan: Any, name: str) -> Any:
 
 
 def int_or_none(value: Any) -> Optional[int]:
-    if value in (None, ""):
+    if value in (None, ''):
         return None
     try:
         return int(value)
@@ -469,7 +480,7 @@ def int_or_none(value: Any) -> Optional[int]:
 
 def bool_or_false(value: Any) -> bool:
     if isinstance(value, str):
-        return value.strip().lower() in ("1", "true", "t", "yes", "y")
+        return value.strip().lower() in ('1', 'true', 't', 'yes', 'y')
     return bool(value)
 
 
@@ -481,17 +492,17 @@ def training_skip_reason(
     source_exists_fn: Optional[SourceExistsFn] = fsutil.exists,
 ) -> Optional[str]:
     if not is_successful_job(job):
-        return f"job status is {job_status(job)}"
+        return f'job status is {job_status(job)}'
     if job.advanced_options is None:
-        return "missing advanced_options"
+        return 'missing advanced_options'
     if not job.pquery_def_fpid:
-        return "missing pquery_def_fpid"
+        return 'missing pquery_def_fpid'
     try:
-        graph = build_graph_bundle(rest_db, str(job.pquery_def_fpid),
-                                   source_exists_fn=source_exists_fn)
+        graph = build_graph_bundle(
+            rest_db, str(job.pquery_def_fpid), source_exists_fn=source_exists_fn
+        )
         train_plan = get_training_table_plan(ml_db, job)
-        reason = unsupported_forecasting_reason(graph.query, train_plan,
-                                                "training job")
+        reason = unsupported_forecasting_reason(graph.query, train_plan, 'training job')
         if reason is not None:
             return reason
         get_model_plan(job)
@@ -508,39 +519,49 @@ def batch_prediction_skip_reason(
     source_exists_fn: Optional[SourceExistsFn] = fsutil.exists,
 ) -> Optional[str]:
     if not is_successful_job(job):
-        return f"job status is {job_status(job)}"
+        return f'job status is {job_status(job)}'
     if job.config is None:
-        return "missing config"
+        return 'missing config'
     if not job.config.outputs:
-        return "missing outputs"
-    if any(output.storage_type != PredictionStorageType.S3
-           for output in job.config.outputs):
-        return "non-S3 output"
+        return 'missing outputs'
+    if any(
+        output.storage_type != PredictionStorageType.S3 for output in job.config.outputs
+    ):
+        return 'non-S3 output'
     training_job = ml_db.training_job_map.get(str(job.config.training_job_id))
     if training_job is None:
-        return f"missing training job {job.config.training_job_id}"
-    reason = training_skip_reason(rest_db, ml_db, training_job,
-                                  source_exists_fn=source_exists_fn)
+        return f'missing training job {job.config.training_job_id}'
+    reason = training_skip_reason(
+        rest_db, ml_db, training_job, source_exists_fn=source_exists_fn
+    )
     if reason:
-        return f"training job cannot be exported: {reason}"
+        return f'training job cannot be exported: {reason}'
     training_pquery_def_fpid = training_job.pquery_def_fpid
     pquery_def_fpid = job.config.pquery_def_fpid or training_pquery_def_fpid
     if pquery_def_fpid:
         try:
-            graph = build_graph_bundle(rest_db, str(pquery_def_fpid),
-                                       source_exists_fn=source_exists_fn)
-            if (job.config.pquery_def_fpid and training_pquery_def_fpid
-                    and job.config.pquery_def_fpid != training_pquery_def_fpid):
+            graph = build_graph_bundle(
+                rest_db, str(pquery_def_fpid), source_exists_fn=source_exists_fn
+            )
+            if (
+                job.config.pquery_def_fpid
+                and training_pquery_def_fpid
+                and job.config.pquery_def_fpid != training_pquery_def_fpid
+            ):
                 training_graph = build_graph_bundle(
-                    rest_db, str(training_pquery_def_fpid),
-                    source_exists_fn=source_exists_fn)
+                    rest_db,
+                    str(training_pquery_def_fpid),
+                    source_exists_fn=source_exists_fn,
+                )
                 if graph.graph_fpid != training_graph.graph_fpid:
                     return (
-                        "alternate batch prediction pquery graph is not supported: "
-                        f"training_graph={training_graph.graph_fpid}, "
-                        f"prediction_graph={graph.graph_fpid}")
-            reason = unsupported_forecasting_reason(graph.query, job.config,
-                                                    "batch prediction")
+                        'alternate batch prediction pquery graph is not supported: '
+                        f'training_graph={training_graph.graph_fpid}, '
+                        f'prediction_graph={graph.graph_fpid}'
+                    )
+            reason = unsupported_forecasting_reason(
+                graph.query, job.config, 'batch prediction'
+            )
             if reason is not None:
                 return reason
         except ExportError as exc:
@@ -560,18 +581,27 @@ def export_job_script(
     bp_output_run_id_env: str = DEFAULT_BP_OUTPUT_RUN_ID_ENV,
     source_exists_fn: Optional[SourceExistsFn] = fsutil.exists,
 ) -> str:
-    if job_type == "training":
-        return render_training_script(rest_db, ml_db,
-                                      ml_db.training_job_map[str(job_id)],
-                                      api_url, auth_env_var,
-                                      source_exists_fn=source_exists_fn)
-    if job_type == "batch_prediction":
+    if job_type == 'training':
+        return render_training_script(
+            rest_db,
+            ml_db,
+            ml_db.training_job_map[str(job_id)],
+            api_url,
+            auth_env_var,
+            source_exists_fn=source_exists_fn,
+        )
+    if job_type == 'batch_prediction':
         return render_batch_prediction_script(
-            rest_db, ml_db, ml_db.batch_prediction_jobs_map[str(job_id)],
-            api_url, auth_env_var, bp_output_root,
+            rest_db,
+            ml_db,
+            ml_db.batch_prediction_jobs_map[str(job_id)],
+            api_url,
+            auth_env_var,
+            bp_output_root,
             bp_output_run_id_env=bp_output_run_id_env,
-            source_exists_fn=source_exists_fn)
-    raise ValueError(f"Unsupported job type: {job_type}")
+            source_exists_fn=source_exists_fn,
+        )
+    raise ValueError(f'Unsupported job type: {job_type}')
 
 
 def render_training_script(
@@ -584,28 +614,31 @@ def render_training_script(
     source_exists_fn: Optional[SourceExistsFn] = fsutil.exists,
 ) -> str:
     assert job.pquery_def_fpid is not None
-    graph = build_graph_bundle(rest_db, str(job.pquery_def_fpid),
-                               source_exists_fn=source_exists_fn)
-    train_plan = compact_training_table_plan(get_training_table_plan(
-        ml_db, job))
+    graph = build_graph_bundle(
+        rest_db, str(job.pquery_def_fpid), source_exists_fn=source_exists_fn
+    )
+    train_plan = compact_training_table_plan(get_training_table_plan(ml_db, job))
     model_plan = compact_model_plan(get_model_plan(job), graph)
-    existing_train_table_job_id = getattr(job, "generate_train_table_job_id",
-                                          None) or None
-    return (render_header(api_url, auth_env_var) + render_graph_setup(graph) +
-            "\n"
-            "pquery = kumo.PredictiveQuery(\n"
-            "    graph=graph,\n"
-            f"    query={quoted(graph.query)},\n"
-            ")\n\n" + render_train_table(
-                train_plan,
-                existing_train_table_job_id=existing_train_table_job_id) +
-            f"model_plan = {format_value(model_plan)}\n\n"
-            "trainer = kumo.Trainer(model_plan)\n"
-            "training_job = trainer.fit(\n"
-            "    graph=graph,\n"
-            "    train_table=train_table,\n"
-            "    non_blocking=False,\n"
-            ")\n" + render_tune_metric_check(job))
+    existing_train_table_job_id = (
+        getattr(job, 'generate_train_table_job_id', None) or None
+    )
+    return (
+        render_header(api_url, auth_env_var) + render_graph_setup(graph) + '\n'
+        'pquery = kumo.PredictiveQuery(\n'
+        '    graph=graph,\n'
+        f'    query={quoted(graph.query)},\n'
+        ')\n\n'
+        + render_train_table(
+            train_plan, existing_train_table_job_id=existing_train_table_job_id
+        )
+        + f'model_plan = {format_value(model_plan)}\n\n'
+        'trainer = kumo.Trainer(model_plan)\n'
+        'training_job = trainer.fit(\n'
+        '    graph=graph,\n'
+        '    train_table=train_table,\n'
+        '    non_blocking=False,\n'
+        ')\n' + render_tune_metric_check(job)
+    )
 
 
 def render_batch_prediction_script(
@@ -621,70 +654,86 @@ def render_batch_prediction_script(
 ) -> str:
     assert job.config is not None
     training_job = ml_db.training_job_map[str(job.config.training_job_id)]
-    script = render_training_script(rest_db, ml_db, training_job, api_url,
-                                    auth_env_var,
-                                    source_exists_fn=source_exists_fn)
-    query_var = "pquery"
-    if job.config.pquery_def_fpid and job.config.pquery_def_fpid != training_job.pquery_def_fpid:
-        prediction_graph = build_graph_bundle(rest_db,
-                                              str(job.config.pquery_def_fpid),
-                                              source_exists_fn=source_exists_fn)
-        training_graph = build_graph_bundle(rest_db,
-                                            str(training_job.pquery_def_fpid),
-                                            source_exists_fn=source_exists_fn)
+    script = render_training_script(
+        rest_db,
+        ml_db,
+        training_job,
+        api_url,
+        auth_env_var,
+        source_exists_fn=source_exists_fn,
+    )
+    query_var = 'pquery'
+    if (
+        job.config.pquery_def_fpid
+        and job.config.pquery_def_fpid != training_job.pquery_def_fpid
+    ):
+        prediction_graph = build_graph_bundle(
+            rest_db, str(job.config.pquery_def_fpid), source_exists_fn=source_exists_fn
+        )
+        training_graph = build_graph_bundle(
+            rest_db,
+            str(training_job.pquery_def_fpid),
+            source_exists_fn=source_exists_fn,
+        )
         if prediction_graph.graph_fpid != training_graph.graph_fpid:
             raise ExportError(
-                "alternate batch prediction pquery graph is not supported: "
-                f"training_graph={training_graph.graph_fpid}, "
-                f"prediction_graph={prediction_graph.graph_fpid}")
-        query_var = "prediction_pquery"
-        script += ("\n"
-                   "prediction_pquery = kumo.PredictiveQuery(\n"
-                   "    graph=graph,\n"
-                   f"    query={quoted(prediction_graph.query)},\n"
-                   ")\n")
+                'alternate batch prediction pquery graph is not supported: '
+                f'training_graph={training_graph.graph_fpid}, '
+                f'prediction_graph={prediction_graph.graph_fpid}'
+            )
+        query_var = 'prediction_pquery'
+        script += (
+            '\n'
+            'prediction_pquery = kumo.PredictiveQuery(\n'
+            '    graph=graph,\n'
+            f'    query={quoted(prediction_graph.query)},\n'
+            ')\n'
+        )
 
-    output_root, output_config = compact_output_config(job.config,
-                                                       bp_output_root, job.id)
-    script += "\n" + render_prediction_table(
-        query_var, compact_prediction_table_plan(job.config))
-    script += render_prediction_output_connector(
-        output_root, bp_output_run_id_env
-    ) + (f"output_config = OutputConfig(\n"
-         f"    **{format_value(output_config)},\n"
-         "    output_connector=prediction_export_connector,\n"
-         ")\n\n"
-         "prediction_job = trainer.predict(\n"
-         "    graph=graph,\n"
-         "    prediction_table=prediction_table,\n"
-         "    output_config=output_config,\n"
-         "    training_job_id=training_job.job_id,\n" + render_call_kwargs(
-             compact_predict_kwargs(job.config)) + "    non_blocking=False,\n"
-         ")\n")
+    output_root, output_config = compact_output_config(
+        job.config, bp_output_root, job.id
+    )
+    script += '\n' + render_prediction_table(
+        query_var, compact_prediction_table_plan(job.config)
+    )
+    script += render_prediction_output_connector(output_root, bp_output_run_id_env) + (
+        f'output_config = OutputConfig(\n'
+        f'    **{format_value(output_config)},\n'
+        '    output_connector=prediction_export_connector,\n'
+        ')\n\n'
+        'prediction_job = trainer.predict(\n'
+        '    graph=graph,\n'
+        '    prediction_table=prediction_table,\n'
+        '    output_config=output_config,\n'
+        '    training_job_id=training_job.job_id,\n'
+        + render_call_kwargs(compact_predict_kwargs(job.config))
+        + '    non_blocking=False,\n'
+        ')\n'
+    )
     return script
 
 
-def render_prediction_output_connector(output_root: str,
-                                       run_id_env: str) -> str:
+def render_prediction_output_connector(output_root: str, run_id_env: str) -> str:
     return (
-        f"prediction_output_root = {output_root!r}\n"
-        f"prediction_output_run_id = os.environ.get({run_id_env!r}) or uuid.uuid4().hex\n"
-        "prediction_export_connector = kumo.S3Connector(\n"
-        "    root_dir=f'{prediction_output_root.rstrip(\"/\")}/{prediction_output_run_id}',\n"
-        ")\n\n")
+        f'prediction_output_root = {output_root!r}\n'
+        f'prediction_output_run_id = os.environ.get({run_id_env!r}) or uuid.uuid4().hex\n'
+        'prediction_export_connector = kumo.S3Connector(\n'
+        '    root_dir=f\'{prediction_output_root.rstrip("/")}/{prediction_output_run_id}\',\n'
+        ')\n\n'
+    )
 
 
 def final_tune_metric(job: Any) -> Optional[tuple[str, float]]:
     tune_metric = get_model_plan(job).training_job.tune_metric
     if not tune_metric:
         return None
-    results = getattr(job.execution, "results", None)
-    test_metrics = getattr(results, "test_metrics", None)
+    results = getattr(job.execution, 'results', None)
+    test_metrics = getattr(results, 'test_metrics', None)
     if not test_metrics:
         return None
     for metric in test_metrics:
-        if getattr(metric, "name", None) == tune_metric:
-            value = getattr(metric, "val", None)
+        if getattr(metric, 'name', None) == tune_metric:
+            value = getattr(metric, 'val', None)
             if value is not None:
                 return tune_metric, float(value)
     return None
@@ -693,88 +742,88 @@ def final_tune_metric(job: Any) -> Optional[tuple[str, float]]:
 def render_tune_metric_check(job: Any) -> str:
     expected = final_tune_metric(job)
     if expected is None:
-        return ""
+        return ''
     metric_name, metric_value = expected
     lines = [
-        "",
-        f"EXPECTED_TUNE_METRIC_NAME = {metric_name!r}",
-        f"EXPECTED_TUNE_METRIC_VALUE = {metric_value!r}",
+        '',
+        f'EXPECTED_TUNE_METRIC_NAME = {metric_name!r}',
+        f'EXPECTED_TUNE_METRIC_VALUE = {metric_value!r}',
         'TUNE_METRIC_REL_TOL = float(os.environ.get("KUMO_TUNE_METRIC_REL_TOL", "0.05"))',
-        "PARTIAL_FAILURES = []",
-        "",
-        "def _replay_field(obj, *names):",
-        "    for name in names:",
-        "        if isinstance(obj, dict) and name in obj:",
-        "            return obj.get(name)",
-        "        value = getattr(obj, name, None)",
-        "        if value is not None:",
-        "            return value",
-        "    return None",
-        "",
-        "def _replay_metrics_from_result(result):",
-        "    if result is None:",
-        "        return None",
-        "    for candidate in (",
-        "        result,",
-        "        _replay_field(result, \"result\", \"results\"),",
-        "    ):",
-        "        if candidate is None:",
-        "            continue",
-        "        metrics_fn = getattr(candidate, \"metrics\", None)",
-        "        if callable(metrics_fn):",
-        "            metrics = metrics_fn()",
-        "            if metrics is not None:",
-        "                return metrics",
-        "        metrics = _replay_field(candidate, \"eval_metrics\", \"metrics\")",
-        "        if metrics is not None:",
-        "            return metrics",
-        "        if _replay_field(candidate, \"test_metrics\") is not None:",
-        "            return candidate",
-        "    return None",
-        "",
-        "replay_training_result = training_job",
-        "replay_metrics = _replay_metrics_from_result(replay_training_result)",
-        "if replay_metrics is None and hasattr(replay_training_result, \"wait\"):",
-        "    replay_training_result = replay_training_result.wait()",
-        "    replay_metrics = _replay_metrics_from_result(replay_training_result)",
-        "if replay_metrics is None and hasattr(replay_training_result, \"refresh\"):",
-        "    replay_training_result = replay_training_result.refresh()",
-        "    replay_metrics = _replay_metrics_from_result(replay_training_result)",
-        "",
-        "replay_test_metrics = _replay_field(replay_metrics, \"test_metrics\")",
-        "actual_test_tune_metric_value = None",
-        "if replay_test_metrics is not None:",
-        "    for metric in replay_test_metrics:",
-        "        metric_name = _replay_field(metric, \"name\")",
-        "        metric_value = _replay_field(metric, \"value\", \"val\")",
-        "        if metric_name == EXPECTED_TUNE_METRIC_NAME and metric_value is not None:",
-        "            actual_test_tune_metric_value = float(metric_value)",
-        "            break",
-        "",
-        "if actual_test_tune_metric_value is None:",
-        "    PARTIAL_FAILURES.append(",
+        'PARTIAL_FAILURES = []',
+        '',
+        'def _replay_field(obj, *names):',
+        '    for name in names:',
+        '        if isinstance(obj, dict) and name in obj:',
+        '            return obj.get(name)',
+        '        value = getattr(obj, name, None)',
+        '        if value is not None:',
+        '            return value',
+        '    return None',
+        '',
+        'def _replay_metrics_from_result(result):',
+        '    if result is None:',
+        '        return None',
+        '    for candidate in (',
+        '        result,',
+        '        _replay_field(result, "result", "results"),',
+        '    ):',
+        '        if candidate is None:',
+        '            continue',
+        '        metrics_fn = getattr(candidate, "metrics", None)',
+        '        if callable(metrics_fn):',
+        '            metrics = metrics_fn()',
+        '            if metrics is not None:',
+        '                return metrics',
+        '        metrics = _replay_field(candidate, "eval_metrics", "metrics")',
+        '        if metrics is not None:',
+        '            return metrics',
+        '        if _replay_field(candidate, "test_metrics") is not None:',
+        '            return candidate',
+        '    return None',
+        '',
+        'replay_training_result = training_job',
+        'replay_metrics = _replay_metrics_from_result(replay_training_result)',
+        'if replay_metrics is None and hasattr(replay_training_result, "wait"):',
+        '    replay_training_result = replay_training_result.wait()',
+        '    replay_metrics = _replay_metrics_from_result(replay_training_result)',
+        'if replay_metrics is None and hasattr(replay_training_result, "refresh"):',
+        '    replay_training_result = replay_training_result.refresh()',
+        '    replay_metrics = _replay_metrics_from_result(replay_training_result)',
+        '',
+        'replay_test_metrics = _replay_field(replay_metrics, "test_metrics")',
+        'actual_test_tune_metric_value = None',
+        'if replay_test_metrics is not None:',
+        '    for metric in replay_test_metrics:',
+        '        metric_name = _replay_field(metric, "name")',
+        '        metric_value = _replay_field(metric, "value", "val")',
+        '        if metric_name == EXPECTED_TUNE_METRIC_NAME and metric_value is not None:',
+        '            actual_test_tune_metric_value = float(metric_value)',
+        '            break',
+        '',
+        'if actual_test_tune_metric_value is None:',
+        '    PARTIAL_FAILURES.append(',
         '        f"missing replay test tune metric {EXPECTED_TUNE_METRIC_NAME!r}")',
-        "else:",
-        "    tune_metric_abs_delta = abs(actual_test_tune_metric_value - EXPECTED_TUNE_METRIC_VALUE)",
-        "    tune_metric_rel_delta = tune_metric_abs_delta / max(abs(EXPECTED_TUNE_METRIC_VALUE), 1e-12)",
-        "    if tune_metric_rel_delta > TUNE_METRIC_REL_TOL:",
-        "        PARTIAL_FAILURES.append(",
+        'else:',
+        '    tune_metric_abs_delta = abs(actual_test_tune_metric_value - EXPECTED_TUNE_METRIC_VALUE)',
+        '    tune_metric_rel_delta = tune_metric_abs_delta / max(abs(EXPECTED_TUNE_METRIC_VALUE), 1e-12)',
+        '    if tune_metric_rel_delta > TUNE_METRIC_REL_TOL:',
+        '        PARTIAL_FAILURES.append(',
         '            f"test tune metric {EXPECTED_TUNE_METRIC_NAME} diverged: "',
         '            f"expected={EXPECTED_TUNE_METRIC_VALUE}, "',
         '            f"actual={actual_test_tune_metric_value}, "',
         '            f"rel_delta={tune_metric_rel_delta:.6g}, "',
         '            f"tolerance={TUNE_METRIC_REL_TOL}")',
-        "",
-        "PARTIAL_FAILURE = bool(PARTIAL_FAILURES)",
-        "if PARTIAL_FAILURE:",
+        '',
+        'PARTIAL_FAILURE = bool(PARTIAL_FAILURES)',
+        'if PARTIAL_FAILURE:',
         '    print("PARTIAL_FAILURE: " + "; ".join(PARTIAL_FAILURES))',
-        "else:",
-        "    print(",
+        'else:',
+        '    print(',
         '        f"Test tune metric {EXPECTED_TUNE_METRIC_NAME} matched: "',
         '        f"expected={EXPECTED_TUNE_METRIC_VALUE}, actual={actual_test_tune_metric_value}")',
-        "",
+        '',
     ]
-    return "\n".join(lines)
+    return '\n'.join(lines)
 
 
 def validate_source_table_ref(
@@ -782,25 +831,28 @@ def validate_source_table_ref(
     source: S3SourceTable,
     source_exists_fn: Optional[SourceExistsFn],
 ) -> None:
-    connector_id = str(source.connector_id or "")
+    connector_id = str(source.connector_id or '')
     source_uri = s3_source_uri(source)
     if source_uri is None:
         if connector_id:
             raise ExportError(
-                f"file-upload source table {graph_name} uses {connector_id}; "
-                "uploaded tables are not replayable as plain S3Connector "
-                "tables")
-        raise ExportError(f"S3 table {graph_name} is missing s3_path")
+                f'file-upload source table {graph_name} uses {connector_id}; '
+                'uploaded tables are not replayable as plain S3Connector '
+                'tables'
+            )
+        raise ExportError(f'S3 table {graph_name} is missing s3_path')
     if source_exists_fn is None:
         return
     try:
         exists = source_exists_fn(source_uri)
     except Exception as exc:
-        raise ExportError(f"could not validate source table {graph_name} at "
-                          f"{source_uri}: {exc}") from exc
+        raise ExportError(
+            f'could not validate source table {graph_name} at {source_uri}: {exc}'
+        ) from exc
     if not exists:
-        raise ExportError(f"missing source table {graph_name}: {source.table} "
-                          f"at {source_uri}")
+        raise ExportError(
+            f'missing source table {graph_name}: {source.table} at {source_uri}'
+        )
 
 
 def build_graph_bundle(
@@ -810,14 +862,14 @@ def build_graph_bundle(
     source_exists_fn: Optional[SourceExistsFn] = fsutil.exists,
 ) -> GraphBundle:
     project_id = str(rest_db.project_id)
-    pquery_def = map_get(rest_db.pquery_definitions_map,
-                         (project_id, str(pquery_def_fpid)))
+    pquery_def = map_get(
+        rest_db.pquery_definitions_map, (project_id, str(pquery_def_fpid))
+    )
     if pquery_def is None:
-        raise ExportError(f"missing pquery definition {pquery_def_fpid}")
-    graph = map_get(rest_db.graphs_v2_map,
-                    (project_id, str(pquery_def.graph_fpid)))
+        raise ExportError(f'missing pquery definition {pquery_def_fpid}')
+    graph = map_get(rest_db.graphs_v2_map, (project_id, str(pquery_def.graph_fpid)))
     if graph is None:
-        raise ExportError(f"missing graph {pquery_def.graph_fpid}")
+        raise ExportError(f'missing graph {pquery_def.graph_fpid}')
 
     table_refs: list[TableRef] = []
     table_by_graph_name: dict[str, TableRef] = {}
@@ -825,22 +877,21 @@ def build_graph_bundle(
     used_connector_vars: set[str] = set()
 
     for graph_name, table_fpid in sorted(graph.table_name_to_dbid.items()):
-        table_entry = map_get(rest_db.tables_v2_map,
-                              (project_id, str(table_fpid)))
+        table_entry = map_get(rest_db.tables_v2_map, (project_id, str(table_fpid)))
         if table_entry is None:
-            raise ExportError(f"missing table {table_fpid}")
+            raise ExportError(f'missing table {table_fpid}')
         table = table_entry.config
         source = table.source_table
         if not isinstance(source, S3SourceTable):
-            source_type = getattr(source, "data_source_type", "UNKNOWN")
-            raise ExportError(f"non-S3 graph table {graph_name}: {source_type}")
+            source_type = getattr(source, 'data_source_type', 'UNKNOWN')
+            raise ExportError(f'non-S3 graph table {graph_name}: {source_type}')
         validate_source_table_ref(str(graph_name), source, source_exists_fn)
 
         # Full-URI source tables replay through one rootless connector.  A
         # rooted connector would reject the full URI passed to ``table``.
-        root_dir = ""
+        root_dir = ''
         if root_dir not in root_to_connector_var:
-            connector_var = unique_var("s3_connector", used_connector_vars)
+            connector_var = unique_var('s3_connector', used_connector_vars)
             root_to_connector_var[root_dir] = connector_var
             used_connector_vars.add(connector_var)
 
@@ -864,25 +915,31 @@ def build_graph_bundle(
                 pkey_col = col
                 break
         if pkey_col is None:
-            raise ExportError(
-                "graph column group does not contain a primary key")
+            raise ExportError('graph column group does not contain a primary key')
         for col in col_group.columns:
             if col == pkey_col:
                 continue
             src_ref = table_by_graph_name[str(col.table_name)]
             dst_ref = table_by_graph_name[str(pkey_col.table_name)]
             edges.append(
-                graph_api.Edge(src_ref.var_name, str(col.col_name),
-                               dst_ref.var_name))
+                graph_api.Edge(src_ref.var_name, str(col.col_name), dst_ref.var_name)
+            )
 
     query_refs = [
-        QueryTableRef(source_table_name=ref.var_name,
-                      table_alias_in_graph=ref.graph_name) for ref in table_refs
+        QueryTableRef(
+            source_table_name=ref.var_name, table_alias_in_graph=ref.graph_name
+        )
+        for ref in table_refs
     ]
     query = clean_up_pquery_string(pquery_def.query_str, query_refs)
     query = align_query_column_case(query, table_refs)
-    return GraphBundle(str(pquery_def.pquery_name), query,
-                       str(pquery_def.graph_fpid), table_refs, edges)
+    return GraphBundle(
+        str(pquery_def.pquery_name),
+        query,
+        str(pquery_def.graph_fpid),
+        table_refs,
+        edges,
+    )
 
 
 def align_query_column_case(query: str, table_refs: Sequence[TableRef]) -> str:
@@ -896,8 +953,7 @@ def align_query_column_case(query: str, table_refs: Sequence[TableRef]) -> str:
             col_map[str(col.name).lower()] = str(col.name)
         table_cols_by_var[ref.var_name] = col_map
 
-    pattern = re.compile(
-        r"\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b")
+    pattern = re.compile(r'\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b')
 
     unresolved: list[str] = []
 
@@ -908,11 +964,11 @@ def align_query_column_case(query: str, table_refs: Sequence[TableRef]) -> str:
             return match.group(0)
         emitted = col_map.get(col_token.lower())
         if emitted is None:
-            unresolved.append(f"{table_token}.{col_token}")
+            unresolved.append(f'{table_token}.{col_token}')
             return match.group(0)
         if emitted == col_token:
             return match.group(0)
-        return f"{table_token}.{emitted}"
+        return f'{table_token}.{emitted}'
 
     rewritten = pattern.sub(_replace, query)
 
@@ -924,83 +980,93 @@ def align_query_column_case(query: str, table_refs: Sequence[TableRef]) -> str:
                 seen.add(ref_str)
                 unique_unresolved.append(ref_str)
         raise ExportError(
-            "pquery references columns not present in the emitted graph: " +
-            ", ".join(unique_unresolved))
+            'pquery references columns not present in the emitted graph: '
+            + ', '.join(unique_unresolved)
+        )
 
     return rewritten
 
 
 def render_header(api_url: str, auth_env_var: str) -> str:
-    return ("import os\n"
-            "import uuid\n\n"
-            "import kumoai_studio as kumo\n"
-            "from kumoai_studio.artifact_export import OutputConfig\n"
-            "from kumoai_studio.graph import Column\n"
-            "from kumoapi.typing import Dtype, Stype\n\n"
-            f"API_URL = os.environ.get(\"KUMO_API_URL\", {api_url!r})\n"
-            f"API_KEY = os.environ[\"{auth_env_var}\"]\n"
-            "kumo.init(url=API_URL, api_key=API_KEY)\n")
+    return (
+        'import os\n'
+        'import uuid\n\n'
+        'import kumoai_studio as kumo\n'
+        'from kumoai_studio.artifact_export import OutputConfig\n'
+        'from kumoai_studio.graph import Column\n'
+        'from kumoapi.typing import Dtype, Stype\n\n'
+        f'API_URL = os.environ.get("KUMO_API_URL", {api_url!r})\n'
+        f'API_KEY = os.environ["{auth_env_var}"]\n'
+        'kumo.init(url=API_URL, api_key=API_KEY)\n'
+    )
 
 
 def render_graph_setup(graph: GraphBundle) -> str:
-    lines: list[str] = [""]
+    lines: list[str] = ['']
     emitted_connectors: set[str] = set()
     for table_ref in graph.table_refs:
         if table_ref.connector_var in emitted_connectors:
             continue
-        lines.append(f"{table_ref.connector_var} = kumo.S3Connector(")
+        lines.append(f'{table_ref.connector_var} = kumo.S3Connector(')
         if table_ref.connector_root_dir:
-            lines.append(f"    root_dir={table_ref.connector_root_dir!r},")
-        lines.extend([")", ""])
+            lines.append(f'    root_dir={table_ref.connector_root_dir!r},')
+        lines.extend([')', ''])
         emitted_connectors.add(table_ref.connector_var)
 
     for table_ref in graph.table_refs:
         lines.extend(render_table(table_ref))
 
-    lines.extend(["graph = kumo.Graph(", "    tables={"])
+    lines.extend(['graph = kumo.Graph(', '    tables={'])
     for table_ref in graph.table_refs:
-        lines.append(f"        {table_ref.var_name!r}: {table_ref.var_name},")
-    lines.extend(["    },", "    edges=["])
+        lines.append(f'        {table_ref.var_name!r}: {table_ref.var_name},')
+    lines.extend(['    },', '    edges=['])
     for edge in graph.edges:
-        lines.append("        " + format_value({
-            "src_table": edge.src_table,
-            "fkey": edge.fkey,
-            "dst_table": edge.dst_table
-        }) + ",")
-    lines.extend(["    ],", ")", "graph.validate()"])
-    return "\n".join(lines) + "\n"
+        lines.append(
+            '        '
+            + format_value(
+                {
+                    'src_table': edge.src_table,
+                    'fkey': edge.fkey,
+                    'dst_table': edge.dst_table,
+                }
+            )
+            + ','
+        )
+    lines.extend(['    ],', ')', 'graph.validate()'])
+    return '\n'.join(lines) + '\n'
 
 
 def render_table(table_ref: TableRef) -> list[str]:
     table = table_ref.table
     lines = [
-        f"{table_ref.var_name} = kumo.Table(",
-        f"    source_table={table_ref.connector_var}.table({table_ref.source_table_name!r}),",
-        f"    columns={render_columns(table.cols)},",
+        f'{table_ref.var_name} = kumo.Table(',
+        f'    source_table={table_ref.connector_var}.table({table_ref.source_table_name!r}),',
+        f'    columns={render_columns(table.cols)},',
     ]
     if table.pkey is not None:
-        lines.append(f"    primary_key={str(table.pkey)!r},")
+        lines.append(f'    primary_key={str(table.pkey)!r},')
     if table.time_col is not None:
-        lines.append(f"    time_column={str(table.time_col)!r},")
+        lines.append(f'    time_column={str(table.time_col)!r},')
     if table.end_time_col is not None:
-        lines.append(f"    end_time_column={str(table.end_time_col)!r},")
-    lines.extend([")", ""])
+        lines.append(f'    end_time_column={str(table.end_time_col)!r},')
+    lines.extend([')', ''])
     return lines
 
 
 def render_columns(cols: Sequence[Any]) -> str:
     if not cols:
-        return "[]"
+        return '[]'
     rendered = []
     for col in cols:
         args = [
-            f"name={str(col.name)!r}", f"stype=Stype.{enum_name(col.stype)}",
-            f"dtype=Dtype.{enum_name(col.dtype)}"
+            f'name={str(col.name)!r}',
+            f'stype=Stype.{enum_name(col.stype)}',
+            f'dtype=Dtype.{enum_name(col.dtype)}',
         ]
         if col.timestamp_format is not None:
-            args.append(f"timestamp_format={str(col.timestamp_format)!r}")
-        rendered.append(f"Column({', '.join(args)})")
-    return "[\n        " + ",\n        ".join(rendered) + ",\n    ]"
+            args.append(f'timestamp_format={str(col.timestamp_format)!r}')
+        rendered.append(f'Column({", ".join(args)})')
+    return '[\n        ' + ',\n        '.join(rendered) + ',\n    ]'
 
 
 def render_train_table(
@@ -1010,114 +1076,124 @@ def render_train_table(
 ) -> str:
     if existing_train_table_job_id:
         return (
-            f"train_table = kumo.TrainingTableJob({existing_train_table_job_id!r})\n\n"
+            f'train_table = kumo.TrainingTableJob({existing_train_table_job_id!r})\n\n'
         )
     if not plan:
-        return "train_table = pquery.generate_training_table()\n\n"
-    return f"train_table_plan = {format_value(dict(plan))}\n" "train_table = pquery.generate_training_table(plan=train_table_plan)\n\n"
+        return 'train_table = pquery.generate_training_table()\n\n'
+    return (
+        f'train_table_plan = {format_value(dict(plan))}\n'
+        'train_table = pquery.generate_training_table(plan=train_table_plan)\n\n'
+    )
 
 
 def render_prediction_table(query_var: str, plan: Mapping[str, Any]) -> str:
     if not plan:
-        return f"prediction_table = {query_var}.generate_prediction_table()\n\n"
-    return f"prediction_table_plan = {format_value(dict(plan))}\n" f"prediction_table = {query_var}.generate_prediction_table(plan=prediction_table_plan)\n\n"
+        return f'prediction_table = {query_var}.generate_prediction_table()\n\n'
+    return (
+        f'prediction_table_plan = {format_value(dict(plan))}\n'
+        f'prediction_table = {query_var}.generate_prediction_table(plan=prediction_table_plan)\n\n'
+    )
 
 
 def render_call_kwargs(kwargs: Mapping[str, Any]) -> str:
-    return "".join(f"    {key}={format_value(value)},\n"
-                   for key, value in kwargs.items())
+    return ''.join(
+        f'    {key}={format_value(value)},\n' for key, value in kwargs.items()
+    )
 
 
 def get_model_plan(job: Any) -> ModelPlan:
     advanced_options = job.advanced_options
     if isinstance(advanced_options, ModelPlan):
         return advanced_options
-    if isinstance(advanced_options,
-                  rest_api_db_entries.DeprecatedAdvancedAutoTrainerOptions):
+    if isinstance(
+        advanced_options, rest_api_db_entries.DeprecatedAdvancedAutoTrainerOptions
+    ):
         return migrate_deprecated_advanced_options(advanced_options)
     raise ExportError(
-        f"unsupported advanced_options type {type(advanced_options).__name__}")
+        f'unsupported advanced_options type {type(advanced_options).__name__}'
+    )
 
 
-def get_training_table_plan(ml_db: MLJobSnapshot,
-                            job: Any) -> TrainingTableGenerationPlan:
+def get_training_table_plan(
+    ml_db: MLJobSnapshot, job: Any
+) -> TrainingTableGenerationPlan:
     if job.generate_train_table_job_id:
         train_table_job = ml_db.generate_train_table_jobs_map.get(
-            str(job.generate_train_table_job_id))
+            str(job.generate_train_table_job_id)
+        )
         if train_table_job is None:
             raise ExportError(
-                f"missing training table job {job.generate_train_table_job_id}")
+                f'missing training table job {job.generate_train_table_job_id}'
+            )
         return train_table_job.config.plan
 
     model_plan = get_model_plan(job)
     if model_plan.training_table_generation is not None:
         return model_plan.training_table_generation
-    raise ExportError("missing training table generation plan")
+    raise ExportError('missing training table generation plan')
 
 
 def migrate_deprecated_advanced_options(
-    legacy: rest_api_db_entries.DeprecatedAdvancedAutoTrainerOptions
+    legacy: rest_api_db_entries.DeprecatedAdvancedAutoTrainerOptions,
 ) -> ModelPlan:
     plan = ModelPlan()
     sections = {
-        "training_table_generation": {
-            "split": "split",
-            "timeframe_step": "timeframe_step",
-            "forecast_length": "forecast_length",
-            "lag_timesteps": "lag_timesteps",
-            "train_start_offset": "train_start_offset",
-            "train_end_offset": "train_end_offset",
-            "entity_candidate": "entity_candidate",
-            "entity_candidate_aggregation": "entity_candidate_aggregation",
-            "task_path_override": "task_path_override",
-            "train_table_path_override": "train_table_path_override"
+        'training_table_generation': {
+            'split': 'split',
+            'timeframe_step': 'timeframe_step',
+            'forecast_length': 'forecast_length',
+            'lag_timesteps': 'lag_timesteps',
+            'train_start_offset': 'train_start_offset',
+            'train_end_offset': 'train_end_offset',
+            'entity_candidate': 'entity_candidate',
+            'entity_candidate_aggregation': 'entity_candidate_aggregation',
+            'task_path_override': 'task_path_override',
+            'train_table_path_override': 'train_table_path_override',
         },
-        "training_job": {
-            "num_experiments": "num_experiments",
-            "tune_metric": "tune_metric",
-            "disable_explain": "disable_explain",
-            "refit_trainval": "refit_trainval",
-            "refit_full": "refit_full"
+        'training_job': {
+            'num_experiments': 'num_experiments',
+            'tune_metric': 'tune_metric',
+            'disable_explain': 'disable_explain',
+            'refit_trainval': 'refit_trainval',
+            'refit_full': 'refit_full',
         },
-        "neighbor_sampling": {
-            "num_neighbors": "num_neighbors",
-            "max_target_neighbors_per_entity": "max_target_neighbors_per_entity"
+        'neighbor_sampling': {
+            'num_neighbors': 'num_neighbors',
+            'max_target_neighbors_per_entity': 'max_target_neighbors_per_entity',
         },
-        "optimization": {
-            "max_epochs": "max_epochs",
-            "max_steps_per_epoch": "max_steps_per_epoch",
-            "max_val_steps": "max_val_steps",
-            "max_test_steps": "max_test_steps",
-            "base_lr": "base_lr",
-            "batch_size": "batch_size",
-            "weight_decay": "weight_decay",
-            "lr_scheduler": "lr_scheduler",
-            "early_stopping": "early_stopping",
-            "majority_sampling_ratio": "majority_sampling_ratio",
-            "weight_mode": "weight_mode"
+        'optimization': {
+            'max_epochs': 'max_epochs',
+            'max_steps_per_epoch': 'max_steps_per_epoch',
+            'max_val_steps': 'max_val_steps',
+            'max_test_steps': 'max_test_steps',
+            'base_lr': 'base_lr',
+            'batch_size': 'batch_size',
+            'weight_decay': 'weight_decay',
+            'lr_scheduler': 'lr_scheduler',
+            'early_stopping': 'early_stopping',
+            'majority_sampling_ratio': 'majority_sampling_ratio',
+            'weight_mode': 'weight_mode',
         },
-        "model_architecture": {
-            "channels": "channels",
-            "num_pre_mp_layers": "num_pre_message_passing_layers",
-            "num_post_mp_layers": "num_post_message_passing_layers",
-            "aggr": "aggregation",
-            "activation": "activation",
-            "module": "module",
-            "handle_new_target_entities": "handle_new_target_entities",
-            "lp_target_embedding_mode": "target_embedding_mode",
-            "lp_embedding_dim": "output_embedding_dim",
-            "lp_ranking_emb_loss_coeff": "ranking_embedding_loss_coeff",
-            "use_seq_id": "use_seq_id"
+        'model_architecture': {
+            'channels': 'channels',
+            'num_pre_mp_layers': 'num_pre_message_passing_layers',
+            'num_post_mp_layers': 'num_post_message_passing_layers',
+            'aggr': 'aggregation',
+            'activation': 'activation',
+            'module': 'module',
+            'handle_new_target_entities': 'handle_new_target_entities',
+            'lp_target_embedding_mode': 'target_embedding_mode',
+            'lp_embedding_dim': 'output_embedding_dim',
+            'lp_ranking_emb_loss_coeff': 'ranking_embedding_loss_coeff',
+            'use_seq_id': 'use_seq_id',
         },
-        "column_processing": {
-            "encoder_overrides": "encoder_overrides"
-        },
+        'column_processing': {'encoder_overrides': 'encoder_overrides'},
     }
     for section_name, mapping in sections.items():
         section = getattr(plan, section_name)
         for old_name, new_name in mapping.items():
             value = getattr(legacy, old_name)
-            if value not in (None, "", [], {}):
+            if value not in (None, '', [], {}):
                 setattr(section, new_name, value)
     metrics = list(legacy.extra_metrics)
     if legacy.tune_metric and legacy.tune_metric not in metrics:
@@ -1127,12 +1203,11 @@ def migrate_deprecated_advanced_options(
     return plan
 
 
-def compact_model_plan(model_plan: ModelPlan,
-                       graph: GraphBundle) -> dict[str, Any]:
+def compact_model_plan(model_plan: ModelPlan, graph: GraphBundle) -> dict[str, Any]:
     actual = to_primitive(model_plan)
     default = to_primitive(ModelPlan())
-    actual.pop("training_table_generation", None)
-    default.pop("training_table_generation", None)
+    actual.pop('training_table_generation', None)
+    default.pop('training_table_generation', None)
     compact = diff_dict(actual, default)
     return remap_model_plan_table_refs(compact, graph)
 
@@ -1153,20 +1228,20 @@ def graph_table_aliases(graph: GraphBundle) -> dict[str, str]:
             aliases.setdefault(normalize_table_token(candidate), ref.var_name)
     for ref in graph.table_refs:
         aliases.setdefault(str(ref.source_table_name).lower(), ref.var_name)
-        aliases.setdefault(normalize_table_token(ref.source_table_name),
-                           ref.var_name)
+        aliases.setdefault(normalize_table_token(ref.source_table_name), ref.var_name)
     return aliases
 
 
 def normalize_table_token(value: str) -> str:
-    return re.sub(r"[^0-9a-zA-Z]+", "", str(value)).lower()
+    return re.sub(r'[^0-9a-zA-Z]+', '', str(value)).lower()
 
 
 def rewrite_model_plan_value(value: Any, aliases: Mapping[str, str]) -> Any:
     if isinstance(value, dict):
         return {
-            rewrite_model_plan_key(str(k), aliases):
-            rewrite_model_plan_value(v, aliases)
+            rewrite_model_plan_key(str(k), aliases): rewrite_model_plan_value(
+                v, aliases
+            )
             for k, v in value.items()
         }
     if isinstance(value, list):
@@ -1175,63 +1250,59 @@ def rewrite_model_plan_value(value: Any, aliases: Mapping[str, str]) -> Any:
 
 
 def rewrite_model_plan_key(key: str, aliases: Mapping[str, str]) -> str:
-    if "->" not in key:
+    if '->' not in key:
         return rewrite_endpoint_key(key, aliases)
-    return "->".join(
-        rewrite_endpoint_key(part, aliases) for part in key.split("->"))
+    return '->'.join(rewrite_endpoint_key(part, aliases) for part in key.split('->'))
 
 
 def rewrite_endpoint_key(value: str, aliases: Mapping[str, str]) -> str:
-    table, dot, rest = value.partition(".")
+    table, dot, rest = value.partition('.')
     if not dot:
         return value
-    mapped = aliases.get(table.lower()) or aliases.get(
-        normalize_table_token(table))
+    mapped = aliases.get(table.lower()) or aliases.get(normalize_table_token(table))
     if mapped is None:
         return value
-    return f"{mapped}.{rest}"
+    return f'{mapped}.{rest}'
 
 
-def compact_training_table_plan(
-        plan: TrainingTableGenerationPlan) -> dict[str, Any]:
-    compact = diff_dict(to_primitive(plan),
-                        to_primitive(TrainingTableGenerationPlan()))
-    if compact.get("forecast_length") == 1:
-        compact.pop("forecast_length")
+def compact_training_table_plan(plan: TrainingTableGenerationPlan) -> dict[str, Any]:
+    compact = diff_dict(to_primitive(plan), to_primitive(TrainingTableGenerationPlan()))
+    if compact.get('forecast_length') == 1:
+        compact.pop('forecast_length')
     return compact
 
 
-def compact_prediction_table_plan(
-        config: BatchPredictionJobConfig) -> dict[str, Any]:
+def compact_prediction_table_plan(config: BatchPredictionJobConfig) -> dict[str, Any]:
     plan: dict[str, Any] = {}
     if config.prediction_time is not None:
-        plan["anchor_time"] = config.prediction_time.isoformat()
+        plan['anchor_time'] = config.prediction_time.isoformat()
     if config.forecast_length is not None:
-        plan["forecast_length"] = config.forecast_length
+        plan['forecast_length'] = config.forecast_length
     if config.lag_timesteps is not None:
-        plan["lag_timesteps"] = config.lag_timesteps
+        plan['lag_timesteps'] = config.lag_timesteps
     if config.year_over_year:
-        plan["year_over_year"] = True
+        plan['year_over_year'] = True
     if config.filter_override_args:
         filters = {
             k: v
             for k, v in to_primitive(config.filter_override_args).items()
-            if v not in ("", None)
+            if v not in ('', None)
         }
         if filters:
-            plan["filter_overrides"] = filters
+            plan['filter_overrides'] = filters
     return plan
 
 
 def compact_predict_kwargs(config: BatchPredictionJobConfig) -> dict[str, Any]:
     kwargs: dict[str, Any] = {}
     if config.binary_classification_threshold is not None:
-        kwargs[
-            "binary_classification_threshold"] = config.binary_classification_threshold
+        kwargs['binary_classification_threshold'] = (
+            config.binary_classification_threshold
+        )
     if config.num_classes_to_return is not None:
-        kwargs["num_classes_to_return"] = config.num_classes_to_return
+        kwargs['num_classes_to_return'] = config.num_classes_to_return
     if config.num_parallel_workers_limit != 1:
-        kwargs["num_workers"] = config.num_parallel_workers_limit
+        kwargs['num_workers'] = config.num_parallel_workers_limit
     return kwargs
 
 
@@ -1246,21 +1317,22 @@ def compact_output_config(
     seen_extra_fields: set[str] = set()
     for output in config.outputs:
         output_types.append(str(output.artifact_type.value))
-        _, name = str(output.file_path).rstrip("/").rsplit("/", 1)
-        output_names.append(name.rsplit(".", 1)[0])
-        for field in getattr(output, "extra_fields", None) or ():
+        _, name = str(output.file_path).rstrip('/').rsplit('/', 1)
+        output_names.append(name.rsplit('.', 1)[0])
+        for field in getattr(output, 'extra_fields', None) or ():
             field_str = field.value if isinstance(field, Enum) else str(field)
             if field_str not in seen_extra_fields:
                 seen_extra_fields.add(field_str)
                 extra_fields.append(field_str)
     if not output_names:
-        raise ExportError("missing S3 output path")
-    output_root = f"{bp_output_root.rstrip('/')}/{job_id}"
-    config_dict: dict[str, Any] = {"output_types": sorted(set(output_types))}
-    config_dict["output_table_name"] = (output_names[0] if len(output_names)
-                                        == 1 else safe_var(job_id))
+        raise ExportError('missing S3 output path')
+    output_root = f'{bp_output_root.rstrip("/")}/{job_id}'
+    config_dict: dict[str, Any] = {'output_types': sorted(set(output_types))}
+    config_dict['output_table_name'] = (
+        output_names[0] if len(output_names) == 1 else safe_var(job_id)
+    )
     if extra_fields:
-        config_dict["extra_fields"] = extra_fields
+        config_dict['extra_fields'] = extra_fields
     return output_root, config_dict
 
 
@@ -1280,8 +1352,7 @@ def to_primitive(value: Any) -> Any:
     return value
 
 
-def diff_dict(actual: Mapping[str, Any],
-              default: Mapping[str, Any]) -> dict[str, Any]:
+def diff_dict(actual: Mapping[str, Any], default: Mapping[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for key, value in actual.items():
         diff = diff_value(value, default.get(key, MISSING))
@@ -1293,12 +1364,10 @@ def diff_dict(actual: Mapping[str, Any],
 def diff_value(actual: Any, default: Any) -> Any:
     if default is not MISSING and actual == default:
         return MISSING
-    if actual in (None, [], {}, "inferred", "???"):
+    if actual in (None, [], {}, 'inferred', '???'):
         return MISSING
     if isinstance(actual, list):
-        filtered = [
-            value for value in actual if value not in (None, "inferred", "???")
-        ]
+        filtered = [value for value in actual if value not in (None, 'inferred', '???')]
         if not filtered:
             return MISSING
         actual = filtered
@@ -1315,22 +1384,22 @@ def format_value(value: Any) -> str:
 def enum_name(value: Any) -> str:
     if isinstance(value, Enum):
         return value.name
-    return str(value).rsplit(".", 1)[-1]
+    return str(value).rsplit('.', 1)[-1]
 
 
 def s3_source_uri(source: S3SourceTable) -> Optional[str]:
-    uri = getattr(source.source, "uri", None)
+    uri = getattr(source.source, 'uri', None)
     return str(uri) if uri else None
 
 
 def safe_var(name: str) -> str:
-    var = re.sub(r"\W+", "_", name).strip("_").lower()
+    var = re.sub(r'\W+', '_', name).strip('_').lower()
     if not var:
-        var = "value"
+        var = 'value'
     if var[0].isdigit():
-        var = f"_{var}"
+        var = f'_{var}'
     if keyword.iskeyword(var):
-        var = f"{var}_"
+        var = f'{var}_'
     return var
 
 
@@ -1339,7 +1408,7 @@ def unique_var(name: str, used: set[str]) -> str:
     candidate = base
     suffix = 2
     while candidate in used:
-        candidate = f"{base}_{suffix}"
+        candidate = f'{base}_{suffix}'
         suffix += 1
     return candidate
 
@@ -1354,5 +1423,5 @@ def quoted(value: str) -> str:
     return repr(value)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

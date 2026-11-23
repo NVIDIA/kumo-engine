@@ -51,9 +51,13 @@ class Timer(ContextDecorator):
         @Timer()
         my_function2():
     """
-    def __init__(self, logging_prefix: Optional[str] = None,
-                 metric_name: Optional[Metrics] = None,
-                 metric_labels: Optional[Dict[str, str]] = None):
+
+    def __init__(
+        self,
+        logging_prefix: Optional[str] = None,
+        metric_name: Optional[Metrics] = None,
+        metric_labels: Optional[Dict[str, str]] = None,
+    ):
         r"""
         Args:
             logging_prefix (str, optional): Prefix used for logging the
@@ -75,16 +79,17 @@ class Timer(ContextDecorator):
         # Validation of metric_name and metric_labels.
         if metric_name is None and len(metric_labels):
             raise ValueError(
-                "Cannot set metric_labels to %s without a metric_name.",
-                str(metric_labels))
+                'Cannot set metric_labels to %s without a metric_name.',
+                str(metric_labels),
+            )
         self.metric = None
         if metric_name is not None:
-            self.metric = metrics_client.get_metric(metric_name,
-                                                    labels=metric_labels)
+            self.metric = metrics_client.get_metric(metric_name, labels=metric_labels)
             if not isinstance(self.metric, (Summary, Histogram)):
                 raise NotImplementedError(
-                    "Timer only suppports Summary or Histogram metrics."
-                    " Got type %s.", type(self.metric))
+                    'Timer only suppports Summary or Histogram metrics. Got type %s.',
+                    type(self.metric),
+                )
 
     def __call__(self, func):
         # If used as a function decorator, use the function name as
@@ -104,15 +109,14 @@ class Timer(ContextDecorator):
         self.end_real_time = time.perf_counter()
         self.end_process_time = time.process_time()
         self.elapsed_real_time = self.end_real_time - self.start_real_time
-        self.elapsed_process_time = (self.end_process_time -
-                                     self.start_process_time)
+        self.elapsed_process_time = self.end_process_time - self.start_process_time
 
         # Record the running time in the metric.
         if self.metric is not None:
-            metrics_client._set_metric_value(self.metric,
-                                             self.elapsed_real_time)
+            metrics_client._set_metric_value(self.metric, self.elapsed_real_time)
         # Only log if there is a logging_prefix
         if self.logging_prefix:
             logger.debug(
-                f"{self.logging_prefix} took {self.elapsed_real_time:.6f}s in"
-                f" real_time, {self.elapsed_process_time:.6f}s in process_time")
+                f'{self.logging_prefix} took {self.elapsed_real_time:.6f}s in'
+                f' real_time, {self.elapsed_process_time:.6f}s in process_time'
+            )

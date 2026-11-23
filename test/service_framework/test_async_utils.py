@@ -32,8 +32,7 @@ async def my_async_func(sync_time: float, async_time: float) -> float:
 
 
 @pytest.mark.asyncio
-async def test_async_timer(caplog: pytest.LogCaptureFixture,
-                           monkeypatch: MonkeyPatch):
+async def test_async_timer(caplog: pytest.LogCaptureFixture, monkeypatch: MonkeyPatch):
     # Disable stress test mode.
     monkeypatch.setenv('DEPLOY_STAGE', 'dev')
     monkeypatch.setenv('STRESS_TEST_MODE', '0')
@@ -46,17 +45,16 @@ async def test_async_timer(caplog: pytest.LogCaptureFixture,
 
     with caplog.at_level(logging.WARNING):
         assert pytest.approx(0.11) == await my_async_func(
-            sync_time=0.01, async_time=0.1)
+            sync_time=0.01, async_time=0.1
+        )
     assert len(caplog.text) == 0
 
     with caplog.at_level(logging.WARNING):
-        assert pytest.approx(0.3) == await my_async_func(
-            sync_time=0.2, async_time=0.1)
+        assert pytest.approx(0.3) == await my_async_func(sync_time=0.2, async_time=0.1)
     assert 'Async func my_async_func has executed for' in caplog.text
 
     with caplog.at_level(logging.CRITICAL):
-        assert pytest.approx(0.7) == await my_async_func(
-            sync_time=0.6, async_time=0.1)
+        assert pytest.approx(0.7) == await my_async_func(sync_time=0.6, async_time=0.1)
     assert 'Async func my_async_func has executed for' in caplog.text
 
     # Enable stress test mode.
@@ -66,8 +64,9 @@ async def test_async_timer(caplog: pytest.LogCaptureFixture,
 
 
 @pytest.mark.asyncio
-async def test_async_timer_nested(caplog: pytest.LogCaptureFixture,
-                                  monkeypatch: MonkeyPatch):
+async def test_async_timer_nested(
+    caplog: pytest.LogCaptureFixture, monkeypatch: MonkeyPatch
+):
     async def _child(*sleep_times: float):
         for sleep_time in sleep_times:
             sleep(sleep_time)  # "blocking"
@@ -139,8 +138,9 @@ num_calls: int = 0
 
 
 @reuse_inflight_future(param_keys=['param_a', 'param_b'])
-async def dummy_async_func(param_a: int, param_b: str,
-                           seconds_to_sleep: float = 1.0) -> str:
+async def dummy_async_func(
+    param_a: int, param_b: str, seconds_to_sleep: float = 1.0
+) -> str:
     global num_calls
     num_calls += 1
     print(f'Sleeping for {seconds_to_sleep:.2f} seconds...')
@@ -150,9 +150,9 @@ async def dummy_async_func(param_a: int, param_b: str,
 
 
 @measure_blocking_code
-async def dummy_create_bp_job(args: ConnectorSpec, cols: Dict[BaseColumnConfig,
-                                                              str],
-                              ctx: RequestContext) -> BatchPredictionJobID:
+async def dummy_create_bp_job(
+    args: ConnectorSpec, cols: Dict[BaseColumnConfig, str], ctx: RequestContext
+) -> BatchPredictionJobID:
     @blocking_func()
     def _dummy_create_bp_sync():
         sleep(1.0)
@@ -180,33 +180,45 @@ async def test_concurrent_task():
     assert ret2 == '1--a'
     assert num_calls == 1
 
-    create_bp_args = ConnectorSpec(ConnectorID('connector_' + '1' * 32),
-                                   connector_config=None)
+    create_bp_args = ConnectorSpec(
+        ConnectorID('connector_' + '1' * 32), connector_config=None
+    )
     create_bp_task1 = asyncio.ensure_future(
         dummy_create_bp_job(
-            create_bp_args, {BaseColumnConfig('colA'): 'abc'},
-            RequestContext(UserAuthorization.disabled(), 'traceid1')))
+            create_bp_args,
+            {BaseColumnConfig('colA'): 'abc'},
+            RequestContext(UserAuthorization.disabled(), 'traceid1'),
+        )
+    )
     create_bp_task2 = asyncio.ensure_future(
         dummy_create_bp_job(
-            create_bp_args, {BaseColumnConfig('colA'): 'abc'},
-            RequestContext(UserAuthorization.disabled(), 'traceid2')))
+            create_bp_args,
+            {BaseColumnConfig('colA'): 'abc'},
+            RequestContext(UserAuthorization.disabled(), 'traceid2'),
+        )
+    )
     create_bp_task3 = asyncio.ensure_future(
         dummy_create_bp_job(
             ConnectorSpec(
                 ConnectorID('connector_' + '2' * 32),
                 connector_config=None,
-            ), {BaseColumnConfig('colB'): 'abc'},
-            RequestContext(UserAuthorization.disabled(), 'traceid1')))
-    bp1, bp2, bp3 = await asyncio.gather(create_bp_task1, create_bp_task2,
-                                         create_bp_task3)
+            ),
+            {BaseColumnConfig('colB'): 'abc'},
+            RequestContext(UserAuthorization.disabled(), 'traceid1'),
+        )
+    )
+    bp1, bp2, bp3 = await asyncio.gather(
+        create_bp_task1, create_bp_task2, create_bp_task3
+    )
     assert bp1 == bp2
     assert bp1 != bp3
 
     async_ex1 = asyncio.ensure_future(async_func_raise('call'))
     async_ex2 = asyncio.ensure_future(async_func_raise('call'))
     async_ex3 = asyncio.ensure_future(async_func_raise('call2'))
-    ex1, ex2, ex3 = await asyncio.gather(async_ex1, async_ex2, async_ex3,
-                                         return_exceptions=True)
+    ex1, ex2, ex3 = await asyncio.gather(
+        async_ex1, async_ex2, async_ex3, return_exceptions=True
+    )
     print(traceback.format_exception(ex1))
     print(traceback.format_exception(ex2))
     print(traceback.format_exception(ex3))
@@ -233,18 +245,22 @@ class DummyClass:
             self.base += param_a
             return self.base
 
-    @blocking_method(executor=DUMMY_THREAD_POOL,
-                     fut_dedupe_option=FutureDedupeOption.BY_INSTANCE_ID)
+    @blocking_method(
+        executor=DUMMY_THREAD_POOL, fut_dedupe_option=FutureDedupeOption.BY_INSTANCE_ID
+    )
     def add_and_return1(self, param_a: int) -> int:
         return self._add_and_return(param_a)
 
-    @blocking_method(executor=DUMMY_THREAD_POOL,
-                     fut_dedupe_option=FutureDedupeOption.BY_INSTANCE_STATE)
+    @blocking_method(
+        executor=DUMMY_THREAD_POOL,
+        fut_dedupe_option=FutureDedupeOption.BY_INSTANCE_STATE,
+    )
     def add_and_return2(self, param_a: int) -> int:
         return self._add_and_return(param_a)
 
-    @blocking_method(executor=DUMMY_THREAD_POOL,
-                     fut_dedupe_option=FutureDedupeOption.DISABLED)
+    @blocking_method(
+        executor=DUMMY_THREAD_POOL, fut_dedupe_option=FutureDedupeOption.DISABLED
+    )
     def add_and_return3(self, param_a: int) -> int:
         return self._add_and_return(param_a)
 

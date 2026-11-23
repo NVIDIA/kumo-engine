@@ -11,6 +11,7 @@ wheel's manifest reader. Tests validate:
   * spec round-trips through JSON (Temporal activity boundary)
   * frozen + hashable invariants
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -45,27 +46,24 @@ def _make_spec(**overrides) -> TaskDatasetMaterializeSpec:
             'node_types': {
                 'USERS': {
                     'feature_columns': ['AGE', 'INCOME'],
-                    'mapper_key':
-                    'USERS',
-                    'time_column':
-                    None,
-                    'column_specs': [{
-                        'column_name': name,
-                        'dtype': 'float',
-                        'stype': 'numerical',
-                        'encoder': {
-                            'name': 'Numerical'
-                        },
-                        'stats': {
-                            'MEAN': 0.0
-                        },
-                    } for name in ('AGE', 'INCOME')],
+                    'mapper_key': 'USERS',
+                    'time_column': None,
+                    'column_specs': [
+                        {
+                            'column_name': name,
+                            'dtype': 'float',
+                            'stype': 'numerical',
+                            'encoder': {'name': 'Numerical'},
+                            'stats': {'MEAN': 0.0},
+                        }
+                        for name in ('AGE', 'INCOME')
+                    ],
                 },
             },
             'target_encoder_input': None,
         },
-        graph_node_types=('USERS', ),
-        graph_edge_types=(('USERS', 'FRIENDS', 'USERS'), ),
+        graph_node_types=('USERS',),
+        graph_edge_types=(('USERS', 'FRIENDS', 'USERS'),),
     )
     defaults.update(overrides)
     return TaskDatasetMaterializeSpec(**defaults)
@@ -77,28 +75,30 @@ def _make_spec(**overrides) -> TaskDatasetMaterializeSpec:
 
 # The expected field set — adding or removing fields from the spec
 # should require updating this test, forcing an explicit decision.
-_EXPECTED_FIELDS = frozenset({
-    'tt_manifest_path',
-    'job_id',
-    'artifact_root',
-    'task_family',
-    'task_type',
-    'is_temporal',
-    'seed_node_type',
-    'train_table_name',
-    'entity_table_name',
-    'feature_schema',
-    'graph_node_types',
-    'graph_edge_types',
-    'rhs_node_type',
-    # Fail closed when a temporal split leaves a required dataset stage empty.
-    'required_stages',
-    # The query's target->entity paths. Recorded rather than derived: the
-    # graph edge list cannot reproduce them, because for link prediction the
-    # path runs from the fact table to the seed entity, which is neither the
-    # seed nor the RHS node type the spec already names.
-    'target_to_entity_paths',
-})
+_EXPECTED_FIELDS = frozenset(
+    {
+        'tt_manifest_path',
+        'job_id',
+        'artifact_root',
+        'task_family',
+        'task_type',
+        'is_temporal',
+        'seed_node_type',
+        'train_table_name',
+        'entity_table_name',
+        'feature_schema',
+        'graph_node_types',
+        'graph_edge_types',
+        'rhs_node_type',
+        # Fail closed when a temporal split leaves a required dataset stage empty.
+        'required_stages',
+        # The query's target->entity paths. Recorded rather than derived: the
+        # graph edge list cannot reproduce them, because for link prediction the
+        # path runs from the fact table to the seed entity, which is neither the
+        # seed nor the RHS node type the spec already names.
+        'target_to_entity_paths',
+    }
+)
 
 
 def test_spec_field_set_matches_locked_contract() -> None:
@@ -112,7 +112,8 @@ def test_spec_field_set_matches_locked_contract() -> None:
     assert actual == _EXPECTED_FIELDS, (
         f'Spec fields drifted from locked contract.\n'
         f'  Added:   {actual - _EXPECTED_FIELDS}\n'
-        f'  Removed: {_EXPECTED_FIELDS - actual}')
+        f'  Removed: {_EXPECTED_FIELDS - actual}'
+    )
 
 
 def test_spec_does_not_contain_derivable_fields() -> None:
@@ -129,7 +130,7 @@ def test_spec_does_not_contain_derivable_fields() -> None:
     }
     actual = set(spec.__dataclass_fields__.keys())
     leaked = actual & derivable
-    assert not leaked, (f'Derivable fields should not be on the spec: {leaked}')
+    assert not leaked, f'Derivable fields should not be on the spec: {leaked}'
 
 
 # ---------------------------------------------------------------------------
@@ -160,22 +161,19 @@ def test_spec_round_trips_with_complex_feature_schema() -> None:
     schema = {
         'node_types': {
             table: {
-                'feature_columns':
-                columns,
-                'mapper_key':
-                table,
+                'feature_columns': columns,
+                'mapper_key': table,
                 'time_column': ('TIMESTAMP' if table == 'USERS' else None),
-                'column_specs': [{
-                    'column_name': name,
-                    'dtype': 'float',
-                    'stype': 'numerical',
-                    'encoder': {
-                        'name': 'Numerical'
-                    },
-                    'stats': {
-                        'MEAN': 0.0
-                    },
-                } for name in columns],
+                'column_specs': [
+                    {
+                        'column_name': name,
+                        'dtype': 'float',
+                        'stype': 'numerical',
+                        'encoder': {'name': 'Numerical'},
+                        'stats': {'MEAN': 0.0},
+                    }
+                    for name in columns
+                ],
             }
             for table, columns in {
                 'USERS': ['AGE', 'INCOME'],
@@ -187,7 +185,7 @@ def test_spec_round_trips_with_complex_feature_schema() -> None:
     spec = _make_spec(
         feature_schema=schema,
         graph_node_types=('USERS', 'PRODUCTS'),
-        graph_edge_types=(('USERS', 'BOUGHT', 'PRODUCTS'), ),
+        graph_edge_types=(('USERS', 'BOUGHT', 'PRODUCTS'),),
     )
     payload = to_json_dict(spec)
     restored = from_json_dict(payload, TaskDatasetMaterializeSpec)
@@ -227,13 +225,9 @@ def test_monolith_builder_emits_exact_core_feature_schema() -> None:
     age_encoder = Numerical()
     age_encoder._stats = {ColStatType.MEAN: 42.0}
     target_encoder = Index()
-    target_encoder._stats = {
-        ColStatType.CATEGORY_COUNTS: [[False, 8], [True, 2]]
-    }
+    target_encoder._stats = {ColStatType.CATEGORY_COUNTS: [[False, 8], [True, 2]]}
     fitted = SimpleNamespace(
-        encoders={'USERS': {
-            'AGE': age_encoder
-        }},
+        encoders={'USERS': {'AGE': age_encoder}},
         target=TargetEncoderConfig('TARGET', target_encoder),
     )
     task = SimpleNamespace(

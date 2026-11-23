@@ -76,6 +76,7 @@ class GraphDriver:
     """Supports operations on graph objects.
     This class exclusively performes operations on the v2 object models.
     """
+
     def __init__(
         self,
         data_backend_ctx: DataBackendContext,
@@ -111,7 +112,7 @@ class GraphDriver:
 
     def _require_state_services(self) -> StateServices:
         if self._state_services is None:
-            raise RuntimeError("GraphDriver requires StateServices")
+            raise RuntimeError('GraphDriver requires StateServices')
         return self._state_services
 
     def _require_graph_service(self):
@@ -126,8 +127,7 @@ class GraphDriver:
     def _require_connector_service(self):
         return self._connector_service()
 
-    async def _require_project_access(self,
-                                      project_id: ProjectID | str) -> None:
+    async def _require_project_access(self, project_id: ProjectID | str) -> None:
         """Authorize a project before any graph repository or cache read."""
         await self._require_project_service().get_project(
             ProjectID(project_id),
@@ -139,12 +139,12 @@ class GraphDriver:
         graph_fpid: FPID,
         project_id: ProjectID,
     ) -> Tuple[
-            graph_api.GraphResource,
-            ResourceTimestamps,
-            Dict[
-                TableName,
-                FPID,
-            ],
+        graph_api.GraphResource,
+        ResourceTimestamps,
+        Dict[
+            TableName,
+            FPID,
+        ],
     ]:
         """
         Retrieve a graph v2 resource by its FPID.
@@ -164,12 +164,10 @@ class GraphDriver:
         """
         await self._require_project_access(project_id)
         graph_service = self._require_graph_service()
-        graph_entry = await graph_service.get_graph_entry(
-            project_id, graph_fpid)
+        graph_entry = await graph_service.get_graph_entry(project_id, graph_fpid)
         if graph_entry is None:
             raise KeyError(f'Graph {graph_fpid} is not found')
-        graph_def = await graph_service.get_graph_definition(
-            project_id, graph_fpid)
+        graph_def = await graph_service.get_graph_definition(project_id, graph_fpid)
         if graph_def is None:
             raise KeyError(f'Graph {graph_fpid} is not found')
         table_name_to_dbid: Dict[TableName, FPID] = {
@@ -191,9 +189,9 @@ class GraphDriver:
         graph_alias: ID,
         project_id: ProjectID,
     ) -> Tuple[
-            graph_api.GraphResource,
-            ResourceTimestamps,
-            Dict[TableName, FPID],
+        graph_api.GraphResource,
+        ResourceTimestamps,
+        Dict[TableName, FPID],
     ]:
         """
         Retrieve a graph v2 resource by its alias.
@@ -214,7 +212,8 @@ class GraphDriver:
         await self._require_project_access(project_id)
         graph_service = self._require_graph_service()
         graph_entry = await graph_service.get_graph_entry_by_alias(
-            project_id, graph_alias)
+            project_id, graph_alias
+        )
         if not graph_entry:
             raise KeyError(f'Graph alias {graph_alias} is not found')
         return await self.get_graph_v2(FPID(graph_entry.id), project_id)
@@ -230,12 +229,14 @@ class GraphDriver:
         try:
             _, fpid = GraphIDv2.parse(graph_id_or_name)
             if fpid is None:
-                raise ValueError("Invalid graph ID passed.")
+                raise ValueError('Invalid graph ID passed.')
             graph_entry = await self._require_graph_service().get_graph_entry(
-                project_id, fpid)
+                project_id, fpid
+            )
         except ValueError:
-            graph_entry = await self._require_graph_service(
-            ).get_graph_entry_by_alias(project_id, graph_id_or_name)
+            graph_entry = await self._require_graph_service().get_graph_entry_by_alias(
+                project_id, graph_id_or_name
+            )
         if graph_entry is None:
             raise KeyError(
                 f"Could not find graph '{graph_id_or_name}' in project '{project_id}'."
@@ -249,14 +250,14 @@ class GraphDriver:
         """List graph names scoped to a project using project-local aliases."""
         project_id = ProjectID(project_id)
         await self._require_project_access(project_id)
-        entries = await self._require_graph_service().list_named_graphs(
-            project_id)
+        entries = await self._require_graph_service().list_named_graphs(project_id)
         return [
             ListResponse(
                 name=entry.alias,
                 id=GraphIDv2.public(entry.id),
                 timestamps=entry.timestamps,
-            ) for entry in entries
+            )
+            for entry in entries
         ]
 
     async def validate_project_graph_name(
@@ -273,7 +274,8 @@ class GraphDriver:
         typed_project_id = ProjectID(project_id)
         await self._require_project_access(typed_project_id)
         existing = await self._require_graph_service().get_graph_entry_by_alias(
-            typed_project_id, name)
+            typed_project_id, name
+        )
         if existing is not None:
             return ValidateNameResponse(
                 is_valid=False,
@@ -292,8 +294,7 @@ class GraphDriver:
             :class:`List[ListResponse]`: List of graph name responses
         """
         await self._require_project_access(project_id)
-        graphs = await self._require_graph_service().list_named_graphs(
-            project_id)
+        graphs = await self._require_graph_service().list_named_graphs(project_id)
         return [
             ListResponse(
                 id=f'graph-{graph.id}',
@@ -302,7 +303,9 @@ class GraphDriver:
                 num_tables=len(graph.table_name_to_dbid),
                 num_links=sum(len(grp.columns) - 1 for grp in graph.col_groups),
                 created_by_name=graph.created_by_name,
-            ) for graph in graphs if graph.alias
+            )
+            for graph in graphs
+            if graph.alias
         ]
 
     async def suggest_links_v2(
@@ -372,20 +375,27 @@ class GraphDriver:
         # unconditionally: it is the cheap connector_type correctness/security
         # gate, independent of the expensive ``skip_validation`` checks.
         graph = await canonicalize_graph_custom_sql_tables(
-            graph, ProjectID(project_id), self._require_state_services(),
-            _current_user_ctx.get())
+            graph,
+            ProjectID(project_id),
+            self._require_state_services(),
+            _current_user_ctx.get(),
+        )
         if alias and force_rename is False:
-            name_validation = await self.validate_project_graph_name(
-                project_id, alias)
+            name_validation = await self.validate_project_graph_name(project_id, alias)
             if not name_validation.is_valid:
-                existing_named_graph = await self._require_graph_service(
-                ).get_graph_entry_by_alias(ProjectID(project_id), alias)
-                if (existing_named_graph is None
-                        or existing_named_graph.id != graph.fpid):
+                existing_named_graph = (
+                    await self._require_graph_service().get_graph_entry_by_alias(
+                        ProjectID(project_id), alias
+                    )
+                )
+                if (
+                    existing_named_graph is None
+                    or existing_named_graph.id != graph.fpid
+                ):
                     raise GraphExistsInProjectError(
                         name_validation.error_msg
-                        or (f"Graph with name {alias} already "
-                            "exists in this project."))
+                        or (f'Graph with name {alias} already exists in this project.')
+                    )
 
         table_resources = await self._create_full_graph_def_v2_from_state_services(
             graph,
@@ -430,8 +440,7 @@ class GraphDriver:
         graph_service = self._require_graph_service()
         table_service = self._require_table_service()
 
-        existing_entry = await graph_service.get_graph_entry(
-            project_id, graph.fpid)
+        existing_entry = await graph_service.get_graph_entry(project_id, graph.fpid)
         await self._validate_graph_tables_for_creation(
             graph,
             project_id,
@@ -451,7 +460,8 @@ class GraphDriver:
             created_by_name=principal.user_name,
         )
         table_entries_map = await table_service.get_table_entries(
-            project_id, graph_entry.table_name_to_dbid.values())
+            project_id, graph_entry.table_name_to_dbid.values()
+        )
         table_entries = []
         for table_fpid in graph_entry.table_name_to_dbid.values():
             table_entry = table_entries_map.get(table_fpid)
@@ -459,7 +469,8 @@ class GraphDriver:
                 raise TableDoesNotExistError(table_fpid)
             table_entries.append(table_entry)
         return await self._table_driver._table_resource_responses_from_entries(
-            table_entries, fetch_column_stats=False)
+            table_entries, fetch_column_stats=False
+        )
 
     async def _validate_graph_tables_for_creation(
         self,
@@ -498,24 +509,29 @@ class GraphDriver:
 
         responses = await asyncio.gather(
             *(_validate(table_def) for table_def in graph.tables.values()),
-            return_exceptions=True)
+            return_exceptions=True,
+        )
         for response in responses:
             if isinstance(response, BaseException):
                 raise response
-        failures = [(str(table_name), response)
-                    for table_name, response in zip(graph.tables, responses)
-                    if response.errors]
+        failures = [
+            (str(table_name), response)
+            for table_name, response in zip(graph.tables, responses)
+            if response.errors
+        ]
         if failures:
             failures.sort(key=lambda failure: failure[0])
             errors = [
                 ValidationError(
                     title=f"Table '{table_name}': {error.title}",
                     message=error.message,
-                ) for table_name, response in failures
+                )
+                for table_name, response in failures
                 for error in response.errors
             ]
-            raise ValidationException(message=ValidationResponse(
-                errors=errors).error_message())
+            raise ValidationException(
+                message=ValidationResponse(errors=errors).error_message()
+            )
 
     async def delete_graph_alias(
         self,
@@ -531,10 +547,12 @@ class GraphDriver:
             fpid = None
         if fpid is not None:
             entry = await graph_service.clear_graph_alias_by_id(
-                ProjectID(project_id), fpid)
+                ProjectID(project_id), fpid
+            )
         else:
             entry = await graph_service.clear_graph_alias(
-                ProjectID(project_id), graph_id_or_alias)
+                ProjectID(project_id), graph_id_or_alias
+            )
         if entry is None:
             raise GraphDoesNotExistError(graph_id_or_alias)
         return str(GraphIDv2.public(entry.id))
@@ -554,12 +572,12 @@ class GraphDriver:
         if fpid is None:
             raise GraphDoesNotExistError(graph_id)
         graph_entry = await self._require_graph_service().get_graph_entry(
-            project_id, fpid)
+            project_id, fpid
+        )
         if graph_entry is None:
             raise GraphDoesNotExistError(graph_id)
 
-        execution_input = await self._get_graph_data_compute_input(
-            graph_id, project_id)
+        execution_input = await self._get_graph_data_compute_input(graph_id, project_id)
         await self._start_graph_refresh(execution_input)
 
     async def _start_graph_refresh(
@@ -640,12 +658,14 @@ class GraphDriver:
             await self._validate_graph_definition(graph_def, project_id)
         except Exception as e:
             # TODO(manan): fix the wide net here:
-            return ValidationResponse(errors=[
-                ValidationError(
-                    title="Graph Validation Failure",
-                    message=str(e),
-                )
-            ])
+            return ValidationResponse(
+                errors=[
+                    ValidationError(
+                        title='Graph Validation Failure',
+                        message=str(e),
+                    )
+                ]
+            )
         return ValidationResponse()
 
     async def get_edge_stats(
@@ -706,8 +726,7 @@ class GraphDriver:
         self,
         graph_fpid: FPID,
         project_id: ProjectID,
-    ) -> Tuple[List[ConnectorSpec], List[TableReferenceMetadata],
-               List[graph_api.Edge]]:
+    ) -> Tuple[List[ConnectorSpec], List[TableReferenceMetadata], List[graph_api.Edge]]:
         """
         Get graph metadata for SDK script generation.
 
@@ -721,8 +740,7 @@ class GraphDriver:
             Tuple containing connector specs, table metadata, and edges
         """
         await self._require_project_access(project_id)
-        return await self._get_graph_metadata_for_sdk_impl(
-            graph_fpid, project_id)
+        return await self._get_graph_metadata_for_sdk_impl(graph_fpid, project_id)
 
     async def _execution_refs_for_graph(
         self,
@@ -732,10 +750,12 @@ class GraphDriver:
         connector_service = self._require_connector_service()
         connector_ids = connector_service.connector_ids_for_graph(graph_def)
         return {
-            connector_id:
-            await connector_service.execution_ref_for_project(
-                _current_user_ctx.get(), project_id, connector_id,
-                CONNECTOR_GRAPH_ACTIONS)
+            connector_id: await connector_service.execution_ref_for_project(
+                _current_user_ctx.get(),
+                project_id,
+                connector_id,
+                CONNECTOR_GRAPH_ACTIONS,
+            )
             for connector_id in connector_ids
         }
 
@@ -796,10 +816,12 @@ class GraphDriver:
         graph_version_info: Optional[GraphDataVersionInfo] = None,
     ) -> EdgeHealthStats:
         """Implementation of get_edge_stats for SQL DB."""
-        data_compute_input = (await self._get_graph_data_compute_input(
-            graph_id, project_id))
+        data_compute_input = await self._get_graph_data_compute_input(
+            graph_id, project_id
+        )
         return await self._get_edge_stats_from_compute_input(
-            graph_id, data_compute_input, graph_version_info)
+            graph_id, data_compute_input, graph_version_info
+        )
 
     async def _get_edge_stats_from_compute_input(
         self,
@@ -807,12 +829,13 @@ class GraphDriver:
         data_compute_input: GraphDataComputeInput,
         graph_version_info: Optional[GraphDataVersionInfo] = None,
     ) -> EdgeHealthStats:
-        link_stats = await DataBackend.get_edge_stats(self._data_backend_ctx,
-                                                      data_compute_input,
-                                                      graph_version_info)
+        link_stats = await DataBackend.get_edge_stats(
+            self._data_backend_ctx, data_compute_input, graph_version_info
+        )
 
-        edge_stats = EdgeHealthStats(is_ready=link_stats is not None,
-                                     link_stats=link_stats)
+        edge_stats = EdgeHealthStats(
+            is_ready=link_stats is not None, link_stats=link_stats
+        )
 
         # Update table IDs for v2
         pquery_id, _ = GraphIDv2.parse(graph_id)
@@ -820,23 +843,23 @@ class GraphDriver:
             for edge in edge_stats.link_stats:
                 if edge.col_a:
                     edge.col_a.table_id = TableIDv2.update(
-                        TableIDv2(edge.col_a.table_id), pquery_id, False)
+                        TableIDv2(edge.col_a.table_id), pquery_id, False
+                    )
                 if edge.col_b:
                     edge.col_b.table_id = TableIDv2.update(
-                        TableIDv2(edge.col_b.table_id), pquery_id, False)
+                        TableIDv2(edge.col_b.table_id), pquery_id, False
+                    )
         return edge_stats
 
     async def _get_graph_sdk_metadata_from_state_services(
         self,
         graph_fpid: FPID,
         project_id: ProjectID,
-    ) -> Tuple[List[ConnectorSpec], List[TableReferenceMetadata],
-               List[graph_api.Edge]]:
+    ) -> Tuple[List[ConnectorSpec], List[TableReferenceMetadata], List[graph_api.Edge]]:
         graph_service = self._require_graph_service()
         table_service = self._require_table_service()
 
-        graph_entry = await graph_service.get_graph_entry(
-            project_id, graph_fpid)
+        graph_entry = await graph_service.get_graph_entry(project_id, graph_fpid)
         if graph_entry is None:
             raise GraphDoesNotExistError(GraphIDv2.compose(None, graph_fpid))
 
@@ -844,15 +867,17 @@ class GraphDriver:
         _assert_no_duplicate_tables(table_name_to_dbid)
 
         table_entries = await table_service.get_table_entries(
-            project_id, table_name_to_dbid.values())
-        connector_configs, table_configs = (
-            await self._get_many_table_configs_for_sdk_from_entries(
-                project_id,
-                table_name_to_dbid,
-                table_entries,
-            ))
-        edge_configs = get_edge_configs_for_sdk(graph_entry.col_groups,
-                                                table_configs)
+            project_id, table_name_to_dbid.values()
+        )
+        (
+            connector_configs,
+            table_configs,
+        ) = await self._get_many_table_configs_for_sdk_from_entries(
+            project_id,
+            table_name_to_dbid,
+            table_entries,
+        )
+        edge_configs = get_edge_configs_for_sdk(graph_entry.col_groups, table_configs)
         return connector_configs, table_configs, edge_configs
 
     async def _get_many_table_configs_for_sdk_from_entries(
@@ -881,7 +906,7 @@ class GraphDriver:
             table_def = table_entry.config
             table_id = TableIDv2.public(
                 pquery_id=None,
-                table_name=TableName("NA"),
+                table_name=TableName('NA'),
                 fpid=fpid,
             )
             connector_conf, src_tbl_conf = (
@@ -889,16 +914,17 @@ class GraphDriver:
                     table_entry,
                     table_id,
                     table_fpid_to_name_in_graph,
-                ))
+                )
+            )
 
             table_metadata = {
-                "cols": table_def.cols,
-                "pkey": table_def.pkey,
-                "time_col": table_def.time_col,
-                "end_time_col": table_def.end_time_col,
+                'cols': table_def.cols,
+                'pkey': table_def.pkey,
+                'time_col': table_def.time_col,
+                'end_time_col': table_def.end_time_col,
             }
             table_config = TableReferenceMetadata(
-                source_table_name=src_tbl_conf["table_name"],
+                source_table_name=src_tbl_conf['table_name'],
                 table_fpid=fpid,
                 table_config={
                     **src_tbl_conf,
@@ -914,29 +940,31 @@ class GraphDriver:
 
         for config in connector_confs_set:
             config_as_dict = dict(config)
-            if "connector_id" in config_as_dict:
-                connector_id = ConnectorID(config_as_dict["connector_id"])
-            elif "name" in config_as_dict:
-                connector_id = ConnectorID(config_as_dict["name"])
+            if 'connector_id' in config_as_dict:
+                connector_id = ConnectorID(config_as_dict['connector_id'])
+            elif 'name' in config_as_dict:
+                connector_id = ConnectorID(config_as_dict['name'])
             else:
-                raise ValueError(f"Connector with config {config_as_dict} does "
-                                 "not have a valied connector ID.")
-            connector = await self._require_connector_service(
-            ).source_table_connector_for_project(
+                raise ValueError(
+                    f'Connector with config {config_as_dict} does '
+                    'not have a valied connector ID.'
+                )
+            connector = await self._require_connector_service().source_table_connector_for_project(
                 project_id,
                 connector_id,
                 _current_user_ctx.get(),
             )
-            config_as_dict["connector_id"] = str(connector_id)
+            config_as_dict['connector_id'] = str(connector_id)
             if connector is None:
-                config_as_dict["is_project_upload"] = True
+                config_as_dict['is_project_upload'] = True
             else:
-                config_as_dict["lookup_name"] = connector.name
+                config_as_dict['lookup_name'] = connector.name
             connector_spec_arr.append(
                 ConnectorSpec(
                     connector_id=connector_id,
                     connector_config=config_as_dict,
-                ))
+                )
+            )
 
         return connector_spec_arr, table_confs
 
@@ -950,10 +978,11 @@ class GraphDriver:
             _, fpid = GraphIDv2.parse(graph_id)
             assert fpid is not None
         except BaseException:
-            raise ValueError(f"Table resource id is malformed: {graph_id}")
+            raise ValueError(f'Table resource id is malformed: {graph_id}')
 
         metadata = await self._get_graph_sdk_metadata_from_state_services(
-            fpid, project_id)
+            fpid, project_id
+        )
         connector_configs, table_configs, edge_configs = metadata
         final_script = generate_conn_graph_or_table_sdk_script(
             connector_configs,
@@ -967,9 +996,9 @@ class GraphDriver:
         self,
         graph_fpid: FPID,
         project_id: ProjectID,
-    ) -> Tuple[List[ConnectorSpec], List[TableReferenceMetadata],
-               List[graph_api.Edge]]:
+    ) -> Tuple[List[ConnectorSpec], List[TableReferenceMetadata], List[graph_api.Edge]]:
         """Implementation of get_graph_metadata_for_sdk for SQL DB."""
         metadata = await self._get_graph_sdk_metadata_from_state_services(
-            graph_fpid, project_id)
+            graph_fpid, project_id
+        )
         return metadata

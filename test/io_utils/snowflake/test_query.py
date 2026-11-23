@@ -22,9 +22,7 @@ def test_validation_error_omits_provider_row_value(caplog):
 
     canary = 'customer-row-value password=query-secret-canary'
     cursor = MagicMock()
-    cursor.description = [
-        SimpleNamespace(name='a', type_code=FIELD_NAME_TO_ID['TEXT'])
-    ]
+    cursor.description = [SimpleNamespace(name='a', type_code=FIELD_NAME_TO_ID['TEXT'])]
     cursor.fetchall.return_value = [([canary],)]
 
     with pytest.raises(ValueError) as exc_info:
@@ -50,7 +48,7 @@ def test_simple_schema(patched_session):
 
     with get_fsutil_session().connection.cursor() as cur:
         content = 'some_text'
-        cur.execute(f"SELECT '{content}' AS \"a\"")
+        cur.execute(f'SELECT \'{content}\' AS "a"')
         res = SnowflakeQuery._get_result(cur, Response)
         assert len(res) == 1
         assert res[0].a == content

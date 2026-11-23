@@ -80,33 +80,27 @@ class IdentityAuthenticationCategory(str, Enum):
 
 
 _IDENTITY_AUTHENTICATION_CATEGORY_MESSAGES = {
-    IdentityAuthenticationCategory.EXCHANGE_DISABLED:
-    'Google workload exchange is disabled for this deployment.',
-    IdentityAuthenticationCategory.SOURCE_UNAVAILABLE:
-    'The deployment Google workload credential is unavailable.',
-    IdentityAuthenticationCategory.DISALLOWED_SOURCE:
-    'The deployment Google credential source is not an approved workload '
+    IdentityAuthenticationCategory.EXCHANGE_DISABLED: 'Google workload exchange is disabled for this deployment.',
+    IdentityAuthenticationCategory.SOURCE_UNAVAILABLE: 'The deployment Google workload credential is unavailable.',
+    IdentityAuthenticationCategory.DISALLOWED_SOURCE: 'The deployment Google credential source is not an approved workload '
     'credential.',
-    IdentityAuthenticationCategory.IMPERSONATION_DENIED:
-    'Google service-account impersonation was denied or unavailable.',
-    IdentityAuthenticationCategory.S3_VALIDATION_FAILED:
-    'The stored S3 access key or connection settings are invalid.',
-    IdentityAuthenticationCategory.STORED_KEY_INVALID:
-    'The stored Google service-account key is invalid.',
+    IdentityAuthenticationCategory.IMPERSONATION_DENIED: 'Google service-account impersonation was denied or unavailable.',
+    IdentityAuthenticationCategory.S3_VALIDATION_FAILED: 'The stored S3 access key or connection settings are invalid.',
+    IdentityAuthenticationCategory.STORED_KEY_INVALID: 'The stored Google service-account key is invalid.',
 }
 
 
 class IdentityAuthenticationCategoryError(WorkloadExchangeConfigurationError):
     """Trusted, fixed authentication category safe for public boundaries."""
+
     def __init__(self, category: IdentityAuthenticationCategory) -> None:
         self.category = category
         super().__init__(_IDENTITY_AUTHENTICATION_CATEGORY_MESSAGES[category])
 
 
-_GOOGLE_CLOUD_PLATFORM_SCOPE = (
-    'https://www.googleapis.com/auth/cloud-platform')
-_GOOGLE_GCS_SCOPE = ('https://www.googleapis.com/auth/devstorage.read_write')
-_GOOGLE_SERVICE_ACCOUNT_AUTH_URI = ('https://accounts.google.com/o/oauth2/auth')
+_GOOGLE_CLOUD_PLATFORM_SCOPE = 'https://www.googleapis.com/auth/cloud-platform'
+_GOOGLE_GCS_SCOPE = 'https://www.googleapis.com/auth/devstorage.read_write'
+_GOOGLE_SERVICE_ACCOUNT_AUTH_URI = 'https://accounts.google.com/o/oauth2/auth'
 _GOOGLE_SERVICE_ACCOUNT_TOKEN_URI = 'https://oauth2.googleapis.com/token'
 _GOOGLE_SERVICE_ACCOUNT_UNIVERSE_DOMAIN = 'googleapis.com'
 # Coalesce one connector fanout while bounding stale role attestation.
@@ -114,8 +108,9 @@ _AMBIENT_AWS_ATTESTATION_TTL_SECONDS = 60.0
 
 
 def is_ambient_s3_identity(config: IdentityConfig) -> bool:
-    return (isinstance(config, S3IdentityConfig)
-            and isinstance(config.authentication, S3AmbientAuthentication))
+    return isinstance(config, S3IdentityConfig) and isinstance(
+        config.authentication, S3AmbientAuthentication
+    )
 
 
 def require_ambient_s3_workload_config():
@@ -125,13 +120,15 @@ def require_ambient_s3_workload_config():
     config = deploy_env().ambient_s3
     if config is None:
         raise WorkloadExchangeConfigurationError(
-            'Ambient S3 workload identity is disabled')
+            'Ambient S3 workload identity is disabled'
+        )
     return config
 
 
 def is_ambient_gcp_identity(config: IdentityConfig) -> bool:
-    return (isinstance(config, (BigQueryIdentityConfig, GCSIdentityConfig))
-            and isinstance(config.authentication, GoogleAmbientAuthentication))
+    return isinstance(
+        config, (BigQueryIdentityConfig, GCSIdentityConfig)
+    ) and isinstance(config.authentication, GoogleAmbientAuthentication)
 
 
 def require_ambient_gcp_workload_config():
@@ -141,41 +138,45 @@ def require_ambient_gcp_workload_config():
     config = deploy_env().ambient_gcp
     if config is None:
         raise WorkloadExchangeConfigurationError(
-            'Ambient GCP workload identity is disabled')
+            'Ambient GCP workload identity is disabled'
+        )
     return config
 
 
-def _approved_ambient_role(caller_arn: str,
-                           approved_role_arns: tuple[str, ...]) -> str:
+def _approved_ambient_role(caller_arn: str, approved_role_arns: tuple[str, ...]) -> str:
     """Map an STS assumed-role ARN to exactly one approved IAM role ARN."""
     parts = caller_arn.split(':', 5)
     if len(parts) != 6 or parts[0] != 'arn':
         raise WorkloadExchangeConfigurationError(
-            'AWS workload caller did not return a valid ARN')
-    partition, service, account_id, resource = (parts[1], parts[2], parts[4],
-                                                parts[5])
+            'AWS workload caller did not return a valid ARN'
+        )
+    partition, service, account_id, resource = (parts[1], parts[2], parts[4], parts[5])
     if service == 'iam' and resource.startswith('role/'):
         if caller_arn in approved_role_arns:
             return caller_arn
         raise WorkloadExchangeConfigurationError(
-            'AWS workload role is not approved for ambient S3')
+            'AWS workload role is not approved for ambient S3'
+        )
     if service != 'sts' or not resource.startswith('assumed-role/'):
         raise WorkloadExchangeConfigurationError(
-            'AWS workload caller is not an IAM role session')
+            'AWS workload caller is not an IAM role session'
+        )
     role_parts = resource.split('/')
     if len(role_parts) != 3 or not role_parts[1] or not role_parts[2]:
         raise WorkloadExchangeConfigurationError(
-            'AWS workload assumed-role ARN is malformed')
+            'AWS workload assumed-role ARN is malformed'
+        )
     role_name = role_parts[1]
-    iam_role_arn = (f'arn:{partition}:iam::{account_id}:role/{role_name}')
+    iam_role_arn = f'arn:{partition}:iam::{account_id}:role/{role_name}'
     if iam_role_arn not in approved_role_arns:
         raise WorkloadExchangeConfigurationError(
-            'AWS workload role is not approved for ambient S3')
+            'AWS workload role is not approved for ambient S3'
+        )
     return iam_role_arn
 
 
 def _ambient_aws_credentials(
-    approved_role_arns: tuple[str, ...]
+    approved_role_arns: tuple[str, ...],
 ) -> AWSAmbientCredentials:
     """Resolve and attest only an AWS workload-role credential provider."""
     import boto3
@@ -186,18 +187,20 @@ def _ambient_aws_credentials(
     if source is None or source_method not in AWS_WORKLOAD_CREDENTIAL_METHODS:
         raise WorkloadExchangeConfigurationError(
             'Ambient S3 requires web-identity, container-role, or '
-            'instance-role credentials')
+            'instance-role credentials'
+        )
     caller = session.client('sts').get_caller_identity()
     caller_arn = caller.get('Arn') if isinstance(caller, dict) else None
     if not isinstance(caller_arn, str):
         raise WorkloadExchangeConfigurationError(
-            'AWS workload role attestation did not return an ARN')
-    approved_role_arn = _approved_ambient_role(caller_arn,
-                                               approved_role_arns)
+            'AWS workload role attestation did not return an ARN'
+        )
+    approved_role_arn = _approved_ambient_role(caller_arn, approved_role_arns)
     frozen = source.get_frozen_credentials()
     if not (frozen.access_key and frozen.secret_key and frozen.token):
         raise WorkloadExchangeConfigurationError(
-            'AWS workload role did not provide temporary session credentials')
+            'AWS workload role did not provide temporary session credentials'
+        )
     return AWSAmbientCredentials(
         session=session,
         approved_role_arn=approved_role_arn,
@@ -205,7 +208,7 @@ def _ambient_aws_credentials(
 
 
 def _gcloud_cli_user_credentials(
-    scopes: list[str]
+    scopes: list[str],
 ) -> tuple['google.auth.credentials.Credentials', Optional[str]]:
     """Build refreshable dev credentials from the active gcloud profile.
 
@@ -225,31 +228,26 @@ def _gcloud_cli_user_credentials(
         del request, scopes
         try:
             result = subprocess.run(
-                [
-                    'gcloud', 'auth', 'print-access-token', '--quiet',
-                    '--format=json'
-                ],
+                ['gcloud', 'auth', 'print-access-token', '--quiet', '--format=json'],
                 capture_output=True,
                 check=False,
                 text=True,
                 timeout=30,
             )
-            document = json.loads(
-                result.stdout) if result.returncode == 0 else {}
-            token = document.get('token') if isinstance(document,
-                                                        dict) else None
+            document = json.loads(result.stdout) if result.returncode == 0 else {}
+            token = document.get('token') if isinstance(document, dict) else None
             if not isinstance(token, str) or not token:
                 raise ValueError('missing token')
         except Exception:
             raise RefreshError(
                 'The active gcloud developer login is unavailable. Run '
-                '`gcloud auth login`.') from None
+                '`gcloud auth login`.'
+            ) from None
         # gcloud user access tokens normally live much longer than this. A
         # deliberately short local cache keeps long-running Temporal jobs
         # refreshable without relying on undocumented gcloud expiry metadata.
         # google-auth's refresh-handler contract currently expects naive UTC.
-        expiry = (datetime.now(timezone.utc).replace(tzinfo=None) +
-                  timedelta(minutes=5))
+        expiry = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(minutes=5)
         return token, expiry
 
     try:
@@ -273,8 +271,7 @@ def _gcloud_cli_user_credentials(
     ), project
 
 
-def _ambient_google_credentials(
-        config: IdentityConfig) -> 'GoogleCloudCredentials':
+def _ambient_google_credentials(config: IdentityConfig) -> 'GoogleCloudCredentials':
     """Resolve the deployment's ambient Google credential.
 
     Workload deployments accept only a compute or external-account credential
@@ -302,21 +299,26 @@ def _ambient_google_credentials(
     except Exception:
         if not allow_user_credentials:
             raise IdentityAuthenticationCategoryError(
-                IdentityAuthenticationCategory.SOURCE_UNAVAILABLE) from None
+                IdentityAuthenticationCategory.SOURCE_UNAVAILABLE
+            ) from None
         try:
             source, project = _gcloud_cli_user_credentials(scopes)
         except Exception:
             raise IdentityAuthenticationCategoryError(
-                IdentityAuthenticationCategory.SOURCE_UNAVAILABLE) from None
+                IdentityAuthenticationCategory.SOURCE_UNAVAILABLE
+            ) from None
     workload_source = isinstance(
-        source, (external_account.Credentials, compute_engine.Credentials))
+        source, (external_account.Credentials, compute_engine.Credentials)
+    )
     user_source = isinstance(source, oauth2_credentials.Credentials)
     if not workload_source and not (allow_user_credentials and user_source):
         raise IdentityAuthenticationCategoryError(
-            IdentityAuthenticationCategory.DISALLOWED_SOURCE)
+            IdentityAuthenticationCategory.DISALLOWED_SOURCE
+        )
     if workload_source and policy is None:
         raise WorkloadExchangeConfigurationError(
-            'Ambient GCP workload identity is disabled')
+            'Ambient GCP workload identity is disabled'
+        )
     try:
         # Refreshing attests that either credential chain is currently usable.
         # For workload credentials it also populates the service-account email
@@ -324,7 +326,8 @@ def _ambient_google_credentials(
         source.refresh(Request())
     except Exception:
         raise IdentityAuthenticationCategoryError(
-            IdentityAuthenticationCategory.SOURCE_UNAVAILABLE) from None
+            IdentityAuthenticationCategory.SOURCE_UNAVAILABLE
+        ) from None
     if user_source:
         return GoogleCloudCredentials(
             provider=_google_provider(config),
@@ -338,15 +341,14 @@ def _ambient_google_credentials(
     if not isinstance(email, str) or '@' not in email:
         raise WorkloadExchangeConfigurationError(
             'Ambient GCP workload identity did not resolve a concrete '
-            'service-account email')
+            'service-account email'
+        )
     email = email.strip().lower()
-    approved = {
-        item.strip().lower()
-        for item in policy.approved_service_account_emails
-    }
+    approved = {item.strip().lower() for item in policy.approved_service_account_emails}
     if email not in approved:
         raise WorkloadExchangeConfigurationError(
-            'Ambient GCP service account is not approved for this deployment')
+            'Ambient GCP service account is not approved for this deployment'
+        )
     return GoogleCloudCredentials(
         provider=_google_provider(config),
         credential=source,
@@ -398,8 +400,7 @@ class WorkloadIdentityExchanger(Protocol):
         self,
         config: IdentityConfig,
         credentials: Optional[IdentityCredentials],
-    ) -> Credentials:
-        ...
+    ) -> Credentials: ...
 
 
 def _require_exchange_enabled(provider: str) -> None:
@@ -407,7 +408,8 @@ def _require_exchange_enabled(provider: str) -> None:
     if os.getenv(variable, '').lower() not in ('1', 'true', 'yes'):
         raise WorkloadExchangeConfigurationError(
             f'{provider.upper()} workload exchange is not configured; set '
-            f'{variable}=true and configure the deployment workload issuer')
+            f'{variable}=true and configure the deployment workload issuer'
+        )
 
 
 def ambient_adls_identity_config() -> Optional[ADLSIdentityConfig]:
@@ -420,19 +422,23 @@ def ambient_adls_identity_config() -> Optional[ADLSIdentityConfig]:
     client_id = os.getenv('AZURE_CLIENT_ID', '').strip()
     authority = os.getenv('AZURE_AUTHORITY_HOST', '').strip()
     missing = [
-        name for name, value in (
+        name
+        for name, value in (
             ('AZURE_TENANT_ID', tenant_id),
             ('AZURE_CLIENT_ID', client_id),
             ('AZURE_AUTHORITY_HOST', authority),
-        ) if not value
+        )
+        if not value
     ]
     if missing:
         raise WorkloadExchangeConfigurationError(
             'Azure workload exchange is enabled but AKS did not inject '
-            + ', '.join(missing))
+            + ', '.join(missing)
+        )
 
     authority_host = urlsplit(
-        authority if '://' in authority else f'https://{authority}').hostname
+        authority if '://' in authority else f'https://{authority}'
+    ).hostname
     clouds = {
         'login.microsoftonline.com': AzureCloud.PUBLIC,
         'login.microsoftonline.us': AzureCloud.US_GOVERNMENT,
@@ -460,8 +466,11 @@ def _google_provider(config: IdentityConfig) -> str:
 
 
 def _google_scope(config: IdentityConfig) -> str:
-    return (_GOOGLE_CLOUD_PLATFORM_SCOPE if isinstance(
-        config, BigQueryIdentityConfig) else _GOOGLE_GCS_SCOPE)
+    return (
+        _GOOGLE_CLOUD_PLATFORM_SCOPE
+        if isinstance(config, BigQueryIdentityConfig)
+        else _GOOGLE_GCS_SCOPE
+    )
 
 
 def _google_service_account_info(
@@ -475,18 +484,17 @@ def _google_service_account_info(
     }
     for field_name, expected in canonical.items():
         if getattr(authentication, field_name).strip() != expected:
-            raise ValueError(
-                f'Google service-account {field_name} is not canonical')
+            raise ValueError(f'Google service-account {field_name} is not canonical')
     private_key_id = credentials.private_key_id.get_secret_value().strip()
     private_key = credentials.private_key.get_secret_value()
     if not private_key_id:
         raise ValueError('Google service-account key ID is required')
     try:
-        serialization.load_pem_private_key(private_key.encode('utf-8'),
-                                           password=None)
+        serialization.load_pem_private_key(private_key.encode('utf-8'), password=None)
     except (TypeError, ValueError):
         raise ValueError(
-            'Google service-account private key is not valid PEM') from None
+            'Google service-account private key is not valid PEM'
+        ) from None
     return {
         'type': 'service_account',
         'project_id': authentication.project_id,
@@ -523,24 +531,29 @@ def _validate_s3_access_key(
     from botocore.exceptions import ClientError
 
     connection_config = config.connection
-    endpoint_url = (connection_config.endpoint_url
-                    if connection_config else None)
+    endpoint_url = connection_config.endpoint_url if connection_config else None
     connection = S3Connection(
         endpoint_url=endpoint_url,
-        region=((connection_config.region if connection_config else None)
-                or runtime.region),
-        addressing_style=(connection_config.addressing_style.value
-                          if connection_config else 'auto'),
+        region=(
+            (connection_config.region if connection_config else None) or runtime.region
+        ),
+        addressing_style=(
+            connection_config.addressing_style.value if connection_config else 'auto'
+        ),
         credential_secret_name='',
         access_key=runtime.access_key_id.get_secret_value(),
         secret_key=runtime.secret_access_key.get_secret_value(),
-        session_token=(runtime.session_token.get_secret_value()
-                       if runtime.session_token else None),
+        session_token=(
+            runtime.session_token.get_secret_value() if runtime.session_token else None
+        ),
         ca_bundle_path=None,
         send_bucket_owner_full_control=endpoint_url is None,
         owner='identity-validation',
-        ca_certificate=(submitted.ca_certificate.get_secret_value()
-                        if submitted.ca_certificate else None),
+        ca_certificate=(
+            submitted.ca_certificate.get_secret_value()
+            if submitted.ca_certificate
+            else None
+        ),
     )
     request_config = connection.boto_config.merge(
         Config(
@@ -550,7 +563,8 @@ def _validate_s3_access_key(
                 'mode': 'standard',
                 'total_max_attempts': 1,
             },
-        ))
+        )
+    )
     try:
         client = boto3.client(
             's3',
@@ -571,23 +585,28 @@ def _validate_s3_access_key(
         if code == 'AccessDenied':
             return
         raise IdentityAuthenticationCategoryError(
-            IdentityAuthenticationCategory.S3_VALIDATION_FAILED) from None
+            IdentityAuthenticationCategory.S3_VALIDATION_FAILED
+        ) from None
     except Exception:
         # Endpoint, TLS/CA, timeout, and transport errors are intentionally
         # collapsed so provider responses cannot disclose submitted secrets.
         raise IdentityAuthenticationCategoryError(
-            IdentityAuthenticationCategory.S3_VALIDATION_FAILED) from None
+            IdentityAuthenticationCategory.S3_VALIDATION_FAILED
+        ) from None
 
 
 class NativeWorkloadIdentityExchanger:
     """Exchange the explicitly configured deployment workload identity."""
+
     def __init__(self) -> None:
         self._ambient_aws_lock = threading.Lock()
-        self._ambient_aws_cache: Optional[tuple[
-            tuple[str, ...],
-            float,
-            AWSAmbientCredentials,
-        ]] = None
+        self._ambient_aws_cache: Optional[
+            tuple[
+                tuple[str, ...],
+                float,
+                AWSAmbientCredentials,
+            ]
+        ] = None
 
     def _cached_ambient_aws_credentials(self) -> AWSAmbientCredentials:
         policy = require_ambient_s3_workload_config()
@@ -620,21 +639,21 @@ class NativeWorkloadIdentityExchanger:
             if isinstance(config.authentication, S3AmbientAuthentication):
                 if credentials is not None:
                     raise WorkloadExchangeConfigurationError(
-                        'Ambient S3 identities cannot store credentials')
+                        'Ambient S3 identities cannot store credentials'
+                    )
                 return self._cached_ambient_aws_credentials()
             if isinstance(config.authentication, S3AccessKeyAuthentication):
                 if not isinstance(credentials, S3AccessKeyCredentials):
                     raise WorkloadExchangeConfigurationError(
-                        'S3 access-key credentials are required')
+                        'S3 access-key credentials are required'
+                    )
                 return AWSAccessKeyCredentials(
                     access_key_id=credentials.access_key_id,
                     secret_access_key=credentials.secret_access_key,
                     session_token=credentials.session_token,
-                    region=(config.connection.region
-                            if config.connection else None),
+                    region=(config.connection.region if config.connection else None),
                 )
-            if not isinstance(config.authentication,
-                              S3AssumeRoleAuthentication):
+            if not isinstance(config.authentication, S3AssumeRoleAuthentication):
                 raise TypeError('Unsupported S3 identity authentication mode')
             _require_exchange_enabled('aws')
             import boto3
@@ -643,23 +662,22 @@ class NativeWorkloadIdentityExchanger:
             source = session.get_credentials()
             source_method = getattr(source, 'method', None)
             if source is None or source_method not in {
-                    'assume-role-with-web-identity',
-                    'container-role',
-                    'iam-role',
+                'assume-role-with-web-identity',
+                'container-role',
+                'iam-role',
             }:
                 raise WorkloadExchangeConfigurationError(
                     'AWS workload exchange requires an instance, container, '
                     'or web-identity role as its source; static keys and '
-                    'developer credentials are not permitted')
+                    'developer credentials are not permitted'
+                )
             args = {
                 'RoleArn': config.authentication.role_arn,
                 'RoleSessionName': 'kumo-project-connector',
             }
             if isinstance(credentials, S3AssumeRoleCredentials):
                 if credentials.external_id:
-                    args[
-                        'ExternalId'] = credentials.external_id.get_secret_value(
-                        )
+                    args['ExternalId'] = credentials.external_id.get_secret_value()
             response = session.client('sts').assume_role(**args)
             exchanged = response['Credentials']
             return AWSFederatedCredentials(
@@ -672,22 +690,23 @@ class NativeWorkloadIdentityExchanger:
             if isinstance(authentication, GoogleAmbientAuthentication):
                 if credentials is not None:
                     raise WorkloadExchangeConfigurationError(
-                        'Google ambient identities cannot store credentials')
+                        'Google ambient identities cannot store credentials'
+                    )
                 # Ambient GCP: use the deployment's own Workload Identity
                 # service account DIRECTLY, with no impersonation and no key.
                 return _ambient_google_credentials(config)
-            if not isinstance(authentication,
-                              GoogleWorkloadIdentityAuthentication):
-                raise TypeError(
-                    'Google key identities do not use workload exchange')
+            if not isinstance(authentication, GoogleWorkloadIdentityAuthentication):
+                raise TypeError('Google key identities do not use workload exchange')
             if credentials is not None:
                 raise WorkloadExchangeConfigurationError(
-                    'Google workload identities cannot store credentials')
+                    'Google workload identities cannot store credentials'
+                )
             try:
                 _require_exchange_enabled('gcp')
             except WorkloadExchangeConfigurationError:
                 raise IdentityAuthenticationCategoryError(
-                    IdentityAuthenticationCategory.EXCHANGE_DISABLED) from None
+                    IdentityAuthenticationCategory.EXCHANGE_DISABLED
+                ) from None
             import google.auth
             from google.auth import (
                 compute_engine,
@@ -697,17 +716,20 @@ class NativeWorkloadIdentityExchanger:
 
             try:
                 source, project = google.auth.default(
-                    scopes=[_GOOGLE_CLOUD_PLATFORM_SCOPE])
+                    scopes=[_GOOGLE_CLOUD_PLATFORM_SCOPE]
+                )
             except Exception:
                 raise IdentityAuthenticationCategoryError(
-                    IdentityAuthenticationCategory.SOURCE_UNAVAILABLE) from None
+                    IdentityAuthenticationCategory.SOURCE_UNAVAILABLE
+                ) from None
             source_types = (
                 external_account.Credentials,
                 compute_engine.Credentials,
             )
             if not isinstance(source, source_types):
                 raise IdentityAuthenticationCategoryError(
-                    IdentityAuthenticationCategory.DISALLOWED_SOURCE)
+                    IdentityAuthenticationCategory.DISALLOWED_SOURCE
+                )
             try:
                 exchanged = impersonated_credentials.Credentials(
                     source_credentials=source,
@@ -734,10 +756,11 @@ class NativeWorkloadIdentityExchanger:
             token_file_path = os.getenv('AZURE_FEDERATED_TOKEN_FILE')
             if not token_file_path:
                 raise WorkloadExchangeConfigurationError(
-                    'Azure workload exchange requires '
-                    'AZURE_FEDERATED_TOKEN_FILE')
-            endpoint_suffix, token_scope, authority_name = (
-                _azure_cloud_settings(config.cloud))
+                    'Azure workload exchange requires AZURE_FEDERATED_TOKEN_FILE'
+                )
+            endpoint_suffix, token_scope, authority_name = _azure_cloud_settings(
+                config.cloud
+            )
             exchanged = WorkloadIdentityCredential(
                 tenant_id=config.tenant_id,
                 client_id=config.client_id,
@@ -745,10 +768,8 @@ class NativeWorkloadIdentityExchanger:
                 authority=getattr(AzureAuthorityHosts, authority_name),
             )
             exchanged.get_token(token_scope)
-            return AzureFederatedCredentials(exchanged,
-                                             endpoint_suffix=endpoint_suffix)
-        raise TypeError(
-            f'Identity {type(config)} does not use workload exchange')
+            return AzureFederatedCredentials(exchanged, endpoint_suffix=endpoint_suffix)
+        raise TypeError(f'Identity {type(config)} does not use workload exchange')
 
 
 def _normalized_host(host: str) -> str:
@@ -756,22 +777,23 @@ def _normalized_host(host: str) -> str:
     if '://' not in value:
         value = f'https://{value}'
     parsed = urlsplit(value)
-    return urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(),
-                       parsed.path.rstrip('/'), '', ''))
+    return urlunsplit(
+        (parsed.scheme.lower(), parsed.netloc.lower(), parsed.path.rstrip('/'), '', '')
+    )
 
 
 def _validate_s3_connection_policy(config: S3IdentityConfig) -> None:
     connection = config.connection
     if connection is None or connection.endpoint_url is None:
         return
-    if (urlsplit(connection.endpoint_url).scheme == 'http'
-            and deploy_stage() not in {
-                DeployStage.DEV,
-                DeployStage.DEV_LOCAL,
-                DeployStage.TEST,
-            }):
+    if urlsplit(connection.endpoint_url).scheme == 'http' and deploy_stage() not in {
+        DeployStage.DEV,
+        DeployStage.DEV_LOCAL,
+        DeployStage.TEST,
+    }:
         raise WorkloadExchangeConfigurationError(
-            'S3-compatible endpoints must use HTTPS in this deployment')
+            'S3-compatible endpoints must use HTTPS in this deployment'
+        )
 
 
 def identity_key(
@@ -779,20 +801,28 @@ def identity_key(
     credentials: Optional[IdentityCredentials] = None,
 ) -> str:
     if isinstance(config, DatabricksIdentityConfig):
-        return (f'databricks:{_normalized_host(config.host)}:'
-                f'{config.client_id.strip().lower()}')
+        return (
+            f'databricks:{_normalized_host(config.host)}:'
+            f'{config.client_id.strip().lower()}'
+        )
     if isinstance(config, SnowflakeIdentityConfig):
-        return (f'snowflake:{config.account.strip().lower()}:'
-                f'{config.username.strip().upper()}:'
-                f'{config.authentication.value}')
+        return (
+            f'snowflake:{config.account.strip().lower()}:'
+            f'{config.username.strip().upper()}:'
+            f'{config.authentication.value}'
+        )
     if isinstance(config, BigQueryIdentityConfig):
         authentication = config.authentication
         if isinstance(authentication, GoogleServiceAccountKeyAuthentication):
-            return ('bigquery:service_account_key:'
-                    f'{authentication.client_email.strip().lower()}')
+            return (
+                'bigquery:service_account_key:'
+                f'{authentication.client_email.strip().lower()}'
+            )
         if isinstance(authentication, GoogleWorkloadIdentityAuthentication):
-            return ('bigquery:workload_identity:'
-                    f'{authentication.service_account_email.strip().lower()}')
+            return (
+                'bigquery:workload_identity:'
+                f'{authentication.service_account_email.strip().lower()}'
+            )
         if isinstance(authentication, GoogleAmbientAuthentication):
             return 'bigquery:ambient'
         raise TypeError('Unsupported BigQuery authentication mode')
@@ -800,15 +830,20 @@ def identity_key(
         if isinstance(config.authentication, S3AmbientAuthentication):
             return 's3:ambient'
         if isinstance(config.authentication, S3AssumeRoleAuthentication):
-            return (f's3:{config.authentication.partition.strip().lower()}:'
-                    f'{config.authentication.role_arn.strip().lower()}')
+            return (
+                f's3:{config.authentication.partition.strip().lower()}:'
+                f'{config.authentication.role_arn.strip().lower()}'
+            )
         if isinstance(config.authentication, S3AccessKeyAuthentication):
             if not isinstance(credentials, S3AccessKeyCredentials):
                 raise ValueError(
-                    'S3 access-key credentials are required for identity key')
-            endpoint_url = (config.connection.endpoint_url
-                            if config.connection
-                            and config.connection.endpoint_url else '')
+                    'S3 access-key credentials are required for identity key'
+                )
+            endpoint_url = (
+                config.connection.endpoint_url
+                if config.connection and config.connection.endpoint_url
+                else ''
+            )
             access_key_id = credentials.access_key_id.get_secret_value().strip()
             digest = CredentialsEncryptor().s3_access_key_fingerprint(
                 endpoint_url,
@@ -819,18 +854,23 @@ def identity_key(
     if isinstance(config, GCSIdentityConfig):
         authentication = config.authentication
         if isinstance(authentication, GoogleServiceAccountKeyAuthentication):
-            return ('gcs:service_account_key:'
-                    f'{authentication.client_email.strip().lower()}')
+            return (
+                f'gcs:service_account_key:{authentication.client_email.strip().lower()}'
+            )
         if isinstance(authentication, GoogleWorkloadIdentityAuthentication):
-            return ('gcs:workload_identity:'
-                    f'{authentication.service_account_email.strip().lower()}')
+            return (
+                'gcs:workload_identity:'
+                f'{authentication.service_account_email.strip().lower()}'
+            )
         if isinstance(authentication, GoogleAmbientAuthentication):
             return 'gcs:ambient'
         raise TypeError('Unsupported GCS authentication mode')
     if isinstance(config, ADLSIdentityConfig):
-        return (f'adls:{config.tenant_id.strip().lower()}:'
-                f'{config.client_id.strip().lower()}:'
-                f'{config.cloud.strip().lower()}')
+        return (
+            f'adls:{config.tenant_id.strip().lower()}:'
+            f'{config.client_id.strip().lower()}:'
+            f'{config.cloud.strip().lower()}'
+        )
     raise TypeError(f'Unsupported identity config: {type(config)}')
 
 
@@ -839,22 +879,25 @@ def credentials_for_identity(
     credentials: Optional[IdentityCredentials],
     exchanger: WorkloadIdentityExchanger,
 ) -> Credentials:
-    if (isinstance(config, DatabricksIdentityConfig)
-            and isinstance(credentials, DatabricksOAuthCredentials)):
+    if isinstance(config, DatabricksIdentityConfig) and isinstance(
+        credentials, DatabricksOAuthCredentials
+    ):
         return DatabricksCredentials(
             client_id=SecretStr(config.client_id),
             client_secret=credentials.client_secret,
             pat=SecretStr(''),
         )
     if isinstance(config, SnowflakeIdentityConfig):
-        if (config.authentication == SnowflakeAuthenticationKind.PASSWORD
-                and isinstance(credentials, SnowflakePasswordCredentials)):
+        if config.authentication == SnowflakeAuthenticationKind.PASSWORD and isinstance(
+            credentials, SnowflakePasswordCredentials
+        ):
             return UsernamePassword(
                 username=SecretStr(config.username),
                 password=credentials.password,
             )
-        if (config.authentication == SnowflakeAuthenticationKind.KEY_PAIR
-                and isinstance(credentials, SnowflakeKeyPairCredentials)):
+        if config.authentication == SnowflakeAuthenticationKind.KEY_PAIR and isinstance(
+            credentials, SnowflakeKeyPairCredentials
+        ):
             return KeyPair(
                 user=SecretStr(config.username),
                 private_key=credentials.private_key,
@@ -862,28 +905,33 @@ def credentials_for_identity(
             )
     if isinstance(config, (BigQueryIdentityConfig, GCSIdentityConfig)):
         authentication = config.authentication
-        if (isinstance(authentication, GoogleServiceAccountKeyAuthentication)
-                and isinstance(credentials,
-                               GoogleServiceAccountKeyCredentials)):
+        if isinstance(
+            authentication, GoogleServiceAccountKeyAuthentication
+        ) and isinstance(credentials, GoogleServiceAccountKeyCredentials):
             try:
                 info = _google_service_account_info(authentication, credentials)
                 google_credentials = (
                     service_account.Credentials.from_service_account_info(
                         info,
                         scopes=[_google_scope(config)],
-                    ))
+                    )
+                )
             except Exception:
                 raise IdentityAuthenticationCategoryError(
-                    IdentityAuthenticationCategory.STORED_KEY_INVALID) from None
+                    IdentityAuthenticationCategory.STORED_KEY_INVALID
+                ) from None
             return GoogleCloudCredentials(
                 provider=_google_provider(config),
                 credential=google_credentials,
                 project=authentication.project_id,
             )
-        if (isinstance(
+        if (
+            isinstance(
                 authentication,
-            (GoogleWorkloadIdentityAuthentication, GoogleAmbientAuthentication))
-                and credentials is None):
+                (GoogleWorkloadIdentityAuthentication, GoogleAmbientAuthentication),
+            )
+            and credentials is None
+        ):
             return exchanger.exchange(config, credentials)
         raise ValueError('Google identity config and credentials do not match')
     if isinstance(config, (S3IdentityConfig, ADLSIdentityConfig)):
@@ -904,39 +952,51 @@ def compose_resolved_connector_spec(
     if str(connector.id) != connector.config.name:
         raise ValueError('Connector ID and runtime config name must match')
 
-    runtime_credentials = credentials_for_identity(identity.config, credentials,
-                                                   exchanger)
-    if isinstance(runtime_credentials,
-                  (AWSFederatedCredentials, AWSAmbientCredentials,
-                   AWSAccessKeyCredentials)):
+    runtime_credentials = credentials_for_identity(
+        identity.config, credentials, exchanger
+    )
+    if isinstance(
+        runtime_credentials,
+        (AWSFederatedCredentials, AWSAmbientCredentials, AWSAccessKeyCredentials),
+    ):
         runtime_credentials = replace(
             runtime_credentials,
             region=getattr(connector.config, 'region', None),
         )
-        connection_config = (identity.config.connection if isinstance(
-            identity.config, S3IdentityConfig) else None)
-        endpoint_url = (connection_config.endpoint_url
-                        if connection_config else None)
-        region = ((connection_config.region if connection_config else None)
-                  or runtime_credentials.region)
+        connection_config = (
+            identity.config.connection
+            if isinstance(identity.config, S3IdentityConfig)
+            else None
+        )
+        endpoint_url = connection_config.endpoint_url if connection_config else None
+        region = (
+            connection_config.region if connection_config else None
+        ) or runtime_credentials.region
         if connection_config is not None and isinstance(
-                runtime_credentials,
-                (AWSFederatedCredentials, AWSAccessKeyCredentials)):
+            runtime_credentials, (AWSFederatedCredentials, AWSAccessKeyCredentials)
+        ):
             access_key = runtime_credentials.access_key_id.get_secret_value()
-            secret_key = (
-                runtime_credentials.secret_access_key.get_secret_value())
-            session_token = (runtime_credentials.session_token.get_secret_value()
-                             if runtime_credentials.session_token else None)
+            secret_key = runtime_credentials.secret_access_key.get_secret_value()
+            session_token = (
+                runtime_credentials.session_token.get_secret_value()
+                if runtime_credentials.session_token
+                else None
+            )
             ca_certificate = None
             if isinstance(credentials, S3AccessKeyCredentials):
                 ca_certificate = (
                     credentials.ca_certificate.get_secret_value()
-                    if credentials.ca_certificate else None)
+                    if credentials.ca_certificate
+                    else None
+                )
             resolved_connection = S3Connection(
                 endpoint_url=endpoint_url,
                 region=region,
-                addressing_style=(connection_config.addressing_style.value
-                                  if connection_config else 'auto'),
+                addressing_style=(
+                    connection_config.addressing_style.value
+                    if connection_config
+                    else 'auto'
+                ),
                 credential_secret_name='',
                 access_key=access_key,
                 secret_key=secret_key,
@@ -944,8 +1004,11 @@ def compose_resolved_connector_spec(
                 ca_bundle_path=None,
                 send_bucket_owner_full_control=endpoint_url is None,
                 owner=f'connector:{identity.id}',
-                rotation_id=(identity.credentials_rotated_at.isoformat()
-                             if identity.credentials_rotated_at else 'static'),
+                rotation_id=(
+                    identity.credentials_rotated_at.isoformat()
+                    if identity.credentials_rotated_at
+                    else 'static'
+                ),
                 ca_certificate=ca_certificate,
             )
             runtime_credentials = replace(
@@ -956,24 +1019,26 @@ def compose_resolved_connector_spec(
         if runtime_credentials.provider == 'gcs':
             runtime_credentials = replace(
                 runtime_credentials,
-                requester_pays_project=getattr(connector.config,
-                                               'requester_pays_project', None),
+                requester_pays_project=getattr(
+                    connector.config, 'requester_pays_project', None
+                ),
             )
         elif runtime_credentials.provider == 'bigquery':
             runtime_credentials = replace(
                 runtime_credentials,
-                billing_project_id=getattr(connector.config,
-                                           'billing_project_id', None),
+                billing_project_id=getattr(
+                    connector.config, 'billing_project_id', None
+                ),
             )
     elif isinstance(identity.config, ADLSIdentityConfig):
         expected_endpoint, _, _ = _azure_cloud_settings(identity.config.cloud)
         target = getattr(connector.config, 'target', None)
         actual_endpoint = getattr(target, 'endpoint_suffix', None)
-        if (actual_endpoint is not None
-                and actual_endpoint != expected_endpoint):
+        if actual_endpoint is not None and actual_endpoint != expected_endpoint:
             raise ValueError(
                 f'ADLS endpoint {actual_endpoint!r} does not match identity '
-                f'cloud {identity.config.cloud!r}')
+                f'cloud {identity.config.cloud!r}'
+            )
     if isinstance(identity.config, DatabricksIdentityConfig):
         native_connector = connector.config.as_connector(
             identity.config.host,
@@ -986,7 +1051,8 @@ def compose_resolved_connector_spec(
         )
     else:
         native_connector = connector.config.as_connector(
-            require_explicit_credentials=True)
+            require_explicit_credentials=True
+        )
     native_connector.set_credentials(runtime_credentials.as_dict())
     return ResolvedConnectorSpec(
         connector_id=connector.id,
@@ -1000,8 +1066,7 @@ def validate_identity_authentication(
     credentials: Optional[IdentityCredentials],
     exchanger: WorkloadIdentityExchanger,
 ) -> None:
-    runtime_credentials = credentials_for_identity(config, credentials,
-                                                   exchanger)
+    runtime_credentials = credentials_for_identity(config, credentials, exchanger)
     if isinstance(config, S3IdentityConfig):
         if isinstance(config.authentication, S3AccessKeyAuthentication):
             assert isinstance(credentials, S3AccessKeyCredentials)
@@ -1014,6 +1079,7 @@ def validate_identity_authentication(
         from kumo.connector.databricks_connector import (
             validate_databricks_auth,
         )
+
         validate_databricks_auth(config.host, runtime_credentials.as_dict())
         return
     if isinstance(config, SnowflakeIdentityConfig):
@@ -1047,9 +1113,10 @@ def validate_identity_authentication(
         return
     if isinstance(config, (BigQueryIdentityConfig, GCSIdentityConfig)):
         assert isinstance(runtime_credentials, GoogleCloudCredentials)
-        if isinstance(config.authentication,
-                      (GoogleWorkloadIdentityAuthentication,
-                       GoogleAmbientAuthentication)):
+        if isinstance(
+            config.authentication,
+            (GoogleWorkloadIdentityAuthentication, GoogleAmbientAuthentication),
+        ):
             # The workload exchanger refreshes the impersonated (or ambient)
             # credential as part of exchange, which both validates it and
             # obtains the provider token. Do not perform a second provider
@@ -1059,7 +1126,8 @@ def validate_identity_authentication(
             runtime_credentials.credential.refresh(Request())
         except Exception:
             raise IdentityAuthenticationCategoryError(
-                IdentityAuthenticationCategory.STORED_KEY_INVALID) from None
+                IdentityAuthenticationCategory.STORED_KEY_INVALID
+            ) from None
         return
     # Workload exchange already obtains and validates a provider token.
 

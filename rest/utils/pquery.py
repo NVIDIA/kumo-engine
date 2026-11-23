@@ -28,10 +28,12 @@ log = logging.getLogger(__name__)
 
 
 @blocking_func()
-def create_pquery_object(config: PredictiveQueryV2Config,
-                         **kwargs) -> PredictiveQueryV2:
+def create_pquery_object(
+    config: PredictiveQueryV2Config, **kwargs
+) -> PredictiveQueryV2:
     return PredictiveQueryV2.from_config(
-        config.with_credentials(kwargs.get('credentials', {})), **kwargs)
+        config.with_credentials(kwargs.get('credentials', {})), **kwargs
+    )
 
 
 # `forecast_length` / `lag_timesteps` / `year_over_year` are declared valid
@@ -61,8 +63,7 @@ def forecasting_pass_through_plan(
     ``None`` when the task has nothing to pass through, so that callers do not
     report having supplied options they did not.
     """
-    if (task_type not in _FORECASTING_TASK_TYPES
-            or query_type != QueryType.TEMPORAL):
+    if task_type not in _FORECASTING_TASK_TYPES or query_type != QueryType.TEMPORAL:
         return None
     train_options = TrainingTableGenerationPlan()
     train_options.forecast_length = forecast_length
@@ -111,7 +112,8 @@ def make_predictive_config_with_graph(
     it alongside the options -- prefer that over computing it by hand.
     """
     query_config: PredictiveQueryV2Config = parse_query_string_v2(
-        name, graph, query_yaml, graph_config=graph_config)
+        name, graph, query_yaml, graph_config=graph_config
+    )
     query_config.list_distinct_target_is_array = list_distinct_target_is_array
     query_config.lp_bp_layout = lp_bp_layout
     # NOTE: Don't override the split here since we do special parsing
@@ -119,35 +121,46 @@ def make_predictive_config_with_graph(
     if not isinstance(train_options.forecast_length, MissingType):
         plan_forecast_length = train_options.forecast_length
 
-    if (plan_forecast_length is not None and query_config.is_forecasting
-            and plan_forecast_length != query_config.forecast_length):
+    if (
+        plan_forecast_length is not None
+        and query_config.is_forecasting
+        and plan_forecast_length != query_config.forecast_length
+    ):
         raise ValidationException(
-            title='Conflicting forecast_length', message=(
-                f"The model plan specifies forecast_length="
-                f"{plan_forecast_length}, but the query syntax specifies "
-                f"FORECAST {query_config.forecast_length} TIMEFRAMES. "
-                f"Either remove forecast_length from the model plan or "
-                f"ensure both values match."))
+            title='Conflicting forecast_length',
+            message=(
+                f'The model plan specifies forecast_length='
+                f'{plan_forecast_length}, but the query syntax specifies '
+                f'FORECAST {query_config.forecast_length} TIMEFRAMES. '
+                f'Either remove forecast_length from the model plan or '
+                f'ensure both values match.'
+            ),
+        )
     elif plan_forecast_length is not None:
         query_config.forecast_length = plan_forecast_length
     if not isinstance(train_options.lag_timesteps, MissingType):
         query_config.lag_timesteps = train_options.lag_timesteps
     elif train_options_provided and query_config.is_forecasting:
         query_config.lag_timesteps = None
-    if (not isinstance(train_options.timeframe_step, MissingType)
-            and not isinstance(train_options.timeframe_step, InferredType)):
+    if not isinstance(train_options.timeframe_step, MissingType) and not isinstance(
+        train_options.timeframe_step, InferredType
+    ):
         query_config.timeframe_step = train_options.timeframe_step
-    if (not isinstance(train_options.train_start_offset, MissingType) and
-            not isinstance(train_options.train_start_offset, InferredType)):
+    if not isinstance(train_options.train_start_offset, MissingType) and not isinstance(
+        train_options.train_start_offset, InferredType
+    ):
         query_config.train_start_offset = train_options.train_start_offset
-    if (not isinstance(train_options.train_end_offset, MissingType) and
-            not isinstance(train_options.train_end_offset, InferredType)):
+    if not isinstance(train_options.train_end_offset, MissingType) and not isinstance(
+        train_options.train_end_offset, InferredType
+    ):
         query_config.train_end_offset = train_options.train_end_offset
-    if (not _is_missing(train_options.start_time)
-            and not _is_inferred(train_options.start_time)):
+    if not _is_missing(train_options.start_time) and not _is_inferred(
+        train_options.start_time
+    ):
         query_config.start_time = train_options.start_time
-    if (not _is_missing(train_options.end_time)
-            and not _is_inferred(train_options.end_time)):
+    if not _is_missing(train_options.end_time) and not _is_inferred(
+        train_options.end_time
+    ):
         query_config.end_time = train_options.end_time
     if not isinstance(train_options.year_over_year, MissingType):
         query_config.year_over_year = train_options.year_over_year

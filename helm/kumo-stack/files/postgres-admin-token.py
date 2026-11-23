@@ -9,20 +9,21 @@ pod's workload identity and shares them through a pod-private tmpfs.
 
 import os
 
-AWS_RDS_TRUST_ANCHOR = "/opt/kumo/certs/aws-rds-roots.pem"
-SYSTEM_TRUST_ANCHOR = "/etc/ssl/certs/ca-certificates.crt"
-ENTRA_POSTGRES_SCOPE = "https://ossrdbms-aad.database.windows.net/.default"
+AWS_RDS_TRUST_ANCHOR = '/opt/kumo/certs/aws-rds-roots.pem'
+SYSTEM_TRUST_ANCHOR = '/etc/ssl/certs/ca-certificates.crt'
+ENTRA_POSTGRES_SCOPE = 'https://ossrdbms-aad.database.windows.net/.default'
 
 
 def aws_rds_token() -> str:
     import boto3
 
     return boto3.client(
-        "rds", region_name=os.environ["AWS_REGION"]).generate_db_auth_token(
-            DBHostname=os.environ["PGHOST"],
-            Port=int(os.environ["PGPORT"]),
-            DBUsername=os.environ["PGUSER"],
-        )
+        'rds', region_name=os.environ['AWS_REGION']
+    ).generate_db_auth_token(
+        DBHostname=os.environ['PGHOST'],
+        Port=int(os.environ['PGPORT']),
+        DBUsername=os.environ['PGUSER'],
+    )
 
 
 def azure_entra_token() -> str:
@@ -53,21 +54,21 @@ def stage(directory: str, name: str, content: bytes) -> None:
 
 
 def main() -> None:
-    directory = os.environ["KUMO_CREDENTIAL_DIR"]
-    mode = os.environ["POSTGRES_ADMIN_MODE"]
-    if mode == "aws_iam":
+    directory = os.environ['KUMO_CREDENTIAL_DIR']
+    mode = os.environ['POSTGRES_ADMIN_MODE']
+    if mode == 'aws_iam':
         token = aws_rds_token()
         trust_anchor = AWS_RDS_TRUST_ANCHOR
-    elif mode == "azure_entra":
+    elif mode == 'azure_entra':
         token = azure_entra_token()
         trust_anchor = SYSTEM_TRUST_ANCHOR
     else:
-        raise SystemExit(f"unsupported PostgreSQL bootstrap auth mode: {mode}")
+        raise SystemExit(f'unsupported PostgreSQL bootstrap auth mode: {mode}')
 
-    with open(trust_anchor, "rb") as source:
-        stage(directory, "ca.pem", source.read())
-    stage(directory, "admin-password", token.encode("utf-8"))
+    with open(trust_anchor, 'rb') as source:
+        stage(directory, 'ca.pem', source.read())
+    stage(directory, 'admin-password', token.encode('utf-8'))
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

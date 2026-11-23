@@ -14,6 +14,7 @@ pending and the executor fails the whole pool with ``BrokenProcessPool``.
 The ``None`` branch must remain safe for any process-pool caller that needs to
 ensure an environment variable is absent in the child.
 """
+
 import os
 
 from temporalio_commons.process_pool_utils import _apply_child_env_vars
@@ -48,11 +49,13 @@ def test_mixed_values_applied_independently(monkeypatch):
     monkeypatch.delenv(set_var, raising=False)
     monkeypatch.delenv(absent_var, raising=False)
     monkeypatch.setenv(present_var, 'old')
-    _apply_child_env_vars({
-        set_var: '/tmp/persist',
-        absent_var: None,
-        present_var: None,
-    })
+    _apply_child_env_vars(
+        {
+            set_var: '/tmp/persist',
+            absent_var: None,
+            present_var: None,
+        }
+    )
     assert os.environ[set_var] == '/tmp/persist'
     assert absent_var not in os.environ
     assert present_var not in os.environ

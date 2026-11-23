@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Focused tests for pooled Kumo subprocess session supervision."""
+
 import signal
 from contextlib import nullcontext
 from types import SimpleNamespace
@@ -31,11 +32,14 @@ def test_empty_task_snapshot_falls_back_to_live_leader() -> None:
     assert member.has_live_tasks
 
 
-@pytest.mark.parametrize(('task_group_exited', 'expected_live'), [
-    (False, True),
-    (None, True),
-    (True, False),
-])
+@pytest.mark.parametrize(
+    ('task_group_exited', 'expected_live'),
+    [
+        (False, True),
+        (None, True),
+        (True, False),
+    ],
+)
 def test_empty_zombie_task_snapshot_uses_pidfd_group_state(
     task_group_exited: bool | None,
     expected_live: bool,
@@ -50,11 +54,14 @@ def test_empty_zombie_task_snapshot_uses_pidfd_group_state(
     assert member.has_live_tasks is expected_live
 
 
-@pytest.mark.parametrize(('task_group_exited', 'expected_live'), [
-    (False, True),
-    (None, True),
-    (True, False),
-])
+@pytest.mark.parametrize(
+    ('task_group_exited', 'expected_live'),
+    [
+        (False, True),
+        (None, True),
+        (True, False),
+    ],
+)
 def test_unavailable_task_snapshot_uses_pidfd_group_state(
     task_group_exited: bool | None,
     expected_live: bool,
@@ -70,7 +77,8 @@ def test_unavailable_task_snapshot_uses_pidfd_group_state(
 
 
 def test_task_states_distinguishes_unavailable_directory(
-        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     def _unavailable(_path: str) -> None:
         raise FileNotFoundError('synthetic unavailable task directory')
 
@@ -80,7 +88,8 @@ def test_task_states_distinguishes_unavailable_directory(
 
 
 def test_session_members_retains_unavailable_live_task_group(
-        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(supervisor.os, 'getsid', lambda _pid: 200)
     monkeypatch.setattr(
         supervisor.os,
@@ -108,7 +117,8 @@ def test_session_members_retains_unavailable_live_task_group(
 
 
 def test_session_members_uses_pidfd_for_empty_zombie_snapshot(
-        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(supervisor.os, 'getsid', lambda _pid: 200)
     monkeypatch.setattr(
         supervisor.os,
@@ -122,8 +132,9 @@ def test_session_members_uses_pidfd_for_empty_zombie_snapshot(
     )
     monkeypatch.setattr(supervisor, '_task_states', lambda _pid: ())
     pidfd_calls = []
-    monkeypatch.setattr(supervisor, 'pidfd_process_exited',
-                        lambda pid: pidfd_calls.append(pid) or False)
+    monkeypatch.setattr(
+        supervisor, 'pidfd_process_exited', lambda pid: pidfd_calls.append(pid) or False
+    )
 
     members = supervisor._session_members()
 
@@ -138,8 +149,7 @@ def test_session_members_uses_pidfd_for_empty_zombie_snapshot(
     ]
 
 
-def test_signal_members_signals_zombie_leader_with_live_sibling(
-        monkeypatch) -> None:
+def test_signal_members_signals_zombie_leader_with_live_sibling(monkeypatch) -> None:
     member = supervisor._SessionMember(
         pid=100,
         leader_state='Z',
@@ -163,7 +173,8 @@ def test_signal_members_signals_zombie_leader_with_live_sibling(
 
 
 def test_signal_members_signals_unavailable_live_task_group(
-        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     member = supervisor._SessionMember(
         pid=100,
         leader_state='Z',
@@ -191,7 +202,7 @@ def test_signal_members_skips_all_zombie_task_group(monkeypatch) -> None:
     member = supervisor._SessionMember(
         pid=100,
         leader_state='Z',
-        task_states=((100, 'Z'), ),
+        task_states=((100, 'Z'),),
     )
     pidfd_open = []
     monkeypatch.setattr(supervisor, '_session_members', lambda: [member])

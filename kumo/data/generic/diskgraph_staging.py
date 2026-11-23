@@ -90,9 +90,11 @@ def check_ingest_orphan_skips(ingest_result: Any, kind: str) -> None:
     """
     try:
         kf = (ingest_result or {}).get('key_failures') or {}
-        skipped = int(kf.get('parse_failures') or 0) + \
-            int(kf.get('lookup_failures') or 0) + \
-            int(kf.get('membership_failures') or 0)
+        skipped = (
+            int(kf.get('parse_failures') or 0)
+            + int(kf.get('lookup_failures') or 0)
+            + int(kf.get('membership_failures') or 0)
+        )
         if skipped == 0:
             return
         task_dataset = (ingest_result or {}).get('task_dataset') or {}
@@ -103,15 +105,17 @@ def check_ingest_orphan_skips(ingest_result: Any, kind: str) -> None:
         if total_rows == 0:
             stages = task_dataset.get('stages') or {}
             total_rows = sum(
-                int((stage or {}).get('row_count') or 0)
-                for stage in stages.values())
+                int((stage or {}).get('row_count') or 0) for stage in stages.values()
+            )
         by_context = kf.get('by_context')
         samples = kf.get('samples')
     except Exception:  # malformed counters (wheel skew) must not kill the job
         logger.warning(
             'TT-NG %s: could not parse ingest key_failures %r; skipping the '
-            'orphan-skip check', kind,
-            (ingest_result or {}).get('key_failures'))
+            'orphan-skip check',
+            kind,
+            (ingest_result or {}).get('key_failures'),
+        )
         return
     # Skips count FK *references*, not rows — an LP row carries an entity ref
     # plus one ref per target-list element — so the fraction is an upper-bound
@@ -122,40 +126,47 @@ def check_ingest_orphan_skips(ingest_result: Any, kind: str) -> None:
     else:
         pct = 100.0
         denom = 'an unknown number of seed rows (no stage row counts)'
-    detail = (f'{skipped} seed FK reference(s) across {denom} '
-              f'(~{pct:.1f}%) did not resolve to a node of the training '
-              f'graph and were skipped (never trained on). '
-              f'by_context={by_context} samples={samples}')
+    detail = (
+        f'{skipped} seed FK reference(s) across {denom} '
+        f'(~{pct:.1f}%) did not resolve to a node of the training '
+        f'graph and were skipped (never trained on). '
+        f'by_context={by_context} samples={samples}'
+    )
     if pct >= _ORPHAN_ESCALATE_PCT:
         message = (
             f'TT-NG {kind}: {detail} Most of the train table does not belong '
             f'to this graph — it was almost certainly generated against a '
             f'different graph or graph version. Re-generate the train table '
             f'against this graph, or bind the training job to the graph it '
-            f'was generated from.')
+            f'was generated from.'
+        )
     else:
         message = (
             f'TT-NG {kind}: {detail} These seeds reference entities that do '
             f'not exist in this graph (e.g. the graph was regenerated, or the '
             f'train table is reused across graphs) and are excluded from '
-            f'training/prediction.')
+            f'training/prediction.'
+        )
     logger.warning('%s', message)
     fail_pct_raw = os.environ.get(_ORPHAN_FAIL_PCT_ENV, '')
     if fail_pct_raw:
         try:
             fail_pct = float(fail_pct_raw)
         except ValueError:
-            logger.warning('Ignoring invalid %s=%r (expected a percent)',
-                           _ORPHAN_FAIL_PCT_ENV, fail_pct_raw)
+            logger.warning(
+                'Ignoring invalid %s=%r (expected a percent)',
+                _ORPHAN_FAIL_PCT_ENV,
+                fail_pct_raw,
+            )
             return
         if pct >= fail_pct:
             raise TTNGOrphanSkipError(
                 f'{message} (failing: ~{pct:.1f}% skipped >= '
-                f'{_ORPHAN_FAIL_PCT_ENV}={fail_pct_raw})')
+                f'{_ORPHAN_FAIL_PCT_ENV}={fail_pct_raw})'
+            )
 
 
-def check_extension_manifest_orphan_skips(extension_path: str,
-                                          kind: str) -> None:
+def check_extension_manifest_orphan_skips(extension_path: str, kind: str) -> None:
     """Re-run the orphan-skip check from the persisted manifest when a
     present-and-complete extension is REUSED without re-ingest.
 
@@ -172,8 +183,8 @@ def check_extension_manifest_orphan_skips(extension_path: str,
             manifest = json.load(f)
     except Exception:  # unreadable manifest → the consumer will fail loudly
         logger.warning(
-            'TT-NG %s: could not read %s for the orphan-skip check', kind,
-            manifest_path)
+            'TT-NG %s: could not read %s for the orphan-skip check', kind, manifest_path
+        )
         return
     check_ingest_orphan_skips(manifest, f'{kind} (reused extension)')
 
@@ -202,13 +213,19 @@ def ensure_stage_ingested(
         # consumer reads); a bare dir-existence check would skip re-ingest and
         # later fail on the incomplete extension. Validate, then drop-and-heal.
         if is_tt_extension_complete(extension_path):
-            logger.info('TT-NG %s: extension already present at %s; skipping '
-                        're-ingest', kind, extension_path)
+            logger.info(
+                'TT-NG %s: extension already present at %s; skipping re-ingest',
+                kind,
+                extension_path,
+            )
             check_extension_manifest_orphan_skips(extension_path, kind)
             return extension_path
-        logger.warning('TT-NG %s: extension at %s is incomplete (missing '
-                       'diskgraph_manifest.json); deleting and re-ingesting',
-                       kind, extension_path)
+        logger.warning(
+            'TT-NG %s: extension at %s is incomplete (missing '
+            'diskgraph_manifest.json); deleting and re-ingesting',
+            kind,
+            extension_path,
+        )
         fsutil.rm(extension_path, ignore_errors=True)
 
     from kumo.data.generic.diskgraph_train_table import (
@@ -216,19 +233,22 @@ def ensure_stage_ingested(
         assert_ttng_bundle_complete,
         restore_durable_ttng_bundle,
     )
+
     try:
         assert_ttng_bundle_complete(staging_dir)
     except TTNGBundleError as e:
         raise RuntimeError(
             f'{e} The ephemeral index was torn down / this pod has no '
             f'extension, and the durable {kind} staging beside the '
-            f'{kind} table is missing or incomplete.') from e
+            f'{kind} table is missing or incomplete.'
+        ) from e
     # Copy into this pod's index-local staging dir so the DG publish renames
     # within the index FS.
     local_staging = ttng_staging_dir(index_path, target_tt_id)
     local_staging = restore_durable_ttng_bundle(staging_dir, local_staging)
 
     from diskgraph import execute_tt_ingest
+
     with kumo_timing(f'{kind}_materialize.ttng_reingest_stage'):
         ingest_kwargs = dict(
             staging_dir=local_staging,
@@ -242,12 +262,15 @@ def ensure_stage_ingested(
     # path the manifest / consumer reads.
     published = (ingest_result or {}).get('tt_extension_path')
     if published is not None and (
-            osp.abspath(published) != osp.abspath(extension_path)):
+        osp.abspath(published) != osp.abspath(extension_path)
+    ):
         raise RuntimeError(
             f'TT-NG {kind}: execute_tt_ingest published the extension at '
             f'{published!r} but the manifest/consumer reads {extension_path!r}; '
-            'the wheel publish convention diverged from the train convention.')
+            'the wheel publish convention diverged from the train convention.'
+        )
     check_ingest_orphan_skips(ingest_result, kind)
-    logger.info('TT-NG %s: re-ingested stage from %s into %s', kind,
-                staging_dir, extension_path)
+    logger.info(
+        'TT-NG %s: re-ingested stage from %s into %s', kind, staging_dir, extension_path
+    )
     return extension_path

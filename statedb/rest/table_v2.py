@@ -26,16 +26,17 @@ class TableDBEntryV2(DBEntry):
 
     # Human-friendly name for the table template.
     alias: Optional[str] = None
-    normalized_alias: str = ""
+    normalized_alias: str = ''
 
     # Ref counting is used for V2 table to track how many PQueries (v2) are
     # using the same table.
     ref_count: int = 1
 
     # Stable principal ID that created this project-owned table.
-    created_by: str = ""
-    created_by_name: str = ""
+    created_by: str = ''
+    created_by_name: str = ''
 
     def __post_init__(self) -> None:
-        self.normalized_alias = (normalize_resource_alias(self.alias)
-                                 if self.alias else '')
+        self.normalized_alias = (
+            normalize_resource_alias(self.alias) if self.alias else ''
+        )

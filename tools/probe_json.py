@@ -31,7 +31,7 @@ def get_handle(
 
 def main():
     if len(sys.argv) != 2:
-        print("Usage: python script.py <path_to_json_file>")
+        print('Usage: python script.py <path_to_json_file>')
         sys.exit(1)
 
     file_path = sys.argv[1]
@@ -44,5 +44,5 @@ def main():
         print(f"Error: File '{file_path}' not found.")
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

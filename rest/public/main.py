@@ -31,17 +31,15 @@ from temporalio_commons.runtime_utils import init_temporal_runtime
 from temporalio_commons.temporal_client import TemporalClient
 
 # Env variable names:
-_REST_API_HOST = EnvVar('REST_API_HOST', str, required=False,
-                        default_value='0.0.0.0')
+_REST_API_HOST = EnvVar('REST_API_HOST', str, required=False, default_value='0.0.0.0')
 _REST_API_PORT = EnvVar('REST_API_PORT', int, default_value=8001)
 _METRICS_PORT = EnvVar('METRICS_PORT', int, required=False, default_value=9100)
 _METRICS_HOST = EnvVar('METRICS_HOST', str, required=False, default_value='::')
-_DRIVER_RPC_TIMEOUT_SEC = EnvVar('DRIVER_RPC_TIMEOUT_SEC', int,
-                                 default_value=180)
-_ACCESS_LOG = EnvVar('UVICORN_ACCESS_LOG', bool, required=False,
-                     default_value=True)
-_APP_LOG_LEVEL = EnvVar('KUMO_REST_MAIN_LOG_LEVEL', str, required=False,
-                        default_value='DEBUG')
+_DRIVER_RPC_TIMEOUT_SEC = EnvVar('DRIVER_RPC_TIMEOUT_SEC', int, default_value=180)
+_ACCESS_LOG = EnvVar('UVICORN_ACCESS_LOG', bool, required=False, default_value=True)
+_APP_LOG_LEVEL = EnvVar(
+    'KUMO_REST_MAIN_LOG_LEVEL', str, required=False, default_value='DEBUG'
+)
 
 # Dump the stacktrace when segfault occurs
 faulthandler.enable()
@@ -53,8 +51,7 @@ def create_app_builder() -> AppBuilder:
     deploy_env_config = deploy_env()
 
     if 'RPC_TIMEOUT_DEFAULT' not in os.environ:
-        os.environ['RPC_TIMEOUT_DEFAULT'] = str(
-            _DRIVER_RPC_TIMEOUT_SEC.parse_value())
+        os.environ['RPC_TIMEOUT_DEFAULT'] = str(_DRIVER_RPC_TIMEOUT_SEC.parse_value())
 
     # Public REST hosts product-metadata drivers in-process, backed by its own
     # StateDB (configured in AppBuilder.startup_event). The metadata driver
@@ -72,15 +69,15 @@ def create_app_builder() -> AppBuilder:
     # REST app); connector drivers decrypt stored credentials in-process.
     CredentialsEncryptor(deploy_mode=deploy_env_config.deploy_mode)
 
-    data_backend_ctx = DataBackendContext(deploy_env_config,
-                                          settings.data_backend_settings)
+    data_backend_ctx = DataBackendContext(
+        deploy_env_config, settings.data_backend_settings
+    )
 
     # In-process MLJobBackend (no AutoRPC client), shared by the RestApiDriver
     # and the public job routers. Its StateDB is late-bound in
     # AppBuilder.startup_event.
     temporal_client = TemporalClient(deploy_env_config)
-    ml_backend = MLJobBackend(MLBackendSettings.parse_from_env(),
-                              temporal_client)
+    ml_backend = MLJobBackend(MLBackendSettings.parse_from_env(), temporal_client)
 
     auth = Authentication(settings.authentication, is_unit_test=False)
 
@@ -98,8 +95,9 @@ def create_app_builder() -> AppBuilder:
 
     groups_driver = GroupsDriver()
 
-    auth_disabled = (_DISABLE_AUTH.parse_value()
-                     or deploy_env_config.deploy_mode.is_preprod)
+    auth_disabled = (
+        _DISABLE_AUTH.parse_value() or deploy_env_config.deploy_mode.is_preprod
+    )
     auth_proxied = _PROXY_AUTH.parse_value()
     return AppBuilder(
         driver.pquery_driver,
@@ -122,7 +120,7 @@ app = app_builder.cors_app
 
 
 class IgnoreMetrics:
-    KEYWORDS = ["/metrics", "200"]
+    KEYWORDS = ['/metrics', '200']
 
     def filter(self, record: LogRecord):
         message = record.getMessage()
@@ -131,60 +129,56 @@ class IgnoreMetrics:
 
 _app_log_level = _APP_LOG_LEVEL.parse_value().upper()
 LOGGING_CONFIG = copy.deepcopy(uvicorn.config.LOGGING_CONFIG)  # type: ignore
-LOGGING_CONFIG["loggers"]["kumo"] = {
-    "handlers": ["default"],
-    "level": _app_log_level,
+LOGGING_CONFIG['loggers']['kumo'] = {
+    'handlers': ['default'],
+    'level': _app_log_level,
 }
-LOGGING_CONFIG["loggers"]["rest"] = {
-    "handlers": ["default"],
-    "level": _app_log_level,
+LOGGING_CONFIG['loggers']['rest'] = {
+    'handlers': ['default'],
+    'level': _app_log_level,
 }
 if _app_log_level != 'DEBUG':
-    LOGGING_CONFIG["root"] = {
-        "handlers": ["default"],
-        "level": _app_log_level,
+    LOGGING_CONFIG['root'] = {
+        'handlers': ['default'],
+        'level': _app_log_level,
     }
     for _logger_name in (
-            "async_utils",
-            "common_utils",
-            "io_utils",
-            "service_framework",
-            "temporalio_commons",
+        'async_utils',
+        'common_utils',
+        'io_utils',
+        'service_framework',
+        'temporalio_commons',
     ):
-        LOGGING_CONFIG["loggers"][_logger_name] = {
-            "handlers": ["default"],
-            "level": _app_log_level,
+        LOGGING_CONFIG['loggers'][_logger_name] = {
+            'handlers': ['default'],
+            'level': _app_log_level,
         }
-    LOGGING_CONFIG["loggers"]["opentelemetry"] = {
-        "handlers": ["default"],
-        "level": "CRITICAL",
+    LOGGING_CONFIG['loggers']['opentelemetry'] = {
+        'handlers': ['default'],
+        'level': 'CRITICAL',
     }
-LOGGING_CONFIG["filters"] = {
-    "ignore_metrics": {
-        "()": IgnoreMetrics
-    },
-    "redact_sensitive_query": {
-        "()": SensitiveQueryLogFilter
-    },
+LOGGING_CONFIG['filters'] = {
+    'ignore_metrics': {'()': IgnoreMetrics},
+    'redact_sensitive_query': {'()': SensitiveQueryLogFilter},
 }
-LOGGING_CONFIG["handlers"]["access"]["filters"] = ["redact_sensitive_query"]
-LOGGING_CONFIG["loggers"]["uvicorn.access"]["filters"] = ["ignore_metrics"]
+LOGGING_CONFIG['handlers']['access']['filters'] = ['redact_sensitive_query']
+LOGGING_CONFIG['loggers']['uvicorn.access']['filters'] = ['ignore_metrics']
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     logging.config.dictConfig(LOGGING_CONFIG)
     init(
         'public-rest-api',
-        logging_mode=(LoggingMode.DEBUG
-                      if _app_log_level == 'DEBUG' else LoggingMode.PRODUCTION),
+        logging_mode=(
+            LoggingMode.DEBUG if _app_log_level == 'DEBUG' else LoggingMode.PRODUCTION
+        ),
     )
-    start_http_server(_METRICS_PORT.parse_value(),
-                      addr=_METRICS_HOST.parse_value())
+    start_http_server(_METRICS_PORT.parse_value(), addr=_METRICS_HOST.parse_value())
 
     # Init Temporal SDK runtime (client & worker telemetry).
     init_temporal_runtime(app_name='public-rest-api')
 
     uvicorn.run(
-        "main:app",
+        'main:app',
         host=_REST_API_HOST.parse_value(),
         port=_REST_API_PORT.parse_value(),
         timeout_keep_alive=15,
@@ -192,5 +186,5 @@ if __name__ == "__main__":
         workers=1,
         access_log=_ACCESS_LOG.parse_value(),
         proxy_headers=True,
-        forwarded_allow_ips=os.environ.get("FORWARDED_ALLOW_IPS", "127.0.0.1"),
+        forwarded_allow_ips=os.environ.get('FORWARDED_ALLOW_IPS', '127.0.0.1'),
     )

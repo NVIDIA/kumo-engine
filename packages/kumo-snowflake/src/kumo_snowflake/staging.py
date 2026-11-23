@@ -17,9 +17,10 @@ import requests
 from kumo_core.sources.diagnostics import safe_summary
 from kumo_core.sources.errors import PermanentSourceError, TransientSourceError
 from kumo_core.sources.transfer import StagedFile, fetch_all
-from kumo_snowflake.spcs import SPCS_TOKEN_PATH
 from requests.adapters import HTTPAdapter
 from snowflake.connector.cursor import SnowflakeCursor
+
+from kumo_snowflake.spcs import SPCS_TOKEN_PATH
 
 MAX_FILE_SIZE = 128 * 1024 * 1024
 PRESIGNED_BATCH = 1000
@@ -41,19 +42,24 @@ DOWNLOAD_ATTEMPTS = 12
 DOWNLOAD_RETRY_BACKOFF_SECONDS = 1.0
 DOWNLOAD_RETRY_MAX_BACKOFF_SECONDS = 60.0
 TRANSIENT_DOWNLOAD_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
-NOT_PLAINTEXT = "; the stage was created without SNOWFLAKE_SSE encryption"
+NOT_PLAINTEXT = '; the stage was created without SNOWFLAKE_SSE encryption'
 
 logger = logging.getLogger(__name__)
 
-CREATE_STAGE = ("CREATE TEMPORARY STAGE IF NOT EXISTS {stage} "
-                "ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE')")
+CREATE_STAGE = (
+    "CREATE TEMPORARY STAGE IF NOT EXISTS {stage} ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE')"
+)
 REMOVE = "REMOVE '{location}'"
-UNLOAD = ("COPY INTO '{location}' FROM (SELECT {projection} FROM {source}) "
-          "FILE_FORMAT=(TYPE=PARQUET) MAX_FILE_SIZE={max_file_size} "
-          "HEADER=TRUE OVERWRITE=TRUE")
+UNLOAD = (
+    "COPY INTO '{location}' FROM (SELECT {projection} FROM {source}) "
+    'FILE_FORMAT=(TYPE=PARQUET) MAX_FILE_SIZE={max_file_size} '
+    'HEADER=TRUE OVERWRITE=TRUE'
+)
 LIST = "LIST '{location}'"
-PRESIGN = ("SELECT path, GET_PRESIGNED_URL('@{stage}', path, {lifetime}) "
-           "FROM (VALUES {values}) AS s(path)")
+PRESIGN = (
+    "SELECT path, GET_PRESIGNED_URL('@{stage}', path, {lifetime}) "
+    'FROM (VALUES {values}) AS s(path)'
+)
 PRESIGN_ONE = "SELECT GET_PRESIGNED_URL('@{stage}', {path}, {lifetime})"
 
 
@@ -63,8 +69,8 @@ class UnloadResult:
     input_bytes: int
 
 
-def _location(stage: str, prefix: str = "") -> str:
-    return f"@{stage}/{prefix}"
+def _location(stage: str, prefix: str = '') -> str:
+    return f'@{stage}/{prefix}'
 
 
 def create_stage(cursor: SnowflakeCursor, stage: str) -> None:
@@ -91,28 +97,32 @@ def unload(
             projection=projection,
             source=source,
             max_file_size=MAX_FILE_SIZE,
-        ))
+        )
+    )
     rows = cursor.fetchall()
     if not rows:
         raise PermanentSourceError(
-            f"snowflake unloaded {source} without reporting a row count")
-    return UnloadResult(rows_unloaded=int(rows[0][0]),
-                        input_bytes=int(rows[0][1]))
+            f'snowflake unloaded {source} without reporting a row count'
+        )
+    return UnloadResult(rows_unloaded=int(rows[0][0]), input_bytes=int(rows[0][1]))
 
 
-def list_prefix(cursor: SnowflakeCursor, stage: str,
-                prefix: str) -> tuple[StagedFile, ...]:
+def list_prefix(
+    cursor: SnowflakeCursor, stage: str, prefix: str
+) -> tuple[StagedFile, ...]:
     cursor.execute(LIST.format(location=_location(stage, prefix)))
     files = []
     for row in cursor.fetchall():
-        _, _, relative = str(row[0]).partition("/")
+        _, _, relative = str(row[0]).partition('/')
         if not relative.startswith(prefix):
             raise PermanentSourceError(
-                f"snowflake listed {row[0]!r} outside the prefix {prefix!r}")
+                f'snowflake listed {row[0]!r} outside the prefix {prefix!r}'
+            )
         files.append(StagedFile(path=relative, size=int(row[1])))
     if not files:
         raise PermanentSourceError(
-            f"snowflake unloaded nothing to the stage prefix {prefix!r}")
+            f'snowflake unloaded nothing to the stage prefix {prefix!r}'
+        )
     return tuple(files)
 
 
@@ -123,11 +133,12 @@ def _literal(value: str) -> str:
 
 def _batches(paths: Sequence[str]) -> Iterator[Sequence[str]]:
     for start in range(0, len(paths), PRESIGNED_BATCH):
-        yield paths[start:start + PRESIGNED_BATCH]
+        yield paths[start : start + PRESIGNED_BATCH]
 
 
-def presigned_urls(cursor: SnowflakeCursor, stage: str,
-                   paths: Sequence[str]) -> dict[str, str]:
+def presigned_urls(
+    cursor: SnowflakeCursor, stage: str, paths: Sequence[str]
+) -> dict[str, str]:
     """The paths are interpolated because a bound parameter reaches
     ``GET_PRESIGNED_URL`` unfilled and the statement is rejected; minting a
     thousand costs 0.25s against minutes of downloading, so it stays serial."""
@@ -136,28 +147,34 @@ def presigned_urls(cursor: SnowflakeCursor, stage: str,
         urls = _presigned_one_at_a_time(cursor, stage, paths)
     else:
         for batch in _batches(list(paths)):
-            values = ",".join(f"({_literal(path)})" for path in batch)
+            values = ','.join(f'({_literal(path)})' for path in batch)
             cursor.execute(
-                PRESIGN.format(stage=stage, lifetime=URL_LIFETIME_SECONDS,
-                               values=values))
+                PRESIGN.format(
+                    stage=stage, lifetime=URL_LIFETIME_SECONDS, values=values
+                )
+            )
             urls.update({str(row[0]): str(row[1]) for row in cursor.fetchall()})
     missing = [path for path in paths if path not in urls]
     if missing:
         raise PermanentSourceError(
-            f"snowflake minted no download url for {missing[0]!r}")
+            f'snowflake minted no download url for {missing[0]!r}'
+        )
     return urls
 
 
-def _presigned_one_at_a_time(cursor: SnowflakeCursor, stage: str,
-                             paths: Sequence[str]) -> dict[str, str]:
+def _presigned_one_at_a_time(
+    cursor: SnowflakeCursor, stage: str, paths: Sequence[str]
+) -> dict[str, str]:
     """Inside Snowpark Container Services the path has to reach
     ``GET_PRESIGNED_URL`` as a literal rather than as a column reference, so
     the batched form above mints urls that fetch nothing."""
     urls = {}
     for path in paths:
         cursor.execute(
-            PRESIGN_ONE.format(stage=stage, path=_literal(path),
-                               lifetime=URL_LIFETIME_SECONDS))
+            PRESIGN_ONE.format(
+                stage=stage, path=_literal(path), lifetime=URL_LIFETIME_SECONDS
+            )
+        )
         rows = cursor.fetchall()
         if rows and rows[0][0]:
             urls[path] = str(rows[0][0])
@@ -180,10 +197,18 @@ def download(
     """
     sessions = _WorkerSessions(_download_session)
     try:
-        ceiling = (DOWNLOAD_WORKERS if worker_ceiling is None else min(
-            DOWNLOAD_WORKERS, worker_ceiling))
-        result = fetch_all(files, dest, fetch=partial(_fetch, sessions, urls),
-                           diagnosis=NOT_PLAINTEXT, worker_ceiling=ceiling)
+        ceiling = (
+            DOWNLOAD_WORKERS
+            if worker_ceiling is None
+            else min(DOWNLOAD_WORKERS, worker_ceiling)
+        )
+        result = fetch_all(
+            files,
+            dest,
+            fetch=partial(_fetch, sessions, urls),
+            diagnosis=NOT_PLAINTEXT,
+            worker_ceiling=ceiling,
+        )
         return result
     finally:
         sessions.close()
@@ -202,8 +227,10 @@ class _SessionLocal(threading.local):
 
 class _TrackedResponse:
     """Keeps an in-flight response alive if another worker fails first."""
-    def __init__(self, response: requests.Response,
-                 release: Callable[[], None]) -> None:
+
+    def __init__(
+        self, response: requests.Response, release: Callable[[], None]
+    ) -> None:
         self._response = response
         self._release = release
         self._entered = False
@@ -241,6 +268,7 @@ class _WorkerSessions:
     those peers. This owner closes idle sessions immediately and defers an
     active session until its response context exits.
     """
+
     def __init__(self, factory: Callable[[], requests.Session]) -> None:
         self._factory = factory
         self._local = _SessionLocal()
@@ -248,8 +276,9 @@ class _WorkerSessions:
         self._lock = threading.Lock()
         self._closing = False
 
-    def get(self, url: str, *, stream: bool = False,
-            timeout: float | None = None) -> _TrackedResponse:
+    def get(
+        self, url: str, *, stream: bool = False, timeout: float | None = None
+    ) -> _TrackedResponse:
         state = self._local.state
         with self._lock:
             if state is not None and not state.closed:
@@ -286,7 +315,7 @@ class _WorkerSessions:
                     ready.append(state.session)
         error = _close_sessions(ready)
         if error is not None:
-            _warn_cleanup("closing staged download sessions", error)
+            _warn_cleanup('closing staged download sessions', error)
 
     def _release(self, state: _SessionState) -> None:
         session: requests.Session | None = None
@@ -298,23 +327,25 @@ class _WorkerSessions:
         if session is not None:
             error = _close_sessions([session])
             if error is not None:
-                _warn_cleanup("closing an in-flight download session", error)
+                _warn_cleanup('closing an in-flight download session', error)
 
 
 def _download_session() -> requests.Session:
     """Create one worker session with hidden urllib3 retries disabled."""
     session = requests.Session()
     try:
-        for prefix in ("http://", "https://"):
+        for prefix in ('http://', 'https://'):
             session.mount(
                 prefix,
-                HTTPAdapter(pool_connections=8, pool_maxsize=1, max_retries=0,
-                            pool_block=True))
+                HTTPAdapter(
+                    pool_connections=8, pool_maxsize=1, max_retries=0, pool_block=True
+                ),
+            )
     except Exception:
         try:
             session.close()
         except Exception as error:
-            _warn_cleanup("closing a partially configured session", error)
+            _warn_cleanup('closing a partially configured session', error)
         raise
     return session
 
@@ -332,8 +363,11 @@ def _close_sessions(sessions: Sequence[requests.Session]) -> Exception | None:
 
 def _warn_cleanup(action: str, error: Exception) -> None:
     """Never render a third-party exception that may retain a signed URL."""
-    logger.warning("%s raised %s; continuing with the primary outcome", action,
-                   type(error).__name__)
+    logger.warning(
+        '%s raised %s; continuing with the primary outcome',
+        action,
+        type(error).__name__,
+    )
 
 
 def _discard_pooled_connections(session: requests.Session) -> None:
@@ -341,42 +375,51 @@ def _discard_pooled_connections(session: requests.Session) -> None:
         try:
             adapter.close()
         except Exception as error:
-            _warn_cleanup("discarding a failed connection pool", error)
+            _warn_cleanup('discarding a failed connection pool', error)
 
 
-def _fetch(session: _WorkerSessions, urls: Mapping[str, str],
-           staged: StagedFile, target: str) -> None:
+def _fetch(
+    session: _WorkerSessions, urls: Mapping[str, str], staged: StagedFile, target: str
+) -> None:
     """``requests`` names the url it failed on, and that url is a usable
     signature for the life of the link, so only type and status survive."""
     for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
         _remove_partial(target)
         try:
-            with session.get(urls[staged.path], stream=True,
-                             timeout=DOWNLOAD_TIMEOUT) as response:
+            with session.get(
+                urls[staged.path], stream=True, timeout=DOWNLOAD_TIMEOUT
+            ) as response:
                 response.raise_for_status()
-                with open(target, "wb") as handle:
+                with open(target, 'wb') as handle:
                     for chunk in response.iter_content(DOWNLOAD_CHUNK):
                         handle.write(chunk)
         except Exception as error:
             _remove_partial(target, error)
-            if (not isinstance(error, requests.RequestException)
-                    or attempt == DOWNLOAD_ATTEMPTS
-                    or not _transient_download_error(error)):
+            if (
+                not isinstance(error, requests.RequestException)
+                or attempt == DOWNLOAD_ATTEMPTS
+                or not _transient_download_error(error)
+            ):
                 if isinstance(error, requests.HTTPError):
-                    status = getattr(getattr(error, "response", None),
-                                     "status_code", None)
-                    failure = (TransientSourceError
-                               if status in TRANSIENT_DOWNLOAD_STATUS else
-                               PermanentSourceError)
+                    status = getattr(
+                        getattr(error, 'response', None), 'status_code', None
+                    )
+                    failure = (
+                        TransientSourceError
+                        if status in TRANSIENT_DOWNLOAD_STATUS
+                        else PermanentSourceError
+                    )
                     raise failure(
-                        f"snowflake download of {staged.path} failed on "
-                        f"attempt {attempt}/{DOWNLOAD_ATTEMPTS}: "
-                        f"{safe_summary(error, status=status)}") from None
+                        f'snowflake download of {staged.path} failed on '
+                        f'attempt {attempt}/{DOWNLOAD_ATTEMPTS}: '
+                        f'{safe_summary(error, status=status)}'
+                    ) from None
                 if isinstance(error, requests.RequestException):
                     raise TransientSourceError(
-                        f"snowflake download of {staged.path} failed on "
-                        f"attempt {attempt}/{DOWNLOAD_ATTEMPTS}: "
-                        f"{safe_summary(error)}") from None
+                        f'snowflake download of {staged.path} failed on '
+                        f'attempt {attempt}/{DOWNLOAD_ATTEMPTS}: '
+                        f'{safe_summary(error)}'
+                    ) from None
                 raise
             reason = type(error).__name__
         else:
@@ -384,31 +427,36 @@ def _fetch(session: _WorkerSessions, urls: Mapping[str, str],
             if staged.size is None or written == staged.size:
                 return
             mismatch = TransientSourceError(
-                f"downloaded {written} of {staged.size} bytes for "
-                f"{staged.path}")
+                f'downloaded {written} of {staged.size} bytes for {staged.path}'
+            )
             _remove_partial(target, mismatch)
             if attempt == DOWNLOAD_ATTEMPTS:
                 raise mismatch
-            reason = "stage-size mismatch"
+            reason = 'stage-size mismatch'
 
         session.discard_current()
         _download_backoff(staged.path, attempt, reason)
 
-    raise AssertionError("the bounded download loop did not terminate")
+    raise AssertionError('the bounded download loop did not terminate')
 
 
 def _transient_download_error(error: requests.RequestException) -> bool:
-    if isinstance(error, (requests.ConnectionError, requests.Timeout,
-                          requests.exceptions.ChunkedEncodingError)):
+    if isinstance(
+        error,
+        (
+            requests.ConnectionError,
+            requests.Timeout,
+            requests.exceptions.ChunkedEncodingError,
+        ),
+    ):
         return True
     if isinstance(error, requests.HTTPError):
-        status = getattr(error.response, "status_code", None)
+        status = getattr(error.response, 'status_code', None)
         return status in TRANSIENT_DOWNLOAD_STATUS
     return False
 
 
-def _remove_partial(target: str,
-                    original_error: Exception | None = None) -> None:
+def _remove_partial(target: str, original_error: Exception | None = None) -> None:
     try:
         os.remove(target)
     except FileNotFoundError:
@@ -416,13 +464,20 @@ def _remove_partial(target: str,
     except OSError as error:
         if original_error is None:
             raise
-        _warn_cleanup("removing a partial staged file", error)
+        _warn_cleanup('removing a partial staged file', error)
 
 
 def _download_backoff(relative: str, attempt: int, reason: str) -> None:
-    delay = min(DOWNLOAD_RETRY_BACKOFF_SECONDS * (2**(attempt - 1)),
-                DOWNLOAD_RETRY_MAX_BACKOFF_SECONDS)
+    delay = min(
+        DOWNLOAD_RETRY_BACKOFF_SECONDS * (2 ** (attempt - 1)),
+        DOWNLOAD_RETRY_MAX_BACKOFF_SECONDS,
+    )
     logger.warning(
-        "retrying staged file %r after attempt %d/%d in %.1f seconds (%s)",
-        relative, attempt, DOWNLOAD_ATTEMPTS, delay, reason)
+        'retrying staged file %r after attempt %d/%d in %.1f seconds (%s)',
+        relative,
+        attempt,
+        DOWNLOAD_ATTEMPTS,
+        delay,
+        reason,
+    )
     time.sleep(delay)

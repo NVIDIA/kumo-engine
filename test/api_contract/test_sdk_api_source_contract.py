@@ -16,11 +16,14 @@ def test_first_party_sdk_and_api_import_together() -> None:
     # The SDK now comes from packages/kumo-sdk while kumo-api is a
     # workspace member too. The SDK shares the root VERSION file (stamped by
     # scripts/stamp_version.py), so a version change is one deliberate edit.
-    assert kumoai_studio.__version__ == (REPO_ROOT /
-                                         'VERSION').read_text().strip()
+    assert kumoai_studio.__version__ == (REPO_ROOT / 'VERSION').read_text().strip()
     assert api.CreateConnectorArgs is not None
     assert api.S3RootedConnectorTarget is not None
-    assert TypeAdapter(
-        api.CreateConnectorArgs).json_schema()['additionalProperties'] is False
-    assert TypeAdapter(api.S3RootedConnectorTarget).json_schema(
-    )['additionalProperties'] is False
+    assert (
+        TypeAdapter(api.CreateConnectorArgs).json_schema()['additionalProperties']
+        is False
+    )
+    assert (
+        TypeAdapter(api.S3RootedConnectorTarget).json_schema()['additionalProperties']
+        is False
+    )

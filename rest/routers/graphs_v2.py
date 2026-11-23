@@ -45,6 +45,7 @@ class GraphRouter:
     """
     V2 graph resources.
     """
+
     def __init__(
         self,
         auth: Authentication,
@@ -54,104 +55,102 @@ class GraphRouter:
         self._auth = auth
 
         self.router = APIRouter(
-            prefix="/v1/graphs",
+            prefix='/v1/graphs',
             route_class=StrictQueryAPIRoute,
-            tags=["API v1 (Under Development): Graphs"],
+            tags=['API v1 (Under Development): Graphs'],
             dependencies=[Depends(auth.authenticate_request_header)],
         )
 
         self.router.add_api_route(
-            "/",
+            '/',
             self.create_graph_v2,
             response_model=IDResponse,
             methods=['POST'],
-            summary="Create a new graph with its full definition.",
+            summary='Create a new graph with its full definition.',
             responses={
                 HTTPStatus.UNPROCESSABLE_ENTITY: {
-                    'description':
-                    "Unable to create a new Graph as the its definition is "
-                    "invalid."
+                    'description': 'Unable to create a new Graph as the its definition is '
+                    'invalid.'
                 }
             },
         )
 
         self.router.add_api_route(
-            "/{graph_alias}",
+            '/{graph_alias}',
             self.delete_graph_v2,
             response_model=IDResponse,
             methods=['DELETE'],
         )
 
         self.router.add_api_route(
-            "/{graph_id_or_alias}",
+            '/{graph_id_or_alias}',
             self.get_graph_v2,
             response_model=GraphResourceResponse,
             methods=['GET'],
-            summary="Get a graph with its full definition by id or alias",
+            summary='Get a graph with its full definition by id or alias',
             responses={
                 HTTPStatus.NOT_FOUND: {
-                    'description':
-                    "Unable to find the graph with the given id or name alias."
+                    'description': 'Unable to find the graph with the given id or name alias.'
                 }
             },
         )
 
         self.router.add_api_route(
-            "/validate",
+            '/validate',
             self.validate,
             response_model=ValidationResponse,
             methods=['POST'],
         )
 
         self.router.add_api_route(
-            "/utils/validate_name",
+            '/utils/validate_name',
             self.validate_name_v2,
             response_model=ValidateNameResponse,
             methods=['GET'],
         )
 
         self.router.add_api_route(
-            "/",
+            '/',
             self.list_graph_names_v2,
             response_model=List[ListResponse],
             methods=['GET'],
-            summary="List all V2 graphs; used for new UI.",
+            summary='List all V2 graphs; used for new UI.',
         )
 
         self.router.add_api_route(
-            "/suggest_links",
+            '/suggest_links',
             self.suggest_links_v2,
             response_model=List[api.ColumnKeyGroup],
             methods=['POST'],
         )
 
         self.router.add_api_route(
-            "/{graph_id}/edge_stats",
+            '/{graph_id}/edge_stats',
             self.get_edge_stats,
             response_model=EdgeHealthStats,
             methods=['GET'],
-            summary="Info about edge stats such as cols, link type, etc.",
+            summary='Info about edge stats such as cols, link type, etc.',
         )
 
         self.router.add_api_route(
-            "/{graph_id}/refresh",
+            '/{graph_id}/refresh',
             self.refresh_graph_v2,
             response_model=EmptyResponse,
             methods=['POST'],
-            summary="Refresh a single graph by id.",
+            summary='Refresh a single graph by id.',
             responses={
                 HTTPStatus.NOT_FOUND: {
-                    'description': "Unable to find the graph with the given id."
+                    'description': 'Unable to find the graph with the given id.'
                 }
             },
         )
 
         self.router.add_api_route(
-            "/{graph_id}/sdk",
+            '/{graph_id}/sdk',
             self.graph_to_sdk,
             response_model=str,
             methods=['GET'],
-            summary="Fully executable SDK script to load a graph.",
+            summary='Fully executable SDK script to load a graph.',
         )
 
     async def validate_name_v2(
@@ -173,9 +172,11 @@ class GraphRouter:
         project_id: Annotated[str, Query()],
         name_alias: Annotated[str | None, Query(max_length=64)] = None,
         force_rename: Annotated[
-            bool, Query(description=_force_graph_rename_desc)] = False,
+            bool, Query(description=_force_graph_rename_desc)
+        ] = False,
         skip_validation: Annotated[
-            bool, Query(description=_skip_graph_validation_desc)] = False,
+            bool, Query(description=_skip_graph_validation_desc)
+        ] = False,
     ) -> IDResponse:
         """
         Create a GraphDefinition from api.GraphDefinition.
@@ -221,8 +222,9 @@ class GraphRouter:
         identifier.
         """
         with wrap_validation_exceptions():
-            await self._graph_driver.delete_graph_alias(graph_alias,
-                                                        project_id=project_id)
+            await self._graph_driver.delete_graph_alias(
+                graph_alias, project_id=project_id
+            )
         return IDResponse(graph_alias)
 
     async def get_graph_v2(
@@ -249,20 +251,19 @@ class GraphRouter:
             with wrap_validation_exceptions(), wrap_driver_errors():
                 if _FP_SUFFIX_SEPARATOR in id:
                     if not id.startswith('graph-') or id.startswith('NA-'):
-                        raise ValueError(
-                            f'Graph resource id is malformed: {id}')
+                        raise ValueError(f'Graph resource id is malformed: {id}')
                     try:
                         fpid = GraphIDv2(id).fpid
                         assert fpid is not None
                     except BaseException:
-                        raise ValueError(
-                            f"Graph resource id is malformed: {id}")
+                        raise ValueError(f'Graph resource id is malformed: {id}')
                     (
                         graph_def,
                         tstamps,
                         table_mapping,
                     ) = await self._graph_driver.get_graph_v2(
-                        fpid, ProjectID(project_id))
+                        fpid, ProjectID(project_id)
+                    )
                 else:
                     alias = ID(id)
                     (
@@ -270,11 +271,12 @@ class GraphRouter:
                         tstamps,
                         table_mapping,
                     ) = await self._graph_driver.get_graph_v2_by_alias(
-                        alias, ProjectID(project_id))
+                        alias, ProjectID(project_id)
+                    )
 
                 num_links = sum(
-                    len(group.columns) - 1
-                    for group in graph_def.graph.col_groups)
+                    len(group.columns) - 1 for group in graph_def.graph.col_groups
+                )
                 num_tables = len(graph_def.graph.tables)
                 return GraphResourceResponse(
                     id=graph_def.id,
@@ -286,12 +288,14 @@ class GraphRouter:
                     num_tables=num_tables,
                 )
 
-        with wrap_validation_exceptions(
-                not_exists_error=GraphDoesNotExistError), wrap_driver_errors():
+        with (
+            wrap_validation_exceptions(not_exists_error=GraphDoesNotExistError),
+            wrap_driver_errors(),
+        ):
             entry = await self._graph_driver.resolve_project_graph(
-                project_id, graph_id_or_alias)
-            response = await _get_graph_response(str(GraphIDv2.public(entry.id))
-                                                 )
+                project_id, graph_id_or_alias
+            )
+            response = await _get_graph_response(str(GraphIDv2.public(entry.id)))
             response.created_by = entry.created_by
             response.created_by_name = entry.created_by_name
             return response
@@ -331,8 +335,7 @@ class GraphRouter:
             List[ColumnKeyGroup]: A list of columns that
             should be linked together.
         """
-        return await self._graph_driver.suggest_links_v2(
-            request, ProjectID(project_id))
+        return await self._graph_driver.suggest_links_v2(request, ProjectID(project_id))
 
     async def get_edge_stats(
         self,
@@ -349,9 +352,11 @@ class GraphRouter:
             edge stats.
         """
         with wrap_validation_exceptions(
-                not_exists_error=GraphDoesNotExistError, ):
+            not_exists_error=GraphDoesNotExistError,
+        ):
             return await self._graph_driver.get_edge_stats(
-                GraphIDv2.from_public(graph_id), project_id)
+                GraphIDv2.from_public(graph_id), project_id
+            )
 
     async def refresh_graph_v2(
         self,
@@ -363,10 +368,10 @@ class GraphRouter:
         Args:
             graph_id(str): String that's either graph-{fpid} or NA-{fpid}.
         """
-        with wrap_validation_exceptions(
-                not_exists_error=GraphDoesNotExistError):
+        with wrap_validation_exceptions(not_exists_error=GraphDoesNotExistError):
             await self._graph_driver.refresh_graph_v2(
-                GraphIDv2.from_public(graph_id), project_id)
+                GraphIDv2.from_public(graph_id), project_id
+            )
         return EmptyResponse()
 
     async def graph_to_sdk(
@@ -389,13 +394,15 @@ class GraphRouter:
         Response:
             str: The complete python script as a string.
         """
-        generated_script = ""
+        generated_script = ''
         with wrap_validation_exceptions(), wrap_driver_errors():
             if _FP_SUFFIX_SEPARATOR not in graph_id:
-                raise ValueError(f"Graph resource id is malformed : {graph_id}")
+                raise ValueError(f'Graph resource id is malformed : {graph_id}')
             generated_script = await self._graph_driver.graph_to_sdk(
-                graph_id, ProjectID(require_project_id(project_id)))
-        if generated_script == "":
-            raise ValueError(f"SDK script for graph with ID {graph_id}" +
-                             "could not be generated.")
+                graph_id, ProjectID(require_project_id(project_id))
+            )
+        if generated_script == '':
+            raise ValueError(
+                f'SDK script for graph with ID {graph_id}' + 'could not be generated.'
+            )
         return generated_script

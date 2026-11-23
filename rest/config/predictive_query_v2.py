@@ -28,6 +28,7 @@ class ModelPlanResponse:
     """
     Response object for suggesting a model plan.
     """
+
     suggested_model_plan: DefaultModelPlanInfo
     suggested_model_plan_yaml: Optional[str]
 
@@ -46,6 +47,7 @@ class PQueryResponse:
         desc (str): A description of the predictive query. Defaults to an
             empty string.
     """
+
     name: Optional[str]
     query_string: str
     graph: apiGraphDefinition
@@ -62,6 +64,7 @@ class PQueryMetadataResponse:
         query_type (QueryType): The query type parsed from the predictive
             query.
     """
+
     task_type: TaskType
     query_type: api.QueryType
 
@@ -75,6 +78,7 @@ class PQueryEncodersResponse:
         encoders (Dict[str, str]): A mapping from fully qualified table name to
             encoder representation.
     """
+
     encoders: Dict[str, str]
 
 
@@ -89,11 +93,11 @@ class PQueryResource(api.PQueryResource):
     contract. Private Kumo routes use this strict superset for UI and internal
     execution metadata that must never cross the public boundary.
     """
+
     graph_display_name: Optional[str] = None
     # For internal use only (testing) where query string is written in YAML.
     advanced_options_yaml: Optional[str] = Field(default=None, hidden=True)
-    runtime_options: Optional[PQueryRuntimeOptions] = Field(
-        default=None, hidden=True)
+    runtime_options: Optional[PQueryRuntimeOptions] = Field(default=None, hidden=True)
 
     @property
     def list_distinct_target_is_array(self) -> Optional[bool]:
@@ -119,8 +123,9 @@ class PQueryResource(api.PQueryResource):
         if isinstance(v, BaseModel):
             return GraphDefinition(**dict(v))
 
-        raise ValueError(f'Invalid GraphDefinition type ({type(v)}),'
-                         f' unable to coerce graph: {v}')
+        raise ValueError(
+            f'Invalid GraphDefinition type ({type(v)}), unable to coerce graph: {v}'
+        )
 
 
 _PQUERY_RUNTIME_OPTION_FIELDS = (
@@ -139,11 +144,13 @@ def pquery_resource_with_runtime_options(
             data['advanced_options_yaml'] = raw_body['advanced_options_yaml']
         if 'runtime_options' in raw_body:
             data['runtime_options'] = raw_body['runtime_options']
-        elif any(field_name in raw_body
-                 for field_name in _PQUERY_RUNTIME_OPTION_FIELDS):
+        elif any(
+            field_name in raw_body for field_name in _PQUERY_RUNTIME_OPTION_FIELDS
+        ):
             data['runtime_options'] = pquery_runtime_options_or_none(
                 list_distinct_target_is_array=raw_body.get(
-                    'list_distinct_target_is_array'),
+                    'list_distinct_target_is_array'
+                ),
                 lp_bp_layout=raw_body.get('lp_bp_layout'),
             )
     return PQueryResource(**data)
@@ -199,7 +206,8 @@ class PQueryValidationRequest:
 
         raise ValueError(
             f'Invalid GraphDefinition type ({type(graph_val)}), unable to '
-            f'coerce graph: {graph_val}')
+            f'coerce graph: {graph_val}'
+        )
 
 
 @kumo_dataclass
@@ -207,9 +215,9 @@ class PQueryValidationArgs:
     query_string: str
     graph: GraphDefinition
     name: str
-    desc: Optional[str] = ""
+    desc: Optional[str] = ''
     # Raw user-supplied model-plan YAML.
-    model_plan: Optional[str] = ""
+    model_plan: Optional[str] = ''
     fpid: Optional[FPID] = None
     runtime_options: Optional[PQueryRuntimeOptions] = None
     # Pre-built train-table options, for in-process callers that already hold

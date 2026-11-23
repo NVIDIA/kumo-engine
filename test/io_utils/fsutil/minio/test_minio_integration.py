@@ -29,7 +29,8 @@ from service_framework._raw_deploy_config import S3AddressingStyle
 pytestmark = pytest.mark.compose_e2e
 
 _REPO_ROOT = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), '..', '..', '..', '..'))
+    os.path.join(os.path.dirname(__file__), '..', '..', '..', '..')
+)
 _SECRET_ROOT = os.path.join(
     _REPO_ROOT,
     'docker',
@@ -68,8 +69,7 @@ def _fixture_secret(name: str) -> str:
 
 @pytest.fixture
 def minio(monkeypatch) -> MinioHarness:
-    endpoint = os.environ.get('KUMO_MINIO_TEST_ENDPOINT',
-                              'http://127.0.0.1:19010')
+    endpoint = os.environ.get('KUMO_MINIO_TEST_ENDPOINT', 'http://127.0.0.1:19010')
     ca_bundle_path = os.environ.get('KUMO_MINIO_TEST_CA')
     connection = S3Connection(
         endpoint_url=endpoint,
@@ -82,10 +82,8 @@ def minio(monkeypatch) -> MinioHarness:
         ca_bundle_path=ca_bundle_path,
         send_bucket_owner_full_control=False,
     )
-    monkeypatch.setattr(s3_connection, 'active_s3_connection',
-                        lambda: connection)
-    monkeypatch.setattr(s3_filesystem, 'active_s3_connection',
-                        lambda: connection)
+    monkeypatch.setattr(s3_connection, 'active_s3_connection', lambda: connection)
+    monkeypatch.setattr(s3_filesystem, 'active_s3_connection', lambda: connection)
     s3_filesystem.threadsafe_boto._reset()
     pyarrow_utils._arrow_cloud_filesystem.cache_clear()
 
@@ -108,11 +106,9 @@ def minio(monkeypatch) -> MinioHarness:
 
 @pytest.fixture
 def orthogonal_minio(monkeypatch) -> OrthogonalMinioHarness:
-    endpoint = os.environ.get('KUMO_MINIO_TEST_ENDPOINT',
-                              'http://127.0.0.1:19010')
+    endpoint = os.environ.get('KUMO_MINIO_TEST_ENDPOINT', 'http://127.0.0.1:19010')
     ca_bundle_path = os.environ.get('KUMO_MINIO_TEST_CA')
-    ca_certificate = (fsutil.read_text(ca_bundle_path)
-                      if ca_bundle_path else None)
+    ca_certificate = fsutil.read_text(ca_bundle_path) if ca_bundle_path else None
     deployment = S3Connection(
         endpoint_url=endpoint,
         region='us-east-1',
@@ -138,8 +134,7 @@ def orthogonal_minio(monkeypatch) -> OrthogonalMinioHarness:
         owner='connector:minio-contract',
         rotation_id='fixture-1',
     )
-    monkeypatch.setattr(s3_connection, 'deployment_s3_connection',
-                        lambda: deployment)
+    monkeypatch.setattr(s3_connection, 'deployment_s3_connection', lambda: deployment)
     s3_filesystem.threadsafe_boto._reset()
     pyarrow_utils._arrow_cloud_filesystem.cache_clear()
     root = f's3://kumo-connector/kumo/minio-contract/{uuid.uuid4().hex}'
@@ -158,8 +153,7 @@ def orthogonal_minio(monkeypatch) -> OrthogonalMinioHarness:
         connector_root=root,
     )
     with credential_scope(credentials, require_explicit=True):
-        s3_filesystem.threadsafe_boto.s3_client().head_bucket(
-            Bucket='kumo-connector')
+        s3_filesystem.threadsafe_boto.s3_client().head_bucket(Bucket='kumo-connector')
     yield harness
     with credential_scope(credentials, require_explicit=True):
         fsutil.rm(root, ignore_errors=True)
@@ -171,10 +165,15 @@ def test_fsutil_contract(minio: MinioHarness) -> None:
     requests: list[tuple[str, dict[str, str]]] = []
 
     def record_request(model, params, **_kwargs) -> None:
-        requests.append((model.name, {
-            str(key).casefold(): str(value)
-            for key, value in params['headers'].items()
-        }))
+        requests.append(
+            (
+                model.name,
+                {
+                    str(key).casefold(): str(value)
+                    for key, value in params['headers'].items()
+                },
+            )
+        )
 
     minio.client.meta.events.register('before-call.s3.*', record_request)
     source = f'{minio.data_root}/source/input.txt'
@@ -200,8 +199,11 @@ def test_fsutil_contract(minio: MinioHarness) -> None:
     assert fsutil.read_text(f'{nested_copy}/nested/child.txt') == 'child'
     fsutil.rm(nested_source)
     assert not fsutil.exists(f'{nested_source}/top.txt')
-    relevant = [headers for operation, headers in requests
-                if operation in {'CopyObject', 'PutObject'}]
+    relevant = [
+        headers
+        for operation, headers in requests
+        if operation in {'CopyObject', 'PutObject'}
+    ]
     assert relevant
     assert all('x-amz-acl' not in headers for headers in relevant)
 
@@ -218,7 +220,8 @@ def test_listing_paginates(minio: MinioHarness) -> None:
     keys = s3_filesystem.listdir_recursive(root)
     assert len(keys) == 1005
     assert keys[0].startswith(
-        minio.data_root.removeprefix('s3://kumo-dataplane/') + '/')
+        minio.data_root.removeprefix('s3://kumo-dataplane/') + '/'
+    )
 
 
 def test_multipart_cleanup(minio: MinioHarness) -> None:
@@ -226,10 +229,12 @@ def test_multipart_cleanup(minio: MinioHarness) -> None:
 
     def record_request(model, params, **_kwargs) -> None:
         del model
-        requests.append({
-            str(key).casefold(): str(value)
-            for key, value in params['headers'].items()
-        })
+        requests.append(
+            {
+                str(key).casefold(): str(value)
+                for key, value in params['headers'].items()
+            }
+        )
 
     minio.client.meta.events.register(
         'before-call.s3.CreateMultipartUpload',
@@ -246,8 +251,7 @@ def test_multipart_cleanup(minio: MinioHarness) -> None:
     )
 
     assert fsutil.has_write_permission(f'{minio.data_root}/output/')
-    uploads = minio.client.list_multipart_uploads(Bucket=bucket,
-                                                  Prefix=root_key)
+    uploads = minio.client.list_multipart_uploads(Bucket=bucket, Prefix=root_key)
     assert uploads.get('Uploads', []) == []
     assert requests
     assert all('x-amz-acl' not in headers for headers in requests)
@@ -300,17 +304,18 @@ def test_pyarrow_parquet(minio: MinioHarness) -> None:
 
 
 def test_connector_contract_is_orthogonal_from_dataplane(
-        orthogonal_minio: OrthogonalMinioHarness) -> None:
+    orthogonal_minio: OrthogonalMinioHarness,
+) -> None:
     root = orthogonal_minio.connector_root
     source = f'{root}/source/input.txt'
     copied = f'{root}/copy/input.txt'
     parquet_uri = f'{root}/parquet/result.parquet'
     expected = pa.table({'customer_id': [1, 2], 'ltv': [10.0, 20.0]})
 
-    assert orthogonal_minio.connector.identity != (
-        orthogonal_minio.deployment.identity)
-    with credential_scope(orthogonal_minio.connector_credentials,
-                          require_explicit=True):
+    assert orthogonal_minio.connector.identity != (orthogonal_minio.deployment.identity)
+    with credential_scope(
+        orthogonal_minio.connector_credentials, require_explicit=True
+    ):
         client = s3_filesystem.threadsafe_boto.s3_client()
         assert client.meta.endpoint_url == orthogonal_minio.connector.endpoint_url
         fsutil.write_text(source, 'connector-minio-contract')
@@ -319,10 +324,13 @@ def test_connector_contract_is_orthogonal_from_dataplane(
         fsutil.copy_file(source, copied)
         assert s3_filesystem.listdir_recursive(root)
         filesystem = pyarrow_utils.arrow_cloud_filesystem(parquet_uri)
-        pq.write_table(expected, parquet_uri.removeprefix('s3://'),
-                       filesystem=filesystem)
-        assert pq.read_table(parquet_uri.removeprefix('s3://'),
-                             filesystem=filesystem) == expected
+        pq.write_table(
+            expected, parquet_uri.removeprefix('s3://'), filesystem=filesystem
+        )
+        assert (
+            pq.read_table(parquet_uri.removeprefix('s3://'), filesystem=filesystem)
+            == expected
+        )
         assert fsutil.has_write_permission(f'{root}/permission-probe/')
         url = fsutil.get_presigned_helper(source).generate_download_url()
         response = requests.get(
@@ -335,17 +343,17 @@ def test_connector_contract_is_orthogonal_from_dataplane(
         with pytest.raises(ClientError) as connector_denied:
             client.head_bucket(Bucket='kumo-dataplane')
         assert connector_denied.value.response['Error']['Code'] in {
-            'AccessDenied', '403'
+            'AccessDenied',
+            '403',
         }
 
     deployment_client = s3_filesystem.threadsafe_boto.s3_client()
     assert deployment_client.meta.endpoint_url == (
-        orthogonal_minio.deployment.endpoint_url)
+        orthogonal_minio.deployment.endpoint_url
+    )
     with pytest.raises(ClientError) as deployment_denied:
         deployment_client.head_bucket(Bucket='kumo-connector')
-    assert deployment_denied.value.response['Error']['Code'] in {
-        'AccessDenied', '403'
-    }
+    assert deployment_denied.value.response['Error']['Code'] in {'AccessDenied', '403'}
 
 
 def test_invalid_key_fails(minio: MinioHarness) -> None:
@@ -409,7 +417,8 @@ def test_wrong_endpoint_fails(minio: MinioHarness) -> None:
                 connect_timeout=1,
                 read_timeout=1,
                 retries={'max_attempts': 0},
-            )),
+            )
+        ),
     )
 
     with pytest.raises(EndpointConnectionError):
@@ -430,8 +439,7 @@ def test_wrong_ca_fails(minio: MinioHarness) -> None:
         endpoint_url=minio.connection.endpoint_url,
         region_name=minio.connection.region,
         verify=default_ca,
-        config=minio.connection.boto_config.merge(
-            Config(retries={'max_attempts': 0})),
+        config=minio.connection.boto_config.merge(Config(retries={'max_attempts': 0})),
     )
 
     with pytest.raises(SSLError):
@@ -442,13 +450,15 @@ def test_wrong_style_fails(minio: MinioHarness) -> None:
     if not minio.connection.endpoint_url.startswith('https://'):
         pytest.skip('addressing failure applies to the TLS fixture')
     endpoint = urlsplit(minio.connection.endpoint_url)
-    virtual_endpoint = urlunsplit((
-        endpoint.scheme,
-        f'localhost:{endpoint.port}',
-        endpoint.path,
-        endpoint.query,
-        endpoint.fragment,
-    ))
+    virtual_endpoint = urlunsplit(
+        (
+            endpoint.scheme,
+            f'localhost:{endpoint.port}',
+            endpoint.path,
+            endpoint.query,
+            endpoint.fragment,
+        )
+    )
     client = boto3.session.Session(
         aws_access_key_id=minio.connection.access_key,
         aws_secret_access_key=minio.connection.secret_key,

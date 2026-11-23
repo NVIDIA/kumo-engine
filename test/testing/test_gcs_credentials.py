@@ -53,9 +53,17 @@ def test_explicit_adc_and_cache(monkeypatch, tmp_path):
     assert fsutil.read_text(adc) == '{"type": "external_account"}'
 
 
-@pytest.mark.parametrize('failure', [
-    'none', 'fixture', 'test', 'teardown', 'missing', 'skip',
-])
+@pytest.mark.parametrize(
+    'failure',
+    [
+        'none',
+        'fixture',
+        'test',
+        'teardown',
+        'missing',
+        'skip',
+    ],
+)
 def test_lifecycle(pytester, monkeypatch, failure):
     adc = str(pytester.path / 'adc.json')
     fsutil.write_text(adc, '{"type": "external_account"}')
@@ -67,7 +75,7 @@ def test_lifecycle(pytester, monkeypatch, failure):
     if failure == 'missing':
         monkeypatch.delenv('GCP_BIGQUERY_NO_TABLE_SERVICE_ACCOUNT')
     before = dict(os.environ)
-    pytester.makeconftest(f'''
+    pytester.makeconftest(f"""
 import os
 import pytest
 from test.conftest import pytest_runtest_setup, pytest_runtest_teardown
@@ -92,8 +100,8 @@ def resource(worker):
     assert os.environ['GOOGLE_IMPERSONATE_SERVICE_ACCOUNT'] == 'restricted'
     if {failure!r} == 'teardown':
         raise RuntimeError('teardown failure')
-''')
-    pytester.makepyfile(f'''
+""")
+    pytester.makepyfile(f"""
 import os
 import pytest
 from kumo.testing.bigquery import BigQueryIdentity, withBigQueryCredentials
@@ -108,9 +116,10 @@ def test_live(resource):
 def test_next():
     expected = 'original-target' if {failure!r} == 'skip' else None
     assert os.environ.get('GOOGLE_IMPERSONATE_SERVICE_ACCOUNT') == expected
-''')
+""")
     result = pytester.runpytest_inprocess(
-        '-q', '-o', 'addopts=', '--confcutdir', str(pytester.path))
+        '-q', '-o', 'addopts=', '--confcutdir', str(pytester.path)
+    )
     if failure in ('fixture', 'missing'):
         result.assert_outcomes(passed=1, errors=1)
     elif failure == 'teardown':
@@ -121,9 +130,13 @@ def test_next():
         result.assert_outcomes(passed=1, skipped=1)
     else:
         result.assert_outcomes(passed=2)
-    for variable in ('GOOGLE_APPLICATION_CREDENTIALS', ENV_GOOGLE_CREDENTIALS_JSON,
-                     'GOOGLE_IMPERSONATE_SERVICE_ACCOUNT', 'GCP_PROJECT_ID',
-                     gcs.ENV_GCS_TEST_BUCKET):
+    for variable in (
+        'GOOGLE_APPLICATION_CREDENTIALS',
+        ENV_GOOGLE_CREDENTIALS_JSON,
+        'GOOGLE_IMPERSONATE_SERVICE_ACCOUNT',
+        'GCP_PROJECT_ID',
+        gcs.ENV_GCS_TEST_BUCKET,
+    ):
         assert os.environ.get(variable) == before.get(variable)
 
 
@@ -132,7 +145,7 @@ def test_existing_workers_rejected(pytester, monkeypatch, skipped):
     adc = str(pytester.path / 'adc.json')
     fsutil.write_text(adc, '{"type": "external_account"}')
     monkeypatch.setenv('GOOGLE_APPLICATION_CREDENTIALS', adc)
-    pytester.makeconftest('''
+    pytester.makeconftest("""
 import pytest
 from test.conftest import pytest_runtest_setup, pytest_runtest_teardown
 from kumo.testing.bigquery import GCP_WORKERS_STARTED
@@ -140,8 +153,8 @@ from kumo.testing.bigquery import GCP_WORKERS_STARTED
 def pytest_configure(config):
     config.addinivalue_line('markers', 'gcs_credentials: identity')
     config.stash[GCP_WORKERS_STARTED] = True
-''')
-    pytester.makepyfile(f'''
+""")
+    pytester.makepyfile(f"""
 import pytest
 from kumo.testing.gcs import withGCSCredentials
 
@@ -149,9 +162,10 @@ from kumo.testing.gcs import withGCSCredentials
 @withGCSCredentials
 def test_late_gcp():
     pass
-''')
+""")
     result = pytester.runpytest_inprocess(
-        '-q', '-o', 'addopts=', '--confcutdir', str(pytester.path))
+        '-q', '-o', 'addopts=', '--confcutdir', str(pytester.path)
+    )
     if skipped:
         result.assert_outcomes(skipped=1)
     else:
@@ -160,7 +174,7 @@ def test_late_gcp():
 
 
 def test_mixed_filesystem_marker(pytester):
-    pytester.makeconftest('''
+    pytester.makeconftest("""
 def pytest_configure(config):
     config.addinivalue_line('markers', 'gcs_credentials: identity')
 
@@ -170,14 +184,14 @@ def pytest_collection_modifyitems(items):
     assert len(marked) == 1
     assert marked[0].name == 'test_mixed[gcs]'
     assert len(items) == 4
-''')
-    pytester.makepyfile('''
+""")
+    pytester.makepyfile("""
 from test.io_utils.fsutil.test_all import root
 
 def test_mixed(root):
     pass
-''')
+""")
     result = pytester.runpytest_inprocess(
-        '--collect-only', '-q', '-o', 'addopts=',
-        '--confcutdir', str(pytester.path))
+        '--collect-only', '-q', '-o', 'addopts=', '--confcutdir', str(pytester.path)
+    )
     assert result.ret == 0

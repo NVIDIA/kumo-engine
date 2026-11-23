@@ -31,15 +31,15 @@ from common_utils.enum import extends_enum
 from io_utils import kumo_dataclass, logging
 from io_utils.json import from_json, to_json
 from kumo.connector.composite_file_connector import CompositeFileConnector
-from kumo.graph.graph import BaseColumn
-from kumo.graph.graph import Column as KumoColumn
 from kumo.graph.graph import (
+    BaseColumn,
     Connector,
     ForeignKey,
     PrimaryKey,
     Table,
     TimeColumn,
 )
+from kumo.graph.graph import Column as KumoColumn
 from kumo.validation import ValidationException
 from monitoring.tracing import TraceOptions, trace
 from rest.config.connector import (
@@ -104,18 +104,29 @@ def _coerce_dtype(dtype: Any) -> Optional[Dtype]:
 def _validate_relative_source_table_name(value: str) -> str:
     """Validate a canonical connector-relative object or dataset name."""
     name = str(value)
-    if (not name or name.startswith('/') or name.endswith('/') or '\\' in name
-            or '://' in name):
+    if (
+        not name
+        or name.startswith('/')
+        or name.endswith('/')
+        or '\\' in name
+        or '://' in name
+    ):
         raise ValueError(
-            'source_table_name must be a non-empty connector-relative path')
+            'source_table_name must be a non-empty connector-relative path'
+        )
     if any(part in ('', '.', '..') for part in name.split('/')):
         raise ValueError(
-            'source_table_name must not contain empty, dot, or parent parts')
+            'source_table_name must not contain empty, dot, or parent parts'
+        )
     return name
 
 
-def _object_source_fpid(connector_id: str, coordinate: str, file_type: FileType,
-                        data_source_type: 'DataSourceType') -> FPID:
+def _object_source_fpid(
+    connector_id: str,
+    coordinate: str,
+    file_type: FileType,
+    data_source_type: 'DataSourceType',
+) -> FPID:
     md5_hasher = md5()
     for value in (connector_id, coordinate, file_type.name, data_source_type):
         md5_hasher.update(value.encode())
@@ -128,12 +139,15 @@ def _fixture_file_type(coordinate: str, source_kind: str) -> FileType:
         return FileType.PARQUET
     if lower.endswith('.csv'):
         return FileType.CSV
-    raise ValueError('Fixture conversion requires an exact .csv or .parquet '
-                     f'{source_kind} source coordinate')
+    raise ValueError(
+        'Fixture conversion requires an exact .csv or .parquet '
+        f'{source_kind} source coordinate'
+    )
 
 
 def _decompose_timestamp_format(
-    col: 'Column', ) -> Tuple[Dict[str, str], Optional[str]]:
+    col: 'Column',
+) -> Tuple[Dict[str, str], Optional[str]]:
     r"""Decompose v2 ``Column.timestamp_format`` into the v1
     ``(metadata, timestamp_unit)`` pair using the dtype-conditional rule
     shared by every v2-to-v1 conversion site (``col_to_base_config``, the
@@ -146,7 +160,7 @@ def _decompose_timestamp_format(
         return metadata, timestamp_unit
     if isinstance(col.timestamp_format, table_api.TimestampUnit):
         timestamp_unit = str(col.timestamp_format.value)
-        if (Dtype.is_string(col.dtype) or Dtype.is_timestamp(col.dtype)):
+        if Dtype.is_string(col.dtype) or Dtype.is_timestamp(col.dtype):
             metadata[TS_FORMAT_METADATA] = str(col.timestamp_format.value)
     else:
         metadata[TS_FORMAT_METADATA] = str(col.timestamp_format)
@@ -181,7 +195,7 @@ def column_def_to_foreign_key(
 
 @kumo_dataclass(frozen=True)
 class Column(table_api.Column):
-    @field_validator("timestamp_format", mode="before")
+    @field_validator('timestamp_format', mode='before')
     @classmethod
     def _normalize_timestamp_format(cls, v: Any) -> Any:
         if isinstance(v, str) and not v.strip():
@@ -240,14 +254,14 @@ class Column(table_api.Column):
 
 @extends_enum(ApiDataSourceType)
 class DataSourceType(str, Enum):
-    SNOWFLAKE = "SNOWFLAKE"
-    S3 = "S3"
-    GCS = "GCS"
-    ADLS = "ADLS"
-    DATABRICKS = "DATABRICKS"
-    BIGQUERY = "BIGQUERY"
-    CUSTOM_SQL = "CUSTOM_SQL"
-    UNAVAILABLE = "UNAVAILABLE"
+    SNOWFLAKE = 'SNOWFLAKE'
+    S3 = 'S3'
+    GCS = 'GCS'
+    ADLS = 'ADLS'
+    DATABRICKS = 'DATABRICKS'
+    BIGQUERY = 'BIGQUERY'
+    CUSTOM_SQL = 'CUSTOM_SQL'
+    UNAVAILABLE = 'UNAVAILABLE'
 
     def match_connector_type(self, connector_type: ConnectorType) -> bool:
         if self == DataSourceType.SNOWFLAKE:
@@ -265,15 +279,17 @@ class DataSourceType(str, Enum):
         if self == DataSourceType.CUSTOM_SQL:
             # A Custom SQL table runs its query against a warehouse SQL
             # connector; any of the supported warehouses is valid.
-            return connector_type in (ConnectorType.SNOWFLAKE,
-                                      ConnectorType.DATABRICKS,
-                                      ConnectorType.BIGQUERY)
+            return connector_type in (
+                ConnectorType.SNOWFLAKE,
+                ConnectorType.DATABRICKS,
+                ConnectorType.BIGQUERY,
+            )
         return False
 
 
 @kumo_dataclass(frozen=True)
 class S3SourceTable(source_table_api.S3SourceTable):
-    @field_validator("data_source_type")
+    @field_validator('data_source_type')
     @classmethod
     def _validate_data_source_type(cls, v):
         return DataSourceType(v)
@@ -300,8 +316,9 @@ class S3SourceTable(source_table_api.S3SourceTable):
 
     @cached_property
     def fpid(self) -> FPID:
-        return _object_source_fpid(self.connector_id, self.table_name,
-                                   self.file_type, self.data_source_type)
+        return _object_source_fpid(
+            self.connector_id, self.table_name, self.file_type, self.data_source_type
+        )
 
     def require_connector(
         self,
@@ -313,18 +330,16 @@ class S3SourceTable(source_table_api.S3SourceTable):
             return isinstance(self.source, source_table_api.S3RelativeSource)
         if not isinstance(connector_config, S3ConnectorResourceConfig):
             return False
-        if isinstance(connector_config.target,
-                      data_source_api.S3RootedConnectorTarget):
+        if isinstance(connector_config.target, data_source_api.S3RootedConnectorTarget):
             return isinstance(self.source, source_table_api.S3RelativeSource)
-        if isinstance(connector_config.target,
-                      data_source_api.S3AnyURIConnectorTarget):
+        if isinstance(connector_config.target, data_source_api.S3AnyURIConnectorTarget):
             return isinstance(self.source, source_table_api.S3URISource)
         return False
 
 
 @kumo_dataclass(frozen=True)
 class GCSSourceTable(source_table_api.GCSSourceTable):
-    @field_validator("data_source_type")
+    @field_validator('data_source_type')
     @classmethod
     def _validate_data_source_type(cls, v):
         return DataSourceType(v)
@@ -355,28 +370,35 @@ class GCSSourceTable(source_table_api.GCSSourceTable):
 
     @cached_property
     def fpid(self) -> FPID:
-        return _object_source_fpid(self.connector_id, self.source_coordinate,
-                                   self.file_type, self.data_source_type)
+        return _object_source_fpid(
+            self.connector_id,
+            self.source_coordinate,
+            self.file_type,
+            self.data_source_type,
+        )
 
     def require_connector(
         self,
         connector_config: ConnectorResourceConfigDB,
     ) -> bool:
-        if (self.connector_id != connector_config.name or
-                not isinstance(connector_config, GCSConnectorResourceConfig)):
+        if self.connector_id != connector_config.name or not isinstance(
+            connector_config, GCSConnectorResourceConfig
+        ):
             return False
-        if isinstance(connector_config.target,
-                      data_source_api.GCSRootedConnectorTarget):
+        if isinstance(
+            connector_config.target, data_source_api.GCSRootedConnectorTarget
+        ):
             return isinstance(self.source, source_table_api.GCSRelativeSource)
-        if isinstance(connector_config.target,
-                      data_source_api.GCSAnyURIConnectorTarget):
+        if isinstance(
+            connector_config.target, data_source_api.GCSAnyURIConnectorTarget
+        ):
             return isinstance(self.source, source_table_api.GCSURISource)
         return False
 
 
 @kumo_dataclass(frozen=True)
 class ADLSSourceTable(source_table_api.ADLSSourceTable):
-    @field_validator("data_source_type")
+    @field_validator('data_source_type')
     @classmethod
     def _validate_data_source_type(cls, v):
         return DataSourceType(v)
@@ -407,39 +429,46 @@ class ADLSSourceTable(source_table_api.ADLSSourceTable):
 
     @cached_property
     def fpid(self) -> FPID:
-        return _object_source_fpid(self.connector_id, self.source_coordinate,
-                                   self.file_type, self.data_source_type)
+        return _object_source_fpid(
+            self.connector_id,
+            self.source_coordinate,
+            self.file_type,
+            self.data_source_type,
+        )
 
     def require_connector(
         self,
         connector_config: ConnectorResourceConfigDB,
     ) -> bool:
-        if (self.connector_id != connector_config.name or
-                not isinstance(connector_config, ADLSConnectorResourceConfig)):
+        if self.connector_id != connector_config.name or not isinstance(
+            connector_config, ADLSConnectorResourceConfig
+        ):
             return False
-        if isinstance(connector_config.target,
-                      data_source_api.ADLSRootedConnectorTarget):
+        if isinstance(
+            connector_config.target, data_source_api.ADLSRootedConnectorTarget
+        ):
             return isinstance(self.source, source_table_api.ADLSRelativeSource)
-        if isinstance(connector_config.target,
-                      data_source_api.ADLSAnyURIConnectorTarget):
+        if isinstance(
+            connector_config.target, data_source_api.ADLSAnyURIConnectorTarget
+        ):
             return isinstance(self.source, source_table_api.ADLSURISource)
         return False
 
 
 @kumo_dataclass(frozen=True)
 class SnowflakeSourceTable(source_table_api.SnowflakeSourceTable):
-    @field_validator("data_source_type")
+    @field_validator('data_source_type')
     @classmethod
     def _validate_data_source_type(cls, v):
         return DataSourceType(v)
 
-    def require_connector(self,
-                          connector_config: ConnectorResourceConfigDB) -> bool:
+    def require_connector(self, connector_config: ConnectorResourceConfigDB) -> bool:
         if connector_config.name == self.snowflake_connector_id:
             if connector_config.type != ConnectorType.SNOWFLAKE:
                 raise ValueError(
                     f'Connector {connector_config.name} is expected to be '
-                    f'Snowflake but got {connector_config.type}')
+                    f'Snowflake but got {connector_config.type}'
+                )
             return True
         return False
 
@@ -449,7 +478,8 @@ class SnowflakeSourceTable(source_table_api.SnowflakeSourceTable):
         md5_hasher.update(self.snowflake_connector_id.encode())
         # See https://docs.snowflake.com/en/sql-reference/name-resolution
         full_qualified_object_name = '.'.join(
-            [self.database, self.schema_name, self.table])
+            [self.database, self.schema_name, self.table]
+        )
         md5_hasher.update(full_qualified_object_name.encode())
         md5_hasher.update(self.data_source_type.encode())
         return FPID(md5_hasher.hexdigest())
@@ -461,18 +491,18 @@ class SnowflakeSourceTable(source_table_api.SnowflakeSourceTable):
 
 @kumo_dataclass(frozen=True)
 class DatabricksSourceTable(source_table_api.DatabricksSourceTable):
-    @field_validator("data_source_type")
+    @field_validator('data_source_type')
     @classmethod
     def _validate_data_source_type(cls, v):
         return DataSourceType(v)
 
-    def require_connector(self,
-                          connector_config: ConnectorResourceConfigDB) -> bool:
+    def require_connector(self, connector_config: ConnectorResourceConfigDB) -> bool:
         if connector_config.name == self.databricks_connector_id:
             if connector_config.type != ConnectorType.DATABRICKS:
                 raise ValueError(
                     f'Connector {connector_config.name} is expected to be '
-                    f'Databricks but got {connector_config.type}')
+                    f'Databricks but got {connector_config.type}'
+                )
             return True
         return False
 
@@ -501,7 +531,8 @@ class DatabricksSourceTable(source_table_api.DatabricksSourceTable):
 @kumo_dataclass(frozen=True)
 class BigQuerySourceTable(source_table_api.BigQuerySourceTable):
     r"""V2 TableDefinition for BigQuery tables."""
-    @field_validator("data_source_type")
+
+    @field_validator('data_source_type')
     @classmethod
     def _validate_data_source_type(cls, v):
         return DataSourceType(v)
@@ -519,7 +550,8 @@ class BigQuerySourceTable(source_table_api.BigQuerySourceTable):
             if connector_config.type != ConnectorType.BIGQUERY:
                 raise ValueError(
                     f'Connector {connector_config.name} is expected to be '
-                    f'BigQuery but got {connector_config.type}')
+                    f'BigQuery but got {connector_config.type}'
+                )
             return True
         return False
 
@@ -527,18 +559,20 @@ class BigQuerySourceTable(source_table_api.BigQuerySourceTable):
     def fpid(self) -> FPID:
         md5_hasher = md5()
         md5_hasher.update(self.bigquery_connector_id.encode())
-        fully_qualified_table_name = ".".join([
-            self.project_id,
-            self.dataset_id,
-            self.table_name,
-        ])
+        fully_qualified_table_name = '.'.join(
+            [
+                self.project_id,
+                self.dataset_id,
+                self.table_name,
+            ]
+        )
         md5_hasher.update(fully_qualified_table_name.encode())
         md5_hasher.update(self.data_source_type.encode())
         return FPID(md5_hasher.hexdigest())
 
     @property
     def table_location(self):
-        return ".".join([self.project_id, self.dataset_id, self.table_name])
+        return '.'.join([self.project_id, self.dataset_id, self.table_name])
 
 
 @kumo_dataclass(frozen=True)
@@ -550,6 +584,7 @@ class UnavailableSourceTable(source_table_api.UnavailableSourceTable):
     definitions. Without a stable fingerprint, validation/create requests can
     fail with an internal AttributeError before input validation can run.
     """
+
     def require_connector(
         self,
         connector_config: ConnectorResourceConfigDB,
@@ -581,13 +616,13 @@ class CustomSQLSourceTable(source_table_api.CustomSQLSourceTable):
     not part of the identity here — edits are tracked separately as a data
     version — so the fingerprint stays stable across formatting-only changes.
     """
-    @field_validator("data_source_type")
+
+    @field_validator('data_source_type')
     @classmethod
     def _validate_data_source_type(cls, v):
         return DataSourceType(v)
 
-    def require_connector(self,
-                          connector_config: ConnectorResourceConfigDB) -> bool:
+    def require_connector(self, connector_config: ConnectorResourceConfigDB) -> bool:
         # The backing connector is a warehouse SQL connector
         # (Snowflake/Databricks/BigQuery); its concrete type is enforced when
         # the query is validated, not here.
@@ -610,9 +645,14 @@ class CustomSQLSourceTable(source_table_api.CustomSQLSourceTable):
 # inheritance property?
 _FILE_SOURCE_TABLE_TYPES = (S3SourceTable, GCSSourceTable, ADLSSourceTable)
 
-_SOURCE_TABLE_TYPES = (*_FILE_SOURCE_TABLE_TYPES, BigQuerySourceTable,
-                       SnowflakeSourceTable, DatabricksSourceTable,
-                       CustomSQLSourceTable, UnavailableSourceTable)
+_SOURCE_TABLE_TYPES = (
+    *_FILE_SOURCE_TABLE_TYPES,
+    BigQuerySourceTable,
+    SnowflakeSourceTable,
+    DatabricksSourceTable,
+    CustomSQLSourceTable,
+    UnavailableSourceTable,
+)
 
 
 def is_file_source_table(table: 'TableDefinition') -> bool:
@@ -622,7 +662,7 @@ def is_file_source_table(table: 'TableDefinition') -> bool:
 
 @kumo_dataclass
 class TableDefinition(table_api.TableDefinition):
-    @field_validator("source_table")
+    @field_validator('source_table')
     @classmethod
     def _validate_source_table(cls, v):
         # Adapt API source table type.
@@ -650,16 +690,21 @@ class TableDefinition(table_api.TableDefinition):
         # 500 in the first accessor rather than 422 here.
         raise ValueError(
             f'Source table type {type(v).__name__} is not supported for a '
-            f'Kumo table definition.')
+            f'Kumo table definition.'
+        )
 
-    @field_validator("cols")
+    @field_validator('cols')
     @classmethod
     def _validate_cols(cls, cols):
         # Adapt api.Column to Column
         return [
-            Column(name=col.name, stype=col.stype, dtype=col.dtype,
-                   timestamp_format=col.timestamp_format,
-                   multicategorical_delimiter=(col.multicategorical_delimiter))
+            Column(
+                name=col.name,
+                stype=col.stype,
+                dtype=col.dtype,
+                timestamp_format=col.timestamp_format,
+                multicategorical_delimiter=(col.multicategorical_delimiter),
+            )
             for col in cols
         ]
 
@@ -682,7 +727,7 @@ class TableDefinition(table_api.TableDefinition):
 
         return FPID(md5_hasher.hexdigest())
 
-    @field_validator("time_col", "end_time_col", "pkey")
+    @field_validator('time_col', 'end_time_col', 'pkey')
     @classmethod
     def empty_str_to_none(cls, v: Optional[str]) -> Optional[str]:
         if v == '':
@@ -723,40 +768,52 @@ class TableDefinition(table_api.TableDefinition):
                 source_path = connector._get_path(source_table_name)
             except FileNotFoundError:
                 logger.warning(
-                    f"Source table {source_table_name} not found in "
-                    f"connector {connector_config.name}. Skipping table.")
+                    f'Source table {source_table_name} not found in '
+                    f'connector {connector_config.name}. Skipping table.'
+                )
                 return None
             file_type = FileType(connector._get_path_type(source_path).upper())
             src_table = S3SourceTable(
                 file_type=file_type,
                 connector_id=str(connector_id),
-                source=source_table_api.S3RelativeSource(
-                    path=source_table_name),
+                source=source_table_api.S3RelativeSource(path=source_table_name),
             )
         elif connector_config.type in {
-                ConnectorType.S3, ConnectorType.GCS, ConnectorType.ADLS
+            ConnectorType.S3,
+            ConnectorType.GCS,
+            ConnectorType.ADLS,
         }:
             if connector_config.type == ConnectorType.S3:
                 if not isinstance(connector_config, S3ConnectorResourceConfig):
                     raise ValueError('Invalid S3 connector configuration')
-                if not isinstance(connector_config.target,
-                                  (data_source_api.S3RootedConnectorTarget,
-                                   data_source_api.S3AnyURIConnectorTarget)):
+                if not isinstance(
+                    connector_config.target,
+                    (
+                        data_source_api.S3RootedConnectorTarget,
+                        data_source_api.S3AnyURIConnectorTarget,
+                    ),
+                ):
                     raise ValueError('Unsupported S3 connector target')
                 source_cls = S3SourceTable
                 source_kind = 'S3'
             else:
-                if not isinstance(connector_config, (
+                if not isinstance(
+                    connector_config,
+                    (
                         GCSConnectorResourceConfig,
                         ADLSConnectorResourceConfig,
-                )):
-                    raise ValueError(
-                        'Invalid object-store connector configuration')
-                source_cls = (GCSSourceTable if connector_config.type
-                              == ConnectorType.GCS else ADLSSourceTable)
+                    ),
+                ):
+                    raise ValueError('Invalid object-store connector configuration')
+                source_cls = (
+                    GCSSourceTable
+                    if connector_config.type == ConnectorType.GCS
+                    else ADLSSourceTable
+                )
                 source_kind = 'object'
-            source = object_store_source_for_connector(connector_config,
-                                                       source_table_name)
+            source = object_store_source_for_connector(
+                connector_config, source_table_name
+            )
             coordinate = getattr(source, 'path', getattr(source, 'uri', None))
             assert coordinate is not None
             src_table = source_cls(
@@ -784,8 +841,7 @@ class TableDefinition(table_api.TableDefinition):
                 dataset_id=connector_config.dataset_id,
             )
         else:
-            raise Exception(
-                f"Unsupported connector type: {connector_config.type}")
+            raise Exception(f'Unsupported connector type: {connector_config.type}')
 
         return TableDefinition(
             cols=tuple(cols),
@@ -814,7 +870,7 @@ class TableDefinition(table_api.TableDefinition):
             return ConnectorID(src.connector_id)
         if isinstance(src, _FILE_SOURCE_TABLE_TYPES):
             return ConnectorID(src.connector_id)
-        raise ValueError(f"Unknown source_table type: {type(src).__name__}")
+        raise ValueError(f'Unknown source_table type: {type(src).__name__}')
 
     def get_source_table_name(self) -> str:
         r"""Return the source-side table name for this TableDefinition,
@@ -831,7 +887,7 @@ class TableDefinition(table_api.TableDefinition):
             return str(src.table)
         if isinstance(src, _FILE_SOURCE_TABLE_TYPES):
             return str(src.table_name)
-        raise ValueError(f"Unknown source_table type: {type(src).__name__}")
+        raise ValueError(f'Unknown source_table type: {type(src).__name__}')
 
     @property
     def source_table_id(self) -> SourceTableID:
@@ -860,10 +916,11 @@ class TableDefinition(table_api.TableDefinition):
                 cols[c.name] = c.dtype
         if missing:
             raise ValueError(
-                f"Cannot fingerprint TableDefinition for "
+                f'Cannot fingerprint TableDefinition for '
                 f"'{self.get_source_table_name()}' — these columns have no "
-                f"dtype: {missing}. Run column dtype inference or set the "
-                f"dtype explicitly before fingerprinting.")
+                f'dtype: {missing}. Run column dtype inference or set the '
+                f'dtype explicitly before fingerprinting.'
+            )
         if self.is_sql:
             # The change-detection ``data_version`` is resolved by the
             # materialization path (it needs the referenced tables' versions),
@@ -878,7 +935,8 @@ class TableDefinition(table_api.TableDefinition):
             )
         multicategorical_delimiters = {
             col.name: col.multicategorical_delimiter
-            for col in self.cols if col.multicategorical_delimiter is not None
+            for col in self.cols
+            if col.multicategorical_delimiter is not None
         }
         return IngestedTableFingerprint(
             connector_name=self.get_connector_id(),
@@ -906,14 +964,15 @@ class TableDefinition(table_api.TableDefinition):
         """
         config_hasher = md5()
         config_hasher.update(f'connector={self.get_connector_id()}'.encode())
-        config_hasher.update(
-            f'source_table={self.get_source_table_name()}'.encode())
+        config_hasher.update(f'source_table={self.get_source_table_name()}'.encode())
         for col in sorted(self.cols, key=lambda c: c.name):
             config_hasher.update(col.name.encode())
             config_hasher.update(
-                persisted_type_token(_coerce_stype(col.stype)).encode())
+                persisted_type_token(_coerce_stype(col.stype)).encode()
+            )
             config_hasher.update(
-                persisted_type_token(_coerce_dtype(col.dtype)).encode())
+                persisted_type_token(_coerce_dtype(col.dtype)).encode()
+            )
             if col.multicategorical_delimiter is not None:
                 config_hasher.update(b'multicategorical_delimiter=')
                 config_hasher.update(col.multicategorical_delimiter.encode())
@@ -924,19 +983,19 @@ class TableDefinition(table_api.TableDefinition):
 
     def cache_key(self) -> str:
         r"""Unique table key for the data-backend cache/persist dir."""
-        source_hash = hashlib.sha256(
-            self.get_source_table_name().encode()).hexdigest()
+        source_hash = hashlib.sha256(self.get_source_table_name().encode()).hexdigest()
         return f'table_{source_hash}_{self._dedupe_hash()}'
 
     def wf_key(self) -> str:
         r"""Unique table key for the table-ingestion workflow id."""
-        return '.'.join([
-            self.fingerprint().fpid(),
-            self._dedupe_hash()[:8],
-        ])
+        return '.'.join(
+            [
+                self.fingerprint().fpid(),
+                self._dedupe_hash()[:8],
+            ]
+        )
 
-    def col_to_base_config(
-            self, col_name: Optional[str]) -> Optional[BaseColumnConfig]:
+    def col_to_base_config(self, col_name: Optional[str]) -> Optional[BaseColumnConfig]:
         if col_name is None:
             return None
         col = next((c for c in self.cols if c.name == col_name), None)
@@ -982,7 +1041,8 @@ class TableDefinition(table_api.TableDefinition):
             if self.pkey == col.name:
                 return col.to_primary_key()
         raise ValidationException(
-            message=f"pkey with name '{self.pkey}' is missing from cols")
+            message=f"pkey with name '{self.pkey}' is missing from cols"
+        )
 
     def time_column(self) -> Optional[TimeColumn]:
         r"""Return the kumo-engine ``TimeColumn`` for this table's
@@ -997,8 +1057,8 @@ class TableDefinition(table_api.TableDefinition):
             if self.time_col == col.name:
                 return col.to_time_column()
         raise ValidationException(
-            message=f"time_col with name '{self.time_col}' is missing "
-            f"from cols")
+            message=f"time_col with name '{self.time_col}' is missing from cols"
+        )
 
     def end_time_column(self) -> Optional[TimeColumn]:
         r"""Return the kumo-engine ``TimeColumn`` for this table's
@@ -1011,8 +1071,8 @@ class TableDefinition(table_api.TableDefinition):
             if self.end_time_col == col.name:
                 return col.to_time_column()
         raise ValidationException(
-            message=f"end_time_col with name '{self.end_time_col}' is "
-            f"missing from cols")
+            message=f"end_time_col with name '{self.end_time_col}' is missing from cols"
+        )
 
 
 @kumo_dataclass
@@ -1041,8 +1101,9 @@ class TableDBEntryV2(SerializedTableDBEntryV2):
 
         if id != config.fpid:
             raise RuntimeError(
-                f"TableV2 DB ID {id} does not match its definition "
-                f"fingerprint {config.fpid}.")
+                f'TableV2 DB ID {id} does not match its definition '
+                f'fingerprint {config.fpid}.'
+            )
 
         return self
 
@@ -1056,12 +1117,14 @@ class TableKind(str, Enum):
     (``ui/src/types/tables.ts``) exactly, so the Tables-list "Kind" filter and
     the detail card classify SQL tables straight off the wire.
     """
-    RAW = "raw"
-    SQL = "sql"
+
+    RAW = 'raw'
+    SQL = 'sql'
 
 
 def derive_table_kind(
-        table_def: 'table_api.TableDefinition | TableDefinition') -> TableKind:
+    table_def: 'table_api.TableDefinition | TableDefinition',
+) -> TableKind:
     r"""Classify a table as ``SQL`` or ``RAW`` from its source-table
     discriminator.
 
@@ -1071,8 +1134,10 @@ def derive_table_kind(
     discriminator is the ``DataSourceType`` enum or its bare string value.
     """
     source_table = getattr(table_def, 'source_table', None)
-    if getattr(source_table, 'data_source_type',
-               None) == source_table_api.CUSTOM_SQL_SOURCE_TABLE_TYPE:
+    if (
+        getattr(source_table, 'data_source_type', None)
+        == source_table_api.CUSTOM_SQL_SOURCE_TABLE_TYPE
+    ):
         return TableKind.SQL
     return TableKind.RAW
 
@@ -1083,6 +1148,7 @@ class TableResourceResponse:
     A config object containing table template metadata.
     Used as response for `get_table_v2`.
     """
+
     # Table resource identifier in the format of
     # <16digit hex id>, generated in the backend.
     id: FPID
@@ -1110,8 +1176,8 @@ class TableResourceResponse:
     # Connector ID and name
     connector: Optional[ConnectorLink] = None
 
-    created_by: str = ""
-    created_by_name: str = ""
+    created_by: str = ''
+    created_by_name: str = ''
 
     # Whether this is a raw (physical source) table or a Custom SQL table.
     # Stamped by the response builders via ``derive_table_kind`` so the UI can
@@ -1138,6 +1204,7 @@ class SqlReferenceStypes:
     dialect-normalized column stypes; ``connector_type`` is the warehouse dialect
     those names were normalized under.
     """
+
     connector_type: ConnectorType
     stypes: Dict[str, Dict[str, Stype]]
 
@@ -1186,6 +1253,7 @@ class TableReferenceMetadata:
     because they can be aliased a few different ways but still
     point to the same table in the end.
     """
+
     source_table_name: str
     table_fpid: FPID
     table_config: Dict[str, Any]
@@ -1207,7 +1275,7 @@ def table_args_to_kumo_table(
     cols = args.to_base_columns()
     table = Table(
         table_name=TableName('NA'),
-        data_source="",
+        data_source='',
         source_name=args.get_source_table_name(),
         cols=cols,
         data_version=None,
@@ -1226,8 +1294,7 @@ def table_args_to_kumo_table(
             table.time_col.metadata = metadata
             table.time_col.timestamp_unit = timestamp_unit
         else:
-            table.set_end_time_col(time_col_name,
-                                   dtype=table[time_col_name].dtype)
+            table.set_end_time_col(time_col_name, dtype=table[time_col_name].dtype)
             table.end_time_col.metadata = metadata
             table.end_time_col.timestamp_unit = timestamp_unit
     return table

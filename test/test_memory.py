@@ -14,8 +14,8 @@ from kumo.testing import withMemory
 
 torch.set_num_threads(1)
 
-if not sys.platform.startswith("linux"):
-    pytest.skip("skipping linux-only memory tests", allow_module_level=True)
+if not sys.platform.startswith('linux'):
+    pytest.skip('skipping linux-only memory tests', allow_module_level=True)
 
 
 def test_good_allocation():

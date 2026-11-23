@@ -79,41 +79,40 @@ def _build_trainer_and_batch(root_dir: str) -> tuple[Trainer, HeteroData]:
     hetero[TRAIN_TABLE].y = torch.tensor([[True], [False], [True], [False]])
 
     df_dict = {
-        USER:
-        pd.DataFrame({
-            'USER_ID': [0, 1, 2, 3],
-            'AGE': [20, 30, 40, 50],
-            'GENDER': ['f', 'm', 'f', 'f'],
-        }),
+        USER: pd.DataFrame(
+            {
+                'USER_ID': [0, 1, 2, 3],
+                'AGE': [20, 30, 40, 50],
+                'GENDER': ['f', 'm', 'f', 'f'],
+            }
+        ),
     }
     schema_dict = {
-        USER:
-        TestTableSchema(
-            stypes={
-                'AGE': Stype.numerical,
-                'GENDER': Stype.categorical
-            },
+        USER: TestTableSchema(
+            stypes={'AGE': Stype.numerical, 'GENDER': Stype.categorical},
             pkey_name='USER_ID',
         ),
     }
-    train_table_df = pd.DataFrame({
-        'USER_ID': [0, 1, 2, 3],
-        'TARGET': [True, False, True, False],
-    })
+    train_table_df = pd.DataFrame(
+        {
+            'USER_ID': [0, 1, 2, 3],
+            'TARGET': [True, False, True, False],
+        }
+    )
     _, _, encoders = create_task_data(
         df_dict=df_dict,
         schema_dict=schema_dict,
         encoders=EncodersConfig(
             encoders={
                 USER: {
-                    "AGE": Numerical(_stats={ColStatType.MEAN: 35.0}),
-                    "GENDER": Index(
-                        _stats={ColStatType.CATEGORY_COUNTS: [["f", 3], ["m", 1]]}
+                    'AGE': Numerical(_stats={ColStatType.MEAN: 35.0}),
+                    'GENDER': Index(
+                        _stats={ColStatType.CATEGORY_COUNTS: [['f', 3], ['m', 1]]}
                     ),
                 }
             },
             target=TargetEncoderConfig(
-                "TARGET",
+                'TARGET',
                 Index(_stats={ColStatType.CATEGORY_COUNTS: [[False, 2], [True, 2]]}),
             ),
         ),
@@ -121,8 +120,7 @@ def _build_trainer_and_batch(root_dir: str) -> tuple[Trainer, HeteroData]:
     )
 
     trainer = Trainer(
-        task=TaskConfig(TaskType.BINARY_CLASSIFICATION,
-                        name='TEST_GRADIENT_EXPLAIN'),
+        task=TaskConfig(TaskType.BINARY_CLASSIFICATION, name='TEST_GRADIENT_EXPLAIN'),
         encoder=HeteroTensorFrameEncoder(),
         model=HeteroGNN(channels=8, num_mp_layers=0),
         head=NodePredHead(),
@@ -150,20 +148,25 @@ def _build_trainer_and_batch(root_dir: str) -> tuple[Trainer, HeteroData]:
     return trainer, hetero
 
 
-def test_gradient_explainer_scores_every_reachable_column(
-        tmp_path: object) -> None:
+def test_gradient_explainer_scores_every_reachable_column(tmp_path: object) -> None:
     root_dir = str(tmp_path)
     with torch.random.fork_rng():
         torch.manual_seed(0)
         trainer, hetero = _build_trainer_and_batch(root_dir)
 
-    explainer = GradientExplainer(task_type=TaskType.BINARY_CLASSIFICATION,
-                                  root_dir=root_dir)
-    explainer.explain_start(module=trainer.pl_model, datamodule=None,
-                            stage=TrainingStage.TEST)
-    explainer.explain_pre_step(batch=hetero, module=trainer.pl_model,
-                               datamodule=None, stage=TrainingStage.TEST,
-                               batch_idx=0)
+    explainer = GradientExplainer(
+        task_type=TaskType.BINARY_CLASSIFICATION, root_dir=root_dir
+    )
+    explainer.explain_start(
+        module=trainer.pl_model, datamodule=None, stage=TrainingStage.TEST
+    )
+    explainer.explain_pre_step(
+        batch=hetero,
+        module=trainer.pl_model,
+        datamodule=None,
+        stage=TrainingStage.TEST,
+        batch_idx=0,
+    )
 
     # A real forward pass, run inside `explaining()` so each stype encoder
     # saves its input tensor for `GradientExplainer.get_grad()`'s
@@ -179,8 +182,9 @@ def test_gradient_explainer_scores_every_reachable_column(
         stage=TrainingStage.TEST,
         batch_idx=0,
     )
-    explainer.explain_end(module=trainer.pl_model, datamodule=None,
-                          outputs={}, stage=TrainingStage.TEST)
+    explainer.explain_end(
+        module=trainer.pl_model, datamodule=None, outputs={}, stage=TrainingStage.TEST
+    )
 
     scores = explainer._table_score_dict
     counts = explainer._table_count_dict

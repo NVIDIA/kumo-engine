@@ -8,8 +8,9 @@ import sys
 from pathlib import Path
 from typing import Optional, Sequence
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(
-    globals().get('__file__') or sys.argv[0])))
+sys.path.insert(
+    0, os.path.dirname(os.path.abspath(globals().get('__file__') or sys.argv[0]))
+)
 
 import jobs  # noqa: E402
 
@@ -28,8 +29,12 @@ def main(argv: Optional[Sequence[str]] = None) -> kumo.TrainingResult:
         if args.num_experiments:
             plan.training_job.num_experiments = args.num_experiments
         result = kumo.Trainer(plan).fit(
-            table, snapshot=snapshot, scoring_defaults=kumo.ScoringDefaults(
-                binary_classification_threshold=args.threshold))
+            table,
+            snapshot=snapshot,
+            scoring_defaults=kumo.ScoringDefaults(
+                binary_classification_threshold=args.threshold
+            ),
+        )
     print(f'model: models/{result.id}')
     if args.model_path_file:
         Path(args.model_path_file).write_text(f'models/{result.id}')

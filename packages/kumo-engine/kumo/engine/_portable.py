@@ -96,41 +96,71 @@ def _source_table_name(source_table: LocalSourceTableType) -> str:
     if isinstance(source_table, SnowflakeSourceTable):
         return '.'.join(
             _escape_dots(part)
-            for part in (source_table.database, source_table.schema_name,
-                         source_table.table))
+            for part in (
+                source_table.database,
+                source_table.schema_name,
+                source_table.table,
+            )
+        )
     if isinstance(source_table, BigQuerySourceTable):
         return '.'.join(
             _escape_dots(part)
-            for part in (source_table.project_id, source_table.dataset_id,
-                         source_table.table_name))
+            for part in (
+                source_table.project_id,
+                source_table.dataset_id,
+                source_table.table_name,
+            )
+        )
     if isinstance(source_table, DatabricksSourceTable):
         # Already catalog.schema.table by construction
         # (DatabricksConnector.source_table_for).
         return source_table.table
     if isinstance(source_table, S3SourceTable):
-        location = (source_table.source.path if isinstance(
-            source_table.source, S3RelativeSource) else source_table.source.uri)
-        return '.'.join(('s3', _escape_dots(source_table.connector_id[:16]),
-                         _escape_dots(location)))
+        location = (
+            source_table.source.path
+            if isinstance(source_table.source, S3RelativeSource)
+            else source_table.source.uri
+        )
+        return '.'.join(
+            ('s3', _escape_dots(source_table.connector_id[:16]), _escape_dots(location))
+        )
     if isinstance(source_table, ADLSSourceTable):
-        location = (source_table.source.path if isinstance(
-            source_table.source, ADLSRelativeSource) else
-                    source_table.source.uri)
-        return '.'.join(('adls', _escape_dots(source_table.connector_id[:16]),
-                         _escape_dots(location)))
+        location = (
+            source_table.source.path
+            if isinstance(source_table.source, ADLSRelativeSource)
+            else source_table.source.uri
+        )
+        return '.'.join(
+            (
+                'adls',
+                _escape_dots(source_table.connector_id[:16]),
+                _escape_dots(location),
+            )
+        )
     if isinstance(source_table, GCSSourceTable):
-        location = (source_table.source.path if isinstance(
-            source_table.source, GCSRelativeSource) else
-                    source_table.source.uri)
-        return '.'.join(('gcs', _escape_dots(source_table.connector_id[:16]),
-                         _escape_dots(location)))
+        location = (
+            source_table.source.path
+            if isinstance(source_table.source, GCSRelativeSource)
+            else source_table.source.uri
+        )
+        return '.'.join(
+            (
+                'gcs',
+                _escape_dots(source_table.connector_id[:16]),
+                _escape_dots(location),
+            )
+        )
     if isinstance(source_table, CustomSQLSourceTable):
-        return '.'.join(('custom_sql',
-                         _escape_dots(source_table.connector_id[:16]),
-                         _escape_dots(source_table.table)))
+        return '.'.join(
+            (
+                'custom_sql',
+                _escape_dots(source_table.connector_id[:16]),
+                _escape_dots(source_table.table),
+            )
+        )
     raise PortableGraphError(
-        f"no source_table_name coordinate builder for "
-        f"{type(source_table).__name__}.")
+        f'no source_table_name coordinate builder for {type(source_table).__name__}.'
+    )
 
 
 def portable_graph_config(
@@ -156,12 +186,14 @@ def portable_graph_config(
     for alias, table in tables.items():
         if table.definition is None:
             raise PortableGraphError(
-                f"Table {alias!r} has no resolved `definition`; "
-                "call infer_metadata() or provide a definition.")
+                f'Table {alias!r} has no resolved `definition`; '
+                'call infer_metadata() or provide a definition.'
+            )
         definitions[alias] = table.definition
     try:
         definition = graph_definition_from_edges(
-            definitions, edges, definition_type=GraphDefinition)
+            definitions, edges, definition_type=GraphDefinition
+        )
     except ValueError as error:
         raise PortableGraphError(str(error)) from error
 
@@ -169,9 +201,9 @@ def portable_graph_config(
         if edge.src_table == edge.dst_table:
             pkey = definition.tables[edge.dst_table].pkey
             warnings.warn(
-                f"Self-relation {edge.src_table}.{edge.fkey} -> "
-                f"{edge.dst_table}.{pkey} is not supported by Kumo Local "
-                "and will be omitted from the snapshot.",
+                f'Self-relation {edge.src_table}.{edge.fkey} -> '
+                f'{edge.dst_table}.{pkey} is not supported by Kumo Local '
+                'and will be omitted from the snapshot.',
                 UserWarning,
                 stacklevel=2,
             )
@@ -185,9 +217,9 @@ def portable_graph_config(
     from kumo_core.portable_graph import _project_portable_graph
 
     try:
-        graph_config = _project_portable_graph(definition, edges,
-                                               source_table_names,
-                                               connector_ids)
+        graph_config = _project_portable_graph(
+            definition, edges, source_table_names, connector_ids
+        )
     except ValueError as error:
         raise PortableGraphError(str(error)) from error
 

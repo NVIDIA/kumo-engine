@@ -18,7 +18,6 @@ from typing import Any, Dict, List, Optional, Tuple
 import google.auth.transport.requests
 from google.auth.credentials import Credentials
 from google.cloud import bigquery, bigquery_storage, storage
-from kumo_bigquery.auth import google_credentials
 from kumo_core.sources.principals import IdentityRef, Principal, resolve
 from kumoapi.data_source import (
     BigQueryConnectorResourceConfig,
@@ -26,14 +25,15 @@ from kumoapi.data_source import (
 )
 from kumoapi.plugin import SourceConnector
 
+from kumo_bigquery.auth import google_credentials
+
 #: What an impersonated token is minted for. The platform uses the same scope
 #: for BigQuery (``rest/config/identity.py``'s ``_google_scope``), so a local
 #: read and a platform read reach the same APIs as the same principal.
 _CLOUD_PLATFORM_SCOPE = 'https://www.googleapis.com/auth/cloud-platform'
 
 
-def _target_config(
-        connector: SourceConnector) -> BigQueryConnectorResourceConfig:
+def _target_config(connector: SourceConnector) -> BigQueryConnectorResourceConfig:
     r"""Narrows a connector's target to this provider's own.
 
     A host routes on ``connector.source_type``, so in practice this always
@@ -44,8 +44,9 @@ def _target_config(
     config = connector.config
     if not isinstance(config, BigQueryConnectorResourceConfig):
         raise ValueError(
-            f"Connector {connector.id!r} points at a "
-            f"{config.type.value} target, so it cannot be read as BigQuery.")
+            f'Connector {connector.id!r} points at a '
+            f'{config.type.value} target, so it cannot be read as BigQuery.'
+        )
     return config
 
 
@@ -73,8 +74,9 @@ def _require_credentials(credentials: object) -> None:
     """
     if not (hasattr(credentials, 'refresh') and hasattr(credentials, 'token')):
         raise TypeError(
-            f"A BigQuery identity must resolve to google.auth credentials; "
-            f"got {type(credentials).__name__!r}.")
+            f'A BigQuery identity must resolve to google.auth credentials; '
+            f'got {type(credentials).__name__!r}.'
+        )
 
 
 def _credentials_for(principal: Principal) -> Credentials:
@@ -86,11 +88,15 @@ def _credentials_for(principal: Principal) -> Credentials:
     config = principal.config
     if not isinstance(config, BigQueryIdentityConfig):
         raise ValueError(
-            f"Identity {principal.name!r} is a {config.type.value} "
-            f"identity, so it cannot reach BigQuery.")
-    return google_credentials(principal.name, config.authentication,
-                              principal.credentials,
-                              scope=_CLOUD_PLATFORM_SCOPE)
+            f'Identity {principal.name!r} is a {config.type.value} '
+            f'identity, so it cannot reach BigQuery.'
+        )
+    return google_credentials(
+        principal.name,
+        config.authentication,
+        principal.credentials,
+        scope=_CLOUD_PLATFORM_SCOPE,
+    )
 
 
 def probe(principal: Principal) -> None:
@@ -121,14 +127,12 @@ def close(identity_name: Optional[str] = None) -> None:
     _clients.close(identity_name)
 
 
-def _query_client(credentials: Credentials, *, project: str,
-                  location: str) -> Any:
+def _query_client(credentials: Credentials, *, project: str, location: str) -> Any:
     r"""``location`` is the connector's, because a job submitted without one
     is resolved against the caller's default region and fails on a dataset
     that lives elsewhere.
     """
-    return bigquery.Client(credentials=credentials, project=project,
-                           location=location)
+    return bigquery.Client(credentials=credentials, project=project, location=location)
 
 
 def _read_client(credentials: Credentials) -> Any:
@@ -165,6 +169,7 @@ class _ClientCache:
     stands in a fake client this way) and have every path that resolves a
     client -- cached or not -- see the replacement.
     """
+
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._query: Dict[Tuple[str, str, str], Any] = {}
@@ -172,16 +177,14 @@ class _ClientCache:
         self._write: Dict[str, Any] = {}
         self._storage: Dict[Tuple[str, str], Any] = {}
 
-    def query_client(self, principal: Principal, *, project: str,
-                     location: str) -> Any:
+    def query_client(self, principal: Principal, *, project: str, location: str) -> Any:
         key = (principal.name, project, location)
         with self._lock:
             client = self._query.get(key)
             if client is None:
                 credentials = _credentials_for(principal)
                 _require_credentials(credentials)
-                client = _query_client(credentials, project=project,
-                                       location=location)
+                client = _query_client(credentials, project=project, location=location)
                 self._query[key] = client
             return client
 
@@ -219,14 +222,10 @@ class _ClientCache:
     def close(self, name: Optional[str] = None) -> None:
         with self._lock:
             for cache in (self._query, self._storage):
-                for key in [
-                        key for key in cache if name is None or key[0] == name
-                ]:
+                for key in [key for key in cache if name is None or key[0] == name]:
                     del cache[key]
             for cache in (self._read, self._write):
-                for key in [
-                        key for key in cache if name is None or key == name
-                ]:
+                for key in [key for key in cache if name is None or key == name]:
                     del cache[key]
 
 
@@ -278,22 +277,28 @@ class _BigQuerySessions:
         _require_credentials(credentials)
         return credentials
 
-    def table_location(self, connector: SourceConnector,
-                       table_name: str) -> str:
+    def table_location(self, connector: SourceConnector, table_name: str) -> str:
         return _name(connector, table_name)
 
     def _client(self, connector: SourceConnector) -> Any:
         return _clients.query_client(
-            self._principal(connector), project=_billing_project(connector),
-            location=_target_config(connector).location)
+            self._principal(connector),
+            project=_billing_project(connector),
+            location=_target_config(connector).location,
+        )
 
     def _principal(self, connector: SourceConnector) -> Principal:
         return resolve(
-            (getattr(connector, 'identity', None),
-             getattr(connector, 'identity_id', None), self._identity),
+            (
+                getattr(connector, 'identity', None),
+                getattr(connector, 'identity_id', None),
+                self._identity,
+            ),
             connector=connector,
             config_example='BigQueryIdentityConfig(...), credentials=...',
             connector_example='BigQueryConnector(identity=identity, ...)',
-            fallback=(f'A default for sources that name none is also '
-                      f'accepted, as {self._default_hint}.'),
+            fallback=(
+                f'A default for sources that name none is also '
+                f'accepted, as {self._default_hint}.'
+            ),
         )

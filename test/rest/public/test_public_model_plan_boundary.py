@@ -78,8 +78,8 @@ def test_training_job_resource_returns_public_model_plan() -> None:
     )
 
     resource = router._make_training_job_resource_v1(
-        job, JobTags(timestamps=get_current_timestamps()))
+        job, JobTags(timestamps=get_current_timestamps())
+    )
 
     assert isinstance(resource.config.model_plan, plan_api.ModelPlan)
-    assert 'training_table_generation' not in to_json_dict(
-        resource.config.model_plan)
+    assert 'training_table_generation' not in to_json_dict(resource.config.model_plan)

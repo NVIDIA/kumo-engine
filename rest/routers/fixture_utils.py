@@ -14,8 +14,7 @@ from rest.config.predictive_query_v2 import PQueryResource
 
 
 @blocking_func()
-def fixture_to_pquery_resources_v2(
-        fixture: FixtureDefinition) -> List[PQueryResource]:
+def fixture_to_pquery_resources_v2(fixture: FixtureDefinition) -> List[PQueryResource]:
     """Convert credential-free fixture definitions to PQuery resources.
 
     Fixtures contain no identities, connectors, groups, or credentials. Their
@@ -37,8 +36,10 @@ def fixture_to_pquery_resources_v2(
                 advanced_options_yaml=pquery_args.model_planner_yaml or None,
                 runtime_options=pquery_runtime_options_or_none(
                     list_distinct_target_is_array=(
-                        pquery_args.list_distinct_target_is_array),
+                        pquery_args.list_distinct_target_is_array
+                    ),
                     lp_bp_layout=pquery_args.lp_bp_layout,
                 ),
-            ))
+            )
+        )
     return resources

@@ -9,6 +9,7 @@ need the same things: a synthetic git repo to mutate, a stub dir prepended to
 PATH, and a `gh` that looks present, modern and authenticated. The per-script
 specifics (which stubs, which tag landscape) stay in the test modules.
 """
+
 import os
 import subprocess
 from dataclasses import dataclass
@@ -53,8 +54,7 @@ esac
 
 
 def git(cwd, *args):
-    subprocess.run(["git", *args], cwd=cwd, check=True,
-                   capture_output=True, text=True)
+    subprocess.run(['git', *args], cwd=cwd, check=True, capture_output=True, text=True)
 
 
 def stub(path, body):
@@ -65,32 +65,33 @@ def stub(path, body):
 
 def init_sandbox_repo(tmp_path):
     """A bare origin plus a working clone of it, both under tmp_path."""
-    origin = tmp_path / "origin.git"
-    git(tmp_path, "init", "--bare", "-b", "master", str(origin))
+    origin = tmp_path / 'origin.git'
+    git(tmp_path, 'init', '--bare', '-b', 'master', str(origin))
 
-    root = tmp_path / "work"
-    git(tmp_path, "clone", str(origin), str(root))
-    git(root, "config", "user.email", "test@example.com")
-    git(root, "config", "user.name", "Test")
+    root = tmp_path / 'work'
+    git(tmp_path, 'clone', str(origin), str(root))
+    git(root, 'config', 'user.email', 'test@example.com')
+    git(root, 'config', 'user.name', 'Test')
     return origin, root
 
 
 def release_branch_with_backport(repo, branch, tag):
     """A release branch carrying one unreleased backport -- what the sweep sees."""
-    git(repo.root, "checkout", "-b", branch)
-    git(repo.root, "push", "origin", branch)
-    git(repo.root, "tag", tag)
-    git(repo.root, "push", "origin", tag)
-    (repo.root / "backport.txt").write_text("fix\n")
-    git(repo.root, "add", "-A")
-    git(repo.root, "commit", "-m", "backport a fix")
-    git(repo.root, "push", "origin", branch)
-    git(repo.root, "fetch", "origin")
+    git(repo.root, 'checkout', '-b', branch)
+    git(repo.root, 'push', 'origin', branch)
+    git(repo.root, 'tag', tag)
+    git(repo.root, 'push', 'origin', tag)
+    (repo.root / 'backport.txt').write_text('fix\n')
+    git(repo.root, 'add', '-A')
+    git(repo.root, 'commit', '-m', 'backport a fix')
+    git(repo.root, 'push', 'origin', branch)
+    git(repo.root, 'fetch', 'origin')
 
 
 @dataclass
 class SandboxRepo:
     """A sandbox clone plus the stub dir its scripts run against."""
+
     root: Path
     origin: Path
     bin: Path
@@ -102,10 +103,10 @@ class SandboxRepo:
         # particular is real, so a run that mutates anything genuinely creates
         # refs on `origin` and can be asserted on.
         env = dict(os.environ)
-        env["PATH"] = f"{self.bin}:{env['PATH']}"
-        env["HOME"] = str(self.root.parent)
+        env['PATH'] = f'{self.bin}:{env["PATH"]}'
+        env['HOME'] = str(self.root.parent)
         return subprocess.run(
-            ["bash", script_rel, *args],
+            ['bash', script_rel, *args],
             cwd=self.root,
             env=env,
             capture_output=True,
@@ -114,6 +115,9 @@ class SandboxRepo:
 
     def origin_refs(self):
         """Every ref that actually made it to the remote."""
-        return subprocess.run(["git", "ls-remote", str(self.origin)],
-                              capture_output=True, text=True,
-                              check=True).stdout
+        return subprocess.run(
+            ['git', 'ls-remote', str(self.origin)],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout

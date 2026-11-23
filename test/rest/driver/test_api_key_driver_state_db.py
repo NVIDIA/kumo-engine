@@ -25,31 +25,30 @@ def auto_cleanup_per_func():
 
 
 @pytest.mark.asyncio
-async def test_api_key_driver_state_db_create_verify_list_delete(
-        tmp_path) -> None:
-    state_db = await StateDB.open_sqlite(str(tmp_path / "state.db"))
+async def test_api_key_driver_state_db_create_verify_list_delete(tmp_path) -> None:
+    state_db = await StateDB.open_sqlite(str(tmp_path / 'state.db'))
     driver = APIKeyDriver(
         state_services=StateServices(state_db),
         update_last_used_time=True,
     )
 
     created = await driver.create_admin_api_key(
-        "state-key",
+        'state-key',
         APIKeyType.ADMIN,
-        "direct_connect|admin1",
-        user_name="Admin One",
+        'direct_connect|admin1',
+        user_name='Admin One',
     )
 
-    assert created.name == "state-key"
-    assert len(created.value.split(":")) == 3
+    assert created.name == 'state-key'
+    assert len(created.value.split(':')) == 3
 
     listed = await driver.list_admin_api_keys(APIKeyType.ADMIN)
     assert [record.id for record in listed] == [created.id]
-    assert listed[0].owner_display_name == "Admin One"
+    assert listed[0].owner_display_name == 'Admin One'
 
     identity = await driver.verify_api_key(created.value)
     assert identity is not None
-    assert identity.user_id == "direct_connect|admin1"
+    assert identity.user_id == 'direct_connect|admin1'
     assert identity.is_admin
 
     repo = APIKeyRepository()
@@ -66,26 +65,24 @@ async def test_api_key_driver_state_db_create_verify_list_delete(
 
 
 @pytest.mark.asyncio
-async def test_api_key_driver_verifies_existing_legacy_prefixed_key(
-        tmp_path) -> None:
-    state_db = await StateDB.open_sqlite(str(tmp_path / "state.db"))
+async def test_api_key_driver_verifies_existing_legacy_prefixed_key(tmp_path) -> None:
+    state_db = await StateDB.open_sqlite(str(tmp_path / 'state.db'))
     services = StateServices(state_db)
     driver = APIKeyDriver(
         state_services=services,
         update_last_used_time=False,
     )
-    owner_user_id = "external|existing-owner"
+    owner_user_id = 'external|existing-owner'
     owner_user_hash = api_key_driver._compute_user_hash(owner_user_id)
-    name = "existing-key"
-    key_value = f"legacy:{owner_user_hash}:{name}:secret"
-    key_id = APIKeyID("k-existing-legacy-key")
+    name = 'existing-key'
+    key_value = f'legacy:{owner_user_hash}:{name}:secret'
+    key_id = APIKeyID('k-existing-legacy-key')
     created_time = now_utc()
     timestamps = ResourceTimestamps(
         created_at=created_time,
         updated_at=created_time,
     )
-    salt_b64, hash_b64 = await api_key_driver._hash_api_key_value_async(
-        key_value)
+    salt_b64, hash_b64 = await api_key_driver._hash_api_key_value_async(key_value)
 
     await services.api_keys.create_unique(
         metadata=APIKeyMetadataRecord(
@@ -95,7 +92,7 @@ async def test_api_key_driver_verifies_existing_legacy_prefixed_key(
             type=APIKeyType.USER,
             owner_user_id=owner_user_id,
             owner_user_hash=owner_user_hash,
-            owner_display_name="Existing Owner",
+            owner_display_name='Existing Owner',
             created_time=created_time,
             value_preview=api_key_driver._to_preview(key_value),
         ),
@@ -105,10 +102,10 @@ async def test_api_key_driver_verifies_existing_legacy_prefixed_key(
             hash_version=api_key_driver._API_KEY_HASH_VERSION,
             hash_algorithm=api_key_driver._API_KEY_HASH_ALGORITHM,
             hash_params={
-                "n": api_key_driver._SCRYPT_N,
-                "r": api_key_driver._SCRYPT_R,
-                "p": api_key_driver._SCRYPT_P,
-                "dklen": api_key_driver._SCRYPT_DKLEN,
+                'n': api_key_driver._SCRYPT_N,
+                'r': api_key_driver._SCRYPT_R,
+                'p': api_key_driver._SCRYPT_P,
+                'dklen': api_key_driver._SCRYPT_DKLEN,
             },
             salt_b64=salt_b64,
             hash_b64=hash_b64,
@@ -124,15 +121,14 @@ async def test_api_key_driver_verifies_existing_legacy_prefixed_key(
 
 
 @pytest.mark.asyncio
-async def test_api_key_driver_ignores_stale_legacy_metadata_rows(
-        tmp_path) -> None:
-    state_db = await StateDB.open_sqlite(str(tmp_path / "state.db"))
+async def test_api_key_driver_ignores_stale_legacy_metadata_rows(tmp_path) -> None:
+    state_db = await StateDB.open_sqlite(str(tmp_path / 'state.db'))
     driver = APIKeyDriver(
         state_services=StateServices(state_db),
         update_last_used_time=True,
     )
     repo = APIKeyRepository()
-    legacy_id = "legacy-key"
+    legacy_id = 'legacy-key'
 
     async with state_db.write_tx() as tx:
         await tx.execute(
@@ -141,10 +137,12 @@ async def test_api_key_driver_ignores_stale_legacy_metadata_rows(
             VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             """,
             legacy_id,
-            ('{"id":"legacy-key",'
-             '"name":"old","type":"legacy","owner_user_id":"legacy|old",'
-             '"owner_display_name":"Old","created_time":"2024-01-01T00:00:00Z",'
-             '"value_preview":"****"}'),
+            (
+                '{"id":"legacy-key",'
+                '"name":"old","type":"legacy","owner_user_id":"legacy|old",'
+                '"owner_display_name":"Old","created_time":"2024-01-01T00:00:00Z",'
+                '"value_preview":"****"}'
+            ),
         )
 
     async with state_db.read_tx() as tx:

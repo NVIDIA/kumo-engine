@@ -30,16 +30,6 @@ from kumo_core.sources.errors import PermanentSourceError, SourceNotFoundError
 from kumo_core.sources.layout import staging_dir
 from kumo_core.sources.principals import IdentityRef
 from kumo_core.sources.types import ReadMode
-from kumo_snowflake.session import (
-    SnowflakeSession,
-    _require_snowpark,
-    _SnowflakeSessions,
-    _target_config,
-    resolved,
-)
-from kumo_snowflake.source import SnowflakeSourceReader
-from kumo_snowflake.sql import describe_columns
-from kumo_snowflake.types import dtype_for
 from kumoapi.data_source import DataSourceType
 from kumoapi.plugin import PrepareIngestResult, SourceConnector
 from kumoapi.source_table import (
@@ -50,6 +40,17 @@ from kumoapi.source_table import (
     SourceTableListResponse,
 )
 from kumoapi.typing import Dtype
+
+from kumo_snowflake.session import (
+    SnowflakeSession,
+    _require_snowpark,
+    _SnowflakeSessions,
+    _target_config,
+    resolved,
+)
+from kumo_snowflake.source import SnowflakeSourceReader
+from kumo_snowflake.sql import describe_columns
+from kumo_snowflake.types import dtype_for
 
 
 class SnowflakeSourceBackend(_SnowflakeSessions):
@@ -85,8 +86,10 @@ class SnowflakeSourceBackend(_SnowflakeSessions):
 
     source_type = DataSourceType.SNOWFLAKE
 
-    _default_hint = ('LocalBackend(sources={DataSourceType.SNOWFLAKE: '
-                     'SnowflakeSourceBackend(identity=identity)})')
+    _default_hint = (
+        'LocalBackend(sources={DataSourceType.SNOWFLAKE: '
+        'SnowflakeSourceBackend(identity=identity)})'
+    )
 
     def __init__(
         self,
@@ -107,13 +110,17 @@ class SnowflakeSourceBackend(_SnowflakeSessions):
     ) -> SourceTableListResponse:
         del project_id
         from kumo_snowflake.catalog import tables
+
         config = _target_config(connector)
         with self._session(connector) as session:
             _require_snowpark(session)
             cursor = session.connection.cursor()
             try:
-                names = tables(cursor, database=resolved(config.database),
-                               schema=resolved(config.schema_name))
+                names = tables(
+                    cursor,
+                    database=resolved(config.database),
+                    schema=resolved(config.schema_name),
+                )
             finally:
                 cursor.close()
         return SourceTableListResponse(table_names=names)
@@ -131,13 +138,16 @@ class SnowflakeSourceBackend(_SnowflakeSessions):
             raise SourceNotFoundError(
                 f'Invalid table {table_name}: it does not exist in '
                 f'{resolved(_target_config(connector).database)}.'
-                f'{resolved(_target_config(connector).schema_name)}.')
-        return SourceTableConfigResponse(source_table=SnowflakeSourceTable(
-            snowflake_connector_id=connector.id,
-            database=_target_config(connector).database,
-            schema_name=_target_config(connector).schema_name,
-            table=table_name,
-        ))
+                f'{resolved(_target_config(connector).schema_name)}.'
+            )
+        return SourceTableConfigResponse(
+            source_table=SnowflakeSourceTable(
+                snowflake_connector_id=connector.id,
+                database=_target_config(connector).database,
+                schema_name=_target_config(connector).schema_name,
+                table=table_name,
+            )
+        )
 
     def get_columns(
         self,
@@ -149,8 +159,7 @@ class SnowflakeSourceBackend(_SnowflakeSessions):
         del project_id
         return SourceTableDataResponse(
             table_name=table_name,
-            cols=self._columns(connector, table_name,
-                               self._embeddable(connector, sql)),
+            cols=self._columns(connector, table_name, self._embeddable(connector, sql)),
         )
 
     def get_sample(
@@ -165,15 +174,23 @@ class SnowflakeSourceBackend(_SnowflakeSessions):
         del project_id
 
         query = self._embeddable(connector, sql)
-        source = (f'({query})' if query is not None else self._qualified(
-            connector, table_name))
+        source = (
+            f'({query})'
+            if query is not None
+            else self._qualified(connector, table_name)
+        )
         # One span for both statements: the columns and the rows they name
         # have to come from the same warehouse.
         with self._session(connector) as session:
             columns = self._columns(connector, table_name, query)
             from kumo_snowflake.results import sample
-            frame = sample(session.connection, source, sample_rows,
-                           timeout=sample_timeout(timeout, query))
+
+            frame = sample(
+                session.connection,
+                source,
+                sample_rows,
+                timeout=sample_timeout(timeout, query),
+            )
             rows = frame.itertuples(index=False, name=None)
         return sampled_table(table_name, columns, rows)
 
@@ -184,9 +201,10 @@ class SnowflakeSourceBackend(_SnowflakeSessions):
         project_id: Optional[str] = None,
     ) -> List[str]:
         raise NotImplementedError(
-            "Snowflake tables have no download URL; they are read through a "
-            "session. Custom prediction tables must come from an object-store "
-            "or Databricks connector.")
+            'Snowflake tables have no download URL; they are read through a '
+            'session. Custom prediction tables must come from an object-store '
+            'or Databricks connector.'
+        )
 
     def get_data_version(
         self,
@@ -240,14 +258,20 @@ class SnowflakeSourceBackend(_SnowflakeSessions):
         # that took it mid-read would move the unload to its own warehouse.
         with self._session(connector) as session:
             staged = read_table(
-                self._reader(connector, session), table_name, str(destination),
+                self._reader(connector, session),
+                table_name,
+                str(destination),
                 columns=self._declared(connector, table_name, dtypes, query),
-                mode=self.mode, sql=query, version=data_version)
+                mode=self.mode,
+                sql=query,
+                version=data_version,
+            )
         if not staged.num_rows:
             raise PermanentSourceError(
                 f'Unloading {table_name} returned no rows. An empty source '
                 f'table cannot be ingested; DiskGraph needs at least one row '
-                f'to infer an encoding.')
+                f'to infer an encoding.'
+            )
 
         return ingest_result(staged)
 
@@ -259,12 +283,13 @@ class SnowflakeSourceBackend(_SnowflakeSessions):
         sql: Optional[str] = None,
     ) -> Mapping[str, Dtype]:
         catalog = self._columns(connector, table_name, sql)
-        return select_columns(table_name,
-                              {column.name: column.dtype
-                               for column in catalog}, dtypes)
+        return select_columns(
+            table_name, {column.name: column.dtype for column in catalog}, dtypes
+        )
 
-    def _reader(self, connector: SourceConnector,
-                session: SnowflakeSession) -> SnowflakeSourceReader:
+    def _reader(
+        self, connector: SourceConnector, session: SnowflakeSession
+    ) -> SnowflakeSourceReader:
         r"""Built per call because it holds the connection behind the
         session, and a session resolved once and kept would outlive the
         identity it came from. ``Session.connection`` borrows the connection
@@ -280,19 +305,24 @@ class SnowflakeSourceBackend(_SnowflakeSessions):
 
     def _exists(self, connector: SourceConnector, table_name: str) -> bool:
         from kumo_snowflake.catalog import table_exists
+
         config = _target_config(connector)
         with self._session(connector) as session:
             _require_snowpark(session)
             cursor = session.connection.cursor()
             try:
-                return table_exists(cursor, database=resolved(config.database),
-                                    schema=resolved(config.schema_name),
-                                    table=table_name)
+                return table_exists(
+                    cursor,
+                    database=resolved(config.database),
+                    schema=resolved(config.schema_name),
+                    table=table_name,
+                )
             finally:
                 cursor.close()
 
-    def _embeddable(self, connector: SourceConnector,
-                    sql: Optional[str]) -> Optional[str]:
+    def _embeddable(
+        self, connector: SourceConnector, sql: Optional[str]
+    ) -> Optional[str]:
         r"""The only form of a query this reader ever sends: the caller's text
         with its trailing terminator and comment removed, so it stands in
         subquery position.
@@ -304,23 +334,24 @@ class SnowflakeSourceBackend(_SnowflakeSessions):
         if sql is None:
             return None
         from kumo_core.types import ConnectorType
-        gate_custom_sql(sql, ConnectorType.SNOWFLAKE,
-                        _target_config(connector))
+
+        gate_custom_sql(sql, ConnectorType.SNOWFLAKE, _target_config(connector))
         return subquery_safe_sql(sql, ConnectorType.SNOWFLAKE)
 
-    def _described(self, connector: SourceConnector,
-                   sql: str) -> List[SourceColumn]:
+    def _described(self, connector: SourceConnector, sql: str) -> List[SourceColumn]:
         with self._session(connector) as session:
             _require_snowpark(session)
             cursor = session.connection.cursor()
             try:
                 return source_columns(
-                    describe_columns(cursor, f'SELECT * FROM ({sql})'))
+                    describe_columns(cursor, f'SELECT * FROM ({sql})')
+                )
             finally:
                 cursor.close()
 
-    def _columns(self, connector: SourceConnector, table_name: str,
-                 sql: Optional[str] = None) -> List[SourceColumn]:
+    def _columns(
+        self, connector: SourceConnector, table_name: str, sql: Optional[str] = None
+    ) -> List[SourceColumn]:
         if sql is not None:
             return self._described(connector, sql)
         from kumo_snowflake.catalog import columns
@@ -330,21 +361,25 @@ class SnowflakeSourceBackend(_SnowflakeSessions):
             _require_snowpark(session)
             cursor = session.connection.cursor()
             try:
-                metadata = columns(cursor, database=resolved(config.database),
-                                   schema=resolved(config.schema_name),
-                                   table=table_name)
+                metadata = columns(
+                    cursor,
+                    database=resolved(config.database),
+                    schema=resolved(config.schema_name),
+                    table=table_name,
+                )
             finally:
                 cursor.close()
         if not metadata:
             raise SourceNotFoundError(
                 f'Invalid table {table_name}: it has no columns in '
-                f'{resolved(config.database)}.{resolved(config.schema_name)}.')
-        return source_columns(
-            (name, dtype) for (_, name), dtype in metadata.items())
+                f'{resolved(config.database)}.{resolved(config.schema_name)}.'
+            )
+        return source_columns((name, dtype) for (_, name), dtype in metadata.items())
 
     @staticmethod
-    def dtype_for(data_type: str,
-                  numeric_scale: Optional[Union[int, str]] = None) -> Dtype:
+    def dtype_for(
+        data_type: str, numeric_scale: Optional[Union[int, str]] = None
+    ) -> Dtype:
         r"""Maps a Snowflake data type to a Kumo data type.
 
         Kept on the class because that is where callers reach it. The mapping

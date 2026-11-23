@@ -7,6 +7,7 @@ Pool pods should use the same Kumo image-version convention as the legacy
 SaaS launchers: derive image tags from ``get_kumo_version()`` by default and
 only pass version tags, never arbitrary image URLs, through placement.
 """
+
 import os
 import os.path as osp
 from enum import Enum
@@ -24,8 +25,7 @@ class PoolImageFlavor(str, Enum):
 
 def backend_image_uri(flavor: PoolImageFlavor) -> str:
     tag = os.environ.get('KUMO_IMAGE_TAG') or get_kumo_version()
-    repo = ('kumo-backend-gpu'
-            if flavor == PoolImageFlavor.GPU else 'kumo-backend-cpu')
+    repo = 'kumo-backend-gpu' if flavor == PoolImageFlavor.GPU else 'kumo-backend-cpu'
     reference = f'{osp.join(DEFAULT_REGISTRY, repo)}:{tag}'
     digest = os.environ.get('KUMO_IMAGE_DIGEST')
     return f'{reference}@{digest}' if digest else reference

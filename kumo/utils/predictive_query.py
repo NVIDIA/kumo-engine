@@ -27,8 +27,7 @@ def get_pquery(
         (PredictiveQueryV2): The returned predictive query.
     """
     parser = PQLParser()
-    validator = PredictiveQueryValidator(
-        **validator_kwargs(graph, query_string=query))
+    validator = PredictiveQueryValidator(**validator_kwargs(graph, query_string=query))
     parsed_pquery = parser.to_parsed_predictive_query(query)
     valid_pquery, response = validator.validate_predictive_query(parsed_pquery)
     if not response.ok:

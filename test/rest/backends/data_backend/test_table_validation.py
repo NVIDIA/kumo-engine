@@ -65,15 +65,17 @@ from temporalio_commons.error_utils import is_error_non_retryable
 
 def test_validate_single_table_col_stats(make_default_table_def_v2):
     backend_cache = get_active_cache()
-    table_def = TableDefinition(
-        **dataclasses.asdict(make_default_table_def_v2()))
+    table_def = TableDefinition(**dataclasses.asdict(make_default_table_def_v2()))
     test_version = '123456'
 
     backend_cache.add_table_stats(
-        table_def.fingerprint(), {
-            TableStatType.NUM_ROWS:
-            Stats(value=100, approx=False, data_version=test_version)
-        })
+        table_def.fingerprint(),
+        {
+            TableStatType.NUM_ROWS: Stats(
+                value=100, approx=False, data_version=test_version
+            )
+        },
+    )
 
     base_cols = table_def.to_base_columns()
 
@@ -81,35 +83,40 @@ def test_validate_single_table_col_stats(make_default_table_def_v2):
     # non-unique pkey (and add some stats for other cols as well)
     test_col_stats = {
         base_col: {
-            ColStatType.NUM_UNIQUE:
-            Stats(value=10, approx=False, data_version=test_version),
-            ColStatType.COUNT:
-            Stats(value=100, approx=False, data_version=test_version),
+            ColStatType.NUM_UNIQUE: Stats(
+                value=10, approx=False, data_version=test_version
+            ),
+            ColStatType.COUNT: Stats(
+                value=100, approx=False, data_version=test_version
+            ),
         }
         for base_col in base_cols
     }
 
     # 3rd column, 'f2' is sequence stype, set mismatched lengths:
     test_col_stats[base_cols[2]][ColStatType.SEQUENCE_MIN_LENGTH] = Stats(
-        value=10, approx=False, data_version=test_version)
+        value=10, approx=False, data_version=test_version
+    )
     test_col_stats[base_cols[2]][ColStatType.SEQUENCE_MAX_LENGTH] = Stats(
-        value=12, approx=False, data_version=test_version)
+        value=12, approx=False, data_version=test_version
+    )
 
     # set 'f3' over invalid threshold
     test_col_stats[base_cols[3]][ColStatType.INVALID_FRACTION] = Stats(
-        value=0.2, approx=False, data_version=test_version)
+        value=0.2, approx=False, data_version=test_version
+    )
 
     backend_cache.add_col_stats(table_def.fingerprint(), test_col_stats)
 
     validator = ColStatsValidator()
-    response = validator.post_col_stats(table_def.get_connector_id(), table_def,
-                                        test_version)
+    response = validator.post_col_stats(
+        table_def.get_connector_id(), table_def, test_version
+    )
     # INVALID_FRACTION is now vestigial under DiskGraph (see
     # _VESTIGIAL_FULL_STATS in kumo/graph/column.py), so the
     # "Large number invalid entries" warning path is unreachable.
     assert len(response.warnings) == 1
-    assert any(e.title == 'Incomplete table statistics'
-               for e in response.errors)
+    assert any(e.title == 'Incomplete table statistics' for e in response.errors)
     response.errors = [
         e for e in response.errors if e.title != 'Incomplete table statistics'
     ]
@@ -135,29 +142,33 @@ def test_validate_pkey_invalid_and_duplicate_warnings():
     )
     version = 'mixed-invalid-and-duplicate-pkeys'
     backend_cache.add_table_stats(
-        table_def.fingerprint(), {
-            TableStatType.NUM_ROWS:
-            Stats(value=100, approx=False, data_version=version)
-        })
+        table_def.fingerprint(),
+        {TableStatType.NUM_ROWS: Stats(value=100, approx=False, data_version=version)},
+    )
     pkey_col = BaseColumnConfig(name='pkey', stype=Stype.ID, dtype=Dtype.int)
     backend_cache.add_col_stats(
-        table_def.fingerprint(), {
+        table_def.fingerprint(),
+        {
             pkey_col: {
-                ColStatType.COUNT:
-                Stats(value=100, approx=False, data_version=version),
-                ColStatType.NUM_UNIQUE:
-                Stats(value=98, approx=False, data_version=version),
-                ColStatType.NA_FRACTION:
-                Stats(value=0.01, approx=False, data_version=version),
-                ColStatType.NUM_NA:
-                Stats(value=1, approx=False, data_version=version),
+                ColStatType.COUNT: Stats(value=100, approx=False, data_version=version),
+                ColStatType.NUM_UNIQUE: Stats(
+                    value=98, approx=False, data_version=version
+                ),
+                ColStatType.NA_FRACTION: Stats(
+                    value=0.01, approx=False, data_version=version
+                ),
+                ColStatType.NUM_NA: Stats(value=1, approx=False, data_version=version),
             }
-        })
+        },
+    )
 
     unscoped_response = ColStatsValidator().post_col_stats(
-        table_def.get_connector_id(), table_def, version)
-    assert not any(warning.title == 'Duplicate primary keys'
-                   for warning in unscoped_response.warnings)
+        table_def.get_connector_id(), table_def, version
+    )
+    assert not any(
+        warning.title == 'Duplicate primary keys'
+        for warning in unscoped_response.warnings
+    )
 
     response = ColStatsValidator().post_col_stats(
         table_def.get_connector_id(),
@@ -168,50 +179,53 @@ def test_validate_pkey_invalid_and_duplicate_warnings():
     warnings = {warning.title: warning for warning in response.warnings}
 
     assert 'Missing or invalid primary keys' in warnings
-    assert warnings['Duplicate primary keys'].message.startswith(
-        '2 (2.0%) of the rows')
+    assert warnings['Duplicate primary keys'].message.startswith('2 (2.0%) of the rows')
 
 
 def test_validate_single_table_dimension(make_default_table_def_v2):
     backend_cache = get_active_cache()
-    table_def = TableDefinition(
-        **dataclasses.asdict(make_default_table_def_v2()))
+    table_def = TableDefinition(**dataclasses.asdict(make_default_table_def_v2()))
     test_version = '123456'
 
     backend_cache.add_table_stats(
-        table_def.fingerprint(), {
-            TableStatType.NUM_ROWS:
-            Stats(value=100, approx=False, data_version=test_version)
-        })
+        table_def.fingerprint(),
+        {
+            TableStatType.NUM_ROWS: Stats(
+                value=100, approx=False, data_version=test_version
+            )
+        },
+    )
 
     base_cols = table_def.to_base_columns()
 
     test_col_stats = {
         base_col: {
-            ColStatType.NUM_UNIQUE:
-            Stats(value=10, approx=False, data_version=test_version),
-            ColStatType.COUNT:
-            Stats(value=10, approx=False, data_version=test_version),
+            ColStatType.NUM_UNIQUE: Stats(
+                value=10, approx=False, data_version=test_version
+            ),
+            ColStatType.COUNT: Stats(value=10, approx=False, data_version=test_version),
         }
         for base_col in base_cols
     }
 
     # 3rd column, 'f2' is sequence stype, set large lengths:
     test_col_stats[base_cols[2]][ColStatType.SEQUENCE_MIN_LENGTH] = Stats(
-        value=5000, approx=False, data_version=test_version)
+        value=5000, approx=False, data_version=test_version
+    )
     test_col_stats[base_cols[2]][ColStatType.SEQUENCE_MAX_LENGTH] = Stats(
-        value=5000, approx=False, data_version=test_version)
+        value=5000, approx=False, data_version=test_version
+    )
 
     backend_cache.add_col_stats(table_def.fingerprint(), test_col_stats)
 
     validator = ColStatsValidator()
-    response = validator.post_col_stats(table_def.get_connector_id(), table_def,
-                                        test_version)
+    response = validator.post_col_stats(
+        table_def.get_connector_id(), table_def, test_version
+    )
     # Test data has 10% valid values per column, triggering invalid entries warning
     # assert len(response.warnings) == 1
     # assert response.warnings[0].title == 'Large number invalid entries'
-    assert any(e.title == 'Incomplete table statistics'
-               for e in response.errors)
+    assert any(e.title == 'Incomplete table statistics' for e in response.errors)
     response.errors = [
         e for e in response.errors if e.title != 'Incomplete table statistics'
     ]
@@ -228,12 +242,16 @@ def test_validate_table_ingestion(make_default_table_def_v2):
     test_version = '123456'
 
     backend_cache.add_table_stats(
-        table_def.fingerprint(), {
-            TableStatType.NUM_ROWS:
-            Stats(value=0, approx=False, data_version=test_version),
-            TableStatType.SOURCE_SIZE:
-            Stats(value=0, approx=False, data_version=test_version),
-        })
+        table_def.fingerprint(),
+        {
+            TableStatType.NUM_ROWS: Stats(
+                value=0, approx=False, data_version=test_version
+            ),
+            TableStatType.SOURCE_SIZE: Stats(
+                value=0, approx=False, data_version=test_version
+            ),
+        },
+    )
 
     validator = IngestionValidator(DeployEnvConfig.for_test())
 
@@ -242,12 +260,12 @@ def test_validate_table_ingestion(make_default_table_def_v2):
     assert len(response.errors) == 1
     assert response.errors[0].title == 'Table ingestion failed'
 
-    backend_cache.materialization_stage.put(table_def.fingerprint(),
-                                            test_version,
-                                            MaterializationStage.INGEST,
-                                            save=True)
-    mat_path = get_materialize_path(table_def.fingerprint(), test_version,
-                                    MaterializationStage.INGEST)
+    backend_cache.materialization_stage.put(
+        table_def.fingerprint(), test_version, MaterializationStage.INGEST, save=True
+    )
+    mat_path = get_materialize_path(
+        table_def.fingerprint(), test_version, MaterializationStage.INGEST
+    )
 
     fsutil.makedirs(mat_path, exist_ok=True)
     with open(osp.join(mat_path, 'part-0.parquet'), 'w') as f:
@@ -259,12 +277,16 @@ def test_validate_table_ingestion(make_default_table_def_v2):
     assert response.errors[0].title == 'Table is empty'
 
     backend_cache.add_table_stats(
-        table_def.fingerprint(), {
-            TableStatType.NUM_ROWS:
-            Stats(value=100, approx=False, data_version=test_version),
-            TableStatType.SOURCE_SIZE:
-            Stats(value=100, approx=False, data_version=test_version),
-        })
+        table_def.fingerprint(),
+        {
+            TableStatType.NUM_ROWS: Stats(
+                value=100, approx=False, data_version=test_version
+            ),
+            TableStatType.SOURCE_SIZE: Stats(
+                value=100, approx=False, data_version=test_version
+            ),
+        },
+    )
 
     # case 3: stage set and data exists, and some rows were dropped
     response = validator.post_ingestion(table_def, test_version)
@@ -272,7 +294,8 @@ def test_validate_table_ingestion(make_default_table_def_v2):
     assert response.errors[0].title == 'Ingested table empty'
     assert (
         'Rows may have been dropped due to malformed data (CSV) or invalid timestamps in'
-        in response.errors[0].message)
+        in response.errors[0].message
+    )
 
     # case 4: without time_col, table is empty
     table_def_no_time = TableDefinition(**dataclasses.asdict(api_table))
@@ -284,16 +307,21 @@ def test_validate_table_ingestion(make_default_table_def_v2):
 
 
 def test_validate_direct_source_without_materialization_stage(
-        make_default_table_def_v2):
+    make_default_table_def_v2,
+):
     table = TableDefinition(**dataclasses.asdict(make_default_table_def_v2()))
     version = 'direct-source'
     get_active_cache().add_table_stats(
-        table.fingerprint(), {
-            TableStatType.NUM_ROWS:
-            Stats(value=100, approx=False, data_version=version),
-            TableStatType.SOURCE_SIZE:
-            Stats(value=1000, approx=False, data_version=version),
-        })
+        table.fingerprint(),
+        {
+            TableStatType.NUM_ROWS: Stats(
+                value=100, approx=False, data_version=version
+            ),
+            TableStatType.SOURCE_SIZE: Stats(
+                value=1000, approx=False, data_version=version
+            ),
+        },
+    )
 
     response = IngestionValidator(DeployEnvConfig.for_test()).post_ingestion(
         table,
@@ -306,9 +334,13 @@ def test_validate_direct_source_without_materialization_stage(
 
 
 def test_graph_source_sizes_accept_file_source_paths(
-        make_default_table_def_v2, data_backend_ctx: DataBackendContext):
-    table = TableDefinition(**dataclasses.asdict(
-        make_default_table_def_v2('fixture-data/connector_123/ACCOUNT')))
+    make_default_table_def_v2, data_backend_ctx: DataBackendContext
+):
+    table = TableDefinition(
+        **dataclasses.asdict(
+            make_default_table_def_v2('fixture-data/connector_123/ACCOUNT')
+        )
+    )
     version = 'file-source-path'
     table_id = VersionedSourceTableID(
         connector_name=table.get_connector_id(),
@@ -316,34 +348,35 @@ def test_graph_source_sizes_accept_file_source_paths(
         version=version,
     )
     get_active_cache().add_table_stats(
-        table.fingerprint(), {
-            TableStatType.NUM_ROWS:
-            Stats(value=100, approx=False, data_version=version),
-            TableStatType.SOURCE_SIZE:
-            Stats(value=4096, approx=False, data_version=version),
-        })
+        table.fingerprint(),
+        {
+            TableStatType.NUM_ROWS: Stats(
+                value=100, approx=False, data_version=version
+            ),
+            TableStatType.SOURCE_SIZE: Stats(
+                value=4096, approx=False, data_version=version
+            ),
+        },
+    )
 
     result = DataBackendActivities.validate_graph_table_stats(
         data_backend_ctx,
         {table_id: table},
         TableRefreshStage.INGEST_TABLE,
         connector_specs=[],
-        aliases={table_id: [TableName('ACCOUNT'),
-                            TableName('ACCOUNT_COPY')]},
+        aliases={table_id: [TableName('ACCOUNT'), TableName('ACCOUNT_COPY')]},
     )
 
     assert result.total_source_size_bytes == 8192
-    assert result.source_size_bytes_by_table == {
-        'ACCOUNT': 4096,
-        'ACCOUNT_COPY': 4096
-    }
+    assert result.source_size_bytes_by_table == {'ACCOUNT': 4096, 'ACCOUNT_COPY': 4096}
 
 
 # test graph-level validations that require tables ingested
 
 
-def test_graph_post_table_ingest_validate(fake_graph_and_tables_request_v2,
-                                          data_backend_ctx: DataBackendContext):
+def test_graph_post_table_ingest_validate(
+    fake_graph_and_tables_request_v2, data_backend_ctx: DataBackendContext
+):
     table_args_list = [
         table_def for _alias, table_def in fake_graph_and_tables_request_v2
     ]
@@ -352,20 +385,25 @@ def test_graph_post_table_ingest_validate(fake_graph_and_tables_request_v2,
         VersionedSourceTableID(
             connector_name=create_table.get_connector_id(),
             source_table_name=str(create_table.get_source_table_name()),
-            version=test_version) for create_table in table_args_list
+            version=test_version,
+        )
+        for create_table in table_args_list
     ]
     # populate table sizes as table stats in cache
     backend_cache = get_active_cache()
     for table_args in table_args_list:
         backend_cache.add_table_stats(
-            table_args.fingerprint(), {
-                TableStatType.SOURCE_SIZE:
-                Stats(value=10000, approx=False, data_version=test_version),
-                TableStatType.NUM_ROWS:
-                Stats(value=10000000, approx=False, data_version=test_version)
-            })
-        backend_cache.save_col_stats_cache(table_args.fingerprint(),
-                                           test_version)
+            table_args.fingerprint(),
+            {
+                TableStatType.SOURCE_SIZE: Stats(
+                    value=10000, approx=False, data_version=test_version
+                ),
+                TableStatType.NUM_ROWS: Stats(
+                    value=10000000, approx=False, data_version=test_version
+                ),
+            },
+        )
+        backend_cache.save_col_stats_cache(table_args.fingerprint(), test_version)
     validator = GraphRefreshValidator(DeployEnvConfig.for_test())
     resp = validator.post_table_ingest(
         ctx=data_backend_ctx,
@@ -380,26 +418,30 @@ def test_graph_post_table_ingest_validate(fake_graph_and_tables_request_v2,
     # trips it regardless of row count.
     for table_args in table_args_list:
         backend_cache.add_table_stats(
-            table_args.fingerprint(), {
-                TableStatType.SOURCE_SIZE:
-                Stats(value=3 *
-                      (1024**4), approx=False, data_version=test_version),
-                TableStatType.NUM_ROWS:
-                Stats(value=10000000, approx=False, data_version=test_version)
-            })
-        backend_cache.save_col_stats_cache(table_args.fingerprint(),
-                                           test_version)
+            table_args.fingerprint(),
+            {
+                TableStatType.SOURCE_SIZE: Stats(
+                    value=3 * (1024**4), approx=False, data_version=test_version
+                ),
+                TableStatType.NUM_ROWS: Stats(
+                    value=10000000, approx=False, data_version=test_version
+                ),
+            },
+        )
+        backend_cache.save_col_stats_cache(table_args.fingerprint(), test_version)
     validator = GraphRefreshValidator(DeployEnvConfig.for_test())
     resp = validator.post_table_ingest(
         ctx=data_backend_ctx,
-        versioned_table_dict=dict(zip(versioned_table_ids, table_args_list)))
+        versioned_table_dict=dict(zip(versioned_table_ids, table_args_list)),
+    )
 
     assert resp.warnings == []
     assert resp.errors[0].title == 'Graph is too large'
 
 
 def test_graph_post_table_ingest_retries_missing_exact_stats(
-        fake_graph_and_tables_request_v2, data_backend_ctx: DataBackendContext):
+    fake_graph_and_tables_request_v2, data_backend_ctx: DataBackendContext
+):
     table_args_list = [
         table_def for _alias, table_def in fake_graph_and_tables_request_v2
     ]
@@ -413,21 +455,22 @@ def test_graph_post_table_ingest_retries_missing_exact_stats(
         VersionedSourceTableID(
             connector_name=create_table.get_connector_id(),
             source_table_name=str(create_table.get_source_table_name()),
-            version=test_version) for create_table in table_args_list
+            version=test_version,
+        )
+        for create_table in table_args_list
     ]
 
     validator = GraphRefreshValidator(DeployEnvConfig.for_test())
-    with pytest.raises(GraphTableStatsNotReady,
-                       match='Exact table stats are missing'):
+    with pytest.raises(GraphTableStatsNotReady, match='Exact table stats are missing'):
         validator.post_table_ingest(
             ctx=data_backend_ctx,
-            versioned_table_dict=dict(zip(versioned_table_ids,
-                                          table_args_list)),
+            versioned_table_dict=dict(zip(versioned_table_ids, table_args_list)),
         )
 
 
 def test_graph_post_table_ingest_retries_partial_table_stats(
-        fake_graph_and_tables_request_v2, data_backend_ctx: DataBackendContext):
+    fake_graph_and_tables_request_v2, data_backend_ctx: DataBackendContext
+):
     table_args_list = [
         table_def for _alias, table_def in fake_graph_and_tables_request_v2
     ]
@@ -438,27 +481,33 @@ def test_graph_post_table_ingest_retries_partial_table_stats(
         VersionedSourceTableID(
             connector_name=create_table.get_connector_id(),
             source_table_name=str(create_table.get_source_table_name()),
-            version=test_version) for create_table in table_args_list
+            version=test_version,
+        )
+        for create_table in table_args_list
     ]
     backend_cache = get_active_cache()
     for table_args in table_args_list:
         backend_cache.save_table_stats(
-            table_args.fingerprint(), test_version, {
-                TableStatType.NUM_ROWS:
-                Stats(value=100, approx=False, data_version=test_version),
-            })
+            table_args.fingerprint(),
+            test_version,
+            {
+                TableStatType.NUM_ROWS: Stats(
+                    value=100, approx=False, data_version=test_version
+                ),
+            },
+        )
 
     validator = GraphRefreshValidator(DeployEnvConfig.for_test())
     with pytest.raises(GraphTableStatsNotReady, match='SOURCE_SIZE'):
         validator.post_table_ingest(
             ctx=data_backend_ctx,
-            versioned_table_dict=dict(zip(versioned_table_ids,
-                                          table_args_list)),
+            versioned_table_dict=dict(zip(versioned_table_ids, table_args_list)),
         )
 
 
 def test_graph_post_table_ingest_tolerates_missing_num_rows(
-        fake_graph_and_tables_request_v2, data_backend_ctx: DataBackendContext):
+    fake_graph_and_tables_request_v2, data_backend_ctx: DataBackendContext
+):
     """NUM_ROWS is optional (kumo#30173): the file/parquet connector persists
     none -- no O(part-count) footer scan -- so a table carrying only
     SOURCE_SIZE must validate rather than block the graph refresh with a
@@ -472,28 +521,36 @@ def test_graph_post_table_ingest_tolerates_missing_num_rows(
         VersionedSourceTableID(
             connector_name=create_table.get_connector_id(),
             source_table_name=str(create_table.get_source_table_name()),
-            version=test_version) for create_table in table_args_list
+            version=test_version,
+        )
+        for create_table in table_args_list
     ]
     # Write only SOURCE_SIZE -- exactly what the file/parquet connector's
     # ingest now persists (no NUM_ROWS).
     backend_cache = get_active_cache()
     for table_args in table_args_list:
         backend_cache.save_table_stats(
-            table_args.fingerprint(), test_version, {
-                TableStatType.SOURCE_SIZE:
-                Stats(value=100, approx=False, data_version=test_version),
-            })
+            table_args.fingerprint(),
+            test_version,
+            {
+                TableStatType.SOURCE_SIZE: Stats(
+                    value=100, approx=False, data_version=test_version
+                ),
+            },
+        )
 
     validator = GraphRefreshValidator(DeployEnvConfig.for_test())
     # No readiness raise, and a 100-byte graph clears the byte limit.
     resp = validator.post_table_ingest(
         ctx=data_backend_ctx,
-        versioned_table_dict=dict(zip(versioned_table_ids, table_args_list)))
+        versioned_table_dict=dict(zip(versioned_table_ids, table_args_list)),
+    )
     assert resp.errors == []
 
 
 def test_graph_post_table_ingest_converges_after_stats_written(
-        fake_graph_and_tables_request_v2, data_backend_ctx: DataBackendContext):
+    fake_graph_and_tables_request_v2, data_backend_ctx: DataBackendContext
+):
     """A readiness failure must clear once the missing stat is written.
 
     This is what makes the retry meaningful: when validate_graph_table_stats
@@ -509,7 +566,9 @@ def test_graph_post_table_ingest_converges_after_stats_written(
         VersionedSourceTableID(
             connector_name=create_table.get_connector_id(),
             source_table_name=str(create_table.get_source_table_name()),
-            version=test_version) for create_table in table_args_list
+            version=test_version,
+        )
+        for create_table in table_args_list
     ]
     versioned_table_dict = dict(zip(versioned_table_ids, table_args_list))
     backend_cache = get_active_cache()
@@ -518,27 +577,37 @@ def test_graph_post_table_ingest_converges_after_stats_written(
     # Attempt 1: only NUM_ROWS present -> readiness failure (would retry).
     for table_args in table_args_list:
         backend_cache.save_table_stats(
-            table_args.fingerprint(), test_version, {
-                TableStatType.NUM_ROWS:
-                Stats(value=100, approx=False, data_version=test_version),
-            })
+            table_args.fingerprint(),
+            test_version,
+            {
+                TableStatType.NUM_ROWS: Stats(
+                    value=100, approx=False, data_version=test_version
+                ),
+            },
+        )
     with pytest.raises(GraphTableStatsNotReady, match='SOURCE_SIZE'):
-        validator.post_table_ingest(ctx=data_backend_ctx,
-                                    versioned_table_dict=versioned_table_dict)
+        validator.post_table_ingest(
+            ctx=data_backend_ctx, versioned_table_dict=versioned_table_dict
+        )
 
     # Stat propagation catches up (what a later retry attempt would observe).
     for table_args in table_args_list:
         backend_cache.add_table_stats(
-            table_args.fingerprint(), {
-                TableStatType.NUM_ROWS:
-                Stats(value=100, approx=False, data_version=test_version),
-                TableStatType.SOURCE_SIZE:
-                Stats(value=100, approx=False, data_version=test_version),
-            })
+            table_args.fingerprint(),
+            {
+                TableStatType.NUM_ROWS: Stats(
+                    value=100, approx=False, data_version=test_version
+                ),
+                TableStatType.SOURCE_SIZE: Stats(
+                    value=100, approx=False, data_version=test_version
+                ),
+            },
+        )
 
     # Attempt 2: stats are now complete -> validation converges (no raise).
     resp = validator.post_table_ingest(
-        ctx=data_backend_ctx, versioned_table_dict=versioned_table_dict)
+        ctx=data_backend_ctx, versioned_table_dict=versioned_table_dict
+    )
     assert resp.errors == []
 
 
@@ -562,13 +631,15 @@ def test_graph_table_stats_not_ready_is_retryable():
 
     # is_error_non_retryable() is the exact predicate the worker interceptor
     # and retry policy rely on. The readiness error must be retryable...
-    assert is_error_non_retryable(
-        GraphTableStatsNotReady('stats not ready')) is False
+    assert is_error_non_retryable(GraphTableStatsNotReady('stats not ready')) is False
     # ...whereas the ValidationException it replaced was non-retryable, which
     # is what made graph refresh fail immediately before this fix.
-    assert is_error_non_retryable(
-        ValidationException(
-            'Required table stats missing (SOURCE_SIZE)')) is True
+    assert (
+        is_error_non_retryable(
+            ValidationException('Required table stats missing (SOURCE_SIZE)')
+        )
+        is True
+    )
 
 
 # test graph-level validations that require col stats
@@ -579,11 +650,10 @@ def test_graph_post_col_stats_validate(fake_graph_and_tables_request_v2):
     test_version = '12345'
     fake_ranges = {
         'TRANS': (datetime(1993, 1, 1), datetime(1998, 10, 31)),
-        'LOAN': (datetime(1993, 7, 5), datetime(1998, 12, 31))
+        'LOAN': (datetime(1993, 7, 5), datetime(1998, 12, 31)),
     }
     backend_cache = get_active_cache()
-    date_col = BaseColumnConfig(name='DATE', stype=Stype.timestamp,
-                                dtype=Dtype.date)
+    date_col = BaseColumnConfig(name='DATE', stype=Stype.timestamp, dtype=Dtype.date)
     for _alias, table_def in table_def_pairs:
         src_name = str(table_def.get_source_table_name())
         if src_name in fake_ranges.keys():
@@ -591,24 +661,29 @@ def test_graph_post_col_stats_validate(fake_graph_and_tables_request_v2):
             min, max = fake_ranges[src_name]
             fake_stats = {
                 date_col: {
-                    ColStatType.MIN:
-                    Stats(value=min, approx=False, data_version=test_version),
-                    ColStatType.MAX:
-                    Stats(value=max, approx=False, data_version=test_version)
+                    ColStatType.MIN: Stats(
+                        value=min, approx=False, data_version=test_version
+                    ),
+                    ColStatType.MAX: Stats(
+                        value=max, approx=False, data_version=test_version
+                    ),
                 }
             }
             backend_cache.add_col_stats(table_def.fingerprint(), fake_stats)
             # need to add table stats so tables don't get ignored by
             # get_many_exact_stats inside validate
             backend_cache.add_table_stats(
-                table_def.fingerprint(), {
-                    TableStatType.SOURCE_SIZE:
-                    Stats(value=1000, approx=False, data_version=test_version),
-                    TableStatType.NUM_ROWS:
-                    Stats(value=1000, approx=False, data_version=test_version)
-                })
-            backend_cache.save_col_stats_cache(table_def.fingerprint(),
-                                               test_version)
+                table_def.fingerprint(),
+                {
+                    TableStatType.SOURCE_SIZE: Stats(
+                        value=1000, approx=False, data_version=test_version
+                    ),
+                    TableStatType.NUM_ROWS: Stats(
+                        value=1000, approx=False, data_version=test_version
+                    ),
+                },
+            )
+            backend_cache.save_col_stats_cache(table_def.fingerprint(), test_version)
     versioned_table_dict = {}
     aliases = {}
     for alias, table_def in table_def_pairs:
@@ -625,10 +700,11 @@ def test_graph_post_col_stats_validate(fake_graph_and_tables_request_v2):
     # Now aggregated into a single warning with bullet points
     assert len(resp.warnings) == 1
     assert resp.warnings[0].title == 'Possible Data Missing'
-    assert 'When connected tables have large temporal gaps' in resp.warnings[
-        0].message
-    assert ('TRANS_FIXTURE (1993-01-01 UTC) is 6 months before the earliest '
-            'fact in LOAN_FIXTURE (1993-07-05 UTC)' in resp.warnings[0].message)
+    assert 'When connected tables have large temporal gaps' in resp.warnings[0].message
+    assert (
+        'TRANS_FIXTURE (1993-01-01 UTC) is 6 months before the earliest '
+        'fact in LOAN_FIXTURE (1993-07-05 UTC)' in resp.warnings[0].message
+    )
 
 
 def test_time_gap_warning_multiple_pairs():
@@ -637,97 +713,102 @@ def test_time_gap_warning_multiple_pairs():
 
     # Test _get_time_gap_entry returns None for small gaps
     result = validator._get_time_gap_entry(
-        "TABLE_A",
-        "TABLE_B",
+        'TABLE_A',
+        'TABLE_B',
         datetime(2020, 1, 1),
         datetime(2020, 2, 1),  # 1 month gap
-        "earliest")
+        'earliest',
+    )
     assert result is None  # Below MAX_ALLOWED_GAP_MONTHS threshold
 
     # Test _get_time_gap_entry returns entry for large gaps
     result = validator._get_time_gap_entry(
-        "TABLE_A",
-        "TABLE_B",
+        'TABLE_A',
+        'TABLE_B',
         datetime(2020, 1, 1),
         datetime(2020, 9, 1),  # 8 month gap
-        "earliest")
+        'earliest',
+    )
     assert result is not None
     assert result == {
-        "gap": 8,
-        "period": "earliest",
-        "earlier_table": "TABLE_A",
-        "later_table": "TABLE_B",
-        "earlier_date": datetime(2020, 1, 1),
-        "later_date": datetime(2020, 9, 1),
+        'gap': 8,
+        'period': 'earliest',
+        'earlier_table': 'TABLE_A',
+        'later_table': 'TABLE_B',
+        'earlier_date': datetime(2020, 1, 1),
+        'later_date': datetime(2020, 9, 1),
     }
 
     # Test single pair warning with "earliest" period
     warning = validator._create_time_gap_warning([result])
-    assert warning.title == "Possible Data Missing"
+    assert warning.title == 'Possible Data Missing'
     assert warning.message == (
-        "When connected tables have large temporal gaps in their "
-        "records, data may be dropped. Please review your data sources "
-        "if this is unexpected:"
-        "\n- TABLE_A (2020-01-01 UTC) is 8 months before the earliest "
-        "fact in TABLE_B (2020-09-01 UTC)")
+        'When connected tables have large temporal gaps in their '
+        'records, data may be dropped. Please review your data sources '
+        'if this is unexpected:'
+        '\n- TABLE_A (2020-01-01 UTC) is 8 months before the earliest '
+        'fact in TABLE_B (2020-09-01 UTC)'
+    )
 
     # Test single pair warning with "latest" period
     latest_entry = {
-        "gap": 6,
-        "period": "latest",
-        "earlier_table": "TABLE_X",
-        "later_table": "TABLE_Y",
-        "earlier_date": datetime(2020, 1, 1),
-        "later_date": datetime(2020, 7, 1),
+        'gap': 6,
+        'period': 'latest',
+        'earlier_table': 'TABLE_X',
+        'later_table': 'TABLE_Y',
+        'earlier_date': datetime(2020, 1, 1),
+        'later_date': datetime(2020, 7, 1),
     }
     warning = validator._create_time_gap_warning([latest_entry])
-    assert warning.title == "Possible Data Missing"
+    assert warning.title == 'Possible Data Missing'
     assert warning.message == (
-        "When connected tables have large temporal gaps in their "
-        "records, data may be dropped. Please review your data sources "
-        "if this is unexpected:"
-        "\n- TABLE_Y (2020-07-01 UTC) is 6 months after the latest "
-        "fact in TABLE_X (2020-01-01 UTC)")
+        'When connected tables have large temporal gaps in their '
+        'records, data may be dropped. Please review your data sources '
+        'if this is unexpected:'
+        '\n- TABLE_Y (2020-07-01 UTC) is 6 months after the latest '
+        'fact in TABLE_X (2020-01-01 UTC)'
+    )
 
     # Test multiple pairs warning lists all gaps as bullet points
     entries = [
         {
-            "gap": 8,
-            "period": "earliest",
-            "earlier_table": "TABLE_A",
-            "later_table": "TABLE_B",
-            "earlier_date": datetime(2020, 1, 1),
-            "later_date": datetime(2020, 9, 1),
+            'gap': 8,
+            'period': 'earliest',
+            'earlier_table': 'TABLE_A',
+            'later_table': 'TABLE_B',
+            'earlier_date': datetime(2020, 1, 1),
+            'later_date': datetime(2020, 9, 1),
         },
         {
-            "gap": 6,
-            "period": "latest",
-            "earlier_table": "TABLE_C",
-            "later_table": "TABLE_D",
-            "earlier_date": datetime(2020, 3, 1),
-            "later_date": datetime(2020, 9, 1),
+            'gap': 6,
+            'period': 'latest',
+            'earlier_table': 'TABLE_C',
+            'later_table': 'TABLE_D',
+            'earlier_date': datetime(2020, 3, 1),
+            'later_date': datetime(2020, 9, 1),
         },
         {
-            "gap": 5,
-            "period": "earliest",
-            "earlier_table": "TABLE_E",
-            "later_table": "TABLE_F",
-            "earlier_date": datetime(2020, 2, 1),
-            "later_date": datetime(2020, 7, 1),
+            'gap': 5,
+            'period': 'earliest',
+            'earlier_table': 'TABLE_E',
+            'later_table': 'TABLE_F',
+            'earlier_date': datetime(2020, 2, 1),
+            'later_date': datetime(2020, 7, 1),
         },
     ]
     warning = validator._create_time_gap_warning(entries)
-    assert warning.title == "Possible Data Missing"
+    assert warning.title == 'Possible Data Missing'
     assert warning.message == (
-        "When connected tables have large temporal gaps in their "
-        "records, data may be dropped. Please review your data sources "
-        "if this is unexpected:"
-        "\n- TABLE_A (2020-01-01 UTC) is 8 months before the earliest "
-        "fact in TABLE_B (2020-09-01 UTC)"
-        "\n- TABLE_D (2020-09-01 UTC) is 6 months after the latest "
-        "fact in TABLE_C (2020-03-01 UTC)"
-        "\n- TABLE_E (2020-02-01 UTC) is 5 months before the earliest "
-        "fact in TABLE_F (2020-07-01 UTC)")
+        'When connected tables have large temporal gaps in their '
+        'records, data may be dropped. Please review your data sources '
+        'if this is unexpected:'
+        '\n- TABLE_A (2020-01-01 UTC) is 8 months before the earliest '
+        'fact in TABLE_B (2020-09-01 UTC)'
+        '\n- TABLE_D (2020-09-01 UTC) is 6 months after the latest '
+        'fact in TABLE_C (2020-03-01 UTC)'
+        '\n- TABLE_E (2020-02-01 UTC) is 5 months before the earliest '
+        'fact in TABLE_F (2020-07-01 UTC)'
+    )
 
 
 # test graph-level validations that require edge stats
@@ -737,8 +818,7 @@ def test_graph_edge_stats_validate(fake_graph_and_tables_request_v2):
     table_def_pairs = fake_graph_and_tables_request_v2
     connector_id = table_def_pairs[0][1].get_connector_id()
     connector_specs = {
-        connector_id:
-        ConnectorExecutionRef(
+        connector_id: ConnectorExecutionRef(
             connector_id=connector_id,
             project_id=ProjectID(f'project_{"1" * 32}'),
         )
@@ -769,42 +849,53 @@ def test_graph_edge_stats_validate(fake_graph_and_tables_request_v2):
         ['DISP_FIXTURE.DISP_ID', 'CARD_FIXTURE.DISP_ID'],
     ]
     col_key_groups = [
-        ColumnKeyGroup(columns=tuple(
-            ColumnKey(table_name=TableName(s.split('.', 1)[0]),
-                      col_name=s.split('.', 1)[1]) for s in group))
+        ColumnKeyGroup(
+            columns=tuple(
+                ColumnKey(
+                    table_name=TableName(s.split('.', 1)[0]),
+                    col_name=s.split('.', 1)[1],
+                )
+                for s in group
+            )
+        )
         for group in financial_groups
     ]
 
-    graph_name = "test_graph"
+    graph_name = 'test_graph'
     graph_input = GraphDataComputeInput(
         graph_display_name=graph_name,
         graph_key=graph_name,
         tables=input_tables,
         base_tables={},
         connectors=connector_specs,
-        graph_definition=GraphDefinition(tables=tables_by_name,
-                                         col_groups=col_key_groups),
+        graph_definition=GraphDefinition(
+            tables=tables_by_name, col_groups=col_key_groups
+        ),
         table_aliases=table_aliases,
     )
     fake_graph_version = '123456'
     graph_version_info = GraphDataVersionInfo(
         graph_data_version=GraphVersion(fake_graph_version),
         table_data_versions={
-            TableName(str(table_def.get_source_table_name())):
-            TableDataVersion('1234')
+            TableName(str(table_def.get_source_table_name())): TableDataVersion('1234')
             for _alias, table_def in table_def_pairs
-        })
+        },
+    )
     backend_cache = get_active_cache()
     fake_stats = []
     good_edge = {
-        EdgeStatType.NUM_SRC_NONZERO_DEGREE:
-        Stats(value=100, approx=False, data_version=fake_graph_version),
-        EdgeStatType.NUM_DST_NONZERO_DEGREE:
-        Stats(value=100, approx=False, data_version=fake_graph_version),
-        EdgeStatType.FRAC_SRC_NONZERO_DEGREE:
-        Stats(value=1, approx=False, data_version=fake_graph_version),
-        EdgeStatType.FRAC_DST_NONZERO_DEGREE:
-        Stats(value=1, approx=False, data_version=fake_graph_version),
+        EdgeStatType.NUM_SRC_NONZERO_DEGREE: Stats(
+            value=100, approx=False, data_version=fake_graph_version
+        ),
+        EdgeStatType.NUM_DST_NONZERO_DEGREE: Stats(
+            value=100, approx=False, data_version=fake_graph_version
+        ),
+        EdgeStatType.FRAC_SRC_NONZERO_DEGREE: Stats(
+            value=1, approx=False, data_version=fake_graph_version
+        ),
+        EdgeStatType.FRAC_DST_NONZERO_DEGREE: Stats(
+            value=1, approx=False, data_version=fake_graph_version
+        ),
     }
     fake_stats.append(good_edge)
     bad_edge = copy.deepcopy(good_edge)
@@ -814,12 +905,14 @@ def test_graph_edge_stats_validate(fake_graph_and_tables_request_v2):
 
     src = SourceTableColumn(connector_id, 'CARD', 'DISP_ID')
     dst = SourceTableColumn(connector_id, 'DISP', 'DISP_ID')
-    backend_cache.graph_cache.add_edge_stats(graph_name, src, dst,
-                                             fake_stats[0], fake_graph_version)
+    backend_cache.graph_cache.add_edge_stats(
+        graph_name, src, dst, fake_stats[0], fake_graph_version
+    )
     src = SourceTableColumn(connector_id, 'DISP', 'CLIENT_ID')
     dst = SourceTableColumn(connector_id, 'CLIENT', 'CLIENT_ID')
-    backend_cache.graph_cache.add_edge_stats(graph_name, src, dst,
-                                             fake_stats[1], fake_graph_version)
+    backend_cache.graph_cache.add_edge_stats(
+        graph_name, src, dst, fake_stats[1], fake_graph_version
+    )
     validator = GraphRefreshValidator(DeployEnvConfig.for_test())
     resp = validator.post_edge_stats(graph_input, graph_version_info)
     assert len(resp.errors) == 0
@@ -834,16 +927,20 @@ def test_validate_col_stats_dropped_rows(make_default_table_def_v2):
     api_table = make_default_table_def_v2()
     # Use first column as time_col to ensure it exists
     first_col_name = api_table.cols[0].name
-    table_def = TableDefinition(**dataclasses.asdict(
-        dataclasses.replace(api_table, time_col=first_col_name)))
+    table_def = TableDefinition(
+        **dataclasses.asdict(dataclasses.replace(api_table, time_col=first_col_name))
+    )
     test_version = '123456'
 
     # Add table stats (no longer includes DROPPED_ROWS)
     backend_cache.add_table_stats(
-        table_def.fingerprint(), {
-            TableStatType.NUM_ROWS:
-            Stats(value=100, approx=False, data_version=test_version)
-        })
+        table_def.fingerprint(),
+        {
+            TableStatType.NUM_ROWS: Stats(
+                value=100, approx=False, data_version=test_version
+            )
+        },
+    )
 
     base_cols = table_def.to_base_columns()
 
@@ -853,38 +950,43 @@ def test_validate_col_stats_dropped_rows(make_default_table_def_v2):
     for base_col in base_cols:
         if base_col.name == table_def.time_col:
             test_col_stats[base_col] = {
-                ColStatType.DROPPED_ROWS:
-                Stats(value=50, approx=False, data_version=test_version),
-                ColStatType.COUNT:
-                Stats(value=100, approx=False, data_version=test_version),
-                ColStatType.NA_FRACTION:
-                Stats(value=0.0, approx=False, data_version=test_version),
-                ColStatType.INVALID_FRACTION:
-                Stats(value=0.0, approx=False, data_version=test_version),
+                ColStatType.DROPPED_ROWS: Stats(
+                    value=50, approx=False, data_version=test_version
+                ),
+                ColStatType.COUNT: Stats(
+                    value=100, approx=False, data_version=test_version
+                ),
+                ColStatType.NA_FRACTION: Stats(
+                    value=0.0, approx=False, data_version=test_version
+                ),
+                ColStatType.INVALID_FRACTION: Stats(
+                    value=0.0, approx=False, data_version=test_version
+                ),
             }
         else:
             test_col_stats[base_col] = {
-                ColStatType.COUNT:
-                Stats(value=100, approx=False, data_version=test_version),
-                ColStatType.NA_FRACTION:
-                Stats(value=0.0, approx=False, data_version=test_version),
-                ColStatType.INVALID_FRACTION:
-                Stats(value=0.0, approx=False, data_version=test_version),
+                ColStatType.COUNT: Stats(
+                    value=100, approx=False, data_version=test_version
+                ),
+                ColStatType.NA_FRACTION: Stats(
+                    value=0.0, approx=False, data_version=test_version
+                ),
+                ColStatType.INVALID_FRACTION: Stats(
+                    value=0.0, approx=False, data_version=test_version
+                ),
             }
 
     backend_cache.add_col_stats(table_def.fingerprint(), test_col_stats)
 
     validator = ColStatsValidator()
-    response = validator.post_col_stats('test_connector', table_def,
-                                        test_version)
+    response = validator.post_col_stats('test_connector', table_def, test_version)
 
-    time_col_warnings = [
-        w for w in response.warnings if 'time col' in w.title.lower()
-    ]
+    time_col_warnings = [w for w in response.warnings if 'time col' in w.title.lower()]
     assert len(time_col_warnings) == 0, (
-        f"Expected no time col warning since DROPPED_ROWS is always computed "
-        f"separately and before other column stats, got warnings: "
-        f"{[item.title for item in response.warnings]}")
+        f'Expected no time col warning since DROPPED_ROWS is always computed '
+        f'separately and before other column stats, got warnings: '
+        f'{[item.title for item in response.warnings]}'
+    )
 
 
 _SQL_CONNECTOR_ID = f'connector_{"5" * 32}'
@@ -906,11 +1008,13 @@ def _sql_table_def(
         ]
     return TableDefinition(
         cols=cols,
-        source_table=CustomSQLSourceTable(connector_id=_SQL_CONNECTOR_ID,
-                                          connector_type=connector_type,
-                                          sql='SELECT pkey, f1 FROM t',
-                                          table=sql_name,
-                                          referenced_tables=['t']),
+        source_table=CustomSQLSourceTable(
+            connector_id=_SQL_CONNECTOR_ID,
+            connector_type=connector_type,
+            sql='SELECT pkey, f1 FROM t',
+            table=sql_name,
+            referenced_tables=['t'],
+        ),
         pkey=pkey,
         time_col=None,
     )
@@ -923,24 +1027,25 @@ def test_fr15_post_col_stats_empty_sql_result_errors(make_default_table_def_v2):
     version = 'fr15_colstats_empty'
 
     sql_def = _sql_table_def('custom_sql_fr15_colstats_empty')
-    backend_cache.add_table_stats(sql_def.fingerprint(), {
-        TableStatType.NUM_ROWS:
-        Stats(value=0, approx=False, data_version=version)
-    })
-    response = ColStatsValidator().post_col_stats(sql_def.get_connector_id(),
-                                                  sql_def, version)
+    backend_cache.add_table_stats(
+        sql_def.fingerprint(),
+        {TableStatType.NUM_ROWS: Stats(value=0, approx=False, data_version=version)},
+    )
+    response = ColStatsValidator().post_col_stats(
+        sql_def.get_connector_id(), sql_def, version
+    )
     assert [e.title for e in response.errors] == ['SQL table returned no rows']
 
     # Raw contrast: the empty-result error is SQL-only.
     raw_def = TableDefinition(**dataclasses.asdict(make_default_table_def_v2()))
-    backend_cache.add_table_stats(raw_def.fingerprint(), {
-        TableStatType.NUM_ROWS:
-        Stats(value=0, approx=False, data_version=version)
-    })
+    backend_cache.add_table_stats(
+        raw_def.fingerprint(),
+        {TableStatType.NUM_ROWS: Stats(value=0, approx=False, data_version=version)},
+    )
     raw_response = ColStatsValidator().post_col_stats(
-        raw_def.get_connector_id(), raw_def, version)
-    assert not any(e.title == 'SQL table returned no rows'
-                   for e in raw_response.errors)
+        raw_def.get_connector_id(), raw_def, version
+    )
+    assert not any(e.title == 'SQL table returned no rows' for e in raw_response.errors)
 
 
 def test_fr15_post_col_stats_null_pkey_sql_errors(make_default_table_def_v2):
@@ -953,58 +1058,58 @@ def test_fr15_post_col_stats_null_pkey_sql_errors(make_default_table_def_v2):
         base_cols = table_def.to_base_columns()
         col_stats = {
             base_col: {
-                ColStatType.COUNT:
-                Stats(value=100, approx=False, data_version=version),
-                ColStatType.NUM_NA:
-                Stats(value=0, approx=False, data_version=version),
+                ColStatType.COUNT: Stats(value=100, approx=False, data_version=version),
+                ColStatType.NUM_NA: Stats(value=0, approx=False, data_version=version),
             }
             for base_col in base_cols
         }
         pkey_col = next(c for c in base_cols if c.name == table_def.pkey)
         # Half the primary keys are null -> above MAX_PKEY_BAD_FRACTION.
         col_stats[pkey_col][ColStatType.NA_FRACTION] = Stats(
-            value=0.5, approx=False, data_version=version)
-        col_stats[pkey_col][ColStatType.NUM_NA] = Stats(value=50, approx=False,
-                                                        data_version=version)
+            value=0.5, approx=False, data_version=version
+        )
+        col_stats[pkey_col][ColStatType.NUM_NA] = Stats(
+            value=50, approx=False, data_version=version
+        )
         return col_stats
 
     sql_def = _sql_table_def('custom_sql_fr15_colstats_pkey')
     backend_cache.add_table_stats(
-        sql_def.fingerprint(), {
-            TableStatType.NUM_ROWS:
-            Stats(value=100, approx=False, data_version=version)
-        })
+        sql_def.fingerprint(),
+        {TableStatType.NUM_ROWS: Stats(value=100, approx=False, data_version=version)},
+    )
     backend_cache.add_col_stats(sql_def.fingerprint(), _bad_pkey_stats(sql_def))
-    response = ColStatsValidator().post_col_stats(sql_def.get_connector_id(),
-                                                  sql_def, version)
-    assert any(e.title == 'Null primary keys in SQL table'
-               for e in response.errors)
-    assert not any(e.title == 'Incomplete table statistics'
-                   for e in response.errors)
+    response = ColStatsValidator().post_col_stats(
+        sql_def.get_connector_id(), sql_def, version
+    )
+    assert any(e.title == 'Null primary keys in SQL table' for e in response.errors)
+    assert not any(e.title == 'Incomplete table statistics' for e in response.errors)
 
     broken = _bad_pkey_stats(sql_def)
-    next(stats for col, stats in broken.items()
-         if col.name == 'f1')[ColStatType.COUNT] = Stats(
-             value=0, approx=False, data_version=version)
+    next(stats for col, stats in broken.items() if col.name == 'f1')[
+        ColStatType.COUNT
+    ] = Stats(value=0, approx=False, data_version=version)
     backend_cache.add_col_stats(sql_def.fingerprint(), broken)
-    response = ColStatsValidator().post_col_stats(sql_def.get_connector_id(),
-                                                  sql_def, version)
-    assert not any(e.title == 'Incomplete table statistics'
-                   for e in response.errors)
+    response = ColStatsValidator().post_col_stats(
+        sql_def.get_connector_id(), sql_def, version
+    )
+    assert not any(e.title == 'Incomplete table statistics' for e in response.errors)
 
     raw_def = TableDefinition(**dataclasses.asdict(make_default_table_def_v2()))
     backend_cache.add_table_stats(
-        raw_def.fingerprint(), {
-            TableStatType.NUM_ROWS:
-            Stats(value=100, approx=False, data_version=version)
-        })
+        raw_def.fingerprint(),
+        {TableStatType.NUM_ROWS: Stats(value=100, approx=False, data_version=version)},
+    )
     backend_cache.add_col_stats(raw_def.fingerprint(), _bad_pkey_stats(raw_def))
     raw_response = ColStatsValidator().post_col_stats(
-        raw_def.get_connector_id(), raw_def, version)
-    assert not any(e.title == 'Null primary keys in SQL table'
-                   for e in raw_response.errors)
-    assert any(w.title == 'Missing or invalid primary keys'
-               for w in raw_response.warnings)
+        raw_def.get_connector_id(), raw_def, version
+    )
+    assert not any(
+        e.title == 'Null primary keys in SQL table' for e in raw_response.errors
+    )
+    assert any(
+        w.title == 'Missing or invalid primary keys' for w in raw_response.warnings
+    )
 
 
 @pytest.mark.asyncio
@@ -1012,8 +1117,12 @@ async def test_standalone_refresh_never_completes_invalid_stats(monkeypatch):
     table = _sql_table_def('custom_sql_incomplete_manifest')
     version = TableDataVersion('incomplete_manifest')
     monkeypatch.setattr(
-        trw.workflow, 'info', lambda: SimpleNamespace(
-            parent=None, workflow_id='test-workflow', run_id='test-run-id'))
+        trw.workflow,
+        'info',
+        lambda: SimpleNamespace(
+            parent=None, workflow_id='test-workflow', run_id='test-run-id'
+        ),
+    )
     workflow = trw.TableRefreshWorkflow()
     saved, colstat_stages = [], []
 
@@ -1021,19 +1130,24 @@ async def test_standalone_refresh_never_completes_invalid_stats(monkeypatch):
         saved.append(copy.deepcopy(result))
 
     async def ingest():
-        return TableDataTaskResult(status=AsyncDataTaskStatus.DONE,
-                                   validation=ValidationResponse(),
-                                   stage=TableRefreshStage.INGEST_TABLE,
-                                   data_version=version)
+        return TableDataTaskResult(
+            status=AsyncDataTaskStatus.DONE,
+            validation=ValidationResponse(),
+            stage=TableRefreshStage.INGEST_TABLE,
+            data_version=version,
+        )
 
     async def execute(activity, *args, **kwargs):
         if activity is trw.DataBackendActivities.compute_standalone_table_col_stats:
             return True
         if activity is trw.DataBackendActivities.validate_table_col_stats:
-            return ValidationResponse(errors=[
-                ValidationError(title='Incomplete table statistics',
-                                message='missing')
-            ])
+            return ValidationResponse(
+                errors=[
+                    ValidationError(
+                        title='Incomplete table statistics', message='missing'
+                    )
+                ]
+            )
         return ValidationResponse()
 
     async def update():
@@ -1052,24 +1166,30 @@ async def test_standalone_refresh_never_completes_invalid_stats(monkeypatch):
         trw.TableRefreshWorkflowInput(
             connector_spec=ConnectorExecutionRef(
                 connector_id=table.get_connector_id(),
-                project_id=f'project_{"0" * 32}', authorization_token='token'),
-            table=table, data_version=version))
+                project_id=f'project_{"0" * 32}',
+                authorization_token='token',
+            ),
+            table=table,
+            data_version=version,
+        ),
+    )
     assert result.stage is not TableRefreshStage.COMPLETED
     assert not colstat_stages
     assert all(item.stage is not TableRefreshStage.COMPLETED for item in saved)
 
 
-@pytest.mark.parametrize('public_failure', [True, False],
-                         ids=['public', 'internal'])
+@pytest.mark.parametrize('public_failure', [True, False], ids=['public', 'internal'])
 @pytest.mark.asyncio
 async def test_standalone_refresh_returns_failed_col_stats_result(
-        monkeypatch, public_failure):
+    monkeypatch, public_failure
+):
     table = _sql_table_def('custom_sql_wide_integer')
     version = TableDataVersion('wide_integer')
     message = (
         f"Table '{table.get_source_table_name()}' could not be refreshed: "
         "column 'wide_int' contains a scale-zero decimal value outside "
-        "Kumo's signed 64-bit integer range")
+        "Kumo's signed 64-bit integer range"
+    )
     internal_message = 'sensitive internal column-statistics failure'
     if public_failure:
         application_error = ApplicationError(
@@ -1097,8 +1217,12 @@ async def test_standalone_refresh_returns_failed_col_stats_result(
     )
     activity_error.__cause__ = application_error
     monkeypatch.setattr(
-        trw.workflow, 'info', lambda: SimpleNamespace(
-            parent=None, workflow_id='test-workflow', run_id='test-run-id'))
+        trw.workflow,
+        'info',
+        lambda: SimpleNamespace(
+            parent=None, workflow_id='test-workflow', run_id='test-run-id'
+        ),
+    )
     workflow = trw.TableRefreshWorkflow()
     saved = []
     saved_colstat = []
@@ -1107,10 +1231,12 @@ async def test_standalone_refresh_returns_failed_col_stats_result(
         saved.append(copy.deepcopy(result))
 
     async def ingest():
-        return TableDataTaskResult(status=AsyncDataTaskStatus.DONE,
-                                   validation=ValidationResponse(),
-                                   stage=TableRefreshStage.INGEST_TABLE,
-                                   data_version=version)
+        return TableDataTaskResult(
+            status=AsyncDataTaskStatus.DONE,
+            validation=ValidationResponse(),
+            stage=TableRefreshStage.INGEST_TABLE,
+            data_version=version,
+        )
 
     async def execute(activity, *args, **kwargs):
         if activity is trw.DataBackendActivities.compute_standalone_table_col_stats:
@@ -1133,7 +1259,9 @@ async def test_standalone_refresh_returns_failed_col_stats_result(
         trw.TableRefreshWorkflowInput(
             connector_spec=ConnectorExecutionRef(
                 connector_id=table.get_connector_id(),
-                project_id=f'project_{"0" * 32}', authorization_token='token'),
+                project_id=f'project_{"0" * 32}',
+                authorization_token='token',
+            ),
             table=table,
             data_version=version,
         ),
@@ -1150,8 +1278,7 @@ async def test_standalone_refresh_returns_failed_col_stats_result(
 
 
 @pytest.mark.asyncio
-async def test_standalone_refresh_propagates_col_stats_cancellation(
-        monkeypatch):
+async def test_standalone_refresh_propagates_col_stats_cancellation(monkeypatch):
     table = _sql_table_def('custom_sql_cancelled_col_stats')
     version = TableDataVersion('cancelled_col_stats')
     activity_error = ActivityError(
@@ -1165,8 +1292,12 @@ async def test_standalone_refresh_propagates_col_stats_cancellation(
     )
     activity_error.__cause__ = CancelledError('activity cancelled')
     monkeypatch.setattr(
-        trw.workflow, 'info', lambda: SimpleNamespace(
-            parent=None, workflow_id='test-workflow', run_id='test-run-id'))
+        trw.workflow,
+        'info',
+        lambda: SimpleNamespace(
+            parent=None, workflow_id='test-workflow', run_id='test-run-id'
+        ),
+    )
     workflow = trw.TableRefreshWorkflow()
     saved = []
     saved_colstat = []
@@ -1175,10 +1306,12 @@ async def test_standalone_refresh_propagates_col_stats_cancellation(
         saved.append(copy.deepcopy(result))
 
     async def ingest():
-        return TableDataTaskResult(status=AsyncDataTaskStatus.DONE,
-                                   validation=ValidationResponse(),
-                                   stage=TableRefreshStage.INGEST_TABLE,
-                                   data_version=version)
+        return TableDataTaskResult(
+            status=AsyncDataTaskStatus.DONE,
+            validation=ValidationResponse(),
+            stage=TableRefreshStage.INGEST_TABLE,
+            data_version=version,
+        )
 
     async def execute(activity, *args, **kwargs):
         if activity is trw.DataBackendActivities.compute_standalone_table_col_stats:
@@ -1203,7 +1336,8 @@ async def test_standalone_refresh_propagates_col_stats_cancellation(
                 connector_spec=ConnectorExecutionRef(
                     connector_id=table.get_connector_id(),
                     project_id=f'project_{"0" * 32}',
-                    authorization_token='token'),
+                    authorization_token='token',
+                ),
                 table=table,
                 data_version=version,
             ),
@@ -1215,12 +1349,17 @@ async def test_standalone_refresh_propagates_col_stats_cancellation(
 
 @pytest.mark.asyncio
 async def test_standalone_refresh_completes_when_stats_intentionally_skipped(
-        monkeypatch):
+    monkeypatch,
+):
     table = _sql_table_def('custom_sql_direct_without_staged_parquet')
     version = TableDataVersion('direct_without_staged_parquet')
     monkeypatch.setattr(
-        trw.workflow, 'info', lambda: SimpleNamespace(
-            parent=None, workflow_id='test-workflow', run_id='test-run-id'))
+        trw.workflow,
+        'info',
+        lambda: SimpleNamespace(
+            parent=None, workflow_id='test-workflow', run_id='test-run-id'
+        ),
+    )
     workflow = trw.TableRefreshWorkflow()
     saved, colstat_stages = [], []
 
@@ -1228,10 +1367,12 @@ async def test_standalone_refresh_completes_when_stats_intentionally_skipped(
         saved.append(copy.deepcopy(result))
 
     async def ingest():
-        return TableDataTaskResult(status=AsyncDataTaskStatus.DONE,
-                                   validation=ValidationResponse(),
-                                   stage=TableRefreshStage.INGEST_TABLE,
-                                   data_version=version)
+        return TableDataTaskResult(
+            status=AsyncDataTaskStatus.DONE,
+            validation=ValidationResponse(),
+            stage=TableRefreshStage.INGEST_TABLE,
+            data_version=version,
+        )
 
     async def execute(activity, *args, **kwargs):
         if activity is trw.DataBackendActivities.compute_standalone_table_col_stats:
@@ -1256,8 +1397,13 @@ async def test_standalone_refresh_completes_when_stats_intentionally_skipped(
         trw.TableRefreshWorkflowInput(
             connector_spec=ConnectorExecutionRef(
                 connector_id=table.get_connector_id(),
-                project_id=f'project_{"0" * 32}', authorization_token='token'),
-            table=table, data_version=version))
+                project_id=f'project_{"0" * 32}',
+                authorization_token='token',
+            ),
+            table=table,
+            data_version=version,
+        ),
+    )
 
     assert result.stage is TableRefreshStage.COMPLETED
     assert not result.min_col_stats_computed
@@ -1274,21 +1420,24 @@ def test_fr15_post_ingestion_empty_sql_result_errors():
     version = 'fr15_ingest_empty'
     sql_def = _sql_table_def('custom_sql_fr15_ingest_empty')
 
-    backend_cache.materialization_stage.put(sql_def.fingerprint(), version,
-                                            MaterializationStage.INGEST,
-                                            save=True)
+    backend_cache.materialization_stage.put(
+        sql_def.fingerprint(), version, MaterializationStage.INGEST, save=True
+    )
     backend_cache.add_table_stats(
-        sql_def.fingerprint(), {
-            TableStatType.NUM_ROWS:
-            Stats(value=0, approx=False, data_version=version),
-            TableStatType.SOURCE_SIZE:
-            Stats(value=0, approx=False, data_version=version),
-        })
+        sql_def.fingerprint(),
+        {
+            TableStatType.NUM_ROWS: Stats(value=0, approx=False, data_version=version),
+            TableStatType.SOURCE_SIZE: Stats(
+                value=0, approx=False, data_version=version
+            ),
+        },
+    )
 
     # ``check_local=False`` isolates the zero-row source signal from the local
     # parquet ``is_empty`` recovery sniff (the raw "Ingested table empty" path).
     response = IngestionValidator(DeployEnvConfig.for_test()).post_ingestion(
-        sql_def, version, check_local=False)
+        sql_def, version, check_local=False
+    )
     assert any(e.title == 'SQL table returned no rows' for e in response.errors)
     assert not any(e.title == 'Table is empty' for e in response.errors)
 
@@ -1298,8 +1447,7 @@ def test_databricks_custom_sql_stats_drive_graph_limits(monkeypatch):
     so its stats are exact at ingest and the byte limit runs on them here --
     it no longer has to be deferred until DiskGraph published a count."""
     version = 'databricks_exact_graph'
-    sql_def = _sql_table_def('databricks_exact_graph',
-                             connector_type='databricks')
+    sql_def = _sql_table_def('databricks_exact_graph', connector_type='databricks')
     versioned_id = VersionedSourceTableID(
         connector_name=sql_def.get_connector_id(),
         source_table_name=str(sql_def.get_source_table_name()),
@@ -1307,18 +1455,28 @@ def test_databricks_custom_sql_stats_drive_graph_limits(monkeypatch):
     )
     exact = SimpleNamespace(
         table_stats={
-            TableStatType.NUM_ROWS:
-            Stats(value=1000, approx=False, data_version=version),
-            TableStatType.SOURCE_SIZE:
-            Stats(value=4096, approx=False, data_version=version),
-        })
-    monkeypatch.setattr(get_active_cache(), 'get_many_min_exact_stats',
-                        lambda *_args, **_kwargs: [exact])
+            TableStatType.NUM_ROWS: Stats(
+                value=1000, approx=False, data_version=version
+            ),
+            TableStatType.SOURCE_SIZE: Stats(
+                value=4096, approx=False, data_version=version
+            ),
+        }
+    )
+    monkeypatch.setattr(
+        get_active_cache(),
+        'get_many_min_exact_stats',
+        lambda *_args, **_kwargs: [exact],
+    )
     graph_calls = []
 
     validator = GraphRefreshValidator(DeployEnvConfig.for_test())
-    validator._limits = SimpleNamespace(validate_graph=lambda **kwargs: (
-        graph_calls.append(kwargs), ValidationResponse())[1])
+    validator._limits = SimpleNamespace(
+        validate_graph=lambda **kwargs: (
+            graph_calls.append(kwargs),
+            ValidationResponse(),
+        )[1]
+    )
 
     response = validator.post_table_ingest(
         ctx=mock.Mock(),
@@ -1330,7 +1488,8 @@ def test_databricks_custom_sql_stats_drive_graph_limits(monkeypatch):
 
 
 def test_fr15_post_table_ingest_empty_sql_result_errors(
-        data_backend_ctx: DataBackendContext):
+    data_backend_ctx: DataBackendContext,
+):
     """The graph-level total-rows gate errors when a Custom SQL table in the
     graph returned no rows."""
     backend_cache = get_active_cache()
@@ -1338,15 +1497,19 @@ def test_fr15_post_table_ingest_empty_sql_result_errors(
     sql_def = _sql_table_def('custom_sql_fr15_graph_empty')
     versioned_id = VersionedSourceTableID(
         connector_name=sql_def.get_connector_id(),
-        source_table_name=str(sql_def.get_source_table_name()), version=version)
+        source_table_name=str(sql_def.get_source_table_name()),
+        version=version,
+    )
 
     backend_cache.add_table_stats(
-        sql_def.fingerprint(), {
-            TableStatType.SOURCE_SIZE:
-            Stats(value=10000, approx=False, data_version=version),
-            TableStatType.NUM_ROWS:
-            Stats(value=0, approx=False, data_version=version),
-        })
+        sql_def.fingerprint(),
+        {
+            TableStatType.SOURCE_SIZE: Stats(
+                value=10000, approx=False, data_version=version
+            ),
+            TableStatType.NUM_ROWS: Stats(value=0, approx=False, data_version=version),
+        },
+    )
     backend_cache.save_col_stats_cache(sql_def.fingerprint(), version)
 
     resp = GraphRefreshValidator(DeployEnvConfig.for_test()).post_table_ingest(
@@ -1362,19 +1525,16 @@ def test_fr15_sql_edge_health_gates():
     connector_id = _SQL_CONNECTOR_ID
     graph_version = 'fr15_edge_v1'
 
-    sql_def = _sql_table_def('custom_sql_fr15_edge',
-                             cols=[RestColumn('id', Stype.ID,
-                                              Dtype.int)], pkey='id')
+    sql_def = _sql_table_def(
+        'custom_sql_fr15_edge', cols=[RestColumn('id', Stype.ID, Dtype.int)], pkey='id'
+    )
 
     # A raw S3-backed sibling table so the edge is SQL-to-raw.
     raw_def = TableDefinition(
         cols=[RestColumn('id', Stype.ID, Dtype.int)],
         source_table=S3SourceTable(
             connector_id=connector_id,
-            source={
-                'mode': 'relative',
-                'path': 'RAW_EDGE'
-            },
+            source={'mode': 'relative', 'path': 'RAW_EDGE'},
             file_type=FileType.PARQUET,  # pyright: ignore
             data_source_type=DataSourceType.S3,
         ),
@@ -1388,14 +1548,13 @@ def test_fr15_sql_edge_health_gates():
         TableIDv2.compose(None, sql_name, sql_def.fpid): sql_name,
         TableIDv2.compose(None, raw_name, raw_def.fpid): raw_name,
     }
-    input_tables = {
-        tid: tables_by_name[name]
-        for tid, name in table_aliases.items()
-    }
-    col_group = ColumnKeyGroup(columns=(
-        ColumnKey(table_name=sql_name, col_name='id'),
-        ColumnKey(table_name=raw_name, col_name='id'),
-    ))
+    input_tables = {tid: tables_by_name[name] for tid, name in table_aliases.items()}
+    col_group = ColumnKeyGroup(
+        columns=(
+            ColumnKey(table_name=sql_name, col_name='id'),
+            ColumnKey(table_name=raw_name, col_name='id'),
+        )
+    )
     graph_name = 'fr15_edge_graph'
     graph_input = GraphDataComputeInput(
         graph_display_name=graph_name,
@@ -1403,61 +1562,74 @@ def test_fr15_sql_edge_health_gates():
         tables=input_tables,
         base_tables={},
         connectors={
-            connector_id:
-            ConnectorExecutionRef(connector_id=connector_id,
-                                  project_id=ProjectID(f'project_{"1" * 32}'))
+            connector_id: ConnectorExecutionRef(
+                connector_id=connector_id, project_id=ProjectID(f'project_{"1" * 32}')
+            )
         },
-        graph_definition=GraphDefinition(tables=tables_by_name,
-                                         col_groups=[col_group]),
+        graph_definition=GraphDefinition(tables=tables_by_name, col_groups=[col_group]),
         table_aliases=table_aliases,
     )
     version_info = GraphDataVersionInfo(
-        graph_data_version=GraphVersion(graph_version), table_data_versions={
-            TableName(str(sql_def.get_source_table_name())):
-            TableDataVersion('1'),
-            TableName(str(raw_def.get_source_table_name())):
-            TableDataVersion('1'),
-        })
+        graph_data_version=GraphVersion(graph_version),
+        table_data_versions={
+            TableName(str(sql_def.get_source_table_name())): TableDataVersion('1'),
+            TableName(str(raw_def.get_source_table_name())): TableDataVersion('1'),
+        },
+    )
 
     # src is the SQL table's pkey ('id'); dst is the raw table's 'id'.
-    src = SourceTableColumn(connector_id, str(sql_def.get_source_table_name()),
-                            'id')
-    dst = SourceTableColumn(connector_id, str(raw_def.get_source_table_name()),
-                            'id')
+    src = SourceTableColumn(connector_id, str(sql_def.get_source_table_name()), 'id')
+    dst = SourceTableColumn(connector_id, str(raw_def.get_source_table_name()), 'id')
     backend_cache = get_active_cache()
 
     # Zero matching rows -> error naming the SQL join column.
     backend_cache.graph_cache.add_edge_stats(
-        graph_name, src, dst, {
-            EdgeStatType.EDGE_COUNT:
-            Stats(value=0, approx=False, data_version=graph_version)
-        }, graph_version)
+        graph_name,
+        src,
+        dst,
+        {
+            EdgeStatType.EDGE_COUNT: Stats(
+                value=0, approx=False, data_version=graph_version
+            )
+        },
+        graph_version,
+    )
     resp = GraphRefreshValidator(DeployEnvConfig.for_test()).post_edge_stats(
-        graph_input, version_info)
+        graph_input, version_info
+    )
     assert any(e.title == 'SQL table edge matches no rows' for e in resp.errors)
 
     # Non-zero but low match rate (10% < 20% threshold) -> warning.
     low_version = 'fr15_edge_v2'
     version_info_low = dataclasses.replace(
-        version_info, graph_data_version=GraphVersion(low_version))
+        version_info, graph_data_version=GraphVersion(low_version)
+    )
     backend_cache.graph_cache.add_edge_stats(
-        graph_name, src, dst, {
-            EdgeStatType.EDGE_COUNT:
-            Stats(value=5, approx=False, data_version=low_version),
-            EdgeStatType.FRAC_SRC_NONZERO_DEGREE:
-            Stats(value=0.1, approx=False, data_version=low_version),
-            EdgeStatType.FRAC_DST_NONZERO_DEGREE:
-            Stats(value=0.1, approx=False, data_version=low_version),
-        }, low_version)
-    resp_low = GraphRefreshValidator(
-        DeployEnvConfig.for_test()).post_edge_stats(graph_input,
-                                                    version_info_low)
-    assert any(w.title == 'Low SQL table edge match rate'
-               for w in resp_low.warnings)
+        graph_name,
+        src,
+        dst,
+        {
+            EdgeStatType.EDGE_COUNT: Stats(
+                value=5, approx=False, data_version=low_version
+            ),
+            EdgeStatType.FRAC_SRC_NONZERO_DEGREE: Stats(
+                value=0.1, approx=False, data_version=low_version
+            ),
+            EdgeStatType.FRAC_DST_NONZERO_DEGREE: Stats(
+                value=0.1, approx=False, data_version=low_version
+            ),
+        },
+        low_version,
+    )
+    resp_low = GraphRefreshValidator(DeployEnvConfig.for_test()).post_edge_stats(
+        graph_input, version_info_low
+    )
+    assert any(w.title == 'Low SQL table edge match rate' for w in resp_low.warnings)
 
 
 def test_graph_source_sizes_reject_an_unusable_source_size(
-        make_default_table_def_v2, data_backend_ctx: DataBackendContext):
+    make_default_table_def_v2, data_backend_ctx: DataBackendContext
+):
     """A zero SOURCE_SIZE fails, unless the table has its own error to report.
 
     ``pool/service.py`` returns early on ``estimate_bytes <= 0``, so a total
@@ -1473,60 +1645,76 @@ def test_graph_source_sizes_reject_an_unusable_source_size(
             version=version,
         )
         get_active_cache().add_table_stats(
-            table.fingerprint(), {
-                TableStatType.NUM_ROWS:
-                Stats(value=num_rows, approx=False, data_version=version),
-                TableStatType.SOURCE_SIZE:
-                Stats(value=source_size, approx=False, data_version=version),
-            })
+            table.fingerprint(),
+            {
+                TableStatType.NUM_ROWS: Stats(
+                    value=num_rows, approx=False, data_version=version
+                ),
+                TableStatType.SOURCE_SIZE: Stats(
+                    value=source_size, approx=False, data_version=version
+                ),
+            },
+        )
         return table_id
 
-    table = TableDefinition(**dataclasses.asdict(
-        make_default_table_def_v2('fixture-data/connector_123/TRANSACTION')))
+    table = TableDefinition(
+        **dataclasses.asdict(
+            make_default_table_def_v2('fixture-data/connector_123/TRANSACTION')
+        )
+    )
     table_id = register(table)
     with pytest.raises(ValidationException, match='TRANSACTION') as excinfo:
         DataBackendActivities.validate_graph_table_stats(
-            data_backend_ctx, {table_id: table}, TableRefreshStage.INGEST_TABLE,
-            connector_specs=[], aliases={table_id: [TableName('T')]})
+            data_backend_ctx,
+            {table_id: table},
+            TableRefreshStage.INGEST_TABLE,
+            connector_specs=[],
+            aliases={table_id: [TableName('T')]},
+        )
     # Permanent, so VALIDATE_STATS_RETRY_POLICY must not spend its ten
     # attempts on it the way it does for the readiness race above.
     assert is_error_non_retryable(excinfo.value) is True
 
     # A table that failed validation on its own terms reports that error, but
     # no partial source-size map escapes from the otherwise valid tables.
-    positive = TableDefinition(**dataclasses.asdict(
-        make_default_table_def_v2('fixture-data/connector_123/ACCOUNT')))
+    positive = TableDefinition(
+        **dataclasses.asdict(
+            make_default_table_def_v2('fixture-data/connector_123/ACCOUNT')
+        )
+    )
     zero = _sql_table_def('custom_sql_zero_size')
     positive_id = register(positive, source_size=4096)
     zero_id = register(zero, num_rows=0)
     result = DataBackendActivities.validate_graph_table_stats(
-        data_backend_ctx, {
-            positive_id: positive,
-            zero_id: zero
-        }, TableRefreshStage.INGEST_TABLE, connector_specs=[], aliases={
+        data_backend_ctx,
+        {positive_id: positive, zero_id: zero},
+        TableRefreshStage.INGEST_TABLE,
+        connector_specs=[],
+        aliases={
             positive_id: [TableName('POSITIVE')],
             zero_id: [TableName('ZERO')],
-        })
-    assert any(e.title == 'SQL table returned no rows'
-               for e in result.validation.errors)
+        },
+    )
+    assert any(
+        e.title == 'SQL table returned no rows' for e in result.validation.errors
+    )
     assert result.total_source_size_bytes == 0
     assert result.source_size_bytes_by_table == {}
 
 
 @pytest.mark.parametrize('count', [0, 1, 100])
-def test_column_parse_warning_uses_exact_count(make_default_table_def_v2,
-                                               count):
+def test_column_parse_warning_uses_exact_count(make_default_table_def_v2, count):
     table = TableDefinition(**dataclasses.asdict(make_default_table_def_v2()))
     cache = get_active_cache()
     version = 'parse-warning'
     cache.add_table_stats(
-        table.fingerprint(), {
-            TableStatType.NUM_ROWS:
-            Stats(value=100, approx=False, data_version=version)
-        })
+        table.fingerprint(),
+        {TableStatType.NUM_ROWS: Stats(value=100, approx=False, data_version=version)},
+    )
     col = table.to_base_columns()[3]
     cache.add_col_stats(
-        table.fingerprint(), {
+        table.fingerprint(),
+        {
             col: {
                 kind: Stats(value=value, approx=False, data_version=version)
                 for kind, value in {
@@ -1536,10 +1724,16 @@ def test_column_parse_warning_uses_exact_count(make_default_table_def_v2,
                     ColStatType.NA_FRACTION: count / 100,
                 }.items()
             }
-        })
-    result = ColStatsValidator().post_col_stats(table.get_connector_id(), table,
-                                                version, alias='events')
-    assert [warning.message for warning in result.warnings] == ([
-        f'{count} invalid values found in events.f3. Invalid values are parsed '
-        'as null. Please correct and retrain if needed.'
-    ] if count else [])
+        },
+    )
+    result = ColStatsValidator().post_col_stats(
+        table.get_connector_id(), table, version, alias='events'
+    )
+    assert [warning.message for warning in result.warnings] == (
+        [
+            f'{count} invalid values found in events.f3. Invalid values are parsed '
+            'as null. Please correct and retrain if needed.'
+        ]
+        if count
+        else []
+    )

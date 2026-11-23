@@ -40,10 +40,12 @@ def prediction_materialization_ownership(index_path: str, job_id: str):
     mutate either final path while materialization and publication are in
     progress.
     """
-    relpaths = sorted((
-        safe_relative_path(osp.join('train_tables', f'pred_{job_id}')),
-        safe_relative_path(osp.join('task_datasets', job_id)),
-    ))
+    relpaths = sorted(
+        (
+            safe_relative_path(osp.join('train_tables', f'pred_{job_id}')),
+            safe_relative_path(osp.join('task_datasets', job_id)),
+        )
+    )
     locks: list[_SharedSidecarLock] = []
     try:
         for relpath in relpaths:
@@ -72,10 +74,10 @@ def upload_job_sidecars_from_config_path(
     manifest = _manifest_from_local_config(snapshot_id, config)
     if manifest is None:
         return None
-    remote_root = _dataplane_root(snapshot_id,
-                                  data_persist_dir=data_persist_dir)
+    remote_root = _dataplane_root(snapshot_id, data_persist_dir=data_persist_dir)
     generation_relpath = _safe_relpath(
-        osp.join(_GENERATIONS_DIR, manifest['job_id'], uuid.uuid4().hex))
+        osp.join(_GENERATIONS_DIR, manifest['job_id'], uuid.uuid4().hex)
+    )
     generation_root = osp.join(remote_root, generation_relpath)
     # Successful older generations may still have active readers and are
     # intentionally retained. Reclaiming unreferenced generations requires a
@@ -89,16 +91,17 @@ def upload_job_sidecars_from_config_path(
             'schema_version': 2,
             'generation_relpath': generation_relpath,
         }
-        manifest_path = _manifest_path(snapshot_id,
-                                       data_persist_dir=data_persist_dir,
-                                       job_id=manifest['job_id'])
+        manifest_path = _manifest_path(
+            snapshot_id, data_persist_dir=data_persist_dir, job_id=manifest['job_id']
+        )
         _publish_manifest_pointer(manifest, manifest_path)
     except BaseException:
         try:
             fsutil.rm(generation_root, ignore_errors=True)
         except Exception:
-            log.warning('Failed to clean unpublished TT-NG sidecar generation',
-                        exc_info=True)
+            log.warning(
+                'Failed to clean unpublished TT-NG sidecar generation', exc_info=True
+            )
         raise
     return remote_root
 
@@ -159,7 +162,8 @@ def _restore_job_sidecars_from_config_path(
         data_persist_dir=data_persist_dir,
     )
     shared_relpaths, owned_relpaths = _split_shared_sidecar_relpaths(
-        manifest, prediction=prediction)
+        manifest, prediction=prediction
+    )
     locks: list[tuple[_SharedSidecarLock, str]] = []
     try:
         for relpath in shared_relpaths:
@@ -208,8 +212,7 @@ def cleanup_local_job_sidecars_from_config_path(
 ) -> None:
     try:
         config = _load_config(config_path, prediction=prediction)
-        if _should_keep_local_job_sidecars() or _config_bundle_dir(
-                config) is None:
+        if _should_keep_local_job_sidecars() or _config_bundle_dir(config) is None:
             return
         try:
             manifest = _manifest_from_local_config(snapshot_id, config)
@@ -223,9 +226,11 @@ def cleanup_local_job_sidecars_from_config_path(
             return
         index_path = _require_config_path(config, 'diskgraph_index_path')
         shared_relpaths, _owned_relpaths = _split_shared_sidecar_relpaths(
-            manifest, prediction=prediction)
-        _cleanup_local_job_sidecars(index_path, manifest['relpaths'],
-                                    shared_relpaths=shared_relpaths)
+            manifest, prediction=prediction
+        )
+        _cleanup_local_job_sidecars(
+            index_path, manifest['relpaths'], shared_relpaths=shared_relpaths
+        )
     except Exception:
         log.warning(
             'TT-NG job sidecar cleanup failed for config=%s (best-effort)',
@@ -262,17 +267,15 @@ class RestoredJobSidecars:
                 shared_relpaths = self._shared_relpaths
                 shared_set = set(shared_relpaths)
                 owned_relpaths = [
-                    relpath for relpath in self._relpaths
-                    if relpath not in shared_set
+                    relpath for relpath in self._relpaths if relpath not in shared_set
                 ]
                 if self._cleanup_enabled:
-                    _cleanup_local_job_sidecars(self._index_path,
-                                                owned_relpaths,
-                                                shared_relpaths=[])
+                    _cleanup_local_job_sidecars(
+                        self._index_path, owned_relpaths, shared_relpaths=[]
+                    )
             except Exception:
                 log.warning(
-                    'TT-NG restored job sidecar cleanup failed '
-                    '(best-effort)',
+                    'TT-NG restored job sidecar cleanup failed (best-effort)',
                     exc_info=True,
                 )
         finally:
@@ -286,8 +289,7 @@ class RestoredJobSidecars:
                 )
         except Exception:
             log.warning(
-                'TT-NG restored shared job sidecar cleanup failed '
-                '(best-effort)',
+                'TT-NG restored shared job sidecar cleanup failed (best-effort)',
                 exc_info=True,
             )
 
@@ -300,8 +302,7 @@ class RestoredJobSidecars:
                 lock.release()
             except Exception:
                 log.warning(
-                    'TT-NG shared job sidecar lock release failed '
-                    '(best-effort)',
+                    'TT-NG shared job sidecar lock release failed (best-effort)',
                     exc_info=True,
                 )
         self._shared_locks = []
@@ -349,7 +350,8 @@ def _manifest_from_local_config(snapshot_id: str, config: Any) -> dict | None:
     stages = runtime_manifest.get('stages')
     if not isinstance(stages, dict):
         raise RuntimeError(
-            f'{_RUNTIME_MANIFEST_FILENAME} is missing dict-valued stages')
+            f'{_RUNTIME_MANIFEST_FILENAME} is missing dict-valued stages'
+        )
     for stage in stages.values():
         if not isinstance(stage, dict):
             continue
@@ -377,20 +379,26 @@ def _load_dataplane_manifest(
     if bundle_dir is None:
         raise ValueError('TT-NG sidecar config is missing bundle dir')
     manifest = load_json(
-        _manifest_path(snapshot_id, data_persist_dir=data_persist_dir,
-                       job_id=_job_id_from_bundle_dir(bundle_dir)),
+        _manifest_path(
+            snapshot_id,
+            data_persist_dir=data_persist_dir,
+            job_id=_job_id_from_bundle_dir(bundle_dir),
+        ),
         dict,
     )
     expected_job_id = _job_id_from_bundle_dir(bundle_dir)
     if manifest.get('job_id') != expected_job_id:
         raise RuntimeError(
-            'TT-NG job sidecar manifest is not bound to the requested job')
+            'TT-NG job sidecar manifest is not bound to the requested job'
+        )
     if manifest.get('snapshot_id') != canonical_graph_snapshot_id(snapshot_id):
         raise RuntimeError(
-            'TT-NG job sidecar manifest is not bound to the requested snapshot')
+            'TT-NG job sidecar manifest is not bound to the requested snapshot'
+        )
     relpaths = manifest.get('relpaths')
     if not isinstance(relpaths, list) or not all(
-            isinstance(relpath, str) for relpath in relpaths):
+        isinstance(relpath, str) for relpath in relpaths
+    ):
         raise RuntimeError('TT-NG job sidecar manifest has invalid relpaths')
     manifest['relpaths'] = [_safe_relpath(relpath) for relpath in relpaths]
     return manifest
@@ -401,12 +409,10 @@ def _dataplane_root(
     *,
     data_persist_dir: str,
 ) -> str:
-    return job_sidecar_root(canonical_graph_snapshot_id(snapshot_id),
-                            data_persist_dir)
+    return job_sidecar_root(canonical_graph_snapshot_id(snapshot_id), data_persist_dir)
 
 
-def _manifest_path(snapshot_id: str, *, data_persist_dir: str,
-                   job_id: str) -> str:
+def _manifest_path(snapshot_id: str, *, data_persist_dir: str, job_id: str) -> str:
     return osp.join(
         _dataplane_root(snapshot_id, data_persist_dir=data_persist_dir),
         _MANIFEST_DIR,
@@ -420,26 +426,26 @@ def _remote_generation_root(
     *,
     data_persist_dir: str,
 ) -> str:
-    remote_root = _dataplane_root(snapshot_id,
-                                  data_persist_dir=data_persist_dir)
+    remote_root = _dataplane_root(snapshot_id, data_persist_dir=data_persist_dir)
     schema_version = manifest.get('schema_version')
     if schema_version == 1:
         return remote_root
     if schema_version != 2:
         raise RuntimeError(
             f'TT-NG job sidecar manifest has unsupported schema_version '
-            f'{schema_version!r}')
+            f'{schema_version!r}'
+        )
     generation_relpath = manifest.get('generation_relpath')
     if not isinstance(generation_relpath, str):
-        raise RuntimeError(
-            'TT-NG v2 job sidecar manifest missing generation_relpath')
+        raise RuntimeError('TT-NG v2 job sidecar manifest missing generation_relpath')
     generation_relpath = _safe_relpath(generation_relpath)
     expected_prefix = _safe_relpath(
-        osp.join(_GENERATIONS_DIR, str(manifest.get('job_id', ''))))
-    if (generation_relpath == expected_prefix or not generation_relpath.startswith(
-            expected_prefix + os.sep)):
-        raise RuntimeError(
-            'TT-NG v2 job sidecar generation is not bound to its job_id')
+        osp.join(_GENERATIONS_DIR, str(manifest.get('job_id', '')))
+    )
+    if generation_relpath == expected_prefix or not generation_relpath.startswith(
+        expected_prefix + os.sep
+    ):
+        raise RuntimeError('TT-NG v2 job sidecar generation is not bound to its job_id')
     return osp.join(remote_root, generation_relpath)
 
 
@@ -471,7 +477,9 @@ def _publish_manifest_pointer(manifest: dict, manifest_path: str) -> None:
                     log.warning(
                         'TT-NG sidecar manifest publication raised after the '
                         'intended pointer became durable; treating it as '
-                        'successful', exc_info=True)
+                        'successful',
+                        exc_info=True,
+                    )
                     return
                 raise
     finally:
@@ -507,8 +515,12 @@ def _safe_relpath(relpath: str) -> str:
 
 def _load_config(config_path: str, *, prediction: bool) -> Any:
     from kumo_core.job_config import JobConfig, PredictionConfig
-    return (PredictionConfig.load(config_path)
-            if prediction else JobConfig.load(config_path))
+
+    return (
+        PredictionConfig.load(config_path)
+        if prediction
+        else JobConfig.load(config_path)
+    )
 
 
 def _config_bundle_dir(config: Any) -> str | None:
@@ -577,7 +589,8 @@ def _split_shared_sidecar_relpaths(
     owned: list[str] = []
     for relpath in relpaths:
         if _is_shared_train_table_relpath(relpath) or (
-                prediction and bundle_relpath == relpath):
+            prediction and bundle_relpath == relpath
+        ):
             shared.append(relpath)
         else:
             owned.append(relpath)
@@ -586,8 +599,9 @@ def _split_shared_sidecar_relpaths(
 
 def _is_shared_train_table_relpath(relpath: str) -> bool:
     parts = _safe_relpath(relpath).split(os.sep)
-    return (len(parts) == 2 and parts[0] == 'train_tables'
-            and not parts[1].startswith('.'))
+    return (
+        len(parts) == 2 and parts[0] == 'train_tables' and not parts[1].startswith('.')
+    )
 
 
 def _train_table_extension_complete(index_path: str, relpath: str) -> bool:
@@ -596,8 +610,7 @@ def _train_table_extension_complete(index_path: str, relpath: str) -> bool:
 
 def _task_dataset_bundle_complete(index_path: str, relpath: str) -> bool:
     root = osp.join(index_path, relpath)
-    return all(
-        fsutil.exists(osp.join(root, name)) for name in _TASK_DATASET_SENTINELS)
+    return all(fsutil.exists(osp.join(root, name)) for name in _TASK_DATASET_SENTINELS)
 
 
 def _shared_sidecar_complete(index_path: str, relpath: str) -> bool:
@@ -639,12 +652,11 @@ def _restore_shared_sidecar(
         fsutil.rm(tmp, ignore_errors=True)
         _copy_path(src, tmp)
         if not _shared_sidecar_complete_at(
-                index_path,
-                _relpath_under(index_path, tmp),
-                expected_relpath=relpath,
+            index_path,
+            _relpath_under(index_path, tmp),
+            expected_relpath=relpath,
         ):
-            raise RuntimeError(
-                f'TT-NG shared job sidecar restored incomplete: {src}')
+            raise RuntimeError(f'TT-NG shared job sidecar restored incomplete: {src}')
         if fsutil.exists(dst):
             fsutil.rm(dst, ignore_errors=True)
         os.rename(tmp, dst)

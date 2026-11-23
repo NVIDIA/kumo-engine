@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Regenerate the SageMaker runner and kernel locks, including its license header."""
+
 import argparse
 import shutil
 import subprocess
@@ -20,20 +21,28 @@ def compile_lock(uv='uv', upgrades=()):
     root = source.parents[3]
     for stem in ('requirements', 'kernel-requirements'):
         output = source / (stem + '.txt')
-        with tempfile.TemporaryDirectory(
-                prefix='kumo-sagemaker-lock-') as directory:
+        with tempfile.TemporaryDirectory(prefix='kumo-sagemaker-lock-') as directory:
             temporary = Path(directory) / output.name
             if output.exists():
                 shutil.copyfile(output, temporary)
             command = [
-                uv, '--no-config', 'pip', 'compile',
+                uv,
+                '--no-config',
+                'pip',
+                'compile',
                 str((source / (stem + '.in')).relative_to(root)),
-                '--python-version', '3.12', '--python-platform',
-                'x86_64-manylinux_2_34', '--default-index',
-                'https://pypi.org/simple', '--generate-hashes',
-                '--no-emit-index-url', '--no-emit-find-links', '--no-header',
+                '--python-version',
+                '3.12',
+                '--python-platform',
+                'x86_64-manylinux_2_34',
+                '--default-index',
+                'https://pypi.org/simple',
+                '--generate-hashes',
+                '--no-emit-index-url',
+                '--no-emit-find-links',
+                '--no-header',
                 '--output-file',
-                str(temporary)
+                str(temporary),
             ]
             for name in upgrades:
                 command += ['--upgrade-package', name]

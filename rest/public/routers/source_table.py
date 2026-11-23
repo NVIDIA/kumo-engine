@@ -42,6 +42,7 @@ class SourceTableRouter:
     mapping; a bare inner wrapper would emit a 422 before the outer
     ``wrap_driver_errors`` entry, kept as documentation of intent, could fire.
     """
+
     def __init__(
         self,
         api_key_auth: Callable,
@@ -51,43 +52,41 @@ class SourceTableRouter:
         del auth
         self._driver = driver
         self.router = APIRouter(
-            prefix=("/projects/{project_id}/connectors/{connector_id}"),
-            tags=["API v1: Project Connector Discovery"],
+            prefix=('/projects/{project_id}/connectors/{connector_id}'),
+            tags=['API v1: Project Connector Discovery'],
             dependencies=[Depends(api_key_auth)],
         )
         self.router.add_api_route(
-            "/source-tables",
+            '/source-tables',
             self.list_source_tables,
             response_model=api.SourceTableListResponse,
-            methods=["GET"],
+            methods=['GET'],
         )
         self.router.add_api_route(
-            "/source-table-config",
+            '/source-table-config',
             self.get_source_table_config,
             response_model=api.SourceTableConfigResponse,
-            methods=["GET"],
+            methods=['GET'],
         )
         self.router.add_api_route(
-            "/columns",
+            '/columns',
             self.get_columns,
             response_model=api.SourceTableDataResponse,
-            methods=["GET"],
+            methods=['GET'],
             responses={
                 HTTPStatus.NOT_FOUND: {
-                    "description":
-                    "The connector or requested physical source was not found."
+                    'description': 'The connector or requested physical source was not found.'
                 },
             },
         )
         self.router.add_api_route(
-            "/sample",
+            '/sample',
             self.get_sample,
             response_model=api.SourceTableDataResponse,
-            methods=["GET"],
+            methods=['GET'],
             responses={
                 HTTPStatus.NOT_FOUND: {
-                    "description":
-                    "The connector or requested physical source was not found."
+                    'description': 'The connector or requested physical source was not found.'
                 },
             },
         )
@@ -110,11 +109,15 @@ class SourceTableRouter:
         connector_id: ConnectorID,
         request: Request,
     ) -> api.SourceTableListResponse:
-        with wrap_driver_errors({
-                ConnectorDoesNotExistError: HTTPStatus.NOT_FOUND,
-                ConnectorError: HTTPStatus.UNPROCESSABLE_ENTITY,
-        }), wrap_validation_exceptions(
-                not_exists_error=ConnectorDoesNotExistError):
+        with (
+            wrap_driver_errors(
+                {
+                    ConnectorDoesNotExistError: HTTPStatus.NOT_FOUND,
+                    ConnectorError: HTTPStatus.UNPROCESSABLE_ENTITY,
+                }
+            ),
+            wrap_validation_exceptions(not_exists_error=ConnectorDoesNotExistError),
+        ):
             table_names = await self._driver.get_project_source_table_names(
                 project_id,
                 connector_id,
@@ -123,18 +126,22 @@ class SourceTableRouter:
         return api.SourceTableListResponse(table_names=table_names)
 
     async def get_columns(
-            self,
-            project_id: ProjectID,
-            connector_id: ConnectorID,
-            request: Request,
-            table_name: str = Query(),
+        self,
+        project_id: ProjectID,
+        connector_id: ConnectorID,
+        request: Request,
+        table_name: str = Query(),
     ) -> api.SourceTableDataResponse:
         """Return columns, or 404 for a missing or unavailable physical source."""
-        with wrap_driver_errors({
-                ConnectorDoesNotExistError: HTTPStatus.NOT_FOUND,
-                ConnectorError: HTTPStatus.UNPROCESSABLE_ENTITY,
-        }), wrap_validation_exceptions(
-                not_exists_error=ConnectorDoesNotExistError):
+        with (
+            wrap_driver_errors(
+                {
+                    ConnectorDoesNotExistError: HTTPStatus.NOT_FOUND,
+                    ConnectorError: HTTPStatus.UNPROCESSABLE_ENTITY,
+                }
+            ),
+            wrap_validation_exceptions(not_exists_error=ConnectorDoesNotExistError),
+        ):
             source_table_name = self._source_name(table_name)
             response = await self._driver.get_project_source_columns(
                 project_id,
@@ -157,11 +164,15 @@ class SourceTableRouter:
         sample_rows: int = Query(default=10, ge=1, le=1000),
     ) -> api.SourceTableDataResponse:
         """Return sample rows, or 404 for a missing or unavailable source."""
-        with wrap_driver_errors({
-                ConnectorDoesNotExistError: HTTPStatus.NOT_FOUND,
-                ConnectorError: HTTPStatus.UNPROCESSABLE_ENTITY,
-        }), wrap_validation_exceptions(
-                not_exists_error=ConnectorDoesNotExistError):
+        with (
+            wrap_driver_errors(
+                {
+                    ConnectorDoesNotExistError: HTTPStatus.NOT_FOUND,
+                    ConnectorError: HTTPStatus.UNPROCESSABLE_ENTITY,
+                }
+            ),
+            wrap_validation_exceptions(not_exists_error=ConnectorDoesNotExistError),
+        ):
             source_table_name = self._source_name(table_name)
             response = await self._driver.get_project_sample_rows(
                 project_id,
@@ -179,19 +190,23 @@ class SourceTableRouter:
         )
 
     async def get_source_table_config(
-            self,
-            project_id: ProjectID,
-            connector_id: ConnectorID,
-            request: Request,
-            table_name: str = Query(),
+        self,
+        project_id: ProjectID,
+        connector_id: ConnectorID,
+        request: Request,
+        table_name: str = Query(),
     ) -> api.SourceTableConfigResponse:
         """Resolve one source config; invalid warehouse coordinates return 422."""
         principal = self._principal(request)
-        with wrap_driver_errors({
-                ConnectorDoesNotExistError: HTTPStatus.NOT_FOUND,
-                ConnectorError: HTTPStatus.UNPROCESSABLE_ENTITY,
-        }), wrap_validation_exceptions(
-                not_exists_error=ConnectorDoesNotExistError):
+        with (
+            wrap_driver_errors(
+                {
+                    ConnectorDoesNotExistError: HTTPStatus.NOT_FOUND,
+                    ConnectorError: HTTPStatus.UNPROCESSABLE_ENTITY,
+                }
+            ),
+            wrap_validation_exceptions(not_exists_error=ConnectorDoesNotExistError),
+        ):
             source_table_name = self._source_name(table_name)
             return await self._driver.get_project_source_table_config(
                 project_id,

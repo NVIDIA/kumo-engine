@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Dataclasses for pool controller state and RPC payloads."""
+
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -56,11 +57,13 @@ class SnapshotLifecyclePolicy:
     guarantee. The two SSD timers are deploy-env tuning knobs for cache
     thrash prevention and node scale-down economics.
     """
+
     min_ssd_idle_secs: int = DEFAULT_MIN_SSD_IDLE_SECS
     max_ssd_idle_secs: int = DEFAULT_MAX_SSD_IDLE_SECS
-    max_dataplane_retention_secs: int = (DEFAULT_MAX_DATAPLANE_RETENTION_SECS)
-    ssd_max_utilization: float = Field(default=DEFAULT_SSD_MAX_UTILIZATION,
-                                       gt=0.0, le=1.0)
+    max_dataplane_retention_secs: int = DEFAULT_MAX_DATAPLANE_RETENTION_SECS
+    ssd_max_utilization: float = Field(
+        default=DEFAULT_SSD_MAX_UTILIZATION, gt=0.0, le=1.0
+    )
 
 
 class SnapshotActivity(str, Enum):
@@ -109,16 +112,15 @@ class ResourceHint:
     It is normally zero. A local disk-full retry sets it above the tier that
     failed so placement cannot return to the same host size.
     """
+
     min_gpu_slots: int = 1
     min_ssd_gib: int = 0
 
     def __post_init__(self) -> None:
         if self.min_gpu_slots < 1:
-            raise ValueError(
-                f'min_gpu_slots must be >= 1, got {self.min_gpu_slots}')
+            raise ValueError(f'min_gpu_slots must be >= 1, got {self.min_gpu_slots}')
         if self.min_ssd_gib < 0:
-            raise ValueError(
-                f'min_ssd_gib must be >= 0, got {self.min_ssd_gib}')
+            raise ValueError(f'min_ssd_gib must be >= 0, got {self.min_ssd_gib}')
 
 
 @kumo_dataclass
@@ -141,6 +143,7 @@ class PlacementRequest:
     Sharded callers (sibling activities under one workflow) use distinct
     ``job_id`` values but share the same ``workflow_id``.
     """
+
     snapshot_id: SnapshotID
     job_id: JobID
     workflow_id: str
@@ -154,6 +157,7 @@ class PlacementResult:
     """Placement implies a lease pinning ``job_id`` until
     ``release_lease(snapshot_id, job_id)``.
     """
+
     snapshot_id: SnapshotID
     task_queue: str
     status: PlacementStatus
@@ -224,6 +228,7 @@ class SnapshotState(str, Enum):
     There is no explicit terminal state — eviction removes the
     ``SnapshotPlacement`` entry entirely rather than marking it evicted.
     """
+
     RESERVED = 'RESERVED'
     INGESTING = 'INGESTING'
     RESTORING = 'RESTORING'
@@ -254,6 +259,7 @@ class SnapshotComplianceRecord:
     unset means active, only ``expired_at`` set means delete pending, and
     ``deleted_at`` set is the durable delete tombstone.
     """
+
     snapshot_id: SnapshotID
     retention_mode: RetentionMode = RetentionMode.DEFAULT
     active_consumer_count: int = 0
@@ -262,7 +268,7 @@ class SnapshotComplianceRecord:
     # Creation-time snapshot of the policy for audit/debug only. Enforcement
     # reads the live ``SnapshotLifecyclePolicy`` so tuning applies to existing
     # records (kumo#29047).
-    max_dataplane_retention_secs: int = (DEFAULT_MAX_DATAPLANE_RETENTION_SECS)
+    max_dataplane_retention_secs: int = DEFAULT_MAX_DATAPLANE_RETENTION_SECS
     expired_at: Optional[datetime] = None
     deleted_at: Optional[datetime] = None
 
@@ -270,6 +276,7 @@ class SnapshotComplianceRecord:
 @kumo_dataclass
 class SnapshotLocalCopyRecord:
     """L1 local-SSD retention state for one snapshot on one worker."""
+
     snapshot_id: SnapshotID
     pool_worker_uid: PoolWorkerUID
     local_state: SnapshotLocalCopyState = SnapshotLocalCopyState.WARM
@@ -290,6 +297,7 @@ class SnapshotPlacement:
     """One snapshot's placement on a specific worker's PVC.
     The snapshot id is carried as the ``PoolState.snapshots`` dict key.
     """
+
     worker: PoolWorkerUID
     state: SnapshotState = SnapshotState.RESERVED
     # Job IDs pinning this placement (empty => evictable after the L1 window).
@@ -302,8 +310,9 @@ class SnapshotPlacement:
     # handle in the right map (``durable_handles`` vs ``overflow_handles``).
     # Without this, retries fall back to a sibling shard's handle and dispatch
     # to the wrong task_queue (see commit log for the cross-shard bug).
-    lease_paths: Dict[JobID, Literal['durable',
-                                     'overflow']] = field(default_factory=dict)
+    lease_paths: Dict[JobID, Literal['durable', 'overflow']] = field(
+        default_factory=dict
+    )
     # Parent Temporal workflow_id per lease (set from ``PlacementRequest``
     # on lease commit). The dangling-lease sweep groups leases by this map
     # so each workflow is queried against Temporal at most once per sweep,
@@ -312,14 +321,12 @@ class SnapshotPlacement:
     # Activity per lease. Used to recover durable GPU reservations after
     # controller restart; legacy states without entries are counted
     # conservatively by the controller when needed.
-    lease_activities: Dict[JobID,
-                           SnapshotActivity] = field(default_factory=dict)
+    lease_activities: Dict[JobID, SnapshotActivity] = field(default_factory=dict)
     # Per-job handles for durable placements. Each durable shard provisions
     # its own activity pod and ``task_queue`` (k8s_strategy returns
     # ``task_queue=activity_task_queue(job_id)``), so handles are per-job
     # rather than shared across the snapshot.
-    durable_handles: Dict[JobID,
-                          ProvisionedHandle] = field(default_factory=dict)
+    durable_handles: Dict[JobID, ProvisionedHandle] = field(default_factory=dict)
     # Per-job handles for overflow placements (``emptyDir`` activity
     # pods on non-PVC nodes). Each call to ``place_snapshot`` that
     # routes to overflow records its handle here keyed by ``job_id``.
@@ -327,14 +334,14 @@ class SnapshotPlacement:
     # ``strategy.release`` to delete the corresponding k8s Job — without
     # per-job keying, concurrent overflow pods would orphan as the
     # latest handle would clobber previous ones.
-    overflow_handles: Dict[JobID,
-                           ProvisionedHandle] = field(default_factory=dict)
+    overflow_handles: Dict[JobID, ProvisionedHandle] = field(default_factory=dict)
 
 
 @kumo_dataclass
 class PvcState:
     """Controller's bookkeeping for a worker's per-node PVC; K8s itself owns
     the PVC resource."""
+
     pool_worker_uid: PoolWorkerUID
     tier_ssd_gib: int = 0
     tier_gpu_count: int = 1
@@ -385,6 +392,7 @@ class WorkerStateSnapshot:
     """Point-in-time inventory carried in every :class:`WorkerStatusReport`.
     The controller reconciles in-memory state against this on every receipt.
     """
+
     ssd_total_bytes: int
     ssd_used_bytes: int
     ready_snapshots: List[SnapshotID] = field(default_factory=list)
@@ -437,6 +445,7 @@ class WorkerEventType(str, Enum):
 @kumo_dataclass
 class WorkerEvent:
     """Only fields relevant to ``type`` are populated; rest are ``None``."""
+
     type: WorkerEventType
     snapshot_id: Optional[SnapshotID] = None
     job: Optional[ActiveJob] = None
@@ -454,6 +463,7 @@ class WorkerStatusReport:
     drives reconciliation; ``event`` is set only on lifecycle transitions
     so the controller can react without waiting for the next heartbeat.
     """
+
     worker_name: PoolWorkerUID
     state: WorkerStateSnapshot
     worker_storage_mode: PoolStorageMode = PoolStorageMode.DAEMON_ON_PVC
@@ -463,6 +473,7 @@ class WorkerStatusReport:
 @kumo_dataclass
 class WorkerInventory:
     """Controller's record of a worker, rebuilt from status reports."""
+
     pool_worker_uid: PoolWorkerUID
     state: WorkerStateSnapshot
     status: WorkerStatus = WorkerStatus.READY
@@ -479,6 +490,7 @@ class WorkerInventory:
 @kumo_dataclass
 class DataplaneBackup:
     """L2 backup metadata; ``dataplane_path`` is anything fsutil understands."""
+
     snapshot_id: SnapshotID
     dataplane_path: str
     # Materialized size, recorded at ingest so a COLD snapshot keeps its size
@@ -518,27 +530,29 @@ class PoolStats:
     durable_workers: List[PoolWorkerStats] = field(default_factory=list)
     snapshots: List[SnapshotPlacement] = field(default_factory=list)
     local_copies: List[SnapshotLocalCopyRecord] = field(default_factory=list)
-    snapshot_compliance: List[SnapshotComplianceRecord] = field(
-        default_factory=list)
+    snapshot_compliance: List[SnapshotComplianceRecord] = field(default_factory=list)
 
 
 @kumo_dataclass
 class K8sPlacementState:
     """K8s-strategy-owned slice of :class:`PoolState`; opaque to controller core."""
+
     type: Literal['k8s'] = 'k8s'
     # One PVC per worker; created lazily on first placement, deleted when last.
     pvcs: Dict[PoolWorkerUID, PvcState] = field(default_factory=dict)
     # Epoch seconds for persisted workers that existed at controller startup
     # but have not heartbeated in this process. Persisted so repeated
     # controller restarts cannot reset the DEAD retirement countdown forever.
-    silent_worker_suspect_since: Dict[PoolWorkerUID,
-                                      float] = field(default_factory=dict)
+    silent_worker_suspect_since: Dict[PoolWorkerUID, float] = field(
+        default_factory=dict
+    )
 
 
 @kumo_dataclass
 class SinglehostPlacementState:
     """Singlehost has no durable strategy state today; this empty variant
     keeps the ``placement_state`` discriminator consistent across deployments."""
+
     type: Literal['singlehost'] = 'singlehost'
 
 
@@ -556,15 +570,15 @@ class PoolState:
     core) land in one ``save()`` under one lock. ``worker_inventory`` is
     rebuilt from heartbeats; not persisted.
     """
+
     # Required — ``create_pool_controller(config)`` picks the right variant.
     placement_state: PlacementState
     snapshots: Dict[SnapshotID, SnapshotPlacement] = field(default_factory=dict)
-    dataplane_backups: Dict[SnapshotID,
-                            DataplaneBackup] = field(default_factory=dict)
+    dataplane_backups: Dict[SnapshotID, DataplaneBackup] = field(default_factory=dict)
     snapshot_compliance: Dict[SnapshotID, SnapshotComplianceRecord] = field(
-        default_factory=dict)
-    local_copies: Dict[str,
-                       SnapshotLocalCopyRecord] = field(default_factory=dict)
+        default_factory=dict
+    )
+    local_copies: Dict[str, SnapshotLocalCopyRecord] = field(default_factory=dict)
 
 
 def expected_pool_worker_uids(state: PoolState) -> set[str]:
@@ -578,9 +592,14 @@ def expected_pool_worker_uids(state: PoolState) -> set[str]:
     worker gets torn down.
     """
     expected: set[str] = set()
-    expected.update(local.pool_worker_uid
-                    for local in state.local_copies.values()
-                    if local.local_state != SnapshotLocalCopyState.EVICTED)
-    expected.update(placement.worker for placement in state.snapshots.values()
-                    if placement.leases and placement.worker)
+    expected.update(
+        local.pool_worker_uid
+        for local in state.local_copies.values()
+        if local.local_state != SnapshotLocalCopyState.EVICTED
+    )
+    expected.update(
+        placement.worker
+        for placement in state.snapshots.values()
+        if placement.leases and placement.worker
+    )
     return expected

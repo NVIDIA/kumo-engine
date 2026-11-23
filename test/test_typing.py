@@ -72,7 +72,7 @@ def test_dtype():
     assert Dtype.intlist.title_case() == 'IntList'
     assert Dtype.stringlist.title_case() == 'StringList'
 
-    assert dtype_to_numpy(Dtype.bool) == bool
+    assert dtype_to_numpy(Dtype.bool) == np.dtype(bool)
     assert dtype_to_numpy(Dtype.int) == np.int64
     assert dtype_to_numpy(Dtype.byte) == np.byte
     assert dtype_to_numpy(Dtype.int32) == np.int32
@@ -80,13 +80,13 @@ def test_dtype():
     assert dtype_to_numpy(Dtype.float) == np.float32
     assert dtype_to_numpy(Dtype.float32) == np.float32
     assert dtype_to_numpy(Dtype.float64) == np.float64
-    assert dtype_to_numpy(Dtype.string) == object
+    assert dtype_to_numpy(Dtype.string) == np.dtype(object)
     assert dtype_to_numpy(Dtype.date) == np.dtype('datetime64[ns]')
     assert dtype_to_numpy(Dtype.time) == np.dtype('datetime64[ns]')
     assert dtype_to_numpy(Dtype.timedelta) == np.dtype('timedelta64[ns]')
-    assert dtype_to_numpy(Dtype.floatlist) == object
-    assert dtype_to_numpy(Dtype.intlist) == object
-    assert dtype_to_numpy(Dtype.stringlist) == object
+    assert dtype_to_numpy(Dtype.floatlist) == np.dtype(object)
+    assert dtype_to_numpy(Dtype.intlist) == np.dtype(object)
+    assert dtype_to_numpy(Dtype.stringlist) == np.dtype(object)
 
     assert dtype_to_pandas(Dtype.bool) == pd.BooleanDtype()
     assert dtype_to_pandas(Dtype.int) == pd.Int64Dtype()
@@ -154,38 +154,37 @@ def test_dtype():
 def test_to_dtype_object_datetime_series():
     # Snowflake object-dtype timestamps must type temporal so MIN/MAX survive.
     timestamp_ser = pd.Series(
-        [pd.Timestamp("2020-01-01"),
-         pd.Timestamp("2021-06-15")], dtype=object)
+        [pd.Timestamp('2020-01-01'), pd.Timestamp('2021-06-15')], dtype=object
+    )
     assert timestamp_ser.dtype == object
     assert to_dtype(timestamp_ser.dtype, ser=timestamp_ser) == Dtype.date
 
     datetime_ser = pd.Series(
-        [datetime.datetime(2020, 1, 1),
-         datetime.datetime(2021, 6, 15)], dtype=object)
+        [datetime.datetime(2020, 1, 1), datetime.datetime(2021, 6, 15)], dtype=object
+    )
     assert to_dtype(datetime_ser.dtype, ser=datetime_ser) == Dtype.date
 
     date_ser = pd.Series(
-        [datetime.date(2020, 1, 1),
-         datetime.date(2021, 6, 15)], dtype=object)
+        [datetime.date(2020, 1, 1), datetime.date(2021, 6, 15)], dtype=object
+    )
     assert to_dtype(date_ser.dtype, ser=date_ser) == Dtype.date
 
     # np.datetime64 scalars are not a datetime.date subclass; infer_dtype must
     # still recognize them as temporal.
     np_dt64_ser = pd.Series(
-        [np.datetime64("2020-01-01"),
-         np.datetime64("2021-06-15")], dtype=object)
+        [np.datetime64('2020-01-01'), np.datetime64('2021-06-15')], dtype=object
+    )
     assert np_dt64_ser.dtype == object
     assert to_dtype(np_dt64_ser.dtype, ser=np_dt64_ser) == Dtype.date
 
     # Out-of-range timestamps must still be recognized as temporal.
     out_of_range_ser = pd.Series(
-        [datetime.datetime(3122, 5, 1),
-         datetime.datetime(2020, 1, 1)], dtype=object)
+        [datetime.datetime(3122, 5, 1), datetime.datetime(2020, 1, 1)], dtype=object
+    )
     assert to_dtype(out_of_range_ser.dtype, ser=out_of_range_ser) == Dtype.date
 
     # Leading nulls must not confuse the inference.
-    leading_null_ser = pd.Series([None, pd.Timestamp("2020-01-01")],
-                                 dtype=object)
+    leading_null_ser = pd.Series([None, pd.Timestamp('2020-01-01')], dtype=object)
     assert to_dtype(leading_null_ser.dtype, ser=leading_null_ser) == Dtype.date
 
     # MIN/MAX must be supported for the inferred temporal dtype.
@@ -193,7 +192,7 @@ def test_to_dtype_object_datetime_series():
     assert ColStatType.MAX.supports(Dtype.date)
 
     # Regression guard: ordinary object series remain Dtype.string.
-    string_ser = pd.Series(["a", "b", "c"], dtype=object)
+    string_ser = pd.Series(['a', 'b', 'c'], dtype=object)
     assert to_dtype(string_ser.dtype, ser=string_ser) == Dtype.string
 
     # Regression guard: numeric-object series must not be typed temporal.
@@ -205,7 +204,7 @@ def test_to_dtype_object_datetime_series():
     assert to_dtype(list_ser.dtype, ser=list_ser) == Dtype.floatlist
     int_list_ser = pd.Series([[1, 2], [3]], dtype=object)
     assert to_dtype(int_list_ser.dtype, ser=int_list_ser) == Dtype.intlist
-    str_list_ser = pd.Series([["a", "b"], ["c"]], dtype=object)
+    str_list_ser = pd.Series([['a', 'b'], ['c']], dtype=object)
     assert to_dtype(str_list_ser.dtype, ser=str_list_ser) == Dtype.stringlist
 
 
@@ -251,10 +250,10 @@ def test_deprecated_task_type():
 
 def test_edge_key():
     edge_key = EdgeKey(src_table='table1', link_key='col', dst_table='table2')
-    assert edge_key.to_str() == "table1__col__table2"
+    assert edge_key.to_str() == 'table1__col__table2'
     assert edge_key.to_tuple() == ('table1', 'col', 'table2')
     rev_edge_key = edge_key.reverse()
-    assert rev_edge_key.to_str() == "table2__rev_col__table1"
+    assert rev_edge_key.to_str() == 'table2__rev_col__table1'
     assert rev_edge_key.to_tuple() == ('table2', 'rev_col', 'table1')
     assert rev_edge_key == EdgeKey(
         src_table='table2',

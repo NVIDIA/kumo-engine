@@ -27,6 +27,5 @@ def tempdir(request):
     with tempfile.NamedTemporaryFile(delete=False) as tempdir:
         os.unlink(tempdir.name)
 
-        request.addfinalizer(
-            lambda: shutil.rmtree(tempdir.name, ignore_errors=True))
+        request.addfinalizer(lambda: shutil.rmtree(tempdir.name, ignore_errors=True))
         return tempdir

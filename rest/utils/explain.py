@@ -29,7 +29,7 @@ def _avg_rfm(cls: Type[T], rfms: List[T]) -> T:
     Returns:
         The averaged base RFM.
     """
-    assert len(rfms) > 0, "RFMs must contain at least one RFM"
+    assert len(rfms) > 0, 'RFMs must contain at least one RFM'
     count: Dict[str, float] = {}
     for rfm in rfms:
         for key in rfm.count:
@@ -59,13 +59,11 @@ def _avg_rfm(cls: Type[T], rfms: List[T]) -> T:
                 most_recent_rel_time[key] = (time, time_unit)
             else:
                 most_recent_rel_time[key] = (
-                    most_recent_rel_time[key][0] +
-                    rfm.most_recent_rel_time[key][0],
+                    most_recent_rel_time[key][0] + rfm.most_recent_rel_time[key][0],
                     rfm.most_recent_rel_time[key][1],
                 )
     most_recent_rel_time = {
-        key:
-        (most_recent_rel_time[key][0] / len(rfms), most_recent_rel_time[key][1])
+        key: (most_recent_rel_time[key][0] / len(rfms), most_recent_rel_time[key][1])
         for key in most_recent_rel_time
     }
 
@@ -97,14 +95,12 @@ def node_pred_rfm_avg(rfms: List[NodePredRFM]) -> NodePredRFM:
                     if k not in unique_counts[key]:
                         unique_counts[key][k] = rfm.unique_counts[key][k]
                     else:
-                        unique_counts[key][k] = unique_counts[key][
-                            k] + rfm.unique_counts[key][k]
+                        unique_counts[key][k] = (
+                            unique_counts[key][k] + rfm.unique_counts[key][k]
+                        )
 
     unique_counts = {
-        key: {
-            k: unique_counts[key][k] / len(rfms)
-            for k in unique_counts[key]
-        }
+        key: {k: unique_counts[key][k] / len(rfms) for k in unique_counts[key]}
         for key in unique_counts
     }
 
@@ -126,21 +122,26 @@ def link_pred_rfm_avg(rfms: List[LinkPredRFM]) -> LinkPredRFM:
     """
     base_rfm = _avg_rfm(LinkPredRFM, rfms)
     num_hist_items: float = sum(rfm.num_hist_items for rfm in rfms) / len(rfms)
-    num_pred_hist_items: float = sum(rfm.num_pred_hist_items
-                                     for rfm in rfms) / len(rfms)
+    num_pred_hist_items: float = sum(rfm.num_pred_hist_items for rfm in rfms) / len(
+        rfms
+    )
 
     num_true_items: Optional[float] = None
     all_none = all(rfm.num_true_items is None for rfm in rfms)
     if not all_none:
-        num_true_items = sum(rfm.num_true_items for rfm in rfms
-                             if rfm.num_true_items is not None)
+        num_true_items = sum(
+            rfm.num_true_items for rfm in rfms if rfm.num_true_items is not None
+        )
         num_true_items = num_true_items / len(rfms)
 
     num_true_hist_items: Optional[float] = None
     all_none = all(rfm.num_true_hist_items is None for rfm in rfms)
     if not all_none:
-        num_true_hist_items = sum(rfm.num_true_hist_items for rfm in rfms
-                                  if rfm.num_true_hist_items is not None)
+        num_true_hist_items = sum(
+            rfm.num_true_hist_items
+            for rfm in rfms
+            if rfm.num_true_hist_items is not None
+        )
         num_true_hist_items = num_true_hist_items / len(rfms)
 
     return LinkPredRFM(
@@ -194,8 +195,7 @@ def group_merge_topk_feats(subgraph: Subgraph, topk: int) -> List[Feature]:
             features.append(col)
     # Filter out features without scores or has null value
     features = [
-        feat for feat in features
-        if feat.score is not None and feat.value is not None
+        feat for feat in features if feat.score is not None and feat.value is not None
     ]
     # Sort features by score in descending order
     features.sort(key=lambda feat: feat.score, reverse=True)
@@ -223,7 +223,6 @@ def group_merge_topk_feats(subgraph: Subgraph, topk: int) -> List[Feature]:
         if len(feats) == 1:
             final_feats.append(feats[0])
         else:
-            op = ('mean'
-                  if feats[0].stype == Stype.numerical else 'most_frequent')
+            op = 'mean' if feats[0].stype == Stype.numerical else 'most_frequent'
             final_feats.append(aggr_list_features(feats, op))
     return final_feats

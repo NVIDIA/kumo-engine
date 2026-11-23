@@ -11,7 +11,7 @@ from kumo_core.sources import sql
 from kumo_core.sources.errors import PermanentSourceError
 from kumoapi.typing import Dtype
 
-QUOTE = "`"
+QUOTE = '`'
 
 
 def quote_identifier(name: str) -> str:
@@ -26,9 +26,9 @@ def qualified_name(*parts: str) -> str:
 
 def table_path(project: str, dataset: str, table: str) -> str:
     for part in (project, dataset, table):
-        if not part or "/" in part:
-            raise ValueError(f"{part!r} is not a table path component")
-    return f"projects/{project}/datasets/{dataset}/tables/{table}"
+        if not part or '/' in part:
+            raise ValueError(f'{part!r} is not a table path component')
+    return f'projects/{project}/datasets/{dataset}/tables/{table}'
 
 
 def order_by_schema(
@@ -40,7 +40,7 @@ def order_by_schema(
     the order of the same columns."""
     missing = [name for name in columns if name not in set(schema)]
     if missing:
-        raise ValueError(f"source has no column named {sorted(missing)}")
+        raise ValueError(f'source has no column named {sorted(missing)}')
     return {name: columns[name] for name in schema if name in columns}
 
 
@@ -61,9 +61,12 @@ def output_columns(
     return tuple(aliases.get(name, name) for name in columns)
 
 
-def home_dataset(project: str, dataset: str,
-                 max_bytes_billed: int | None = None,
-                 job_timeout_ms: int | None = None) -> Any:
+def home_dataset(
+    project: str,
+    dataset: str,
+    max_bytes_billed: int | None = None,
+    job_timeout_ms: int | None = None,
+) -> Any:
     """A job config whose default dataset is the connector's own, so
     unqualified names in a user's query resolve there.
 
@@ -77,12 +80,13 @@ def home_dataset(project: str, dataset: str,
 
     options = {
         name: value
-        for name, value in (("maximum_bytes_billed", max_bytes_billed),
-                            ("job_timeout_ms", job_timeout_ms))
+        for name, value in (
+            ('maximum_bytes_billed', max_bytes_billed),
+            ('job_timeout_ms', job_timeout_ms),
+        )
         if value is not None
     }
-    return bigquery.QueryJobConfig(default_dataset=f"{project}.{dataset}",
-                                   **options)
+    return bigquery.QueryJobConfig(default_dataset=f'{project}.{dataset}', **options)
 
 
 @dataclass(frozen=True)
@@ -105,32 +109,41 @@ def read_only_job(client: Any, sql: str, *, project: str, dataset: str) -> Any:
     """A dry run compiles the query without scanning a row, and classifies
     it: a script or a procedure is not a read however it parses."""
     job = dry_run(client, sql, project=project, dataset=dataset)
-    if job.statement_type != "SELECT":
+    if job.statement_type != 'SELECT':
         raise PermanentSourceError(
-            f"custom sql must be a single read-only SELECT; bigquery "
-            f"classified this as {job.statement_type}")
+            f'custom sql must be a single read-only SELECT; bigquery '
+            f'classified this as {job.statement_type}'
+        )
     return job
 
 
-def query_plan(client: Any, sql: str, *, project: str,
-               dataset: str) -> QueryPlan:
+def query_plan(client: Any, sql: str, *, project: str, dataset: str) -> QueryPlan:
     job = read_only_job(client, sql, project=project, dataset=dataset)
     return QueryPlan(tuple(job.schema), job.total_bytes_processed)
 
 
-def query_result(execute: Callable[..., Any], query: str,
-                 job_config: Any = None) -> Any:
+def query_result(
+    execute: Callable[..., Any], query: str, job_config: Any = None
+) -> Any:
     settings = {} if job_config is None else {'job_config': job_config}
     return execute(query, **settings).result()
 
 
-def sample_request(sql: str, rows: int, *, project: str, dataset: str,
-                   max_bytes_billed: int,
-                   job_timeout_ms: int | None = None) -> tuple[str, Any]:
+def sample_request(
+    sql: str,
+    rows: int,
+    *,
+    project: str,
+    dataset: str,
+    max_bytes_billed: int,
+    job_timeout_ms: int | None = None,
+) -> tuple[str, Any]:
     from kumo_core.custom_sql import sample_select
 
-    return (sample_select(f'({sql})', rows),
-            home_dataset(project, dataset, max_bytes_billed, job_timeout_ms))
+    return (
+        sample_select(f'({sql})', rows),
+        home_dataset(project, dataset, max_bytes_billed, job_timeout_ms),
+    )
 
 
 def table_names(client: Any, dataset: str) -> list[str]:

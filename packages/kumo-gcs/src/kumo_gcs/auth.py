@@ -65,10 +65,11 @@ def google_credentials(
             exchanged.refresh(Request())
         except Exception as error:
             raise ValueError(
-                f"Identity {name!r} could not impersonate "
-                f"{authentication.service_account_email!r}: {error}. The "
-                f"ambient principal needs roles/iam.serviceAccountTokenCreator "
-                f"on it.") from None
+                f'Identity {name!r} could not impersonate '
+                f'{authentication.service_account_email!r}: {error}. The '
+                f'ambient principal needs roles/iam.serviceAccountTokenCreator '
+                f'on it.'
+            ) from None
         return exchanged
 
     if not isinstance(authentication, GoogleServiceAccountKeyAuthentication):
@@ -76,13 +77,16 @@ def google_credentials(
 
     if not isinstance(credentials, GoogleServiceAccountKeyCredentials):
         raise ValueError(
-            f"Identity {name!r} authenticates with a Google service-account "
-            f"key but holds {type(credentials).__name__} credentials.")
+            f'Identity {name!r} authenticates with a Google service-account '
+            f'key but holds {type(credentials).__name__} credentials.'
+        )
     return service_account.Credentials.from_service_account_info(
         service_account_info(
             authentication,
             private_key_id=credentials.private_key_id.get_secret_value(),
-            private_key=credentials.private_key.get_secret_value()))
+            private_key=credentials.private_key.get_secret_value(),
+        )
+    )
 
 
 __all__ = ['google_credentials']

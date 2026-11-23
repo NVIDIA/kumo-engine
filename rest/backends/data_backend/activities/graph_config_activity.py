@@ -43,8 +43,10 @@ def assert_public_connector_target_config(
     identity, principal, group, credential, secret, or token fields.
     """
     if dataclasses.is_dataclass(value):
-        items = ((field.name, getattr(value, field.name))
-                 for field in dataclasses.fields(value))
+        items = (
+            (field.name, getattr(value, field.name))
+            for field in dataclasses.fields(value)
+        )
     elif isinstance(value, Mapping):
         items = value.items()
     else:
@@ -53,16 +55,17 @@ def assert_public_connector_target_config(
     if items is not None:
         for key, item in items:
             normalized = str(key).casefold().replace('-', '_')
-            if any(part in normalized
-                   for part in _FORBIDDEN_MANAGEMENT_CONFIG_FIELD_PARTS):
+            if any(
+                part in normalized for part in _FORBIDDEN_MANAGEMENT_CONFIG_FIELD_PARTS
+            ):
                 raise TypeError(
                     f'One-shot management connector config contains '
-                    f'non-public field {path}.{key}')
+                    f'non-public field {path}.{key}'
+                )
             assert_public_connector_target_config(item, f'{path}.{key}')
         return
 
-    if isinstance(value, Sequence) and not isinstance(value,
-                                                      (str, bytes, bytearray)):
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         for index, item in enumerate(value):
             assert_public_connector_target_config(item, f'{path}[{index}]')
 
@@ -95,8 +98,10 @@ def make_graph_config_from_compute_input(
                 pkey=pkey.config() if pkey else None,
                 fkeys=[fkey.config() for fkey in fkeys],
                 cols=[
-                    col.config() for col in graph_logic._convert_cols_v2(
-                        definition.cols, pkey, fkeys)
+                    col.config()
+                    for col in graph_logic._convert_cols_v2(
+                        definition.cols, pkey, fkeys
+                    )
                 ],
                 time_col=time_col.config() if time_col else None,
                 end_time_col=(end_time_col.config() if end_time_col else None),
@@ -106,7 +111,8 @@ def make_graph_config_from_compute_input(
                 # ``data_version`` from the SQL identity instead of probing the
                 # synthetic source name as a physical table (a 404 on BigQuery).
                 is_sql=definition.is_sql,
-            ))
+            )
+        )
 
     return GraphConfig(
         name=graph_input.graph_display_name,
@@ -117,7 +123,8 @@ def make_graph_config_from_compute_input(
 
 @connector_activity_registry.connector_authorized_activity
 def build_graph_config_activity(
-    graph_input: GraphDataComputeInput, ) -> GraphConfig:
+    graph_input: GraphDataComputeInput,
+) -> GraphConfig:
     """Build public target metadata for a synchronous management request.
 
     This is deliberately not a long-running job payload. The resulting job
@@ -128,8 +135,7 @@ def build_graph_config_activity(
         graph_input,
         connector_configs={},
     )
-    with authorized_graph_for_activity(reference_only,
-                                       graph_input.connectors) as graph:
+    with authorized_graph_for_activity(reference_only, graph_input.connectors) as graph:
         # Serializing here pins every lazy table data version while the
         # connector has its project identity. The request receives only
         # credential-free target metadata and canonical versions.

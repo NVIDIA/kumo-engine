@@ -55,10 +55,9 @@ def connector_for_root(uri: str) -> Connector:
         return ADLSConnector(root_dir=uri)
     if parsed.scheme not in ('', 'file'):
         raise ValueError(
-            f'{uri!r} is not s3://, gs://, abfss://, file:// or a local '
-            f'path.')
-    return FileConnector(
-        root_dir=url2pathname(parsed.path) if parsed.scheme else uri)
+            f'{uri!r} is not s3://, gs://, abfss://, file:// or a local path.'
+        )
+    return FileConnector(root_dir=url2pathname(parsed.path) if parsed.scheme else uri)
 
 
 def _file_sink(connector: Connector, path: str) -> Optional[FileStoreSink]:
@@ -66,8 +65,11 @@ def _file_sink(connector: Connector, path: str) -> Optional[FileStoreSink]:
         sink = connector.sink_backend
     except NotImplementedError:
         return None
-    return sink if isinstance(sink, FileStoreSink) and sink.holds_files(
-        connector, path) else None
+    return (
+        sink
+        if isinstance(sink, FileStoreSink) and sink.holds_files(connector, path)
+        else None
+    )
 
 
 def is_file_destination(connector: Connector, path: str) -> bool:
@@ -81,22 +83,22 @@ def file_store(connector: Connector, path: str) -> Optional[Tuple[Any, str]]:
 
 
 __all__ = [
-    "ADLSConnector",
-    "ADLSIdentity",
-    "Connector",
-    "FileConnector",
-    "SnowflakeConnector",
-    "S3Connector",
-    "GCSConnector",
-    "BigQueryConnector",
-    "DatabricksConnector",
-    "SourceTable",
-    "SQLSourceTable",
-    "Identity",
-    "SnowflakeIdentity",
-    "S3Identity",
-    "GCSIdentity",
-    "BigQueryIdentity",
-    "DatabricksIdentity",
-    "connector_for_root",
+    'ADLSConnector',
+    'ADLSIdentity',
+    'Connector',
+    'FileConnector',
+    'SnowflakeConnector',
+    'S3Connector',
+    'GCSConnector',
+    'BigQueryConnector',
+    'DatabricksConnector',
+    'SourceTable',
+    'SQLSourceTable',
+    'Identity',
+    'SnowflakeIdentity',
+    'S3Identity',
+    'GCSIdentity',
+    'BigQueryIdentity',
+    'DatabricksIdentity',
+    'connector_for_root',
 ]

@@ -46,28 +46,32 @@ class StateDBTableRepository:
         entry: TableDBEntryV2,
     ) -> None:
         connector_id = entry.config.get_connector_id()
-        await require_connectors_for_admission(tx, entry.project_id,
-                                               [connector_id])
+        await require_connectors_for_admission(tx, entry.project_id, [connector_id])
 
-    async def get(self, tx: StateTx, project_id: ProjectID,
-                  fpid: FPID) -> TableDBEntryV2 | None:
+    async def get(
+        self, tx: StateTx, project_id: ProjectID, fpid: FPID
+    ) -> TableDBEntryV2 | None:
         return await self._tables.get_payload(tx, _table_key(project_id, fpid))
 
-    async def get_many(self, tx: StateTx, project_id: ProjectID,
-                       fpids: Iterable[FPID]) -> dict[FPID, TableDBEntryV2]:
+    async def get_many(
+        self, tx: StateTx, project_id: ProjectID, fpids: Iterable[FPID]
+    ) -> dict[FPID, TableDBEntryV2]:
         fpid_values = list(dict.fromkeys(FPID(str(fpid)) for fpid in fpids))
         rows = await self._tables.list_by_ids(
-            tx, [_table_key(project_id, fpid) for fpid in fpid_values])
+            tx, [_table_key(project_id, fpid) for fpid in fpid_values]
+        )
         return {row.payload.id: row.payload for row in rows}
 
     async def get_by_alias(
-            self, tx: StateTx, project_id: ProjectID,
-            alias: ID | TableName | str) -> TableDBEntryV2 | None:
+        self, tx: StateTx, project_id: ProjectID, alias: ID | TableName | str
+    ) -> TableDBEntryV2 | None:
         row = await self._tables.find_one_by_fields(
-            tx, {
+            tx,
+            {
                 'project_id': str(project_id),
                 'normalized_alias': normalize_resource_alias(str(alias)),
-            })
+            },
+        )
         return row.payload if row is not None else None
 
     async def get_many_by_alias(
@@ -80,31 +84,27 @@ class StateDBTableRepository:
         wanted = {normalize_resource_alias(str(alias)) for alias in requested}
         if not wanted:
             return {}
-        rows = await self._tables.list_by_fields(
-            tx, {'project_id': str(project_id)})
+        rows = await self._tables.list_by_fields(tx, {'project_id': str(project_id)})
         entries_by_normalized_alias = {
             row.payload.normalized_alias: row.payload
-            for row in rows if row.payload.alias is not None
-            and row.payload.normalized_alias in wanted
+            for row in rows
+            if row.payload.alias is not None and row.payload.normalized_alias in wanted
         }
         return {
             alias: entries_by_normalized_alias[normalized]
             for alias in requested
-            if (normalized := normalize_resource_alias(str(alias))
-                ) in entries_by_normalized_alias
+            if (normalized := normalize_resource_alias(str(alias)))
+            in entries_by_normalized_alias
         }
 
-    async def list(self, tx: StateTx,
-                   project_id: ProjectID) -> list[TableDBEntryV2]:
-        rows = await self._tables.list_by_fields(
-            tx, {'project_id': str(project_id)})
+    async def list(self, tx: StateTx, project_id: ProjectID) -> list[TableDBEntryV2]:
+        rows = await self._tables.list_by_fields(tx, {'project_id': str(project_id)})
         return [row.payload for row in rows]
 
-    async def list_named(self, tx: StateTx,
-                         project_id: ProjectID) -> list[TableDBEntryV2]:
-        return [
-            entry for entry in await self.list(tx, project_id) if entry.alias
-        ]
+    async def list_named(
+        self, tx: StateTx, project_id: ProjectID
+    ) -> list[TableDBEntryV2]:
+        return [entry for entry in await self.list(tx, project_id) if entry.alias]
 
     async def list_by_connector_id(
         self,
@@ -112,9 +112,9 @@ class StateDBTableRepository:
         project_id: ProjectID,
         connector_id: ConnectorID | str,
     ) -> list[TableDBEntryV2]:
-        return await self._list_by_connector_id(tx, project_id,
-                                                str(connector_id),
-                                                named_only=True)
+        return await self._list_by_connector_id(
+            tx, project_id, str(connector_id), named_only=True
+        )
 
     async def _graph_pinned_fpids(
         self,
@@ -139,11 +139,7 @@ class StateDBTableRepository:
         own.
         """
         graphs = await self._graphs.list(tx, project_id)
-        return {
-            fpid
-            for graph in graphs
-            for fpid in graph.table_name_to_dbid.values()
-        }
+        return {fpid for graph in graphs for fpid in graph.table_name_to_dbid.values()}
 
     async def unreachable_graphs(
         self,
@@ -167,8 +163,7 @@ class StateDBTableRepository:
         tx: StateTx,
         project_id: ProjectID,
         connector_id: ConnectorID | str,
-    ) -> tuple[list[TableDBEntryV2], list[TableDBEntryV2],
-               list[GraphDBEntryV2]]:
+    ) -> tuple[list[TableDBEntryV2], list[TableDBEntryV2], list[GraphDBEntryV2]]:
         """Split a connector's table references into live and orphaned.
 
         A row is *live* while the user can still see and remove it: it carries
@@ -188,9 +183,9 @@ class StateDBTableRepository:
         its tables and not the graph would leave it readable by ``graph-<fpid>``
         and broken.
         """
-        entries = await self._list_by_connector_id(tx, project_id,
-                                                   str(connector_id),
-                                                   named_only=False)
+        entries = await self._list_by_connector_id(
+            tx, project_id, str(connector_id), named_only=False
+        )
         if not entries:
             return [], [], []
         stale = await self.unreachable_graphs(tx, project_id)
@@ -212,7 +207,8 @@ class StateDBTableRepository:
             (live if reachable else orphaned).append(entry)
         dropped = {entry.id for entry in orphaned}
         collect = [
-            graph for graph in stale_by_fpid.values()
+            graph
+            for graph in stale_by_fpid.values()
             if dropped & set(graph.table_name_to_dbid.values())
         ]
         return live, orphaned, collect
@@ -233,14 +229,18 @@ class StateDBTableRepository:
         )
         entries = await self.list(tx, project_id)
         return [
-            entry for entry in entries
-            if (not named_only or bool(entry.alias)) and any(
-                str(getattr(entry.config.source_table, field, '') or '') ==
-                connector_id for field in fields)
+            entry
+            for entry in entries
+            if (not named_only or bool(entry.alias))
+            and any(
+                str(getattr(entry.config.source_table, field, '') or '') == connector_id
+                for field in fields
+            )
         ]
 
-    async def alias_exists(self, tx: StateTx, project_id: ProjectID,
-                           alias: ID | TableName | str) -> bool:
+    async def alias_exists(
+        self, tx: StateTx, project_id: ProjectID, alias: ID | TableName | str
+    ) -> bool:
         return await self.get_by_alias(tx, project_id, alias) is not None
 
     async def _unname_or_delete(
@@ -273,17 +273,27 @@ class StateDBTableRepository:
             return
         await self._tables.delete(tx, key)
 
-    async def upsert(self, tx: StateTx, fpid: FPID, entry: TableDBEntryV2, *,
-                     force_rename: bool = False) -> None:
+    async def upsert(
+        self,
+        tx: StateTx,
+        fpid: FPID,
+        entry: TableDBEntryV2,
+        *,
+        force_rename: bool = False,
+    ) -> None:
         if entry.id != fpid:
             raise ValueError('Table entry ID does not match its fingerprint')
         entry.__post_init__()
         existing = await self.get(tx, entry.project_id, fpid)
         connector_id = entry.config.get_connector_id()
-        existing_connector_id = (existing.config.get_connector_id()
-                                 if existing is not None else None)
-        if (existing is None or connector_id != existing_connector_id
-                or entry.ref_count > existing.ref_count):
+        existing_connector_id = (
+            existing.config.get_connector_id() if existing is not None else None
+        )
+        if (
+            existing is None
+            or connector_id != existing_connector_id
+            or entry.ref_count > existing.ref_count
+        ):
             await self._validate_persistence_invariants(tx, entry)
         else:
             # Metadata cleanup and reference-count decrements do not create a
@@ -297,7 +307,8 @@ class StateDBTableRepository:
                 if not force_rename:
                     raise ValueError(
                         f'The name {other.alias} is already used by another '
-                        'table in this project.')
+                        'table in this project.'
+                    )
                 # Taking the alias unnames `other`. Keep the row only while
                 # something still reaches it -- a saved graph pinning its
                 # fingerprint, or a reference count another resource holds.
@@ -308,16 +319,18 @@ class StateDBTableRepository:
                 await self._unname_or_delete(tx, other)
         await self._tables.upsert(tx, _table_key(entry.project_id, fpid), entry)
 
-    async def delete(self, tx: StateTx, project_id: ProjectID,
-                     fpid: FPID) -> TableDBEntryV2 | None:
+    async def delete(
+        self, tx: StateTx, project_id: ProjectID, fpid: FPID
+    ) -> TableDBEntryV2 | None:
         await self._require_active_project(tx, project_id)
         entry = await self.get(tx, project_id, fpid)
         if entry is not None:
             await self._tables.delete(tx, _table_key(project_id, fpid))
         return entry
 
-    async def decrement_or_delete(self, tx: StateTx, project_id: ProjectID,
-                                  fpid: FPID) -> bool:
+    async def decrement_or_delete(
+        self, tx: StateTx, project_id: ProjectID, fpid: FPID
+    ) -> bool:
         await self._require_active_project(tx, project_id)
         entry = await self.get(tx, project_id, fpid)
         if entry is None:

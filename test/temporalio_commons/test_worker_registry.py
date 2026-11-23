@@ -33,13 +33,11 @@ from temporalio_commons.worker_registry import (
 
 
 @pytest.mark.asyncio
-async def test_single_activity_workflow_has_one_attempt_retry_boundary(
-        monkeypatch):
+async def test_single_activity_workflow_has_one_attempt_retry_boundary(monkeypatch):
     execute_activity = AsyncMock(return_value='result')
     monkeypatch.setattr(workflow, 'execute_activity', execute_activity)
 
-    result = await RunSingleActivityWorkflow().run(
-        'validation_activity', ['input'])
+    result = await RunSingleActivityWorkflow().run('validation_activity', ['input'])
 
     assert result == 'result'
     retry_policy = execute_activity.await_args.kwargs['retry_policy']
@@ -57,9 +55,11 @@ def dummy_func(seconds_to_sleep: int = 60) -> str:
 
 @process_pool_activity_defn
 def raise_ex_func():
-    raise RPCError(message='dummy func raise ex',
-                   status=RPCStatusCode.UNAVAILABLE,
-                   raw_grpc_status=b'UNAVAILABLE')
+    raise RPCError(
+        message='dummy func raise ex',
+        status=RPCStatusCode.UNAVAILABLE,
+        raw_grpc_status=b'UNAVAILABLE',
+    )
 
 
 @process_pool_activity_defn
@@ -77,14 +77,19 @@ class DummyTestWorkflow:  # pylint: disable=too-few-public-methods
     async def run(self, raise_ex: bool = False, seconds_to_sleep: int = 1):
         if raise_ex:
             await workflow.execute_activity(
-                raise_ex_func, schedule_to_close_timeout=timedelta(minutes=1),
-                retry_policy=RetryPolicy(maximum_attempts=1))
+                raise_ex_func,
+                schedule_to_close_timeout=timedelta(minutes=1),
+                retry_policy=RetryPolicy(maximum_attempts=1),
+            )
 
         return await workflow.execute_activity(
-            dummy_func, args=[seconds_to_sleep],
-            schedule_to_close_timeout=(timedelta(minutes=1) +
-                                       timedelta(seconds=seconds_to_sleep)),
-            retry_policy=RetryPolicy(maximum_attempts=1))
+            dummy_func,
+            args=[seconds_to_sleep],
+            schedule_to_close_timeout=(
+                timedelta(minutes=1) + timedelta(seconds=seconds_to_sleep)
+            ),
+            retry_policy=RetryPolicy(maximum_attempts=1),
+        )
 
 
 @workflow.defn
@@ -92,18 +97,21 @@ class DummyTestWorkflow2:  # pylint: disable=too-few-public-methods
     @workflow.run
     async def run(self, *args):
         return await workflow.execute_activity(
-            dummy_func2, schedule_to_close_timeout=timedelta(minutes=1))
+            dummy_func2, schedule_to_close_timeout=timedelta(minutes=1)
+        )
 
 
 @pytest.mark.asyncio
 async def test_process_pool(temporal_config: DeployEnvConfig):
     test_worker_task_queue = 'test-worker-task-queue'
-    worker_options = WorkerOptions(task_queue=test_worker_task_queue,
-                                   max_worker_processes=1)
+    worker_options = WorkerOptions(
+        task_queue=test_worker_task_queue, max_worker_processes=1
+    )
     worker_env = WorkerEnv('test-worker', worker_options, temporal_config)
 
     worker = await worker_env.build_worker(
-        activities=[dummy_func, raise_ex_func], workflows=[DummyTestWorkflow])
+        activities=[dummy_func, raise_ex_func], workflows=[DummyTestWorkflow]
+    )
     async with worker:
         client = await worker_env.client()
         wf_handle = await client.start_workflow(
@@ -155,9 +163,12 @@ async def test_process_pool(temporal_config: DeployEnvConfig):
         # Verify that un-pickable exception gets wrapped as ApplicationFailure
         with pytest.raises(WorkflowFailureError) as err_info:
             await client.execute_workflow(
-                DummyTestWorkflow.run, True, id='dummy_wf_id_ex',
+                DummyTestWorkflow.run,
+                True,
+                id='dummy_wf_id_ex',
                 task_queue=test_worker_task_queue,
-                execution_timeout=timedelta(minutes=1))
+                execution_timeout=timedelta(minutes=1),
+            )
         activity_error = err_info.value.cause
         assert isinstance(activity_error, ActivityError)
         assert isinstance(activity_error.cause, ApplicationError)
@@ -176,14 +187,18 @@ def test_process_pool_refreshes_test_deploy_env_json(monkeypatch):
     )
 
     try:
-        assert executor.submit(read_deploy_env_config_json).result(
-            timeout=30) == old_config
+        assert (
+            executor.submit(read_deploy_env_config_json).result(timeout=30)
+            == old_config
+        )
         old_pool = executor._pool  # pylint: disable=protected-access
 
         monkeypatch.setenv('DEPLOY_ENV_CONFIG_JSON', new_config)
 
-        assert executor.submit(read_deploy_env_config_json).result(
-            timeout=30) == new_config
+        assert (
+            executor.submit(read_deploy_env_config_json).result(timeout=30)
+            == new_config
+        )
         assert executor._pool is not old_pool  # pylint: disable=protected-access
     finally:
         executor.shutdown()
@@ -205,17 +220,25 @@ async def test_multi_executors(temporal_config: DeployEnvConfig):
             max_worker_processes=1,
             multi_executors=True,
         )
-    worker_options = WorkerOptions(task_queue=test_worker_thread_queue,
-                                   max_worker_threads=1, max_worker_processes=1,
-                                   multi_executors=True)
+    worker_options = WorkerOptions(
+        task_queue=test_worker_thread_queue,
+        max_worker_threads=1,
+        max_worker_processes=1,
+        multi_executors=True,
+    )
     worker_env = WorkerEnv('test-worker', worker_options, temporal_config)
-    thread_worker = await worker_env.build_worker(activities=[dummy_func],
-                                                  workflows=[DummyTestWorkflow],
-                                                  use_process_executor=False)
+    thread_worker = await worker_env.build_worker(
+        activities=[dummy_func],
+        workflows=[DummyTestWorkflow],
+        use_process_executor=False,
+    )
     process_worker = await worker_env.build_worker(
-        activities=[dummy_func2], workflows=[DummyTestWorkflow2],
-        alt_task_queue=test_worker_process_queue, worker_name_suffix='-process',
-        use_process_executor=True)
+        activities=[dummy_func2],
+        workflows=[DummyTestWorkflow2],
+        alt_task_queue=test_worker_process_queue,
+        worker_name_suffix='-process',
+        use_process_executor=True,
+    )
 
     async with thread_worker, process_worker:
         client = await worker_env.client()
@@ -289,7 +312,8 @@ def test_warm_up_is_bounded_by_timeout():
         executor.warm_up(timeout=1.0)
         elapsed = monotonic() - started
         assert elapsed < init_sleep_seconds - 1, (
-            f'warm_up blocked for {elapsed:.1f}s; timeout was not enforced')
+            f'warm_up blocked for {elapsed:.1f}s; timeout was not enforced'
+        )
 
         # The pool is still usable: the unfinished children warm up lazily and
         # the submitted task completes once a child is ready.

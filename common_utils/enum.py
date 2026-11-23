@@ -37,11 +37,13 @@ def extends_enum(base_enum_type: Type[Enum]):
         Z = 3
 
     """
+
     def _decorator(extended_enum_type: AnyEnum) -> AnyEnum:
         enum_values = [(e.name, e.value) for e in extended_enum_type]
         for e in base_enum_type:
             assert (e.name, e.value) in enum_values, (
-                f"{(e.name, e.value)} not in {enum_values}.")
+                f'{(e.name, e.value)} not in {enum_values}.'
+            )
         return extended_enum_type
 
     return _decorator

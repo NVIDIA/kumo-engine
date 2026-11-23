@@ -43,13 +43,14 @@ def _default_thresholds() -> List[float]:
     return result
 
 
-def _safe_divide(numerator: Union[List[int], np.ndarray],
-                 denominator: Union[int, List[int], np.ndarray],
-                 fill_na: float = 1.0) -> List[float]:
+def _safe_divide(
+    numerator: Union[List[int], np.ndarray],
+    denominator: Union[int, List[int], np.ndarray],
+    fill_na: float = 1.0,
+) -> List[float]:
     r"""Perform division using `np.divide` and fill any `nan` values
     with `fill_na`"""
-    denominator = (denominator
-                   if isinstance(denominator, int) else np.array(denominator))
+    denominator = denominator if isinstance(denominator, int) else np.array(denominator)
     out = np.divide(np.array(numerator), denominator)
     return np.nan_to_num(out, nan=fill_na).tolist()
 
@@ -82,43 +83,54 @@ class BinaryClassificationMetrics:
 
     @classmethod
     def from_binary_confusion(
-            cls,
-            confusion: BinaryConfusionMatrix) -> 'BinaryClassificationMetrics':
+        cls, confusion: BinaryConfusionMatrix
+    ) -> 'BinaryClassificationMetrics':
 
-        total_negative_actual = confusion.true_negatives[
-            0] + confusion.false_positives[0]
-        total_positive_actual = confusion.true_positives[
-            0] + confusion.false_negatives[0]
+        total_negative_actual = (
+            confusion.true_negatives[0] + confusion.false_positives[0]
+        )
+        total_positive_actual = (
+            confusion.true_positives[0] + confusion.false_negatives[0]
+        )
         num_samples = total_negative_actual + total_positive_actual
         # In case of zero division we default to 0.0 for recall
         # this corresponds to the case with TP=0 and FN=0
-        recall = _safe_divide(confusion.true_positives, total_positive_actual,
-                              fill_na=0.0)
+        recall = _safe_divide(
+            confusion.true_positives, total_positive_actual, fill_na=0.0
+        )
         # In case of zero division we defaulto to 1.0 precision
         # this corresponds to the case with TP=0 and FP=0
         precision = _safe_divide(
             confusion.true_positives,
-            np.array(confusion.true_positives) +
-            np.array(confusion.false_positives), fill_na=1.0)
+            np.array(confusion.true_positives) + np.array(confusion.false_positives),
+            fill_na=1.0,
+        )
         accuracy = _safe_divide(
-            np.array(confusion.true_positives) +
-            np.array(confusion.true_negatives), num_samples)
+            np.array(confusion.true_positives) + np.array(confusion.true_negatives),
+            num_samples,
+        )
         predicted_pos_rate = _safe_divide(
-            np.array(confusion.true_positives) +
-            np.array(confusion.false_positives), num_samples)
-        false_positive_rate = _safe_divide(confusion.false_positives,
-                                           total_negative_actual)
-        total_positive_pred = (np.array(confusion.true_positives) +
-                               np.array(confusion.false_positives)).tolist()
-        total_negative_pred = (np.array(confusion.true_negatives) +
-                               np.array(confusion.false_negatives)).tolist()
+            np.array(confusion.true_positives) + np.array(confusion.false_positives),
+            num_samples,
+        )
+        false_positive_rate = _safe_divide(
+            confusion.false_positives, total_negative_actual
+        )
+        total_positive_pred = (
+            np.array(confusion.true_positives) + np.array(confusion.false_positives)
+        ).tolist()
+        total_negative_pred = (
+            np.array(confusion.true_negatives) + np.array(confusion.false_negatives)
+        ).tolist()
         ppr_ideal = total_positive_actual / num_samples
 
         f1 = _safe_divide(
             2 * np.array(confusion.true_positives),
-            2 * np.array(confusion.true_positives) +
-            np.array(confusion.false_positives) +
-            np.array(confusion.false_negatives), fill_na=0.0)
+            2 * np.array(confusion.true_positives)
+            + np.array(confusion.false_positives)
+            + np.array(confusion.false_negatives),
+            fill_na=0.0,
+        )
 
         return cls(
             num_samples=num_samples,
@@ -143,15 +155,15 @@ class BinaryClassificationMetrics:
 @kumo_dataclass
 class ClassificationEvaluationResponse:
     r"""Retruns metrics assuming a class is positive"""
+
     classes: Dict[str, BinaryClassificationMetrics]
 
     @classmethod
     def from_binary_confusion_matrix(
-            cls, confusion: BinaryConfusionMatrix
+        cls, confusion: BinaryConfusionMatrix
     ) -> 'ClassificationEvaluationResponse':
         # Get confusion matrix saved to db during training job.
-        true_class = BinaryClassificationMetrics.from_binary_confusion(
-            confusion)
+        true_class = BinaryClassificationMetrics.from_binary_confusion(confusion)
 
         # Compute metrics with positive and
         # negative classes switched.
@@ -163,7 +175,8 @@ class ClassificationEvaluationResponse:
             thresholds=confusion.thresholds,
         )
         false_class = BinaryClassificationMetrics.from_binary_confusion(
-            confusion_switched)
+            confusion_switched
+        )
 
         response = cls({})
         response.classes[TRUE_CLASS] = true_class
@@ -201,8 +214,9 @@ class ConfusionMatrixResponse:
             lengths.append(len(value))
 
         if not len(set(lengths)) == 1:
-            raise ValueError('Dimensions are mismatched, all elements '
-                             'must have the same size')
+            raise ValueError(
+                'Dimensions are mismatched, all elements must have the same size'
+            )
 
         return self
 
@@ -228,7 +242,7 @@ class RegressionResiduals:
         # cell in x-axis and y-axis might be 1 larger than our estimation
         # here, resulting in the total number of cells exceed MAX_CELLS
         # by a small margin, but this should not cause any problems
-        cell_width_adjust = ((x_len * y_len) / MAX_CELLS)**0.5
+        cell_width_adjust = ((x_len * y_len) / MAX_CELLS) ** 0.5
 
         # if `heatmap.cell_width` already satisify the restriction, return
         # `heatmap.cell_width` instead
@@ -237,18 +251,20 @@ class RegressionResiduals:
 
     @classmethod
     def from_target_prediction_heatmap(
-            cls, heatmap: TargetPredictionHeatMap) -> 'RegressionResiduals':
+        cls, heatmap: TargetPredictionHeatMap
+    ) -> 'RegressionResiduals':
         """
         Converts a TargetPredictionHeatMap object to a
         RegressionResiduals object"""
-        cell_width_adjust = RegressionResiduals.heatmap_cell_width_resize(
-            heatmap)
-        x_values = np.arange(heatmap.label_bin_start,
-                             heatmap.label_bin_end + 1e-6,
-                             cell_width_adjust).tolist()
-        y_values = np.arange(heatmap.prediction_bin_start,
-                             heatmap.prediction_bin_end + 1e-6,
-                             cell_width_adjust).tolist()
+        cell_width_adjust = RegressionResiduals.heatmap_cell_width_resize(heatmap)
+        x_values = np.arange(
+            heatmap.label_bin_start, heatmap.label_bin_end + 1e-6, cell_width_adjust
+        ).tolist()
+        y_values = np.arange(
+            heatmap.prediction_bin_start,
+            heatmap.prediction_bin_end + 1e-6,
+            cell_width_adjust,
+        ).tolist()
 
         buckets = np.zeros((len(y_values), len(x_values)))
         for index, (cell_x, cell_y) in enumerate(heatmap.cells):
@@ -258,8 +274,7 @@ class RegressionResiduals:
             # Set the value to be the proper count
             buckets[j, i] = heatmap.counts[index]
 
-        return cls(buckets=buckets.tolist(), x_values=x_values,
-                   y_values=y_values)
+        return cls(buckets=buckets.tolist(), x_values=x_values, y_values=y_values)
 
 
 @kumo_dataclass
@@ -267,6 +282,7 @@ class RegressionHeatmapResponse:
     """Contains information that can be used to render a predicted vs actuals
     heatmap in the UI
     """
+
     residuals_chart: Dict[TrainingStage, RegressionResiduals]
 
 
@@ -290,6 +306,5 @@ ColumnName = str
 
 @kumo_dataclass
 class XAIResponse:
-    tables: Dict[str, Dict[ColumnName,
-                           ColumnExplanation]] = field(default_factory=dict)
+    tables: Dict[str, Dict[ColumnName, ColumnExplanation]] = field(default_factory=dict)
     navigation: Optional[NavigationInfo] = None

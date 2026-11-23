@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Leave ten minutes of the installed one-hour job limit for evidence."""
+
 import json
 import math
 import signal
@@ -18,8 +19,7 @@ def remaining(root, maximum=None):
         raise ValueError('Invalid notebook execution deadline')
     seconds = deadline - time.monotonic()
     if seconds <= 0:
-        raise TimeoutError(
-            'Notebook work exhausted its evidence-reserving budget')
+        raise TimeoutError('Notebook work exhausted its evidence-reserving budget')
     return min(seconds, maximum) if maximum is not None else seconds
 
 
@@ -30,8 +30,7 @@ def limit(root):
         raise RuntimeError('Notebook kernel already has an execution timer')
 
     def expired(*_):
-        raise TimeoutError(
-            'Notebook work exhausted its evidence-reserving budget')
+        raise TimeoutError('Notebook work exhausted its evidence-reserving budget')
 
     previous = signal.signal(signal.SIGALRM, expired)
     signal.setitimer(signal.ITIMER_REAL, seconds)

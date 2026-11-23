@@ -32,9 +32,9 @@ async def enqueue_job(job_id: JobID):
             MLBackendActivities.wait_in_job_queue,
             arg=job_id,
             schedule_to_close_timeout=timedelta(hours=24),
-            cancellation_type=(
-                ActivityCancellationType.WAIT_CANCELLATION_COMPLETED),
-        ))
+            cancellation_type=(ActivityCancellationType.WAIT_CANCELLATION_COMPLETED),
+        )
+    )
     try:
         # Wait for the job to be enqueued while don't propagate cancellation to
         # the activity.
@@ -43,7 +43,8 @@ async def enqueue_job(job_id: JobID):
         # The workflow receives a cancellation signal while the enqueue
         # task is still running
         enqueue_job_task.cancel(
-            f'Workflow {workflow.info().workflow_id} received cancellation.')
+            f'Workflow {workflow.info().workflow_id} received cancellation.'
+        )
         # Make sure the task completes
         await enqueue_job_task
         raise  # re-raise the CancelledError
@@ -63,16 +64,16 @@ async def dequeue_job(job_id: JobID):
         MLBackendActivities.finalize_job,
         args=[job_id],
         schedule_to_close_timeout=timedelta(hours=24),
-        cancellation_type=(
-            ActivityCancellationType.WAIT_CANCELLATION_COMPLETED),
+        cancellation_type=(ActivityCancellationType.WAIT_CANCELLATION_COMPLETED),
     )
 
 
-async def init_job_generic(job_input: Union[TrainingJobInput,
-                                            BatchPredictionJobInput],
-                           ml_job_settings: MLJobSettings,
-                           job_id: Optional[JobID] = None,
-                           home_dir: Optional[str] = None):
+async def init_job_generic(
+    job_input: Union[TrainingJobInput, BatchPredictionJobInput],
+    ml_job_settings: MLJobSettings,
+    job_id: Optional[JobID] = None,
+    home_dir: Optional[str] = None,
+):
     job_id = job_id or job_input.id
     # Registry metadata enriches the primary job row but is not required to
     # execute the job, so an exhausted retry should not fail the workflow.
@@ -84,5 +85,7 @@ async def init_job_generic(job_input: Union[TrainingJobInput,
         )
 
     await workflow.execute_activity(
-        persist_job_inputs, args=[job_input, ml_job_settings, home_dir],
-        schedule_to_close_timeout=timedelta(minutes=10))
+        persist_job_inputs,
+        args=[job_input, ml_job_settings, home_dir],
+        schedule_to_close_timeout=timedelta(minutes=10),
+    )

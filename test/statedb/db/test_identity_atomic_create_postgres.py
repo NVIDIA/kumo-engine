@@ -38,10 +38,12 @@ async def test_postgres_group_delete_serializes_with_atomic_identity_create(
         identity_validator=lambda *_: None,
     )
     try:
-        group = (await groups.create_kumo_groups(
-            [KumoGroupCreateSpec(display_name='Atomic identity group')],
-            admin,
-        ))[0]
+        group = (
+            await groups.create_kumo_groups(
+                [KumoGroupCreateSpec(display_name='Atomic identity group')],
+                admin,
+            )
+        )[0]
         original_lock = identities_module.lock_group_relations
         delete_has_lock = asyncio.Event()
         create_is_waiting = asyncio.Event()
@@ -57,10 +59,8 @@ async def test_postgres_group_delete_serializes_with_atomic_identity_create(
             create_is_waiting.set()
             await original_lock(tx, group_ids)
 
-        monkeypatch.setattr(groups_module, 'lock_group_relations',
-                            controlled_lock)
-        monkeypatch.setattr(identities_module, 'lock_group_relations',
-                            controlled_lock)
+        monkeypatch.setattr(groups_module, 'lock_group_relations', controlled_lock)
+        monkeypatch.setattr(identities_module, 'lock_group_relations', controlled_lock)
 
         delete_task = asyncio.create_task(
             groups.delete_kumo_group(str(group.id), admin),
@@ -76,7 +76,8 @@ async def test_postgres_group_delete_serializes_with_atomic_identity_create(
                         authentication=api.S3AssumeRoleAuthentication(
                             partition='aws',
                             role_arn=('arn:aws:iam::123456789012:role/atomic'),
-                        ), ),
+                        ),
+                    ),
                 ),
                 admin,
             ),

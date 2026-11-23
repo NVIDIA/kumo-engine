@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Tests for Kumo's DiskGraph batch-prediction statistics contract."""
+
 import json
 import os
 import os.path as osp
@@ -43,35 +44,23 @@ class TestToKumoColSpecs:
     module confirms the projection passes through raw value strings and skips
     unresolved columns consistently with the normal stats pipeline.
     """
+
     def test_projects_raw_value_strings(self):
         from kumo.diskgraph.service import _to_kumo_col_specs
-        td = _stub_table_def([
-            _stub_col('entity', 'ID', 'string'),
-            _stub_col('PREDICTED', 'categorical', 'int'),
-            _stub_col('CLASS', 'categorical', 'string'),
-            _stub_col('SCORE', 'numerical', 'float'),
-        ])
+
+        td = _stub_table_def(
+            [
+                _stub_col('entity', 'ID', 'string'),
+                _stub_col('PREDICTED', 'categorical', 'int'),
+                _stub_col('CLASS', 'categorical', 'string'),
+                _stub_col('SCORE', 'numerical', 'float'),
+            ]
+        )
         assert _to_kumo_col_specs(td) == [
-            {
-                'name': 'entity',
-                'stype': 'ID',
-                'dtype': 'string'
-            },
-            {
-                'name': 'PREDICTED',
-                'stype': 'categorical',
-                'dtype': 'int'
-            },
-            {
-                'name': 'CLASS',
-                'stype': 'categorical',
-                'dtype': 'string'
-            },
-            {
-                'name': 'SCORE',
-                'stype': 'numerical',
-                'dtype': 'float'
-            },
+            {'name': 'entity', 'stype': 'ID', 'dtype': 'string'},
+            {'name': 'PREDICTED', 'stype': 'categorical', 'dtype': 'int'},
+            {'name': 'CLASS', 'stype': 'categorical', 'dtype': 'string'},
+            {'name': 'SCORE', 'stype': 'numerical', 'dtype': 'float'},
         ]
 
     def test_unsupported_columns_are_skipped(self):
@@ -93,16 +82,14 @@ class TestToKumoColSpecs:
         col = _stub_col('event_time', 'timestamp', 'int')
         col.timestamp_format = type('_Unit', (), {'value': 'ms'})()
 
-        assert _to_kumo_col_specs(_stub_table_def([col])) == [{
-            'name':
-            'event_time',
-            'stype':
-            'timestamp',
-            'dtype':
-            'int',
-            'timestamp_unit':
-            'ms',
-        }]
+        assert _to_kumo_col_specs(_stub_table_def([col])) == [
+            {
+                'name': 'event_time',
+                'stype': 'timestamp',
+                'dtype': 'int',
+                'timestamp_unit': 'ms',
+            }
+        ]
 
     def test_projects_authoritative_integer_timestamp_format(self):
         from kumo.diskgraph.service import _to_kumo_col_specs
@@ -110,24 +97,24 @@ class TestToKumoColSpecs:
         col = _stub_col('event_date', 'timestamp', 'int')
         col.timestamp_format = '%Y%m%d'
 
-        assert _to_kumo_col_specs(_stub_table_def([col])) == [{
-            'name':
-            'event_date',
-            'stype':
-            'timestamp',
-            'dtype':
-            'int',
-            'timestamp_format':
-            '%Y%m%d',
-        }]
+        assert _to_kumo_col_specs(_stub_table_def([col])) == [
+            {
+                'name': 'event_date',
+                'stype': 'timestamp',
+                'dtype': 'int',
+                'timestamp_format': '%Y%m%d',
+            }
+        ]
 
 
 class TestListParquetFiles:
     """``_list_parquet_files`` handles the three BP-output writer shapes:
     single file, directory of part-*.parquet, and missing.
     """
+
     def test_single_file(self):
         from rest.backends.data_backend.data_backend import _list_parquet_files
+
         with tempfile.TemporaryDirectory() as d:
             p = osp.join(d, 'predictions.parquet')
             fsutil.write_text(p, '')  # empty file is fine for path resolution
@@ -135,12 +122,11 @@ class TestListParquetFiles:
 
     def test_directory_of_parts(self):
         from rest.backends.data_backend.data_backend import _list_parquet_files
+
         with tempfile.TemporaryDirectory() as d:
             outdir = osp.join(d, 'predictions.parquet')
             os.makedirs(outdir)
-            files = [
-                'part-00000.parquet', 'part-00001.parquet', 'part-00002.parquet'
-            ]
+            files = ['part-00000.parquet', 'part-00001.parquet', 'part-00002.parquet']
             for fn in files:
                 fsutil.write_text(osp.join(outdir, fn), '')
             # Also a non-parquet file that must be skipped.
@@ -150,8 +136,8 @@ class TestListParquetFiles:
 
     def test_missing_returns_empty(self):
         from rest.backends.data_backend.data_backend import _list_parquet_files
-        assert _list_parquet_files(
-            '/nonexistent/path/predictions.parquet') == []
+
+        assert _list_parquet_files('/nonexistent/path/predictions.parquet') == []
 
 
 def test_physical_parquet_types_normalize_to_logical_bp_specs(tmp_path):
@@ -160,44 +146,32 @@ def test_physical_parquet_types_normalize_to_logical_bp_specs(tmp_path):
     first_path = tmp_path / 'part-00000.parquet'
     second_path = tmp_path / 'part-00001.parquet'
     pq.write_table(
-        pa.table({
-            'PREDICTED': pa.array([True, False]),
-            'CLASS': pa.array([1, 2], type=pa.int64()),
-            'ENTITY': pa.array([10, 20], type=pa.int32()),
-            'SCORE': pa.array([0.2, 0.8], type=pa.float32()),
-        }),
+        pa.table(
+            {
+                'PREDICTED': pa.array([True, False]),
+                'CLASS': pa.array([1, 2], type=pa.int64()),
+                'ENTITY': pa.array([10, 20], type=pa.int32()),
+                'SCORE': pa.array([0.2, 0.8], type=pa.float32()),
+            }
+        ),
         first_path,
     )
     pq.write_table(
-        pa.table({
-            'SCORE': pa.array([0.4, 0.6], type=pa.float64()),
-            'ENTITY': pa.array([30, 40], type=pa.uint64()),
-            'CLASS': pa.array([1, 2], type=pa.uint16()),
-            'PREDICTED': pa.array([False, True]),
-        }),
+        pa.table(
+            {
+                'SCORE': pa.array([0.4, 0.6], type=pa.float64()),
+                'ENTITY': pa.array([30, 40], type=pa.uint64()),
+                'CLASS': pa.array([1, 2], type=pa.uint16()),
+                'PREDICTED': pa.array([False, True]),
+            }
+        ),
         second_path,
     )
     specs = [
-        {
-            'name': 'ENTITY',
-            'stype': 'ID',
-            'dtype': 'string'
-        },
-        {
-            'name': 'PREDICTED',
-            'stype': 'categorical',
-            'dtype': 'int'
-        },
-        {
-            'name': 'CLASS',
-            'stype': 'categorical',
-            'dtype': 'string'
-        },
-        {
-            'name': 'SCORE',
-            'stype': 'numerical',
-            'dtype': 'float'
-        },
+        {'name': 'ENTITY', 'stype': 'ID', 'dtype': 'string'},
+        {'name': 'PREDICTED', 'stype': 'categorical', 'dtype': 'int'},
+        {'name': 'CLASS', 'stype': 'categorical', 'dtype': 'string'},
+        {'name': 'SCORE', 'stype': 'numerical', 'dtype': 'float'},
     ]
 
     full_json, _ = compute_col_stats_for_parquet(
@@ -208,14 +182,13 @@ def test_physical_parquet_types_normalize_to_logical_bp_specs(tmp_path):
     stats = json.loads(full_json)
 
     assert stats['ENTITY__kumo.ID__COUNT__False']['value'] == 4
-    predicted_counts = stats[
-        'PREDICTED__kumo.categorical__CATEGORY_COUNTS__False']['value']
+    predicted_counts = stats['PREDICTED__kumo.categorical__CATEGORY_COUNTS__False'][
+        'value'
+    ]
     assert dict(predicted_counts) == {0: 2, 1: 2}
-    class_counts = stats['CLASS__kumo.categorical__CATEGORY_COUNTS__False'][
-        'value']
+    class_counts = stats['CLASS__kumo.categorical__CATEGORY_COUNTS__False']['value']
     assert dict(class_counts) == {'1': 2, '2': 2}
-    by_class = stats['SCORE__kumo.numerical__SUMMARY_STATS_BY_CLASS__False'][
-        'value']
+    by_class = stats['SCORE__kumo.numerical__SUMMARY_STATS_BY_CLASS__False']['value']
     assert set(by_class) == {'1', '2'}
     assert by_class['1']['mean'] == pytest.approx(0.3)
     assert by_class['2']['mean'] == pytest.approx(0.7)
@@ -242,7 +215,9 @@ def test_physical_parquet_types_normalize_to_logical_bp_specs(tmp_path):
                 name=spec['name'],
                 stype=Stype(spec['stype']),
                 dtype=Dtype(spec['dtype']),
-            ) for spec in specs),
+            )
+            for spec in specs
+        ),
         source_table=S3SourceTable(
             file_type=FileType.PARQUET,
             connector_id=connector_id,
@@ -273,6 +248,7 @@ class TestSummaryStatsByClass:
     the ``__``-key parses back to the right ``ColStatType``, and a dict-valued
     stat surfaces as ``ColumnStats.bp_stats``.
     """
+
     def test_by_class_key_parses_to_colstattype(self):
         """The Rust side emits ``SCORE__kumo.numerical__SUMMARY_STATS_BY_CLASS
         __False``; the cache reader must map it back to the enum, with a
@@ -282,7 +258,8 @@ class TestSummaryStatsByClass:
         from kumo.data.cache.exact_stats import parse_col_stat_from_key
 
         col, stat, approx = parse_col_stat_from_key(
-            'SCORE__kumo.numerical__SUMMARY_STATS_BY_CLASS__False')
+            'SCORE__kumo.numerical__SUMMARY_STATS_BY_CLASS__False'
+        )
         assert col == 'SCORE'
         assert stat == ColStatType.SUMMARY_STATS_BY_CLASS
         assert approx is False
@@ -298,16 +275,8 @@ class TestSummaryStatsByClass:
         from rest.config.table import ColumnStats
 
         by_class = {
-            'fraud': {
-                'min': 0.2,
-                'max': 0.9,
-                'mean': 0.5333333333333333
-            },
-            'legit': {
-                'min': 0.1,
-                'max': 0.8,
-                'mean': 0.4666666666666667
-            },
+            'fraud': {'min': 0.2, 'max': 0.9, 'mean': 0.5333333333333333},
+            'legit': {'min': 0.1, 'max': 0.8, 'mean': 0.4666666666666667},
         }
         # The numerical branch of ``from_stats_dict`` reads COUNT, NUM_NA,
         # MEAN, MIN, MAX, QUANTILES (3-list) plus the by-class dict.

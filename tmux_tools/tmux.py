@@ -85,12 +85,13 @@ configuration than requested. (y/N) """)
         self.run(f'set-hook -g "session-closed" {quote(run_cmd)}')
 
     def launch(self, launch_config: LaunchConfig) -> None:
-        landing_page_command = f"{launch_config.landing_page.command};bash"
-        command = (f"bash -c {quote(landing_page_command)}")
+        landing_page_command = f'{launch_config.landing_page.command};bash'
+        command = f'bash -c {quote(landing_page_command)}'
         self.run(
             f'-f {quote(self.config.config_file)} '
             f'new-session -d -s {quote(self.config.session_id)} '
-            f'-n {quote(launch_config.landing_page.name)} {quote(command)}')
+            f'-n {quote(launch_config.landing_page.name)} {quote(command)}'
+        )
         for window in launch_config.windows:
             # Start the command as the window's process rather than creating
             # an interactive shell and racing a later ``send-keys`` into it.
@@ -99,27 +100,24 @@ configuration than requested. (y/N) """)
             # shell startup hooks are still reading the terminal.
             panel_command = f'{window.command}; exec bash -i'
             command = f'bash -lc {quote(panel_command)}'
-            self.run_session(
-                'new-window',
-                f'-n {quote(window.name)} {quote(command)}')
+            self.run_session('new-window', f'-n {quote(window.name)} {quote(command)}')
         if launch_config.session_closed_callback:
-            self.set_session_closed_callback(
-                launch_config.session_closed_callback)
+            self.set_session_closed_callback(launch_config.session_closed_callback)
         self.run_session('select-window', '-n')
 
     def attach(self) -> None:
         self.run_session('attach')
 
-    def run_session(self, command: str, args: str = "") -> None:
+    def run_session(self, command: str, args: str = '') -> None:
         self.run(f'{command} -t {quote(self.config.session_id)} {args}')
 
     def run(self, command: str) -> None:
-        util.must_run_command(
-            f'tmux -L {quote(self.config.server_id)} {command}')
+        util.must_run_command(f'tmux -L {quote(self.config.server_id)} {command}')
 
     def is_running(self) -> bool:
         output = util.run_command(
-            f'tmux -L {quote(self.config.server_id)} list-sessions -F "#S"')
+            f'tmux -L {quote(self.config.server_id)} list-sessions -F "#S"'
+        )
         if output.returncode != 0:
             return False
         sessions = output.stdout.split('\n')
@@ -127,14 +125,14 @@ configuration than requested. (y/N) """)
 
     def check_tmux_is_installed(self) -> bool:
         dep = config.Dependency(
-            name="tmux is installed",
-            command="tmux -V",
-            stdout_search_pattern="tmux 3.",
+            name='tmux is installed',
+            command='tmux -V',
+            stdout_search_pattern='tmux 3.',
             instructions="""
 Please install tmux version 3 or above.
 """,
         )
-        print("Checking Dependency:", dep.name)
+        print('Checking Dependency:', dep.name)
         result = dep.check()
         if not result.succeeded:
             print(result.message)

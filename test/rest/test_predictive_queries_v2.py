@@ -45,19 +45,20 @@ def test_create_and_get_pquery_v2(
         IDResponse,
     )
     graph_definition_internal = GraphDefinition(
-        **dataclasses.asdict(graph_definition_v2))
+        **dataclasses.asdict(graph_definition_v2)
+    )
 
     valid_request = pquery_api.PQueryResource(
         name='pq',
-        query_string="PREDICT COUNT(transactions.*, 0, 20) FOR EACH "
-        "customers.customer_id",
+        query_string='PREDICT COUNT(transactions.*, 0, 20) FOR EACH '
+        'customers.customer_id',
         graph=graph_definition_internal,
-        desc="Sample predictive query",
+        desc='Sample predictive query',
     )
 
     response = post_and_expect_success(
         client,
-        f"/v1/predictive_queries/?project_id={default_project_id}",
+        f'/v1/predictive_queries/?project_id={default_project_id}',
         valid_request,
         IDResponse,
     )
@@ -85,20 +86,21 @@ def test_create_pquery_v2_accepts_display_and_empty_names(
     default_project_id: str,
 ):
     graph_definition_internal = GraphDefinition(
-        **dataclasses.asdict(graph_definition_v2))
+        **dataclasses.asdict(graph_definition_v2)
+    )
 
     for name in ['display - name', '']:
         request = pquery_api.PQueryResource(
             name=name,
-            query_string="PREDICT COUNT(transactions.*, 0, 20) FOR EACH "
-            "customers.customer_id",
+            query_string='PREDICT COUNT(transactions.*, 0, 20) FOR EACH '
+            'customers.customer_id',
             graph=graph_definition_internal,
-            desc="Sample predictive query",
+            desc='Sample predictive query',
         )
 
         response = post_and_expect_success(
             client,
-            f"/v1/predictive_queries/?project_id={default_project_id}",
+            f'/v1/predictive_queries/?project_id={default_project_id}',
             request,
             IDResponse,
         )
@@ -126,15 +128,18 @@ def test_private_create_pquery_accepts_internal_metadata(
             query_string='PREDICT COUNT(transactions.*, 0, 20) FOR EACH '
             'customers.customer_id',
             graph=graph_definition_v2,
-        ))
-    payload.update({
-        'graph_display_name': 'Private graph display name',
-        'advanced_options_yaml': None,
-        'runtime_options': {
-            'list_distinct_target_is_array': False,
-            'lp_bp_layout': 'private-layout',
-        },
-    })
+        )
+    )
+    payload.update(
+        {
+            'graph_display_name': 'Private graph display name',
+            'advanced_options_yaml': None,
+            'runtime_options': {
+                'list_distinct_target_is_array': False,
+                'lp_bp_layout': 'private-layout',
+            },
+        }
+    )
 
     response = post_and_expect_success(
         client,
@@ -157,7 +162,8 @@ def test_private_create_pquery_rejects_unknown_fields(
             query_string='PREDICT COUNT(transactions.*, 0, 20) FOR EACH '
             'customers.customer_id',
             graph=graph_definition_v2,
-        ))
+        )
+    )
     payload['unknown_internal_field'] = True
 
     response = client.post(
@@ -175,16 +181,16 @@ def test_get_default_model_plan(
     default_project_id: str,
 ):
     graph_definition_internal = GraphDefinition(
-        **dataclasses.asdict(graph_definition_v2))
+        **dataclasses.asdict(graph_definition_v2)
+    )
     # Testing model plan generation for regression
     response = post_and_expect_success(
         client=client,
-        path=(f'/v1/predictive_queries/model_plan?project_id='
-              f'{default_project_id}'),
+        path=(f'/v1/predictive_queries/model_plan?project_id={default_project_id}'),
         payload=plan_api.SuggestModelPlanRequest(
             query_string='PREDICT COUNT(transactions.*, 0, 20) FOR EACH '
             'customers.customer_id',
-            graph_id="",
+            graph_id='',
             run_mode=RunMode.FAST,
             graph_definition=graph_definition_internal,
         ),
@@ -194,21 +200,20 @@ def test_get_default_model_plan(
     assert response is not None
     assert response.suggested_model_plan is not None
     assert response.suggested_model_plan.model_plan is not None
-    assert (response.suggested_model_plan.model_plan.training_job.metrics
-            is not None)
+    assert response.suggested_model_plan.model_plan.training_job.metrics is not None
     assert all(
         metric in response.suggested_model_plan.model_plan.training_job.metrics
-        for metric in ['mae', 'mse', 'rmse'])
+        for metric in ['mae', 'mse', 'rmse']
+    )
 
     # Testing model plan generation for binary classification
     response = post_and_expect_success(
         client=client,
-        path=(f'/v1/predictive_queries/model_plan?project_id='
-              f'{default_project_id}'),
+        path=(f'/v1/predictive_queries/model_plan?project_id={default_project_id}'),
         payload=plan_api.SuggestModelPlanRequest(
             query_string='PREDICT COUNT(transactions.*, 0, 20) = 0 FOR EACH '
             'customers.customer_id',
-            graph_id="",
+            graph_id='',
             run_mode=RunMode.FAST,
             graph_definition=graph_definition_internal,
         ),
@@ -218,11 +223,11 @@ def test_get_default_model_plan(
     assert response is not None
     assert response.suggested_model_plan is not None
     assert response.suggested_model_plan.model_plan is not None
-    assert (response.suggested_model_plan.model_plan.training_job.metrics
-            is not None)
+    assert response.suggested_model_plan.model_plan.training_job.metrics is not None
     assert all(
         metric in response.suggested_model_plan.model_plan.training_job.metrics
-        for metric in ['auroc', 'ap', 'auprc'])
+        for metric in ['auroc', 'ap', 'auprc']
+    )
 
     # Make sure hidden fields are not included in the yaml returned
     assert response.suggested_model_plan_yaml is not None
@@ -232,14 +237,14 @@ def test_get_default_model_plan(
     # Testing model plan generation for link prediction
     response = post_and_expect_success(
         client=client,
-        path=(f'/v1/predictive_queries/model_plan?project_id='
-              f'{default_project_id}'),
+        path=(f'/v1/predictive_queries/model_plan?project_id={default_project_id}'),
         payload=plan_api.SuggestModelPlanRequest(
             query_string=(
                 'PREDICT LIST_DISTINCT(transactions.article_id, 0, 30)'
                 'RANK TOP 10'
-                'FOR EACH customers.customer_id'),
-            graph_id="",
+                'FOR EACH customers.customer_id'
+            ),
+            graph_id='',
             run_mode=RunMode.FAST,
             graph_definition=graph_definition_internal,
         ),
@@ -248,11 +253,20 @@ def test_get_default_model_plan(
     assert response is not None
     assert response.suggested_model_plan is not None
     assert response.suggested_model_plan.model_plan is not None
-    assert (response.suggested_model_plan.model_plan.training_job.metrics
-            is not None)
+    assert response.suggested_model_plan.model_plan.training_job.metrics is not None
     expected = [
-        'f1@1', 'f1@10', 'f1@100', 'map@1', 'map@10', 'map@100', 'precision@1',
-        'precision@10', 'precision@100', 'recall@1', 'recall@10', 'recall@100'
+        'f1@1',
+        'f1@10',
+        'f1@100',
+        'map@1',
+        'map@10',
+        'map@100',
+        'precision@1',
+        'precision@10',
+        'precision@100',
+        'recall@1',
+        'recall@10',
+        'recall@100',
     ]
     assert collections.Counter(
         response.suggested_model_plan.model_plan.training_job.metrics
@@ -275,10 +289,10 @@ def test_validate_predictive_query(
     valid_request = PQueryValidationRequest(
         pquery_resource=pquery_api.PQueryResource(
             name='pq',
-            query_string="PREDICT COUNT(transactions.*, 0, 20) FOR EACH "
-            "customers.customer_id",
+            query_string='PREDICT COUNT(transactions.*, 0, 20) FOR EACH '
+            'customers.customer_id',
             graph=graph_definition_v2,
-            desc="Sample predictive query",
+            desc='Sample predictive query',
         ),
         model_plan='',
     )
@@ -301,10 +315,10 @@ def test_validate_predictive_query(
     unnamed_request = PQueryValidationRequest(
         pquery_resource=pquery_api.PQueryResource(
             name='',
-            query_string="PREDICT COUNT(transactions.*, 0, 20) FOR EACH "
-            "customers.customer_id",
+            query_string='PREDICT COUNT(transactions.*, 0, 20) FOR EACH '
+            'customers.customer_id',
             graph=graph_definition_v2,
-            desc="Sample predictive query",
+            desc='Sample predictive query',
         ),
         model_plan='',
     )
@@ -328,10 +342,10 @@ def test_validate_predictive_query(
     dash_named_request = PQueryValidationRequest(
         pquery_resource=pquery_api.PQueryResource(
             name='display - name',
-            query_string="PREDICT COUNT(transactions.*, 0, 20) FOR EACH "
-            "customers.customer_id",
+            query_string='PREDICT COUNT(transactions.*, 0, 20) FOR EACH '
+            'customers.customer_id',
             graph=graph_definition_v2,
-            desc="Sample predictive query",
+            desc='Sample predictive query',
         ),
         model_plan='',
     )
@@ -349,16 +363,18 @@ def test_validate_predictive_query(
 
     # Test when model plan is none and
     # query has future looking error
-    query_string = ("PREDICT MIN(transactions.sales_channel_id, 0, 2, days) "
-                    "< 1 FOR EACH customers.customer_id WHERE "
-                    "COUNT(transactions.*, -4, 0, days) > 0 AND "
-                    "COUNT(transactions.price, 0, 2, days) > 0.1")
+    query_string = (
+        'PREDICT MIN(transactions.sales_channel_id, 0, 2, days) '
+        '< 1 FOR EACH customers.customer_id WHERE '
+        'COUNT(transactions.*, -4, 0, days) > 0 AND '
+        'COUNT(transactions.price, 0, 2, days) > 0.1'
+    )
     valid_request = PQueryValidationRequest(
         pquery_resource=pquery_api.PQueryResource(
             name='pq',
             query_string=query_string,
             graph=graph_definition_v2,
-            desc="Sample predictive query",
+            desc='Sample predictive query',
         ),
         model_plan='',
     )
@@ -370,16 +386,16 @@ def test_validate_predictive_query(
         jobs_api.ErrorDetails,
     )
 
-    assert "Future-looking time range not allowed." in str(response.items)
+    assert 'Future-looking time range not allowed.' in str(response.items)
 
     # Test when model plan is none and query is incorrect
     valid_request = PQueryValidationRequest(
         pquery_resource=pquery_api.PQueryResource(
             name='pq',
-            query_string="PREDICT COUNT(DOES_NOT_EXISTS.*, 0, 20) FOR EACH "
-            "customers.customer_id",
+            query_string='PREDICT COUNT(DOES_NOT_EXISTS.*, 0, 20) FOR EACH '
+            'customers.customer_id',
             graph=graph_definition_v2,
-            desc="Sample predictive query",
+            desc='Sample predictive query',
         ),
         model_plan='',
     )
@@ -394,18 +410,20 @@ def test_validate_predictive_query(
     assert response is not None
     assert response.items is not None
     assert len(response.items) == 1
-    assert ('Unknown table name' in response.items[0].description
-            or 'is not found in the Graph' in response.items[0].description)
+    assert (
+        'Unknown table name' in response.items[0].description
+        or 'is not found in the Graph' in response.items[0].description
+    )
     assert 'DOES_NOT_EXIST' in response.items[0].description
 
     # Test when model plan is not none and incorrect but query is correct
     valid_request = PQueryValidationRequest(
         pquery_resource=pquery_api.PQueryResource(
             name='pq',
-            query_string="PREDICT COUNT(transactions.*, 0, 20) FOR EACH "
-            "customers.customer_id",
+            query_string='PREDICT COUNT(transactions.*, 0, 20) FOR EACH '
+            'customers.customer_id',
             graph=graph_definition_v2,
-            desc="Sample predictive query",
+            desc='Sample predictive query',
         ),
         model_plan=(
             'training_table_generation:\n'
@@ -505,7 +523,8 @@ def test_validate_predictive_query(
             '  - false\n'
             '  past_encoder:\n'
             '  - decomposed\n'
-            '  handle_new_entities: true'),
+            '  handle_new_entities: true'
+        ),
     )
 
     response = post_and_expect_success(
@@ -519,8 +538,8 @@ def test_validate_predictive_query(
     assert response.items is not None
     assert len(response.items) == 1
     assert response.items[0].description == (
-        'Invalid model plan: Check its field names, values, and expression '
-        'syntax.')
+        'Invalid model plan: Check its field names, values, and expression syntax.'
+    )
     assert 'IncorrectSplitName' not in response.items[0].description
 
 
@@ -530,7 +549,8 @@ def test_get_many_pqueries_v2(
     default_project_id: str,
 ):
     graph_definition_internal = GraphDefinition(
-        **dataclasses.asdict(graph_definition_v2))
+        **dataclasses.asdict(graph_definition_v2)
+    )
 
     # Even though the training job will create the graph, we need to create it
     # upfront so that model_plan request can work.
@@ -541,8 +561,7 @@ def test_get_many_pqueries_v2(
         IDResponse,
     )
 
-    pquery_str = (
-        'PREDICT COUNT(transactions.*, 0, 30) FOR EACH customers.customer_id')
+    pquery_str = 'PREDICT COUNT(transactions.*, 0, 30) FOR EACH customers.customer_id'
 
     payload = plan_api.SuggestModelPlanRequest(
         query_string=pquery_str,
@@ -553,8 +572,7 @@ def test_get_many_pqueries_v2(
 
     model_plan = post_and_expect_success(
         client=client,
-        path=(f'/v1/predictive_queries/model_plan?project_id='
-              f'{default_project_id}'),
+        path=(f'/v1/predictive_queries/model_plan?project_id={default_project_id}'),
         payload=payload,
         response_type=ModelPlanResponse,
     )
@@ -562,8 +580,7 @@ def test_get_many_pqueries_v2(
     request = TrainingJobRequest(
         predictive_query=pquery_str,
         graph_definition=graph_definition_internal,
-        training_table_gen_plan=model_plan.suggested_model_plan.model_plan.
-        training_table_generation,
+        training_table_gen_plan=model_plan.suggested_model_plan.model_plan.training_table_generation,
         model_plan=model_plan.suggested_model_plan.model_plan,
         project_id=default_project_id,
     )
@@ -594,13 +611,17 @@ def test_get_many_pqueries_v2(
         client,
         f'/v1/predictive_queries/get_many?project_id={default_project_id}',
         request_many_pqs,
-        Dict[Union[TrainingJobID, BatchPredictionJobID,
-                   GeneratePredictionTableJobID, GenerateTrainTableJobID],
-             Tuple[str, TaskType]],
+        Dict[
+            Union[
+                TrainingJobID,
+                BatchPredictionJobID,
+                GeneratePredictionTableJobID,
+                GenerateTrainTableJobID,
+            ],
+            Tuple[str, TaskType],
+        ],
     )
 
     assert len(many_predictive_queries_response[training_job_response.id]) == 2
-    assert many_predictive_queries_response[
-        training_job_response.id][0] == pquery_str
-    assert many_predictive_queries_response[
-        training_job_response.id][1] == 'regression'
+    assert many_predictive_queries_response[training_job_response.id][0] == pquery_str
+    assert many_predictive_queries_response[training_job_response.id][1] == 'regression'

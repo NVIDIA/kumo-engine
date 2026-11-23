@@ -107,10 +107,10 @@ class RestApiDriver:
             allow_dev_file_paths=settings.allow_local_connector_file_paths,
             data_scale_limits=settings.data_scale_limits,
         )
-        self._data_snapshot_api_driver = DataSnapshotApiDriver(
-            self._data_backend_ctx)
+        self._data_snapshot_api_driver = DataSnapshotApiDriver(self._data_backend_ctx)
         self._artifact_export_api_driver = ArtifactApiDriver(
-            self._ml_job_backend, self._data_backend_ctx)
+            self._ml_job_backend, self._data_backend_ctx
+        )
         self._jobs_driver = JobsDriver(
             self._pquery_api_driver,
             self._data_snapshot_api_driver,
@@ -126,12 +126,11 @@ class RestApiDriver:
         self.graph_driver._configure_state_services(state_services)
         self.pquery_driver._configure_state_services(state_services)
         self.data_snapshot_api_driver._configure_state_services(state_services)
-        self._artifact_export_api_driver._configure_state_services(
-            state_services)
+        self._artifact_export_api_driver._configure_state_services(state_services)
 
     def _require_state_services(self) -> StateServices:
         if self._state_services is None:
-            raise RuntimeError("RestApiDriver StateServices is not configured")
+            raise RuntimeError('RestApiDriver StateServices is not configured')
         return self._state_services
 
     @property
@@ -170,8 +169,11 @@ class RestApiDriver:
         _, graph_fpid = GraphIDv2.parse(graph_id)
         if graph_fpid is None:
             raise GraphDoesNotExistError(graph_id)
-        graph_definition = await self._require_state_services(
-        ).graphs.get_graph_definition(project_id, graph_fpid)
+        graph_definition = (
+            await self._require_state_services().graphs.get_graph_definition(
+                project_id, graph_fpid
+            )
+        )
         if graph_definition is None:
             raise GraphDoesNotExistError(graph_id)
         return graph_definition
@@ -183,8 +185,9 @@ class RestApiDriver:
         root_table_name: str,
     ) -> Dict[TableID, List[TableID]]:
         table_name_to_id = {
-            TableName(table_name):
-            TableIDv2.compose(None, TableName(table_name), table_def.fpid)
+            TableName(table_name): TableIDv2.compose(
+                None, TableName(table_name), table_def.fpid
+            )
             for table_name, table_def in graph_def.tables.items()
         }
 
@@ -192,8 +195,7 @@ class RestApiDriver:
         adj_list: Dict[TableID, Set[TableID]] = defaultdict(set)
         for col_group in graph_def.col_groups:
             connected_table_ids: Set[TableID] = {
-                table_name_to_id[TableName(col.table_name)]
-                for col in col_group.columns
+                table_name_to_id[TableName(col.table_name)] for col in col_group.columns
             }
             for table_id in connected_table_ids:
                 for adj_table_id in connected_table_ids:
@@ -219,10 +221,10 @@ class RestApiDriver:
     ) -> PredictiveQuery:
         state_services = self._require_state_services()
         graph_def = await state_services.graphs.get_graph_definition(
-            project_id, pq_def.graph_fpid)
+            project_id, pq_def.graph_fpid
+        )
         if graph_def is None:
-            raise GraphDoesNotExistError(
-                GraphIDv2.compose(fpid=pq_def.graph_fpid))
+            raise GraphDoesNotExistError(GraphIDv2.compose(fpid=pq_def.graph_fpid))
 
         parsed_pq, _ = await PQueryLogic(
             self._data_backend_ctx,
@@ -232,11 +234,12 @@ class RestApiDriver:
             PQueryValidationArgs(
                 query_string=pq_def.query_str,
                 graph=graph_def,
-                name=pq_def.pquery_name or "NA",
+                name=pq_def.pquery_name or 'NA',
                 fpid=pq_def.fpid,
                 runtime_options=pquery_runtime_options_or_none(
                     list_distinct_target_is_array=(
-                        pq_def.list_distinct_target_is_array),
+                        pq_def.list_distinct_target_is_array
+                    ),
                     lp_bp_layout=pq_def.lp_bp_layout,
                 ),
             ),
@@ -274,11 +277,11 @@ class RestApiDriver:
         # UI Jobs
         if id is not None:
             # Resolve the pquery id to its v2 `PQueryDefinition`.
-            pq_def = await self._pquery_api_driver.get_pquery_definition_by_id(
-                id)
+            pq_def = await self._pquery_api_driver.get_pquery_definition_by_id(id)
             assert pq_def is not None
             pq_object = await self._get_predictive_query_from_definition(
-                pq_def, project_id)
+                pq_def, project_id
+            )
             assert pq_object is not None
 
             # Configure shared values
@@ -292,22 +295,26 @@ class RestApiDriver:
                 raise ValueError(
                     'XAI is not supported for this Training Job because '
                     'it was trained on an old version of Kumo. '
-                    'Please run a new Training Job.')
+                    'Please run a new Training Job.'
+                )
             pq_def: PQueryDefinition = (
-                await self._pquery_api_driver.get_pquery_definition(
-                    job.pquery_def_fpid))
+                await self._pquery_api_driver.get_pquery_definition(job.pquery_def_fpid)
+            )
 
             # Configure shared values
             predictive_query = await self._get_predictive_query_from_definition(
-                pq_def, project_id)
+                pq_def, project_id
+            )
             graph_id = GraphIDv2.compose(None, pq_def.graph_fpid)
 
         # Get the BFS tree
         assert isinstance(graph_id, GraphIDv2)
         graph_def = await self._get_graph_definition_from_state_services(
-            graph_id, project_id)
+            graph_id, project_id
+        )
         bfs_tree = self._get_bfs_tree_from_graph_definition(
-            graph_def, graph_id, pquery_table_name(predictive_query.entity))
+            graph_def, graph_id, pquery_table_name(predictive_query.entity)
+        )
 
         if id is not None:
             return await logic.get_xai(
@@ -337,9 +344,9 @@ class RestApiDriver:
         stage: TrainingStage = TrainingStage.TEST,
         project_id: ProjectID | None = None,
     ) -> StrategyMappings:
-        logic, home_dir_mgr = (await
-                               self._get_pquery_artifact_logic_and_home_dir(
-                                   ctx, id, job_id, project_id=project_id))
+        logic, home_dir_mgr = await self._get_pquery_artifact_logic_and_home_dir(
+            ctx, id, job_id, project_id=project_id
+        )
         return await logic.get_available_xai_entities(home_dir_mgr, stage)
 
     @measure_blocking_code
@@ -368,33 +375,38 @@ class RestApiDriver:
         # UI Jobs
         if pq_id is not None:
             # Resolve the pquery id to its v2 `PQueryDefinition`.
-            pq_def = await self._pquery_api_driver.get_pquery_definition_by_id(
-                pq_id)
+            pq_def = await self._pquery_api_driver.get_pquery_definition_by_id(pq_id)
             assert pq_def is not None
             graph_id = GraphIDv2.compose(fpid=pq_def.graph_fpid)
             pq_object = await self._get_predictive_query_from_definition(
-                pq_def, project_id)
+                pq_def, project_id
+            )
             if pq_object is None:
                 raise ValueError(
-                    "Could not retrieve the predictive query object" +
-                    f" for query wiht id {pq_id}.")
+                    'Could not retrieve the predictive query object'
+                    + f' for query wiht id {pq_id}.'
+                )
 
             predictive_query = pq_object
         else:
-            raise ValueError("Predictive Query ID is required for "
-                             "getting BP graph-level XAI")
+            raise ValueError(
+                'Predictive Query ID is required for getting BP graph-level XAI'
+            )
 
         # Get the BFS tree
         try:
             assert isinstance(graph_id, GraphIDv2)
-            graph_def = (await self._get_graph_definition_from_state_services(
-                graph_id, project_id))
+            graph_def = await self._get_graph_definition_from_state_services(
+                graph_id, project_id
+            )
             bfs_tree = self._get_bfs_tree_from_graph_definition(
-                graph_def, graph_id, pquery_table_name(predictive_query.entity))
+                graph_def, graph_id, pquery_table_name(predictive_query.entity)
+            )
         except Exception:
             raise ValueError(
-                f"Could not generate BFS tree from graph with id {graph_id}" +
-                f" for bp job {bp_job_id}.")
+                f'Could not generate BFS tree from graph with id {graph_id}'
+                + f' for bp job {bp_job_id}.'
+            )
 
         return await bp_logic.get_xai(
             home_mgr=home_dir_mgr,
@@ -409,9 +421,10 @@ class RestApiDriver:
         ctx: RequestContext,
         id: Optional[BatchPredictionJobID],
     ) -> StrategyMappings:
-        logic, home_dir_mgr = (
-            await
-            self._get_batch_prediction_artifact_logic_and_home_dir(ctx, id))
+        (
+            logic,
+            home_dir_mgr,
+        ) = await self._get_batch_prediction_artifact_logic_and_home_dir(ctx, id)
         return await logic.get_available_xai_entities(home_dir_mgr)
 
     @measure_blocking_code
@@ -421,9 +434,10 @@ class RestApiDriver:
         id: Optional[BatchPredictionJobID],
         entity_id: str,
     ) -> OldSubgraph:
-        logic, home_dir_mgr = (
-            await
-            self._get_batch_prediction_artifact_logic_and_home_dir(ctx, id))
+        (
+            logic,
+            home_dir_mgr,
+        ) = await self._get_batch_prediction_artifact_logic_and_home_dir(ctx, id)
         return await logic.get_entity_old_subgraph(home_dir_mgr, entity_id)
 
     @measure_blocking_code
@@ -433,9 +447,10 @@ class RestApiDriver:
         id: Optional[BatchPredictionJobID],
         entity_id: str,
     ) -> Subgraph:
-        logic, home_dir_mgr = (
-            await
-            self._get_batch_prediction_artifact_logic_and_home_dir(ctx, id))
+        (
+            logic,
+            home_dir_mgr,
+        ) = await self._get_batch_prediction_artifact_logic_and_home_dir(ctx, id)
         return await logic.get_subgraph(home_dir_mgr, entity_id)
 
     async def get_bp_entity_output(
@@ -444,11 +459,11 @@ class RestApiDriver:
         id: Optional[BatchPredictionJobID],
         entity_id: str,
     ) -> EntityOutput:
-        logic, home_dir_mgr = (
-            await
-            self._get_batch_prediction_artifact_logic_and_home_dir(ctx, id))
-        return await logic.get_entity_output(home_mgr=home_dir_mgr,
-                                             entity_id=entity_id)
+        (
+            logic,
+            home_dir_mgr,
+        ) = await self._get_batch_prediction_artifact_logic_and_home_dir(ctx, id)
+        return await logic.get_entity_output(home_mgr=home_dir_mgr, entity_id=entity_id)
 
     @measure_blocking_code
     async def get_bp_entity_historical_items(
@@ -457,11 +472,13 @@ class RestApiDriver:
         id: Optional[BatchPredictionJobID],
         entity_id: str,
     ) -> HistoricalItems:
-        logic, home_dir_mgr = (
-            await
-            self._get_batch_prediction_artifact_logic_and_home_dir(ctx, id))
-        return await logic.get_entity_historical_items(home_mgr=home_dir_mgr,
-                                                       entity_id=entity_id)
+        (
+            logic,
+            home_dir_mgr,
+        ) = await self._get_batch_prediction_artifact_logic_and_home_dir(ctx, id)
+        return await logic.get_entity_historical_items(
+            home_mgr=home_dir_mgr, entity_id=entity_id
+        )
 
     @measure_blocking_code
     async def get_entity_old_subgraph(
@@ -486,12 +503,12 @@ class RestApiDriver:
         Returns:
             The subgraph object defined in :class:`kumo.config.subgraph`.
         """
-        logic, home_dir_mgr = (await
-                               self._get_pquery_artifact_logic_and_home_dir(
-                                   ctx, id, job_id, project_id=project_id))
-        return await logic.get_entity_old_subgraph(home_mgr=home_dir_mgr,
-                                                   entity_id=entity_id,
-                                                   stage=stage)
+        logic, home_dir_mgr = await self._get_pquery_artifact_logic_and_home_dir(
+            ctx, id, job_id, project_id=project_id
+        )
+        return await logic.get_entity_old_subgraph(
+            home_mgr=home_dir_mgr, entity_id=entity_id, stage=stage
+        )
 
     @measure_blocking_code
     async def get_subgraph(
@@ -502,11 +519,12 @@ class RestApiDriver:
         job_id: Optional[TrainingJobID] = None,
         stage: TrainingStage = TrainingStage.TEST,
     ) -> Subgraph:
-        logic, home_dir_mgr = (await
-                               self._get_pquery_artifact_logic_and_home_dir(
-                                   ctx, id, job_id))
-        return await logic.get_subgraph(home_mgr=home_dir_mgr,
-                                        entity_id=entity_id, stage=stage)
+        logic, home_dir_mgr = await self._get_pquery_artifact_logic_and_home_dir(
+            ctx, id, job_id
+        )
+        return await logic.get_subgraph(
+            home_mgr=home_dir_mgr, entity_id=entity_id, stage=stage
+        )
 
     @measure_blocking_code
     async def get_node_pred_rfm(
@@ -517,11 +535,12 @@ class RestApiDriver:
         job_id: Optional[TrainingJobID] = None,
         stage: TrainingStage = TrainingStage.TEST,
     ) -> NodePredRFM:
-        logic, home_dir_mgr = (await
-                               self._get_pquery_artifact_logic_and_home_dir(
-                                   ctx, id, job_id))
-        return await logic.get_node_pred_rfm(home_mgr=home_dir_mgr,
-                                             entity_id=entity_id, stage=stage)
+        logic, home_dir_mgr = await self._get_pquery_artifact_logic_and_home_dir(
+            ctx, id, job_id
+        )
+        return await logic.get_node_pred_rfm(
+            home_mgr=home_dir_mgr, entity_id=entity_id, stage=stage
+        )
 
     @measure_blocking_code
     async def get_category_node_pred_rfm(
@@ -532,12 +551,12 @@ class RestApiDriver:
         job_id: Optional[TrainingJobID] = None,
         stage: TrainingStage = TrainingStage.TEST,
     ) -> NodePredRFM:
-        logic, home_dir_mgr = (await
-                               self._get_pquery_artifact_logic_and_home_dir(
-                                   ctx, id, job_id))
-        return await logic.get_category_node_pred_rfm(home_mgr=home_dir_mgr,
-                                                      category=category,
-                                                      stage=stage)
+        logic, home_dir_mgr = await self._get_pquery_artifact_logic_and_home_dir(
+            ctx, id, job_id
+        )
+        return await logic.get_category_node_pred_rfm(
+            home_mgr=home_dir_mgr, category=category, stage=stage
+        )
 
     @measure_blocking_code
     async def get_category_link_pred_rfm(
@@ -548,12 +567,12 @@ class RestApiDriver:
         job_id: Optional[TrainingJobID] = None,
         stage: TrainingStage = TrainingStage.TEST,
     ) -> LinkPredRFM:
-        logic, home_dir_mgr = (await
-                               self._get_pquery_artifact_logic_and_home_dir(
-                                   ctx, id, job_id))
-        return await logic.get_category_link_pred_rfm(home_mgr=home_dir_mgr,
-                                                      category=category,
-                                                      stage=stage)
+        logic, home_dir_mgr = await self._get_pquery_artifact_logic_and_home_dir(
+            ctx, id, job_id
+        )
+        return await logic.get_category_link_pred_rfm(
+            home_mgr=home_dir_mgr, category=category, stage=stage
+        )
 
     @measure_blocking_code
     async def get_aggr_feature(
@@ -567,14 +586,17 @@ class RestApiDriver:
         job_id: Optional[TrainingJobID] = None,
         stage: TrainingStage = TrainingStage.TEST,
     ) -> Feature:
-        logic, home_dir_mgr = (await
-                               self._get_pquery_artifact_logic_and_home_dir(
-                                   ctx, id, job_id))
-        return await logic.get_aggr_feature(home_mgr=home_dir_mgr,
-                                            entity_id=entity_id,
-                                            table_name=table_name,
-                                            column_name=column_name, op=op,
-                                            stage=stage)
+        logic, home_dir_mgr = await self._get_pquery_artifact_logic_and_home_dir(
+            ctx, id, job_id
+        )
+        return await logic.get_aggr_feature(
+            home_mgr=home_dir_mgr,
+            entity_id=entity_id,
+            table_name=table_name,
+            column_name=column_name,
+            op=op,
+            stage=stage,
+        )
 
     @measure_blocking_code
     async def get_category_aggr_feature(
@@ -588,14 +610,17 @@ class RestApiDriver:
         job_id: Optional[TrainingJobID] = None,
         stage: TrainingStage = TrainingStage.TEST,
     ) -> Feature:
-        logic, home_dir_mgr = (await
-                               self._get_pquery_artifact_logic_and_home_dir(
-                                   ctx, id, job_id))
-        return await logic.get_category_aggr_feature(home_mgr=home_dir_mgr,
-                                                     category=category,
-                                                     table_name=table_name,
-                                                     column_name=column_name,
-                                                     op=op, stage=stage)
+        logic, home_dir_mgr = await self._get_pquery_artifact_logic_and_home_dir(
+            ctx, id, job_id
+        )
+        return await logic.get_category_aggr_feature(
+            home_mgr=home_dir_mgr,
+            category=category,
+            table_name=table_name,
+            column_name=column_name,
+            op=op,
+            stage=stage,
+        )
 
     @measure_blocking_code
     async def get_link_pred_rfm(
@@ -606,11 +631,12 @@ class RestApiDriver:
         job_id: Optional[TrainingJobID] = None,
         stage: TrainingStage = TrainingStage.TEST,
     ) -> LinkPredRFM:
-        logic, home_dir_mgr = (await
-                               self._get_pquery_artifact_logic_and_home_dir(
-                                   ctx, id, job_id))
-        return await logic.get_link_pred_rfm(home_mgr=home_dir_mgr,
-                                             entity_id=entity_id, stage=stage)
+        logic, home_dir_mgr = await self._get_pquery_artifact_logic_and_home_dir(
+            ctx, id, job_id
+        )
+        return await logic.get_link_pred_rfm(
+            home_mgr=home_dir_mgr, entity_id=entity_id, stage=stage
+        )
 
     @measure_blocking_code
     async def get_topk_feature(
@@ -622,12 +648,12 @@ class RestApiDriver:
         job_id: Optional[TrainingJobID] = None,
         stage: TrainingStage = TrainingStage.TEST,
     ) -> List[Feature]:
-        logic, home_dir_mgr = (await
-                               self._get_pquery_artifact_logic_and_home_dir(
-                                   ctx, id, job_id))
-        return await logic.get_topk_feature(home_mgr=home_dir_mgr,
-                                            entity_id=entity_id, topk=topk,
-                                            stage=stage)
+        logic, home_dir_mgr = await self._get_pquery_artifact_logic_and_home_dir(
+            ctx, id, job_id
+        )
+        return await logic.get_topk_feature(
+            home_mgr=home_dir_mgr, entity_id=entity_id, topk=topk, stage=stage
+        )
 
     @measure_blocking_code
     async def get_entity_output(
@@ -639,11 +665,12 @@ class RestApiDriver:
         stage: TrainingStage = TrainingStage.TEST,
         project_id: ProjectID | None = None,
     ) -> EntityOutput:
-        logic, home_dir_mgr = (await
-                               self._get_pquery_artifact_logic_and_home_dir(
-                                   ctx, id, job_id, project_id=project_id))
-        return await logic.get_entity_output(home_mgr=home_dir_mgr,
-                                             entity_id=entity_id, stage=stage)
+        logic, home_dir_mgr = await self._get_pquery_artifact_logic_and_home_dir(
+            ctx, id, job_id, project_id=project_id
+        )
+        return await logic.get_entity_output(
+            home_mgr=home_dir_mgr, entity_id=entity_id, stage=stage
+        )
 
     @measure_blocking_code
     async def get_entity_historical_items(
@@ -655,12 +682,12 @@ class RestApiDriver:
         stage: TrainingStage = TrainingStage.TEST,
         project_id: ProjectID | None = None,
     ) -> HistoricalItems:
-        logic, home_dir_mgr = (await
-                               self._get_pquery_artifact_logic_and_home_dir(
-                                   ctx, id, job_id, project_id=project_id))
-        return await logic.get_entity_historical_items(home_mgr=home_dir_mgr,
-                                                       entity_id=entity_id,
-                                                       stage=stage)
+        logic, home_dir_mgr = await self._get_pquery_artifact_logic_and_home_dir(
+            ctx, id, job_id, project_id=project_id
+        )
+        return await logic.get_entity_historical_items(
+            home_mgr=home_dir_mgr, entity_id=entity_id, stage=stage
+        )
 
     async def _get_pquery_artifact_logic_and_home_dir(
         self,
@@ -694,54 +721,60 @@ class RestApiDriver:
         batch_prediction: bool = False,
     ) -> tuple[HomeDirManager, ProjectID, object]:
         if id is None and job_id is None:
-            raise ValueError('At least one of Predictive Query or '
-                             'Training Job ID must be specified.')
+            raise ValueError(
+                'At least one of Predictive Query or Training Job ID must be specified.'
+            )
 
         # Get the home dir manager pointing to the right job
         existing_job = None
         if id is not None:
             if project_id is None:
                 raise ValueError(
-                    "project_id is required for predictive query artifacts")
+                    'project_id is required for predictive query artifacts'
+                )
             curr_training_job_id = (
                 await self._pquery_api_driver.get_current_training_job_id(
-                    ctx, id, project_id))
+                    ctx, id, project_id
+                )
+            )
             if curr_training_job_id is None:
                 raise ValidationException(
                     message=(
-                        "This predictive query has needs to be trained, before "
-                        "you can perform this operation."), )
+                        'This predictive query has needs to be trained, before '
+                        'you can perform this operation.'
+                    ),
+                )
 
             existing_job = await self._ml_job_backend.get_training_job(
-                ctx, curr_training_job_id)
+                ctx, curr_training_job_id
+            )
             if not existing_job:
                 raise RuntimeError(
-                    f"Training job {curr_training_job_id} is missing from the "
-                    f"ML backend. Please check for database corruption, or "
-                    f"retrain the predictive query.")
+                    f'Training job {curr_training_job_id} is missing from the '
+                    f'ML backend. Please check for database corruption, or '
+                    f'retrain the predictive query.'
+                )
             if existing_job.execution.status != JobStatus.DONE:
                 message = (
-                    "This predictive query needs to be trained successfully "
-                    "before you can perform this operation. However, the last "
-                    f"training job for this pquery has status = "
-                    f"{existing_job.execution.status}.")
+                    'This predictive query needs to be trained successfully '
+                    'before you can perform this operation. However, the last '
+                    f'training job for this pquery has status = '
+                    f'{existing_job.execution.status}.'
+                )
                 raise ValidationException(message=message)
 
-            home_dir = await self._ml_job_backend.get_job_home_dir(
-                curr_training_job_id)
+            home_dir = await self._ml_job_backend.get_job_home_dir(curr_training_job_id)
         else:
             assert job_id is not None
             if batch_prediction:
-                existing_job = (await
-                                self._ml_job_backend.get_batch_prediction_job(
-                                    ctx, job_id))
+                existing_job = await self._ml_job_backend.get_batch_prediction_job(
+                    ctx, job_id
+                )
             else:
-                existing_job = await self._ml_job_backend.get_training_job(
-                    ctx, job_id)
+                existing_job = await self._ml_job_backend.get_training_job(ctx, job_id)
             if existing_job is None:
                 if batch_prediction:
-                    raise ValueError(
-                        f"Batch prediction job {job_id} does not exist")
+                    raise ValueError(f'Batch prediction job {job_id} does not exist')
                 raise TrainingJobDoesNotExistError(job_id)
             home_dir = await self._ml_job_backend.get_job_home_dir(job_id)
 
@@ -781,9 +814,9 @@ class RestApiDriver:
         job_id: Optional[TrainingJobID] = None,
         project_id: ProjectID | None = None,
     ) -> AllTargetRegressionStats:
-        logic, home_dir_mgr = (await
-                               self._get_pquery_artifact_logic_and_home_dir(
-                                   ctx, id, job_id, project_id=project_id))
+        logic, home_dir_mgr = await self._get_pquery_artifact_logic_and_home_dir(
+            ctx, id, job_id, project_id=project_id
+        )
 
         return await logic.get_regression_histogram(home_dir_mgr)
 
@@ -795,9 +828,9 @@ class RestApiDriver:
         job_id: Optional[TrainingJobID] = None,
         project_id: ProjectID | None = None,
     ) -> RegressionHeatmapResponse:
-        logic, home_dir_mgr = (await
-                               self._get_pquery_artifact_logic_and_home_dir(
-                                   ctx, id, job_id, project_id=project_id))
+        logic, home_dir_mgr = await self._get_pquery_artifact_logic_and_home_dir(
+            ctx, id, job_id, project_id=project_id
+        )
         return await logic.get_regression_heatmap(home_dir_mgr)
 
     async def _collect_fixture_graph(
@@ -808,33 +841,37 @@ class RestApiDriver:
         graphs_by_fpid: Dict[FPID, GraphDefinition],
     ) -> FPID:
         if isinstance(graph_id, GraphIDv1):
-            raise ValueError("Cannot export v2 fixtures from v1 graphs")
+            raise ValueError('Cannot export v2 fixtures from v1 graphs')
 
         state_services = self._require_state_services()
         graph_entry = None
         graph_id_str = str(graph_id)
         if isinstance(graph_id, GraphIDv2) and graph_id.fpid is not None:
             graph_entry = await state_services.graphs.get_graph_entry(
-                project_id, graph_id.fpid)
+                project_id, graph_id.fpid
+            )
 
         if graph_entry is None:
             try:
                 graph_entry = await state_services.graphs.get_graph_entry(
-                    project_id, FPID(graph_id_str))
+                    project_id, FPID(graph_id_str)
+                )
             except ValueError:
                 # Non-FPID graph identifiers are looked up via alias below.
                 pass
 
         if graph_entry is None:
             graph_entry = await state_services.graphs.get_graph_entry_by_alias(
-                project_id, graph_id_str)
+                project_id, graph_id_str
+            )
 
         if graph_entry is None:
-            raise ValueError(f"Graph {graph_id} not found")
+            raise ValueError(f'Graph {graph_id} not found')
 
         graph_fpid = graph_entry.id
         table_entries = await state_services.tables.get_table_entries(
-            project_id, graph_entry.table_name_to_dbid.values())
+            project_id, graph_entry.table_name_to_dbid.values()
+        )
         graph_tables = []
         for graph_table_name, fpid in graph_entry.table_name_to_dbid.items():
             table_entry = table_entries.get(fpid)
@@ -844,14 +881,17 @@ class RestApiDriver:
                         table_name=graph_table_name,
                         fpid=fpid,
                         pquery_id=None,
-                    ))
+                    )
+                )
             graph_tables.append(table_entry.config)
         graph = graph_entry.to_graph_definition(graph_tables)
         graphs_by_fpid[graph_fpid] = graph
         for table_def_raw in graph.tables.values():
-            table_def = (table_def_raw if isinstance(
-                table_def_raw, TableDefinition) else TableDefinition(
-                    **dataclasses.asdict(table_def_raw)))
+            table_def = (
+                table_def_raw
+                if isinstance(table_def_raw, TableDefinition)
+                else TableDefinition(**dataclasses.asdict(table_def_raw))
+            )
             tables_by_fpid[table_def.fpid] = table_def
         return graph_fpid
 
@@ -866,20 +906,19 @@ class RestApiDriver:
         if pquery_ids is None:
             pquery_defs = await state_services.pqueries.list_definitions()
         else:
-            pquery_defs_by_id = (
-                await
-                state_services.pqueries.get_definitions_by_ids(pquery_ids))
+            pquery_defs_by_id = await state_services.pqueries.get_definitions_by_ids(
+                pquery_ids
+            )
             missing_pquery_ids = [
-                pquery_id for pquery_id in pquery_ids
+                pquery_id
+                for pquery_id in pquery_ids
                 if pquery_id not in pquery_defs_by_id
             ]
             if missing_pquery_ids:
                 raise ValueError(
                     f'Predictive query id {missing_pquery_ids[0]} is not found.'
                 )
-            pquery_defs = [
-                pquery_defs_by_id[pquery_id] for pquery_id in pquery_ids
-            ]
+            pquery_defs = [pquery_defs_by_id[pquery_id] for pquery_id in pquery_ids]
 
         queries: List[FixturePQueryRecord] = []
         tables_by_fpid: Dict[FPID, TableDefinition] = {}
@@ -902,20 +941,26 @@ class RestApiDriver:
                 FixturePQueryRecord(
                     query_str=pquery_def.query_str,
                     graph_fpid=graph_fpid,
-                    pquery_name=(pquery_def.pquery_name or str(
-                        PredictiveQueryID.public(pquery_def.fpid))),
+                    pquery_name=(
+                        pquery_def.pquery_name
+                        or str(PredictiveQueryID.public(pquery_def.fpid))
+                    ),
                     list_distinct_target_is_array=(
-                        pquery_def.list_distinct_target_is_array),
+                        pquery_def.list_distinct_target_is_array
+                    ),
                     lp_bp_layout=pquery_def.lp_bp_layout,
-                ))
+                )
+            )
 
         connector_ids = set()
         for graph in graphs_by_fpid.values():
             connector_ids.update(
-                state_services.connectors.connector_ids_for_graph(graph))
+                state_services.connectors.connector_ids_for_graph(graph)
+            )
         for connector_id in connector_ids:
             await state_services.connectors.execution_ref_for_project(
-                principal, project_id, connector_id, CONNECTOR_GRAPH_ACTIONS)
+                principal, project_id, connector_id, CONNECTOR_GRAPH_ACTIONS
+            )
 
         return FixtureDefinition(
             tables=list(tables_by_fpid.values()),

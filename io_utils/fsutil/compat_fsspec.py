@@ -12,8 +12,8 @@ from fsspec.utils import stringify_path
 
 from io_utils import fsutil
 
-_FSSPEC_FSUTIL_SCHEME = "fsutil"
-_FSSPEC_FSUTIL_PREFIX = f"{_FSSPEC_FSUTIL_SCHEME}://"
+_FSSPEC_FSUTIL_SCHEME = 'fsutil'
+_FSSPEC_FSUTIL_PREFIX = f'{_FSSPEC_FSUTIL_SCHEME}://'
 
 
 def fsspec_mangle(path: str) -> str:
@@ -29,6 +29,7 @@ class FsutilFilesystem(AbstractFileSystem):
     Whenever possible, prefer to access fsutil directly.
     This layer is lower performance and exists for compatibility only.
     """
+
     protocol = _FSSPEC_FSUTIL_SCHEME
 
     # @override  # disabled due to pyright bug
@@ -55,8 +56,7 @@ class FsutilFilesystem(AbstractFileSystem):
         else:
             parent = osp.dirname(path)
             if not fsutil.isdir(parent):
-                raise ValueError(
-                    f"{parent} does not exist while creating {path}")
+                raise ValueError(f'{parent} does not exist while creating {path}')
             fsutil.makedirs(path, exist_ok=False)
 
     # @override  # disabled due to pyright bug
@@ -67,8 +67,15 @@ class FsutilFilesystem(AbstractFileSystem):
         fsutil.makedirs(path, exist_ok=exist_ok)
 
     # @override  # disabled due to pyright bug
-    def _open(self, path, mode="rb", block_size=None, autocommit=True,
-              cache_options=None, **kwargs):
+    def _open(
+        self,
+        path,
+        mode='rb',
+        block_size=None,
+        autocommit=True,
+        cache_options=None,
+        **kwargs,
+    ):
         """Return raw bytes-mode file-like from the file-system"""
         path = FsutilFilesystem._strip_protocol(path)
         assert isinstance(path, str)
@@ -80,7 +87,8 @@ class FsutilFilesystem(AbstractFileSystem):
             block_size,  # type: ignore
             autocommit,
             cache_options=cache_options,
-            **kwargs)
+            **kwargs,
+        )
 
     # @override  # disabled due to pyright bug
     def rmdir(self, path):
@@ -90,7 +98,7 @@ class FsutilFilesystem(AbstractFileSystem):
         if fsutil.is_empty_dir(path):
             fsutil.rm(path)
         else:
-            raise ValueError(f"{path} is not empty")
+            raise ValueError(f'{path} is not empty')
 
     # @override  # disabled due to pyright bug
     def isdir(self, path):
@@ -123,7 +131,7 @@ class FsutilFilesystem(AbstractFileSystem):
                 isdir = fsutil.isdir(name)
                 return cls(
                     name=name,
-                    type="directory" if isdir else "file",
+                    type='directory' if isdir else 'file',
                     size=None if isdir else fsutil.filesize(name),
                 )
 
@@ -139,14 +147,32 @@ class FsutilFilesystem(AbstractFileSystem):
 
 
 class FsutilBufferedFile(AbstractBufferedFile):
-    def __init__(self, fs, path, mode="rb", block_size="default",
-                 autocommit=True, cache_type="readahead", cache_options=None,
-                 size=None, **kwargs):
-        super().__init__(fs, path, mode, block_size, autocommit, cache_type,
-                         cache_options, size, **kwargs)
+    def __init__(
+        self,
+        fs,
+        path,
+        mode='rb',
+        block_size='default',
+        autocommit=True,
+        cache_type='readahead',
+        cache_options=None,
+        size=None,
+        **kwargs,
+    ):
+        super().__init__(
+            fs,
+            path,
+            mode,
+            block_size,
+            autocommit,
+            cache_type,
+            cache_options,
+            size,
+            **kwargs,
+        )
         self.temp_dir = fsutil.TemporaryDirectory()
-        self.stage_path = osp.join(self.temp_dir.__enter__(), "temp_file")
-        if "r" in mode or "a" in mode:
+        self.stage_path = osp.join(self.temp_dir.__enter__(), 'temp_file')
+        if 'r' in mode or 'a' in mode:
             fsutil.copy_file(self.path, self.stage_path)
 
     # @override  # disabled due to pyright bug

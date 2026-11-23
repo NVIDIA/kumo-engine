@@ -14,6 +14,9 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 from kumo_core.object_store_sink import FileStoreRouting
+from kumoapi.jobs import WriteMode
+from kumoapi.plugin import SourceConnector
+
 from kumo_snowflake.artifacts import _split_stage_location
 from kumo_snowflake.errors import is_lapsed_credential
 from kumo_snowflake.registry import SnowflakeModelRegistryMixin
@@ -24,8 +27,6 @@ from kumo_snowflake.session import (
     _target_config,
     resolved,
 )
-from kumoapi.jobs import WriteMode
-from kumoapi.plugin import SourceConnector
 
 # Snowflake ARRAY and VARIANT are acquired as JSON strings, so nested
 # predictions cannot round-trip as typed lists or mappings. NumPy arrays
@@ -45,17 +46,19 @@ def _refuse_nested_columns(frame: pd.DataFrame) -> None:
     nested = []
     for name in frame.columns:
         column = frame[name]
-        if (pd.api.types.is_object_dtype(column)
-                and isinstance(column.iloc[0], _NESTED_TYPES)):
+        if pd.api.types.is_object_dtype(column) and isinstance(
+            column.iloc[0], _NESTED_TYPES
+        ):
             nested.append(str(name))
     if nested:
         raise ValueError(
-            f"Cannot write {', '.join(repr(name) for name in nested)} to "
-            f"Snowflake: nested values cannot round-trip as typed lists or "
-            f"mappings; ARRAY and VARIANT are read as JSON strings. "
-            f"Ranking predictions are the usual cause; "
-            f"flatten them to one row per class, or drop the column, before "
-            f"exporting.")
+            f'Cannot write {", ".join(repr(name) for name in nested)} to '
+            f'Snowflake: nested values cannot round-trip as typed lists or '
+            f'mappings; ARRAY and VARIANT are read as JSON strings. '
+            f'Ranking predictions are the usual cause; '
+            f'flatten them to one row per class, or drop the column, before '
+            f'exporting.'
+        )
 
 
 class _SnowflakeTables(SnowflakeModelRegistryMixin, _SnowflakeSessions):
@@ -116,32 +119,46 @@ class _SnowflakeTables(SnowflakeModelRegistryMixin, _SnowflakeSessions):
             )
         return self._qualified(connector, table_name)
 
-    def write_files(self, connector, table_name, files,
-                    write_mode=WriteMode.OVERWRITE, project_id=None, *,
-                    export_id=None, extra_columns=None):
+    def write_files(
+        self,
+        connector,
+        table_name,
+        files,
+        write_mode=WriteMode.OVERWRITE,
+        project_id=None,
+        *,
+        export_id=None,
+        extra_columns=None,
+    ):
         """COPY selected Parquet into a table."""
         del project_id, export_id
         from kumo_core.artifact_staging import selected_local_parquet_files
+
         from kumo_snowflake.write import export_table_files
+
         selected = [str(path) for path in selected_local_parquet_files(files)]
 
         def export(*, retry: bool = False) -> None:
-            session_context = (_owned_session(self._principal(connector),
-                                              connector)
-                               if retry else self._session(connector))
+            session_context = (
+                _owned_session(self._principal(connector), connector)
+                if retry
+                else self._session(connector)
+            )
             with session_context as session:
                 _require_snowpark(session)
-                target = _LocalArtifactConnection(session, connector,
-                                                  extra_columns)
-                export_table_files(target, table_name, selected[0],
-                                   replace=write_mode == WriteMode.OVERWRITE,
-                                   artifact_files=selected)
+                target = _LocalArtifactConnection(session, connector, extra_columns)
+                export_table_files(
+                    target,
+                    table_name,
+                    selected[0],
+                    replace=write_mode == WriteMode.OVERWRITE,
+                    artifact_files=selected,
+                )
 
         try:
             export()
         except Exception as error:
-            if (write_mode != WriteMode.OVERWRITE
-                    or not is_lapsed_credential(error)):
+            if write_mode != WriteMode.OVERWRITE or not is_lapsed_credential(error):
                 raise
             # The artifact producer has already finished.  Reconnect from the
             # refreshed mounted token and repeat only this idempotent
@@ -159,8 +176,10 @@ class SnowflakeSinkBackend(FileStoreRouting, _SnowflakeTables):
         identity: Fallback identity for connectors that name none.
     """
 
-    _default_hint = ('LocalBackend(sinks={DataSourceType.SNOWFLAKE: '
-                     'SnowflakeSinkBackend(identity=identity)})')
+    _default_hint = (
+        'LocalBackend(sinks={DataSourceType.SNOWFLAKE: '
+        'SnowflakeSinkBackend(identity=identity)})'
+    )
 
     def holds_files(self, connector, path):
         """Whether ``path`` names a named internal stage location."""
@@ -173,6 +192,7 @@ class SnowflakeSinkBackend(FileStoreRouting, _SnowflakeTables):
     def filesystem(self, connector, path):
         """A pyarrow filesystem for an ``@DB.SCHEMA.STAGE/prefix`` path."""
         from kumo_snowflake.stage_fs import stage_filesystem
+
         with self._session(connector) as session:
             _require_snowpark(session)
             return stage_filesystem(session, path)
@@ -183,6 +203,7 @@ class SnowflakeSinkBackend(FileStoreRouting, _SnowflakeTables):
 
 class _LocalArtifactConnection:
     """Bind shared Snowflake statements to the local connector's session."""
+
     def __init__(self, session, connector, extra_columns):
         self.context = session.connection
         self.connector = connector
@@ -193,8 +214,7 @@ class _LocalArtifactConnection:
 
     def execute_meta_query(self, context, statement, *, creds_clause=None):
         if creds_clause:
-            raise ValueError(
-                'Local Snowflake output uses its authenticated user stage')
+            raise ValueError('Local Snowflake output uses its authenticated user stage')
         cursor = context.cursor()
         try:
             cursor.execute(statement)
@@ -203,49 +223,66 @@ class _LocalArtifactConnection:
 
     def table_exists(self, table_name):
         from kumo_snowflake.catalog import table_exists
+
         config = _target_config(self.connector)
         cursor = self.context.cursor()
         try:
-            return table_exists(cursor, database=resolved(config.database),
-                                schema=resolved(config.schema_name),
-                                table=table_name)
+            return table_exists(
+                cursor,
+                database=resolved(config.database),
+                schema=resolved(config.schema_name),
+                table=table_name,
+            )
         finally:
             cursor.close()
 
     def table_columns(self, table_name):
         from kumo_snowflake.catalog import columns
+
         config = _target_config(self.connector)
         cursor = self.context.cursor()
         try:
-            values = columns(cursor, database=resolved(config.database),
-                             schema=resolved(config.schema_name),
-                             table=table_name)
+            values = columns(
+                cursor,
+                database=resolved(config.database),
+                schema=resolved(config.schema_name),
+                table=table_name,
+            )
             return [column for (_table, column) in values]
         finally:
             cursor.close()
 
-    def write_artifacts_to_table(self, table_name, artifact_path, replace=False,
-                                 *, artifact_files=None):
+    def write_artifacts_to_table(
+        self, table_name, artifact_path, replace=False, *, artifact_files=None
+    ):
         from functools import partial
 
         from kumo_core.artifact_export import prepared_artifact_file
+
         from kumo_snowflake.write import (
             _upload_local_parquet_to_user_stage,
             write_artifacts_to_table,
         )
-        prepare = partial(prepared_artifact_file,
-                          extra_columns=self.extra_columns)
+
+        prepare = partial(prepared_artifact_file, extra_columns=self.extra_columns)
         write_artifacts_to_table(
-            self, table_name, artifact_path, replace,
+            self,
+            table_name,
+            artifact_path,
+            replace,
             artifact_files=artifact_files,
-            upload_local=partial(_upload_local_parquet_to_user_stage,
-                                 prepare_file=prepare))
+            upload_local=partial(
+                _upload_local_parquet_to_user_stage, prepare_file=prepare
+            ),
+        )
 
     def overwrite_table(self, source, target):
         from kumo_snowflake.write import overwrite_table
+
         overwrite_table(self, source, target, quote=self._qualified_table_name)
 
     def drop_table_if_exists(self, table_name):
         self.execute_meta_query(
             self.context,
-            f'DROP TABLE IF EXISTS {self._qualified_table_name(table_name)}')
+            f'DROP TABLE IF EXISTS {self._qualified_table_name(table_name)}',
+        )

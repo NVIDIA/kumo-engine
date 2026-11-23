@@ -30,6 +30,7 @@ arange + checksum work, plus emits a disabled-stub manifest entry so the
 strict validator in ``diskgraph_native_tt_artifacts.parse_train_table_edges_artifact``
 keeps passing.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -88,8 +89,9 @@ def apply_legacy_bridge(
     _inject_arange_weight_and_patch_checksum(src_parquet_path, manifest_path)
 
     # Step 3 + 4: export edge artifacts (or stub) + manifest entry.
-    edges_cfg = train_table_edges_config if isinstance(train_table_edges_config,
-                                                       dict) else None
+    edges_cfg = (
+        train_table_edges_config if isinstance(train_table_edges_config, dict) else None
+    )
     fkeys = list(edges_cfg.get('fkeys') or []) if edges_cfg else []
     enabled = bool(edges_cfg and edges_cfg.get('enabled', False) and fkeys)
 
@@ -147,24 +149,31 @@ def normalize_legacy_parquet_for_rehydration(
             arrays = list(batch.columns)
             fields = []
             for index, field in enumerate(batch.schema):
-                if (normalize_timestamp and field.name == 'TIMESTAMP'
-                        and pa.types.is_timestamp(field.type)):
+                if (
+                    normalize_timestamp
+                    and field.name == 'TIMESTAMP'
+                    and pa.types.is_timestamp(field.type)
+                ):
                     arrays[index] = arrays[index].cast(pa.timestamp('ns'))
-                    field = pa.field(field.name, pa.timestamp('ns'),
-                                     nullable=field.nullable)
+                    field = pa.field(
+                        field.name, pa.timestamp('ns'), nullable=field.nullable
+                    )
                 fields.append(field)
-            normalized = pa.RecordBatch.from_arrays(arrays,
-                                                    schema=pa.schema(fields))
+            normalized = pa.RecordBatch.from_arrays(arrays, schema=pa.schema(fields))
             if writer is None:
-                writer = pq.ParquetWriter(out_path, normalized.schema,
-                                          compression='snappy')
+                writer = pq.ParquetWriter(
+                    out_path, normalized.schema, compression='snappy'
+                )
             writer.write_batch(normalized)
     finally:
         if writer is not None:
             writer.close()
     if writer is None:
-        pq.write_table(pa.Table.from_batches([], schema=dataset.schema),
-                       out_path, compression='snappy')
+        pq.write_table(
+            pa.Table.from_batches([], schema=dataset.schema),
+            out_path,
+            compression='snappy',
+        )
     return out_path
 
 
@@ -173,8 +182,9 @@ def normalize_legacy_parquet_for_rehydration(
 # --------------------------------------------------------------------------- #
 
 
-def _inject_arange_weight_and_patch_checksum(src_parquet_path: str,
-                                             manifest_path: str) -> None:
+def _inject_arange_weight_and_patch_checksum(
+    src_parquet_path: str, manifest_path: str
+) -> None:
     """Append int64 arange row-index column AND optional float32 weight
     column to tt.parquet (single rewrite pass), rename DG physical
     multi-entity/multi-target column names to kumo's logical aliases
@@ -201,15 +211,15 @@ def _inject_arange_weight_and_patch_checksum(src_parquet_path: str,
     _DG_TO_KUMO_COL = {'ENTITY1': 'ENTITY', 'TARGET1': 'TARGET'}
 
     def _rename_columns(batch: pa.RecordBatch) -> pa.RecordBatch:
-        new_names = [
-            _DG_TO_KUMO_COL.get(name, name) for name in batch.schema.names
-        ]
+        new_names = [_DG_TO_KUMO_COL.get(name, name) for name in batch.schema.names]
         if new_names == batch.schema.names:
             return batch
-        new_schema = pa.schema([
-            batch.schema.field(i).with_name(new_names[i])
-            for i in range(len(new_names))
-        ])
+        new_schema = pa.schema(
+            [
+                batch.schema.field(i).with_name(new_names[i])
+                for i in range(len(new_names))
+            ]
+        )
         return pa.RecordBatch.from_arrays(batch.columns, schema=new_schema)
 
     # Read manifest first to discover weight_sidecar (if any).
@@ -223,7 +233,8 @@ def _inject_arange_weight_and_patch_checksum(src_parquet_path: str,
         if not weight_path:
             raise RuntimeError(
                 'legacy_graphstore_bridge: manifest.weight_sidecar present '
-                'but missing path')
+                'but missing path'
+            )
         weight_payload = _load_weight_bin(weight_path)
 
     tmp_parquet_path = src_parquet_path + '.with_arange.tmp'
@@ -238,7 +249,8 @@ def _inject_arange_weight_and_patch_checksum(src_parquet_path: str,
             # Arange injection (idempotent — skip if already present).
             if 'arange' not in schema_names:
                 arange_array = pa.array(
-                    range(total_rows, total_rows + num_rows), type=pa.int64())
+                    range(total_rows, total_rows + num_rows), type=pa.int64()
+                )
                 batch = batch.append_column('arange', arange_array)
 
             # Weight injection (idempotent — skip if `weight` column
@@ -251,16 +263,19 @@ def _inject_arange_weight_and_patch_checksum(src_parquet_path: str,
                     raise RuntimeError(
                         f'weight.bin payload too short: total tt.parquet rows '
                         f'so far {end}, but weight payload has only '
-                        f'{len(weight_payload)} entries')
+                        f'{len(weight_payload)} entries'
+                    )
                 slice_arr = weight_payload[start:end]
                 batch = batch.append_column(
-                    'weight', pa.array(slice_arr, type=pa.float32()))
+                    'weight', pa.array(slice_arr, type=pa.float32())
+                )
                 weight_consumed = end
 
             batch = _rename_columns(batch)
             if writer is None:
-                writer = pq.ParquetWriter(tmp_parquet_path, batch.schema,
-                                          compression='snappy')
+                writer = pq.ParquetWriter(
+                    tmp_parquet_path, batch.schema, compression='snappy'
+                )
             writer.write_batch(batch)
             total_rows += num_rows
     finally:
@@ -277,7 +292,8 @@ def _inject_arange_weight_and_patch_checksum(src_parquet_path: str,
         if weight_consumed > 0:
             raise RuntimeError(
                 f'weight injection mismatch: injected {weight_consumed} '
-                f'weights but tt.parquet has {total_rows} rows')
+                f'weights but tt.parquet has {total_rows} rows'
+            )
 
     os.replace(tmp_parquet_path, src_parquet_path)
 
@@ -309,8 +325,7 @@ def _load_weight_bin(path: str):
     with open(path, 'rb') as f:
         bytes_data = f.read()
     if len(bytes_data) < 24:
-        raise RuntimeError(
-            f'weight.bin {path} too short: {len(bytes_data)} bytes')
+        raise RuntimeError(f'weight.bin {path} too short: {len(bytes_data)} bytes')
     if bytes_data[0:8] != b'DGWGHT\x00\x00':
         raise RuntimeError(f'weight.bin {path} bad magic: {bytes_data[0:8]!r}')
     version = int.from_bytes(bytes_data[8:12], 'little')
@@ -326,7 +341,8 @@ def _load_weight_bin(path: str):
     if len(bytes_data) - 24 != expected_payload_len:
         raise RuntimeError(
             f'weight.bin {path} payload size mismatch: header says {row_count} '
-            f'rows ({expected_payload_len} bytes), got {len(bytes_data) - 24}')
+            f'rows ({expected_payload_len} bytes), got {len(bytes_data) - 24}'
+        )
     arr = np.frombuffer(bytes_data[24:], dtype=np.float32)
     if arr.shape[0] != row_count:
         raise RuntimeError(
@@ -358,7 +374,8 @@ def _export_train_table_edges_and_patch_manifest(
     except Exception as e:  # pragma: no cover - env-dependent
         raise RuntimeError(
             'legacy_graphstore_bridge: failed to import diskgraph runtime '
-            'for train-table edge export') from e
+            'for train-table edge export'
+        ) from e
 
     fkeys = list(edges_cfg.get('fkeys') or [])
     train_table_name = edges_cfg.get('train_table_name', 'train_table')
@@ -385,7 +402,8 @@ def _export_train_table_edges_and_patch_manifest(
         if not column_name or not target_table:
             raise RuntimeError(
                 'legacy_graphstore_bridge: invalid fkey entry (need '
-                f'column_name + target_table): {fk!r}')
+                f'column_name + target_table): {fk!r}'
+            )
         fkey_configs.append(FkeyConfig(column_name, target_table))
         fkey_logical_names.append(column_name)
 
@@ -417,13 +435,13 @@ def _export_train_table_edges_and_patch_manifest(
         physical_name = fk_cfg.column_name
         target_table = fk_cfg.target_table
         # DG writes the dir using the FkeyConfig.column_name (physical).
-        dg_dir_name = (
-            f'{target_table}__rev_{physical_name}__{train_table_name}')
+        dg_dir_name = f'{target_table}__rev_{physical_name}__{train_table_name}'
         dg_dir = osp.join(output_dir, dg_dir_name)
 
         # GraphStore looks up by EdgeKey built from the LOGICAL fkey name.
-        canonical_key = EdgeKey(target_table, logical_name, train_table_name,
-                                is_reverse=True).to_str()
+        canonical_key = EdgeKey(
+            target_table, logical_name, train_table_name, is_reverse=True
+        ).to_str()
         canonical_dir = osp.join(output_dir, canonical_key)
 
         if dg_dir != canonical_dir:
@@ -433,28 +451,32 @@ def _export_train_table_edges_and_patch_manifest(
                 raise RuntimeError(
                     'legacy_graphstore_bridge: expected diskgraph reverse '
                     f'edge dir {dg_dir} (or canonical {canonical_dir}) to '
-                    'exist after export_tt_artifacts')
+                    'exist after export_tt_artifacts'
+                )
 
         edge_parquet_dir = osp.join(canonical_dir, 'edge.parquet')
         if not osp.exists(edge_parquet_dir):
             raise RuntimeError(
                 'legacy_graphstore_bridge: expected edge.parquet at '
-                f'{edge_parquet_dir} after export_tt_artifacts')
+                f'{edge_parquet_dir} after export_tt_artifacts'
+            )
         reverse_edges_manifest[canonical_key] = {
             'path': edge_parquet_dir,
             'format': 'edge_parquet',
         }
 
-    fkey_cols_dir = osp.join(output_dir,
-                             f'{train_table_name}_fkey_cols.parquet')
+    fkey_cols_dir = osp.join(output_dir, f'{train_table_name}_fkey_cols.parquet')
     if not osp.exists(fkey_cols_dir):
         raise RuntimeError(
             'legacy_graphstore_bridge: expected fkey_cols dir at '
-            f'{fkey_cols_dir} after export_tt_artifacts')
+            f'{fkey_cols_dir} after export_tt_artifacts'
+        )
     mask_dir = osp.join(output_dir, f'{train_table_name}_mask.parquet')
     if mask_present and not osp.exists(mask_dir):
-        raise RuntimeError('legacy_graphstore_bridge: expected mask dir at '
-                           f'{mask_dir} after export_tt_artifacts')
+        raise RuntimeError(
+            'legacy_graphstore_bridge: expected mask dir at '
+            f'{mask_dir} after export_tt_artifacts'
+        )
 
     # Compute per-artifact checksums for the bundle. kumo's
     # validate_artifact_bundle requires:
@@ -471,20 +493,18 @@ def _export_train_table_edges_and_patch_manifest(
         edge_checksums[f'{edge_key}_sha256'] = _sha256_path(edge_info['path'])
 
     manifest_entry: dict[str, Any] = {
-        'version':
-        1,
-        'kind':
-        'tt_train_table_edges',
-        'format':
-        'tt_edge_bundle_v1',
-        'enabled':
-        True,
-        'fkeys': [{
-            'column_name': logical_name,
-            'target_table': fk_cfg.target_table,
-        } for fk_cfg, logical_name in zip(fkey_configs, fkey_logical_names)],
-        'reverse_edges':
-        reverse_edges_manifest,
+        'version': 1,
+        'kind': 'tt_train_table_edges',
+        'format': 'tt_edge_bundle_v1',
+        'enabled': True,
+        'fkeys': [
+            {
+                'column_name': logical_name,
+                'target_table': fk_cfg.target_table,
+            }
+            for fk_cfg, logical_name in zip(fkey_configs, fkey_logical_names)
+        ],
+        'reverse_edges': reverse_edges_manifest,
         'fkey_cols': {
             'path': fkey_cols_dir,
             'format': 'fkey_cols_parquet',
@@ -494,14 +514,15 @@ def _export_train_table_edges_and_patch_manifest(
             'path': mask_dir if mask_present else '',
             'format': 'mask_parquet',
         },
-        'checksums':
-        edge_checksums,
+        'checksums': edge_checksums,
     }
 
     bundle_sha256 = hashlib.sha256(
-        pyjson.dumps(manifest_entry, sort_keys=True).encode()).hexdigest()
-    _write_train_table_edges_entry(manifest_path, manifest_entry,
-                                   bundle_sha256=bundle_sha256)
+        pyjson.dumps(manifest_entry, sort_keys=True).encode()
+    ).hexdigest()
+    _write_train_table_edges_entry(
+        manifest_path, manifest_entry, bundle_sha256=bundle_sha256
+    )
     logger.info(
         'legacy_graphstore_bridge: exported %d reverse edges + fkey_cols '
         '(+ mask=%s) to %s',
@@ -511,8 +532,7 @@ def _export_train_table_edges_and_patch_manifest(
     )
 
 
-def _write_disabled_stub(manifest_path: str, fkeys: list[dict[str,
-                                                              Any]]) -> None:
+def _write_disabled_stub(manifest_path: str, fkeys: list[dict[str, Any]]) -> None:
     """Write the disabled-stub train_table_edges manifest entry that matches
     kumo's synthesized-default behavior in
     ``diskgraph_native_tt_artifacts.validate_artifact_bundle``."""
@@ -521,10 +541,12 @@ def _write_disabled_stub(manifest_path: str, fkeys: list[dict[str,
         column_name = fk.get('column_name') or fk.get('name')
         target_table = fk.get('target_table') or fk.get('dst_table')
         if column_name and target_table:
-            declared_fkeys.append({
-                'column_name': column_name,
-                'target_table': target_table,
-            })
+            declared_fkeys.append(
+                {
+                    'column_name': column_name,
+                    'target_table': target_table,
+                }
+            )
     stub = {
         'version': 1,
         'kind': 'tt_train_table_edges',
@@ -536,8 +558,9 @@ def _write_disabled_stub(manifest_path: str, fkeys: list[dict[str,
     _write_train_table_edges_entry(manifest_path, stub)
 
 
-def _write_train_table_edges_entry(manifest_path: str, entry: dict[str, Any],
-                                   bundle_sha256: Optional[str] = None) -> None:
+def _write_train_table_edges_entry(
+    manifest_path: str, entry: dict[str, Any], bundle_sha256: Optional[str] = None
+) -> None:
     with open(manifest_path) as mf:
         manifest_obj = pyjson.load(mf)
     manifest_obj['train_table_edges'] = entry

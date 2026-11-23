@@ -58,8 +58,7 @@ class MLOpsStats:
     # mapping of job_ids to stat values returned by MLOPs backend, separated
     # by job type
     bp_stats: Dict[str, Dict[MLOpsStatType, Any]] = field(default_factory=dict)
-    train_stats: Dict[str, Dict[MLOpsStatType,
-                                Any]] = field(default_factory=dict)
+    train_stats: Dict[str, Dict[MLOpsStatType, Any]] = field(default_factory=dict)
 
 
 @kumo_dataclass

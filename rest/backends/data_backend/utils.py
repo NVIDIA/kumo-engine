@@ -56,19 +56,20 @@ def _connector_type_of(connector: Connector) -> ConnectorType:
         DatabricksConnector,
         SnowflakeConnector,
     )
+
     if isinstance(connector, SnowflakeConnector):
         return ConnectorType.SNOWFLAKE
     if isinstance(connector, DatabricksConnector):
         return ConnectorType.DATABRICKS
     if isinstance(connector, BigQueryConnector):
         return ConnectorType.BIGQUERY
-    raise ValueError('Custom SQL Tables are not supported for '
-                     f'{type(connector).__name__}')
+    raise ValueError(
+        f'Custom SQL Tables are not supported for {type(connector).__name__}'
+    )
 
 
 @connector_activity_registry.connector_resolution_helper
-def _connector_type_from_spec(
-        connector_spec: ConnectorOpenSpec) -> ConnectorType:
+def _connector_type_from_spec(connector_spec: ConnectorOpenSpec) -> ConnectorType:
     """Warehouse type of a connector spec, for picking the SQL dialect.
 
     A resolved spec (``ConnectorSpec`` / ``ResolvedConnectorSpec``) carries a
@@ -86,14 +87,17 @@ def _connector_type_from_spec(
     """
     if isinstance(connector_spec, ConnectorExecutionRef):
         from rest.backends.data_backend import connector_broker
+
         connector_spec = connector_broker.connector_credential_broker.resolve(
-            connector_spec)
+            connector_spec
+        )
     return _connector_type_of(get_connector_from_spec(connector_spec))
 
 
 @connector_activity_registry.connector_resolution_helper
 async def _connector_type_from_spec_async(
-        connector_spec: ConnectorOpenSpec) -> ConnectorType:
+    connector_spec: ConnectorOpenSpec,
+) -> ConnectorType:
     """Async sibling of :func:`_connector_type_from_spec`.
 
     Resolves a ``ConnectorExecutionRef`` through the broker without blocking the
@@ -102,14 +106,17 @@ async def _connector_type_from_spec_async(
     """
     if isinstance(connector_spec, ConnectorExecutionRef):
         from rest.backends.data_backend import connector_broker
-        connector_spec = await (connector_broker.connector_credential_broker.
-                                resolve_async(connector_spec))
+
+        connector_spec = await (
+            connector_broker.connector_credential_broker.resolve_async(connector_spec)
+        )
     return _connector_type_from_spec(connector_spec)
 
 
 @connector_activity_registry.connector_resolution_helper
 def resolve_connector_and_type(
-        connector_spec: ConnectorOpenSpec) -> Tuple[Connector, ConnectorType]:
+    connector_spec: ConnectorOpenSpec,
+) -> Tuple[Connector, ConnectorType]:
     """Resolve a connected connector and its warehouse type from a spec/ref.
 
     Inside an activity a ``ConnectorExecutionRef`` is resolved once through the
@@ -121,15 +128,18 @@ def resolve_connector_and_type(
     """
     if isinstance(connector_spec, ConnectorExecutionRef):
         from rest.backends.data_backend import connector_broker
+
         connector_spec = connector_broker.connector_credential_broker.resolve(
-            connector_spec)
+            connector_spec
+        )
     connector = get_connector_from_spec(connector_spec)
     return connector, _connector_type_of(connector)
 
 
 @connector_activity_registry.connector_resolution_helper
 async def resolve_connector_and_type_async(
-        connector_spec: ConnectorOpenSpec) -> Tuple[Connector, ConnectorType]:
+    connector_spec: ConnectorOpenSpec,
+) -> Tuple[Connector, ConnectorType]:
     """Async sibling of :func:`resolve_connector_and_type`.
 
     Resolves the ``ConnectorExecutionRef`` through the broker without blocking
@@ -138,8 +148,10 @@ async def resolve_connector_and_type_async(
     """
     if isinstance(connector_spec, ConnectorExecutionRef):
         from rest.backends.data_backend import connector_broker
-        connector_spec = await (connector_broker.connector_credential_broker.
-                                resolve_async(connector_spec))
+
+        connector_spec = await (
+            connector_broker.connector_credential_broker.resolve_async(connector_spec)
+        )
     connector = get_connector_from_spec(connector_spec)
     return connector, _connector_type_of(connector)
 
@@ -155,12 +167,15 @@ def compose_table_ingest_wf_id(
     # Both physical (`IngestedTableFingerprint`) and Custom SQL
     # (`SqlTableFingerprint`) tables expose ``ingest_path_fpid`` and share the
     # ingest workflow; a SQL table's fpid lives in a disjoint ``sql`` namespace.
-    assert isinstance(table_fingerprint,
-                      (IngestedTableFingerprint, SqlTableFingerprint))
-    return 'table-ingest-' + ".".join([
-        table_fingerprint.ingest_path_fpid,
-        data_version,
-    ])
+    assert isinstance(
+        table_fingerprint, (IngestedTableFingerprint, SqlTableFingerprint)
+    )
+    return 'table-ingest-' + '.'.join(
+        [
+            table_fingerprint.ingest_path_fpid,
+            data_version,
+        ]
+    )
 
 
 def data_backend_cache() -> BackendCacheManager:
@@ -169,8 +184,10 @@ def data_backend_cache() -> BackendCacheManager:
 
 
 async def _get_sql_table_data_version(
-        connector_spec: ConnectorOpenSpec, table_def: TableDefinition,
-        refresh_table_version: bool) -> TableDataVersion:
+    connector_spec: ConnectorOpenSpec,
+    table_def: TableDefinition,
+    refresh_table_version: bool,
+) -> TableDataVersion:
     """Change-detection version for a Custom SQL Table.
 
     ``data_version = md5(normalized SQL + sorted referenced-table versions +
@@ -223,12 +240,12 @@ async def _get_sql_table_data_version(
         # SQL that no longer parses: the dependency set is unknown, so treat it
         # as changed via a fresh sentinel rather than hashing SQL+cols alone
         # (which would omit real inputs and could serve stale data).
-        referenced_versions[
-            '__unparsed__'] = f"indeterminate:{uuid.uuid4().hex}"
+        referenced_versions['__unparsed__'] = f'indeterminate:{uuid.uuid4().hex}'
         log.warning(
-            "Custom SQL table %s: SQL could not be parsed for dependency "
-            "extraction; re-materializing conservatively.",
-            table_def.get_source_table_name())
+            'Custom SQL table %s: SQL could not be parsed for dependency '
+            'extraction; re-materializing conservatively.',
+            table_def.get_source_table_name(),
+        )
         referenced = []
     for ref in referenced:
         # Reduce the dialect-quoted, fully-qualified parse output to the
@@ -237,19 +254,24 @@ async def _get_sql_table_data_version(
         # every quoted ref and collapsing to a fresh per-call sentinel.
         lookup = custom_sql.normalized_sql_identifier_leaf(ref, connector_type)
         try:
-            referenced_versions[lookup] = str(await get_table_data_version(
-                connector_spec, lookup,
-                refresh_table_version=refresh_table_version))
+            referenced_versions[lookup] = str(
+                await get_table_data_version(
+                    connector_spec, lookup, refresh_table_version=refresh_table_version
+                )
+            )
         except Exception as exc:
             # Any failure to resolve a referenced table's version (missing
             # table, connector error) is treated as "changed": a fresh sentinel
             # guarantees a distinct data_version so the skip-guard
             # re-materializes instead of serving stale data.
-            referenced_versions[lookup] = f"indeterminate:{uuid.uuid4().hex}"
+            referenced_versions[lookup] = f'indeterminate:{uuid.uuid4().hex}'
             log.warning(
-                "Custom SQL table %s: could not resolve version for "
-                "referenced table %s (%r); re-materializing conservatively.",
-                table_def.get_source_table_name(), lookup, exc)
+                'Custom SQL table %s: could not resolve version for '
+                'referenced table %s (%r); re-materializing conservatively.',
+                table_def.get_source_table_name(),
+                lookup,
+                exc,
+            )
 
     # Max-staleness floor: an aligned wall-clock window index, folded into the
     # fingerprint's dedicated staleness field (NOT the referenced-table map), so
@@ -276,36 +298,44 @@ async def _get_sql_table_data_version(
     # no churn); only crossing a window boundary rolls it over and triggers
     # exactly one re-ingest. ``CUSTOM_SQL_MAX_STALENESS_HOURS`` is clamped to >= 1
     # at config load, so the divisor is always positive.
-    staleness_bucket = int(
-        time.time()) // (CUSTOM_SQL_MAX_STALENESS_HOURS * 3600)
+    staleness_bucket = int(time.time()) // (CUSTOM_SQL_MAX_STALENESS_HOURS * 3600)
 
     # Match the cols dict the export projects/casts by (``table_fp.cols``), so a
     # dtype-override edit changes the version even though the path-id does not.
     cols = {c.name: c.dtype for c in table_def.cols}
     return TableDataVersion(
         custom_sql.custom_sql_data_version(
-            src.sql, connector_type, referenced_versions, cols,
-            max_staleness_bucket=staleness_bucket))
+            src.sql,
+            connector_type,
+            referenced_versions,
+            cols,
+            max_staleness_bucket=staleness_bucket,
+        )
+    )
 
 
 @measure_blocking_code
 async def get_table_data_version(
-        connector_spec: ConnectorOpenSpec, source_table_name: str,
-        refresh_table_version: bool = False,
-        table_def: Optional[TableDefinition] = None) -> TableDataVersion:
+    connector_spec: ConnectorOpenSpec,
+    source_table_name: str,
+    refresh_table_version: bool = False,
+    table_def: Optional[TableDefinition] = None,
+) -> TableDataVersion:
     # Custom SQL tables have no physical source table: their version is a
     # content hash over the SQL + referenced-table versions + output cols, not a
     # connector probe of the synthetic name. ``table_def`` is threaded in by the
     # refresh/version callers (which hold it); the recursive referenced-table
     # resolution above passes no ``table_def`` and takes the physical path.
     if table_def is not None and table_def.is_sql:
-        return await _get_sql_table_data_version(connector_spec, table_def,
-                                                 refresh_table_version)
+        return await _get_sql_table_data_version(
+            connector_spec, table_def, refresh_table_version
+        )
     # Don't open connector if we don't need to, i.e. because the
     # caller did not request a refresh for a new version
     if not refresh_table_version:
-        version = (await get_active_cache().table_version_cache.get.coroutine(
-            connector_spec.connector_id, source_table_name))
+        version = await get_active_cache().table_version_cache.get.coroutine(
+            connector_spec.connector_id, source_table_name
+        )
         if version is not None:
             return TableDataVersion(version)
 
@@ -313,7 +343,8 @@ async def get_table_data_version(
     # cached, or the caller wants a new version, get the version
     # from the connector
     connector = await get_connector_from_spec_async(
-        connector_spec, resolved_factory=get_connector_from_spec)
+        connector_spec, resolved_factory=get_connector_from_spec
+    )
     # Retrieve fresh table data version from connector if
     # refresh_table_version is True. However, do not save the updated
     # data version to backend cache yet. This is only saved after
@@ -321,12 +352,14 @@ async def get_table_data_version(
     # the latest ingested version.
     async with async_connector_lifecycle(connector):
         version = await connector.get_data_version.coroutine(
-            source_table_name, refresh_table_version, False)
+            source_table_name, refresh_table_version, False
+        )
     return TableDataVersion(version)
 
 
-def parse_edge_stats_result(graph_input: GraphDataComputeInput,
-                            edge_stats: GraphEdgeStats) -> List[EdgeHealth]:
+def parse_edge_stats_result(
+    graph_input: GraphDataComputeInput, edge_stats: GraphEdgeStats
+) -> List[EdgeHealth]:
     """Parse edge stats fetch from the backend cache for the given graph.
 
     Iterates ``graph_input.graph_definition.col_groups`` (name-keyed
@@ -339,8 +372,7 @@ def parse_edge_stats_result(graph_input: GraphDataComputeInput,
     # we can populate ``EdgeHealthColumn.table_id`` from the name-keyed
     # ColumnKey we now iterate over.
     name_to_table_id: Dict[TableName, TableID] = {
-        name: tid
-        for tid, name in graph_input.table_aliases.items()
+        name: tid for tid, name in graph_input.table_aliases.items()
     }
     for col_group in graph_input.graph_definition.col_groups:
         if len(col_group.columns) == 0:
@@ -356,9 +388,9 @@ def parse_edge_stats_result(graph_input: GraphDataComputeInput,
                 break
         col1 = col_group.columns[col_1_idx]
         table1 = tables_by_name[col1.table_name]
-        src_col = SourceTableColumn(table1.get_connector_id(),
-                                    table1.get_source_table_name(),
-                                    col1.col_name)
+        src_col = SourceTableColumn(
+            table1.get_connector_id(), table1.get_source_table_name(), col1.col_name
+        )
 
         # Get edge stats between col1 and every other column
         for i, col2 in enumerate(col_group.columns):
@@ -366,9 +398,9 @@ def parse_edge_stats_result(graph_input: GraphDataComputeInput,
                 continue
 
             table2 = tables_by_name[col2.table_name]
-            dst_col = SourceTableColumn(table2.get_connector_id(),
-                                        table2.get_source_table_name(),
-                                        col2.col_name)
+            dst_col = SourceTableColumn(
+                table2.get_connector_id(), table2.get_source_table_name(), col2.col_name
+            )
 
             stats = edge_stats.get_stats(src_col, dst_col)
 
@@ -381,8 +413,8 @@ def parse_edge_stats_result(graph_input: GraphDataComputeInput,
                 # Log error if stats are missing to alert oncall engineer
                 if stats is None:  # type: ignore
                     log.error(
-                        "Failed to fetch stats for edge between %s and %s",
-                        col1, col2)
+                        'Failed to fetch stats for edge between %s and %s', col1, col2
+                    )
                     continue
 
             edge_health_column_1 = EdgeHealthColumn(
@@ -399,26 +431,22 @@ def parse_edge_stats_result(graph_input: GraphDataComputeInput,
             )
 
             edge_health = EdgeHealth(
-                col_a=(edge_health_column_1
-                       if not reverse else edge_health_column_2),
-                col_b=(edge_health_column_2
-                       if not reverse else edge_health_column_1),
-                link_type="Exact Match",
+                col_a=(edge_health_column_1 if not reverse else edge_health_column_2),
+                col_b=(edge_health_column_2 if not reverse else edge_health_column_1),
+                link_type='Exact Match',
                 matches=EdgeStat(
-                    a_in_b=get_stat_value(stats,
-                                          EdgeStatType.NUM_SRC_NONZERO_DEGREE),
-                    b_in_a=get_stat_value(stats,
-                                          EdgeStatType.NUM_DST_NONZERO_DEGREE),
+                    a_in_b=get_stat_value(stats, EdgeStatType.NUM_SRC_NONZERO_DEGREE),
+                    b_in_a=get_stat_value(stats, EdgeStatType.NUM_DST_NONZERO_DEGREE),
                 ),
                 percents=EdgeStat(
-                    a_in_b=get_stat_value(stats,
-                                          EdgeStatType.FRAC_SRC_NONZERO_DEGREE,
-                                          percent=True),
-                    b_in_a=get_stat_value(stats,
-                                          EdgeStatType.FRAC_DST_NONZERO_DEGREE,
-                                          percent=True)),
-                edge_count=int(
-                    get_stat_value(stats, EdgeStatType.EDGE_COUNT) or 0),
+                    a_in_b=get_stat_value(
+                        stats, EdgeStatType.FRAC_SRC_NONZERO_DEGREE, percent=True
+                    ),
+                    b_in_a=get_stat_value(
+                        stats, EdgeStatType.FRAC_DST_NONZERO_DEGREE, percent=True
+                    ),
+                ),
+                edge_count=int(get_stat_value(stats, EdgeStatType.EDGE_COUNT) or 0),
             )
             if reverse:
                 edge_health = edge_health.reverse()

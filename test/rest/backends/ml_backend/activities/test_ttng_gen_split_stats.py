@@ -10,13 +10,18 @@ from importlib import import_module
 
 import pytest
 
-mtt = import_module(
-    'rest.backends.ml_backend.activities.materialize_training_task')
+mtt = import_module('rest.backends.ml_backend.activities.materialize_training_task')
 
 
 def _selected_train_table_path(tmp_path, job_id: str) -> str:
-    bundle_dir = (tmp_path / 'jobs' / job_id / 'train_table.ttng_staging' /
-                  '_bundles' / 'bundle-abc')
+    bundle_dir = (
+        tmp_path
+        / 'jobs'
+        / job_id
+        / 'train_table.ttng_staging'
+        / '_bundles'
+        / 'bundle-abc'
+    )
     bundle_dir.mkdir(parents=True)
     return str(bundle_dir / 'tt.parquet')
 
@@ -31,14 +36,8 @@ def _write_split_stats(staging_dir: str) -> None:
             'num_entities': 3,
             'num_targets': 3,
             'target_distribution': {
-                'count': {
-                    '0': 2.0,
-                    '1': 1.0
-                },
-                'percentage': {
-                    '0': 66.6,
-                    '1': 33.3
-                },
+                'count': {'0': 2.0, '1': 1.0},
+                'percentage': {'0': 66.6, '1': 33.3},
             },
         },
         'val_table_stats': None,
@@ -71,7 +70,8 @@ def test_gen_split_stats_written_to_job_dir_when_present(tmp_path):
     out_path = HomeDirManager(job_dir).split_train_table_stats(split_fpid)
     assert os.path.exists(out_path), (
         'C3 must write split_train_table_stats.json to the gen-tt job dir '
-        'so the /split_stats endpoint returns non-null on TT-NG')
+        'so the /split_stats endpoint returns non-null on TT-NG'
+    )
     with open(out_path) as f:
         written = json.load(f)
     # The endpoint deserializes this as SplitTrainTableStats.
@@ -103,6 +103,7 @@ def test_gen_split_stats_noop_when_sidecar_absent(tmp_path):
 
 def test_gen_split_stats_noop_when_no_split(tmp_path, monkeypatch):
     """A no-split table does not require or look for a split sidecar."""
+
     def fail_on_exists(*args, **kwargs):
         del args, kwargs
         raise AssertionError('no-split tables must not inspect split artifacts')
@@ -131,29 +132,23 @@ def _write_reconstructable_bundle(staging_dir: str) -> None:
         'num_total_rows': n,
         'payload': {
             'split_payload': {
-                'mask_counts': {
-                    'train': 4,
-                    'val': 1,
-                    'test': 1
-                },
+                'mask_counts': {'train': 4, 'val': 1, 'test': 1},
             },
         },
     }
     with open(os.path.join(staging_dir, 'stats.json'), 'w') as f:
         json.dump(stats, f)
-    table = pa.table({
-        'ENTITY1':
-        pa.array(list(range(n)), type=pa.int64()),
-        'TIMESTAMP':
-        pa.array([1_700_000_000_000_000_000] * n, type=pa.int64()),
-        'TARGET1':
-        pa.array(['a', 'b', 'a', 'b', 'a', 'b']),
-    })
+    table = pa.table(
+        {
+            'ENTITY1': pa.array(list(range(n)), type=pa.int64()),
+            'TIMESTAMP': pa.array([1_700_000_000_000_000_000] * n, type=pa.int64()),
+            'TARGET1': pa.array(['a', 'b', 'a', 'b', 'a', 'b']),
+        }
+    )
     pq.write_table(table, os.path.join(staging_dir, 'tt.parquet'))
 
 
-def test_missing_sidecar_does_not_read_reconstructable_bundle(
-        tmp_path, monkeypatch):
+def test_missing_sidecar_does_not_read_reconstructable_bundle(tmp_path, monkeypatch):
     """An old reconstructable bundle must not trigger a parquet scan."""
     import pyarrow.parquet as pq
     from kumo_core.types import TaskType

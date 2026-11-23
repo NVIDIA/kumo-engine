@@ -23,6 +23,7 @@ class RandomDataset(Dataset):
 
 class Model(LightningModule):
     """A model with overridden training return."""
+
     def __init__(self, return_values) -> None:
         super().__init__()
         self.layer = torch.nn.Linear(32, 2)
@@ -30,12 +31,12 @@ class Model(LightningModule):
 
     def on_train_epoch_end(self):
         loss = self.return_values[self.current_epoch]
-        self.log("train_loss", loss)
+        self.log('train_loss', loss)
 
     def training_step(self, batch, batch_idx):
         output = self.layer(batch)
         loss = self.loss(batch, output)
-        return {"loss": loss}
+        return {'loss': loss}
 
     def loss(self, batch, prediction):
         return torch.nn.functional.mse_loss(
@@ -54,18 +55,24 @@ class Model(LightningModule):
 
 @pytest.mark.parametrize('min_epochs', [1, 2, 3])
 def test_top_k_early_stopping(min_epochs):
-    loss_values = torch.tensor([[10, 6, 5, 5, 5, 5], [9, 5, 4, 4, 4, 3],
-                                [8, 5, 3, 3, 3, 2], [11, 10, 10, 10, 10, 10]])
+    loss_values = torch.tensor(
+        [
+            [10, 6, 5, 5, 5, 5],
+            [9, 5, 4, 4, 4, 3],
+            [8, 5, 3, 3, 3, 2],
+            [11, 10, 10, 10, 10, 10],
+        ]
+    )
     num_trials, max_epochs = loss_values.size()
     expected_stop_epochs = [6, 6, 6, min_epochs]
     stop_epochs = []
 
     early_stop_callback = TopKEarlyStopping(
-        monitor="train_loss",
+        monitor='train_loss',
         min_epochs=min_epochs,
         k=2,
         continuing_mode='any',
-        mode="min",
+        mode='min',
         check_on_train_epoch_end=True,
     )
 
@@ -82,15 +89,18 @@ def test_top_k_early_stopping(min_epochs):
 
         if i == 0:
             assert early_stop_callback.top_k_trials_scores == [
-                loss_values[0].tolist(), []
+                loss_values[0].tolist(),
+                [],
             ]
         if i == 1:
             assert early_stop_callback.top_k_trials_scores == [
-                loss_values[0].tolist(), loss_values[1].tolist()
+                loss_values[0].tolist(),
+                loss_values[1].tolist(),
             ]
         if i == 2 or i == 3:
             assert early_stop_callback.top_k_trials_scores == [
-                loss_values[2].tolist(), loss_values[1].tolist()
+                loss_values[2].tolist(),
+                loss_values[1].tolist(),
             ]
 
     assert stop_epochs == expected_stop_epochs

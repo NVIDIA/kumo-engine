@@ -20,8 +20,9 @@ def test_shop_tables_resolve_through_file_connector(tmp_path, monkeypatch):
     assert files.table_names() == ['orders', 'users']
 
     users = Table.from_source_table(files['users'], primary_key='user_id')
-    orders = Table.from_source_table(files['orders'], primary_key='order_id',
-                                     time_column='order_time')
+    orders = Table.from_source_table(
+        files['orders'], primary_key='order_id', time_column='order_time'
+    )
     assert [column.name for column in users.definition.cols] == ['user_id']
     columns = {column.name: column for column in orders.definition.cols}
     assert sorted(columns) == ['order_id', 'order_time', 'user_id']

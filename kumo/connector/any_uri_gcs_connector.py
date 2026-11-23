@@ -12,10 +12,8 @@ from kumo.utils import to_dataclass
 
 class AnyURIGCSConnector(AnyURIFileConnector):
     def __init__(self, name: str):
-        super().__init__(name, normalizer=normalize_gcs_source_uri,
-                         provider_name='GCS')
+        super().__init__(name, normalizer=normalize_gcs_source_uri, provider_name='GCS')
 
 
-AnyURIGCSConnectorConfig = to_dataclass(AnyURIGCSConnector,
-                                        base_cls=ConnectorConfig)
+AnyURIGCSConnectorConfig = to_dataclass(AnyURIGCSConnector, base_cls=ConnectorConfig)
 register(AnyURIGCSConnector, AnyURIGCSConnectorConfig, group='connector')

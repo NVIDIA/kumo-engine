@@ -11,9 +11,12 @@ logger = logging.getLogger(__name__)
 
 
 def test_logging_from_subprocess(caplog):
-    process = subprocess.Popen(['sleep 1; echo hello_world'],
-                               stdout=subprocess.PIPE,
-                               stderr=subprocess.STDOUT, shell=True)
+    process = subprocess.Popen(
+        ['sleep 1; echo hello_world'],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        shell=True,
+    )
 
     with caplog.at_level(py_logging.INFO):
         logging_thread = logging_util.LoggingThread('test', process)

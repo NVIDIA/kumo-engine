@@ -32,8 +32,9 @@ def _candidate_ports(child: PlannedDevserver) -> Sequence[int]:
     return tuple(child.expected_ports.values())
 
 
-def _block_available(child: PlannedDevserver,
-                     is_available: Callable[[int], bool]) -> bool:
+def _block_available(
+    child: PlannedDevserver, is_available: Callable[[int], bool]
+) -> bool:
     return all(is_available(port) for port in _candidate_ports(child))
 
 
@@ -60,7 +61,8 @@ def assign_auto_base_ports(
             if not _block_available(child, is_available):
                 raise DevserverCoordinatorError(
                     f'explicit base port {child.base_port} does not have a '
-                    'free complete port block')
+                    'free complete port block'
+                )
             assigned.append(child)
             used_ports.update(_candidate_ports(child))
             continue
@@ -70,10 +72,10 @@ def assign_auto_base_ports(
             ports = set(_candidate_ports(candidate))
             if max(ports) > _MAX_TCP_PORT:
                 raise DevserverCoordinatorError(
-                    'no free port block remains in the TCP port range')
+                    'no free port block remains in the TCP port range'
+                )
             next_candidate += stride
-            if (not (ports & used_ports)
-                    and _block_available(candidate, is_available)):
+            if not (ports & used_ports) and _block_available(candidate, is_available):
                 assigned.append(candidate)
                 used_ports.update(ports)
                 break
@@ -101,6 +103,6 @@ def resolve_auto_cgroup_limits(
     if cpus < _MIN_CPU_PER_DEVSERVER or memory < _MIN_MEMORY_GIB_PER_DEVSERVER:
         raise DevserverCoordinatorError(
             'effective parent capacity leaves too little CPU or memory per '
-            'devserver after shared-service headroom')
-    return tuple(CgroupLimits(cpus=cpus, memory_gib=memory)
-                 for _ in range(count))
+            'devserver after shared-service headroom'
+        )
+    return tuple(CgroupLimits(cpus=cpus, memory_gib=memory) for _ in range(count))

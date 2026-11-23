@@ -113,20 +113,26 @@ P = ParamSpec('P')
 # pylint: disable=typevar-name-incorrect-variance
 T = TypeVar('T', covariant=True)
 
-SelfType = TypeVar("SelfType")
+SelfType = TypeVar('SelfType')
 SyncMethod = Callable[Concatenate[SelfType, P], T]
 AsyncMethod = Callable[Concatenate[SelfType, P], Awaitable[T]]
 
 _AUTO_RPC_DATA_CONVERTER = KumoPayloadConverter()
 _AUTO_RPC_SERDE_THREADPOOL = ThreadPoolExecutor(
-    max_workers=4, thread_name_prefix='auto-rpc-serde')
+    max_workers=4, thread_name_prefix='auto-rpc-serde'
+)
 
 
 class RpcFuncAsync(Generic[P, T]):
-    def __init__(self, handler_func: Callable[P, Awaitable[T]], *,
-                 exclude_from_block_detection: bool = False) -> None:
+    def __init__(
+        self,
+        handler_func: Callable[P, Awaitable[T]],
+        *,
+        exclude_from_block_detection: bool = False,
+    ) -> None:
         self._handler_func = measure_blocking_code(
-            handler_func, disable_check=exclude_from_block_detection)
+            handler_func, disable_check=exclude_from_block_detection
+        )
 
     @property
     def sync(self) -> Callable[P, T]:
@@ -149,8 +155,7 @@ class RpcMethodAsync(Generic[SelfType, P, T]):
 
     def __get__(self, instance, owner):
         if instance:
-            return RpcFuncAsync[P,
-                                T](self._handler_func.__get__(instance, None))
+            return RpcFuncAsync[P, T](self._handler_func.__get__(instance, None))
         return self
 
     @property
@@ -195,18 +200,15 @@ class RpcMethodAsync(Generic[SelfType, P, T]):
 # See "test_auto_rpc_handler.py" for more examples.
 @overload
 def rpc_handler(
-        func: AsyncMethod[SelfType, P, T]) -> RpcMethodAsync[SelfType, P, T]:
-    ...
+    func: AsyncMethod[SelfType, P, T],
+) -> RpcMethodAsync[SelfType, P, T]: ...
 
 
 @overload
-def rpc_handler(
-        func: SyncMethod[SelfType, P, T]) -> RpcMethodSync[SelfType, P, T]:
-    ...
+def rpc_handler(func: SyncMethod[SelfType, P, T]) -> RpcMethodSync[SelfType, P, T]: ...
 
 
-def rpc_handler(func: Union[AsyncMethod[SelfType, P, T], SyncMethod[SelfType,
-                                                                    P, T]]):
+def rpc_handler(func: Union[AsyncMethod[SelfType, P, T], SyncMethod[SelfType, P, T]]):
     if inspect.iscoroutinefunction(func):
         return RpcMethodAsync[SelfType, P, T](func)  # type: ignore
     return RpcMethodSync[SelfType, P, T](func)  # type: ignore
@@ -218,6 +220,7 @@ class _RpcMethodWorkflow:
     """A private, generic single-activity workflow that executes a rpc method
     (as activity func) by the rpc method name.
     """
+
     @workflow.run
     async def run(
         self,
@@ -237,7 +240,8 @@ class _RpcMethodWorkflow:
                 schedule_to_close_timeout=deadline,
                 retry_policy=NO_RETRY_POLICY,
                 cancellation_type=(
-                    ActivityCancellationType.WAIT_CANCELLATION_COMPLETED),
+                    ActivityCancellationType.WAIT_CANCELLATION_COMPLETED
+                ),
             )
         except ActivityError as activity_err:
             cause = activity_err.cause
@@ -248,21 +252,24 @@ class _RpcMethodWorkflow:
             now = workflow.time()
             server_log.exception(
                 f'RPC {rpc_method_name} execution timed out '
-                f'after {now-rpc_start_time:.3f} seconds, '
-                f'deadline={deadline.total_seconds():.3f} sec')
+                f'after {now - rpc_start_time:.3f} seconds, '
+                f'deadline={deadline.total_seconds():.3f} sec'
+            )
             try:
                 worker_info = await workflow.execute_local_activity(
                     activity='get_worker_info',
                     schedule_to_close_timeout=timedelta(seconds=1.0),
-                    retry_policy=NO_RETRY_POLICY)
+                    retry_policy=NO_RETRY_POLICY,
+                )
                 elapsed = workflow.time() - now
                 server_log.warning(
-                    f'Fetched worker info in {elapsed:.3f} seconds:\n'
-                    f'{worker_info}')
+                    f'Fetched worker info in {elapsed:.3f} seconds:\n{worker_info}'
+                )
             except BaseException as e:
                 server_log.exception(
-                    f"Failed to examine worker info: most likely, the asyncio "
-                    f"event loop is blocked. Exception: {e}")
+                    f'Failed to examine worker info: most likely, the asyncio '
+                    f'event loop is blocked. Exception: {e}'
+                )
             raise
 
 
@@ -288,8 +295,9 @@ class AutoRpcFunctionDisqualified(Exception):
 
     def __str__(self) -> str:
         return (
-            f'{self._function.__qualname__} cannot serve as RPC method due ' +
-            f'to: {self._reason}')
+            f'{self._function.__qualname__} cannot serve as RPC method due '
+            + f'to: {self._reason}'
+        )
 
 
 # TODO(siyang): Consider provide a function decorator to opt-in/out of AutoRPC.
@@ -299,25 +307,23 @@ def _qualify_as_rpc_method(function: Callable) -> bool:
     # Disallow @overload method.
     if function.__name__ == '_overload_dummy':
         raise AutoRpcFunctionDisqualified(
-            function, 'AutoRPC service class must not have overload function.')
+            function, 'AutoRPC service class must not have overload function.'
+        )
 
     if not _is_public_instance_method(function):
         return False  # Skip private or non-instance method.
 
     if inspect.isasyncgenfunction(function):
-        raise AutoRpcFunctionDisqualified(function,
-                                          'func is async generator function')
+        raise AutoRpcFunctionDisqualified(function, 'func is async generator function')
     if inspect.isgeneratorfunction(function):
-        raise AutoRpcFunctionDisqualified(function,
-                                          'func is generator function')
+        raise AutoRpcFunctionDisqualified(function, 'func is generator function')
 
     # We don't support keyward-only or kwargs.
     for param in inspect.signature(function).parameters.values():
-        if param.kind in (_ParameterKind.KEYWORD_ONLY,
-                          _ParameterKind.VAR_KEYWORD):
+        if param.kind in (_ParameterKind.KEYWORD_ONLY, _ParameterKind.VAR_KEYWORD):
             raise AutoRpcFunctionDisqualified(
-                function,
-                f'func cannot have keyword-only or kwargs parameter: {param}.')
+                function, f'func cannot have keyword-only or kwargs parameter: {param}.'
+            )
 
     # TODO(siyang): Implement more strict checks on parameter types and return
     # type to be serializable (primitives, dataclasses, list|set|dict)
@@ -335,14 +341,16 @@ ServiceType = TypeVar('ServiceType')
 def _auto_rpc_instance_member(m):
     return isinstance(m, (RpcFuncAsync, RpcFuncSync)) and hasattr(
         m._handler_func,  # pylint: disable=protected-access
-        _RPC_METHOD_ATTR)
+        _RPC_METHOD_ATTR,
+    )
 
 
 # Predicate for a @rpc_handler method bound to an @auto_rpc_service class.
 def _auto_rpc_class_member(m):
     return isinstance(m, (RpcMethodAsync, RpcMethodSync)) and hasattr(
         m._handler_func,  # pylint: disable=protected-access
-        _RPC_METHOD_ATTR)
+        _RPC_METHOD_ATTR,
+    )
 
 
 def _report_retryable_exception(error: BaseException) -> None:
@@ -350,8 +358,10 @@ def _report_retryable_exception(error: BaseException) -> None:
         print(f'raise retriable ex: {error}')
         return
 
-    safe_message = (safe_exception_message_for_log(error)
-                    or 'Restricted integration operation failed')
+    safe_message = (
+        safe_exception_message_for_log(error)
+        or 'Restricted integration operation failed'
+    )
     print(f'raise retriable ex: {type(error).__name__}: {safe_message}')
     server_log.debug(
         'Restricted raw AutoRPC retry failure (error_type=%s)',
@@ -365,11 +375,11 @@ def autorpc_handler_wrapper(func):
     Wrap the rpc handler function with generic framework-level logic to handle
     deserialization and non-retriable errors.
     """
+
     def _wrap_handler_sync(*payloads: Payload, **kwargs) -> Payload:
         for payload in payloads:
             assert isinstance(payload, Payload)
-            assert payload.metadata.get('encoding',
-                                        b'') != b'binary/passthrough'
+            assert payload.metadata.get('encoding', b'') != b'binary/passthrough'
         args = _AUTO_RPC_DATA_CONVERTER.from_payloads(payloads)
         try:
             ret = func(*args, **kwargs)
@@ -385,14 +395,15 @@ def autorpc_handler_wrapper(func):
     async def _wrap_handler_async(*payloads: Payload, **kwargs) -> Payload:
         for payload in payloads:
             assert isinstance(payload, Payload)
-            assert payload.metadata.get('encoding',
-                                        b'') != b'binary/passthrough'
-        args = await sync_to_async(_AUTO_RPC_DATA_CONVERTER.from_payloads,
-                                   _AUTO_RPC_SERDE_THREADPOOL)(payloads)
+            assert payload.metadata.get('encoding', b'') != b'binary/passthrough'
+        args = await sync_to_async(
+            _AUTO_RPC_DATA_CONVERTER.from_payloads, _AUTO_RPC_SERDE_THREADPOOL
+        )(payloads)
         try:
             ret = await func(*args, **kwargs)
-            return await sync_to_async(_AUTO_RPC_DATA_CONVERTER.to_payload,
-                                       _AUTO_RPC_SERDE_THREADPOOL)(ret)
+            return await sync_to_async(
+                _AUTO_RPC_DATA_CONVERTER.to_payload, _AUTO_RPC_SERDE_THREADPOOL
+            )(ret)
         except BaseException as ex:
             if isinstance(ex, (PublicException, ApplicationError)):
                 raise
@@ -412,7 +423,7 @@ def autorpc_handler_wrapper(func):
 
 # TODO: Add the correct type (see pyright warning)
 def _export_rpc_method_activities(
-        service_impl: ServiceType,  # type: ignore
+    service_impl: ServiceType,  # type: ignore
 ) -> List[Callable]:
     """
     Scan the service implementation and exports a list of @rpc_method methods.
@@ -426,7 +437,9 @@ def _export_rpc_method_activities(
                     # Enable auto heartbeating for RPC handler execution so
                     # that it can receive cancellation signal (e.g., after
                     # timeout) and interrupt the exceution.
-                    auto_heartbeater(method._handler_func)))
+                    auto_heartbeater(method._handler_func)
+                )
+            )
     return rpc_methods
 
 
@@ -448,11 +461,11 @@ class _ArgsFlattener:
     To keep it simple, we don't support keyword-only or var-keyword; only
     positional args are supported, or exception will be thrown.
     """
+
     def __init__(self, method) -> None:
         self._spec = inspect.getfullargspec(method)
         if self._spec.args[0] != 'self':
-            raise RuntimeError(
-                f'expect self as first arg, got: {self._spec.args[0]}')
+            raise RuntimeError(f'expect self as first arg, got: {self._spec.args[0]}')
         self._args = self._spec.args[1:]  # Drop the first 'self' arg
         # We pre-fill None for parameter without default value in the defaults
         # list, to make it the same length as self._args
@@ -529,8 +542,9 @@ class _ServiceClient(Generic[ServiceType]):
     ):
         self._service_name = service_cls.__name__
         self._workflow_name = _rpc_workflow_name(self._service_name)
-        self._task_queue = _task_queue_name(config.server_name_prefix,
-                                            self._service_name)
+        self._task_queue = _task_queue_name(
+            config.server_name_prefix, self._service_name
+        )
         self._client = client
         self._config = config
         self._num_calls = 0
@@ -539,29 +553,26 @@ class _ServiceClient(Generic[ServiceType]):
         # For testing purpose, record the last executed wf id per rpc method.
         self._wf_id_per_method: Dict[str, str] = {}
 
-        for name, member in inspect.getmembers(service_cls,
-                                               _auto_rpc_class_member):
+        for name, member in inspect.getmembers(service_cls, _auto_rpc_class_member):
             if isinstance(member, RpcMethodSync):
-                self._method_arg_flattener[name] = _ArgsFlattener(
-                    member._handler_func)
-                setattr(self, name,
-                        RpcFuncAsyncToSync(self._proxy_call_async(name)))
+                self._method_arg_flattener[name] = _ArgsFlattener(member._handler_func)
+                setattr(self, name, RpcFuncAsyncToSync(self._proxy_call_async(name)))
 
             if isinstance(member, RpcMethodAsync):
-                self._method_arg_flattener[name] = _ArgsFlattener(
-                    member._handler_func)
+                self._method_arg_flattener[name] = _ArgsFlattener(member._handler_func)
                 setattr(
                     self,
                     name,
                     # Skip blocking-detection because we know the client side
                     # invocation is simply executing a workflow.
-                    RpcFuncAsync(self._proxy_call_async(name),
-                                 exclude_from_block_detection=True))
+                    RpcFuncAsync(
+                        self._proxy_call_async(name), exclude_from_block_detection=True
+                    ),
+                )
 
     def _get_workflow_id(self, method_name: str) -> str:
         wf_uuid = uuid.uuid4().hex[:8]
-        wf_id = (f'{self._service_name}.{method_name}-{self._num_calls}-'
-                 f'{wf_uuid}')
+        wf_id = f'{self._service_name}.{method_name}-{self._num_calls}-{wf_uuid}'
         self._wf_id_per_method[method_name] = wf_id
         return wf_id
 
@@ -570,10 +581,10 @@ class _ServiceClient(Generic[ServiceType]):
     # which is much less latency sensitive (e.g., training or bp job).
     def _get_timeout_config(self, method_name: str) -> AutoRpcTimeoutConfig:
         raw_config = self._config.method_timeout_config.get(
-            method_name, self._config.timeout_config)
+            method_name, self._config.timeout_config
+        )
         config = copy.deepcopy(raw_config)
-        config.retry_policy = config.retry_policy or copy.deepcopy(
-            DEFAULT_RETRY_POLICY)
+        config.retry_policy = config.retry_policy or copy.deepcopy(DEFAULT_RETRY_POLICY)
 
         # Make sure non retriable errors include "_AutoRpcNonRetriableError"
         non_retriable_errors = config.retry_policy.non_retryable_error_types
@@ -602,7 +613,8 @@ class _ServiceClient(Generic[ServiceType]):
             # If time budget is sufficient, try to increase timeout of
             # each single attempt to time_budget but not exceeding 1min cap.
             config.attempt_timeout = max(
-                min(time_budget, timedelta(minutes=1)), single_attempt_timeout)
+                min(time_budget, timedelta(minutes=1)), single_attempt_timeout
+            )
 
         return config
 
@@ -623,26 +635,32 @@ class _ServiceClient(Generic[ServiceType]):
 
         # Handle serialization of args in a threadpool to avoid blocking
         # the workflow worker event loop, which is necessary for large payload.
-        payloads = await sync_to_async(_AUTO_RPC_DATA_CONVERTER.to_payloads,
-                                       _AUTO_RPC_SERDE_THREADPOOL)(args)
+        payloads = await sync_to_async(
+            _AUTO_RPC_DATA_CONVERTER.to_payloads, _AUTO_RPC_SERDE_THREADPOOL
+        )(args)
         while retry_count < max_retries:
             try:
                 ret_payload = await self._execute_workflow_without_retry(
-                    method_name, retry_count > 0, *payloads)
+                    method_name, retry_count > 0, *payloads
+                )
                 return await sync_to_async(
-                    _AUTO_RPC_DATA_CONVERTER.from_payload,
-                    _AUTO_RPC_SERDE_THREADPOOL)(ret_payload)
+                    _AUTO_RPC_DATA_CONVERTER.from_payload, _AUTO_RPC_SERDE_THREADPOOL
+                )(ret_payload)
             except TemporalRPCError as error:
                 # error is scoped only to the except block. assign it to the
                 # temporal_error so that it can be referenced outside.
                 temporal_error = error
                 error_message = temporal_error.message
-                if (temporal_error.status == RPCStatusCode.DEADLINE_EXCEEDED
-                        or temporal_error.status == RPCStatusCode.CANCELLED):
-                    client_log.debug(f"Timeout error: {temporal_error}")
-                    client_log.debug(f"Retrying in {delay} seconds ..." +
-                                     f"Attempt {retry_count+1} of " +
-                                     f"{max_retries}")
+                if (
+                    temporal_error.status == RPCStatusCode.DEADLINE_EXCEEDED
+                    or temporal_error.status == RPCStatusCode.CANCELLED
+                ):
+                    client_log.debug(f'Timeout error: {temporal_error}')
+                    client_log.debug(
+                        f'Retrying in {delay} seconds ...'
+                        + f'Attempt {retry_count + 1} of '
+                        + f'{max_retries}'
+                    )
                     retry_count += 1
                     # Wait before retrying as network errors can
                     # take time to resolve.
@@ -660,11 +678,12 @@ class _ServiceClient(Generic[ServiceType]):
             error_type=type(temporal_error).__name__,
             message=error_message,
             stack_trace=None,
-            non_retryable=False) from temporal_error
+            non_retryable=False,
+        ) from temporal_error
 
-    async def _execute_workflow_without_retry(self, method_name: str,
-                                              re_initialize: bool, *payloads:
-                                              Payload) -> Payload:
+    async def _execute_workflow_without_retry(
+        self, method_name: str, re_initialize: bool, *payloads: Payload
+    ) -> Payload:
         client_log.debug('Proxy call %s.%s', self._service_name, method_name)
         client = await self._client.get(re_initialize=re_initialize)
         timeout_config = self._get_timeout_config(method_name)
@@ -686,8 +705,9 @@ class _ServiceClient(Generic[ServiceType]):
                     'rpc_method': [method_name],
                 },
                 execution_timeout=timeout_config.rpc_timeout,
-                run_timeout=(timeout_config.attempt_timeout
-                             or timeout_config.rpc_timeout),
+                run_timeout=(
+                    timeout_config.attempt_timeout or timeout_config.rpc_timeout
+                ),
                 retry_policy=timeout_config.retry_policy,
                 task_timeout=DEFAULT_TASK_TIMEOUT,
             )
@@ -695,28 +715,38 @@ class _ServiceClient(Generic[ServiceType]):
             workflow_url = self._client.format_workflow_web_url(workflow_id)
             client_log.exception(
                 'AutoRPC call to %s.%s failed, workflow url: %s',
-                self._service_name, method_name, workflow_url)
+                self._service_name,
+                method_name,
+                workflow_url,
+            )
             if isinstance(temporal_error, WorkflowFailureError):
                 if not isinstance(temporal_error.cause, ApplicationError):
                     self._start_debug_in_background(workflow_id)
-                wf_failure_to_rpc_error(self._service_name, method_name,
-                                        temporal_error)
+                wf_failure_to_rpc_error(self._service_name, method_name, temporal_error)
             error_message = None
             if isinstance(temporal_error, TemporalRPCError):
                 client_log.error(
-                    "gRPC error when talking to Temporal service, "
-                    "status code=%s, message=%s", temporal_error.status.name,
-                    temporal_error.message)
+                    'gRPC error when talking to Temporal service, '
+                    'status code=%s, message=%s',
+                    temporal_error.status.name,
+                    temporal_error.message,
+                )
                 # raise temporal error in case of timeout expired
-                if (temporal_error.status == RPCStatusCode.DEADLINE_EXCEEDED
-                        or temporal_error.status == RPCStatusCode.CANCELLED):
+                if (
+                    temporal_error.status == RPCStatusCode.DEADLINE_EXCEEDED
+                    or temporal_error.status == RPCStatusCode.CANCELLED
+                ):
                     raise temporal_error
                 error_message = temporal_error.message
 
-            raise RpcError(self._service_name, method_name,
-                           error_type=type(temporal_error).__name__,
-                           message=error_message, stack_trace=None,
-                           non_retryable=False) from temporal_error
+            raise RpcError(
+                self._service_name,
+                method_name,
+                error_type=type(temporal_error).__name__,
+                message=error_message,
+                stack_trace=None,
+                non_retryable=False,
+            ) from temporal_error
 
     def _start_debug_in_background(self, workflow_id: str):
         debug_task = asyncio.create_task(self._debug_failed_call(workflow_id))
@@ -728,23 +758,28 @@ class _ServiceClient(Generic[ServiceType]):
         debug_start_time = time.perf_counter()
         try:
             worker_info = await client.execute_workflow(
-                'WorkerInfoWorkflow', task_queue=self._task_queue,
+                'WorkerInfoWorkflow',
+                task_queue=self._task_queue,
                 id=f'debug_{workflow_id}',
                 execution_timeout=timedelta(seconds=10.0),
                 run_timeout=timedelta(seconds=10.0),
                 rpc_timeout=timedelta(seconds=1.0),
-                retry_policy=NO_RETRY_POLICY)
+                retry_policy=NO_RETRY_POLICY,
+            )
             fetch_info_latency = time.perf_counter() - debug_start_time
             client_log.warning(
                 f'Took {fetch_info_latency:.3f} sec to fetch '
-                'Worker info fetched for failed workflow %s:\n%s', workflow_id,
-                worker_info)
+                'Worker info fetched for failed workflow %s:\n%s',
+                workflow_id,
+                worker_info,
+            )
         except BaseException:
             fetch_info_latency = time.perf_counter() - debug_start_time
             client_log.exception(
                 f'Failed to fetch worker info after {fetch_info_latency:.3f} '
                 f'seconds for failed workflow {workflow_id}, likely because '
-                'the worker is either unavailable or unresponsive.')
+                'the worker is either unavailable or unresponsive.'
+            )
 
     def _proxy_call_sync(self, method_name: str):
         def wrapper(*args, **kwargs):
@@ -761,9 +796,8 @@ class _ServiceClient(Generic[ServiceType]):
             return await self._execute_workflow(method_name, *flat_args)
 
         return tracing.trace(
-            tracing.TraceOptions(
-                span_name=f'{self._service_name}.{method_name}'))(
-                    _autorpc_wrapper)
+            tracing.TraceOptions(span_name=f'{self._service_name}.{method_name}')
+        )(_autorpc_wrapper)
 
 
 # Create a type-safe RPC client stub for the 'ServiceType'.
@@ -787,8 +821,11 @@ class AutoRpcClassDisqualified(Exception):
 def auto_rpc_service(cls: ServiceType) -> ServiceType:
     has_rpc_method = False
     for _, member in inspect.getmembers(
-            cls, lambda m: isinstance(m, (RpcMethodAsync, RpcMethodSync)) or
-            inspect.isfunction(m)):
+        cls,
+        lambda m: (
+            isinstance(m, (RpcMethodAsync, RpcMethodSync)) or inspect.isfunction(m)
+        ),
+    ):
         rpc_method_wrapper = None
         if isinstance(member, (RpcMethodSync, RpcMethodAsync)):
             rpc_method_wrapper = member
@@ -798,12 +835,11 @@ def auto_rpc_service(cls: ServiceType) -> ServiceType:
         if inspect.isfunction(member) and _qualify_as_rpc_method(member):
             if rpc_method_wrapper is None:
                 raise AutoRpcFunctionDisqualified(
-                    member,
-                    'RPC handler method must be decorated with @rpc_handler')
+                    member, 'RPC handler method must be decorated with @rpc_handler'
+                )
             if isinstance(member, RpcMethodAsync):
                 # Automatically heartbeat for async activities:
-                activity.defn(name=member.__qualname__)(
-                    auto_heartbeater(member))
+                activity.defn(name=member.__qualname__)(auto_heartbeater(member))
             else:
                 activity.defn(name=member.__qualname__)(member)
             setattr(member, _RPC_METHOD_ATTR, True)
@@ -811,7 +847,8 @@ def auto_rpc_service(cls: ServiceType) -> ServiceType:
 
     if not has_rpc_method:
         raise AutoRpcClassDisqualified(
-            f'{cls} is marked as @auto_rpc_service without qualifying method.')
+            f'{cls} is marked as @auto_rpc_service without qualifying method.'
+        )
 
     return cls
 
@@ -843,40 +880,43 @@ class AutoRpcServerWorkerConfig:
             f'{service_name}-worker',
             WorkerOptions(
                 max_worker_threads=self.max_executor_threads,
-                task_queue=_task_queue_name(self.server_name_prefix,
-                                            service_name)),
-            self.temporal_config)
+                task_queue=_task_queue_name(self.server_name_prefix, service_name),
+            ),
+            self.temporal_config,
+        )
 
 
 # For testing use, build the server worker without running.
 # TODO: Add the correct type (see pyright warning)
 async def build_server(
-        service_impl: ServiceType,  # type: ignore
-        worker_env: WorkerEnv) -> Worker:
+    service_impl: ServiceType,  # type: ignore
+    worker_env: WorkerEnv,
+) -> Worker:
     service_name = service_impl.__class__.__name__
     activities = _export_rpc_method_activities(service_impl)
     if len(activities) == 0:
         raise RuntimeError(f'Cannot find activities from {service_name}')
 
-    sync_activities = [
-        fn for fn in activities if not inspect.iscoroutinefunction(fn)
-    ]
+    sync_activities = [fn for fn in activities if not inspect.iscoroutinefunction(fn)]
     if sync_activities:
         if not worker_env.options.max_worker_threads:
             fn_names = ', '.join([fn.__name__ for fn in sync_activities])
             raise RuntimeError(
                 'Expect server config to specify max_executor_threads '
-                f'because [{fn_names}] functions are not coroutine.')
+                f'because [{fn_names}] functions are not coroutine.'
+            )
 
     # Here is a bit of magic: we dynamically copy the generic workflow type
     # "_RpcMethodWorkflow" into a new workflow type "RpcWorkflow_<SerivceName>"
     # which improves visibility in Temporal web UI as well as tracing.
     rpc_workflow_name = _rpc_workflow_name(service_name)
-    rpc_workflow_cls = type(rpc_workflow_name, _RpcMethodWorkflow.__bases__,
-                            dict(_RpcMethodWorkflow.__dict__))
+    rpc_workflow_cls = type(
+        rpc_workflow_name,
+        _RpcMethodWorkflow.__bases__,
+        dict(_RpcMethodWorkflow.__dict__),
+    )
     wf_def = workflow._Definition.must_from_class(_RpcMethodWorkflow)
-    wf_def = dataclasses.replace(wf_def, name=rpc_workflow_name,
-                                 cls=rpc_workflow_cls)
+    wf_def = dataclasses.replace(wf_def, name=rpc_workflow_name, cls=rpc_workflow_cls)
     setattr(rpc_workflow_cls, '__temporal_workflow_definition', wf_def)
 
     worker = await worker_env.build_worker(
@@ -885,14 +925,16 @@ async def build_server(
         worker_name_suffix=f'-{service_name}-worker',
     )
 
-    server_log.info('Starting AutoRPC server %s with config:\n%s\n',
-                    service_name, worker.config())
+    server_log.info(
+        'Starting AutoRPC server %s with config:\n%s\n', service_name, worker.config()
+    )
     return worker
 
 
 async def create_server_from_config(
     service_impl: ServiceType,  # type: ignore
-    config: AutoRpcServerWorkerConfig) -> Tuple[WorkerEnv, Worker]:
+    config: AutoRpcServerWorkerConfig,
+) -> Tuple[WorkerEnv, Worker]:
     worker_env = config.to_worker_env(service_impl.__class__.__name__)
     worker = await build_server(service_impl, worker_env)
     return (worker_env, worker)

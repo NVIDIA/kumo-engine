@@ -18,7 +18,8 @@ def _module_stub(num_rhs_nodes: int) -> IDLinkGNNLightningModule:
         SimpleNamespace(
             num_rhs_nodes=num_rhs_nodes,
             metric_store=SimpleNamespace(
-                get_metric_collection=lambda stage: SimpleNamespace(max_k=100)),
+                get_metric_collection=lambda stage: SimpleNamespace(max_k=100)
+            ),
         ),
     )
 
@@ -55,7 +56,8 @@ def test_get_rhs_pred_index_mat_pads_with_out_of_range_sentinel():
     rhs_y_index = torch.tensor([999, 999])
 
     mat = IDLinkGNNLightningModule.get_rhs_pred_index_mat(
-        module, logits, rhs_pred_index, lhs_pred_batch, lhs_y_batch)
+        module, logits, rhs_pred_index, lhs_pred_batch, lhs_y_batch
+    )
 
     # Padding must be the out-of-range sentinel, never a negative index.
     assert (mat < 0).sum().item() == 0
@@ -84,7 +86,8 @@ def test_get_rhs_pred_index_mat_counts_true_candidate_hit():
     rhs_y_index = torch.tensor([7, 999])
 
     mat = IDLinkGNNLightningModule.get_rhs_pred_index_mat(
-        module, logits, rhs_pred_index, lhs_pred_batch, lhs_y_batch)
+        module, logits, rhs_pred_index, lhs_pred_batch, lhs_y_batch
+    )
 
     recall = LinkPredRecall(k=100)
     recall.update(mat, torch.stack([lhs_y_batch, rhs_y_index]))

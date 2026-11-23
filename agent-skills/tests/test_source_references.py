@@ -7,6 +7,7 @@ Module paths are written as the agent sees them in a notebook (`kumo_core.train.
 monorepo paths, and are resolved here against the package sources. `kumoml.*` lives in a separate
 repository and is not checked.
 """
+
 import ast
 import re
 from dataclasses import dataclass
@@ -22,19 +23,37 @@ PACKAGES = {
     'kumo_core': REPO / 'packages' / 'kumo-core' / 'src' / 'kumo_core',
     'kumoapi': REPO / 'packages' / 'kumo-api' / 'kumoapi',
     'kumo_snowflake': REPO / 'packages' / 'kumo-snowflake' / 'src' / 'kumo_snowflake',
-    'kumo_databricks': REPO / 'packages' / 'kumo-databricks' / 'src' / 'kumo_databricks',
+    'kumo_databricks': REPO
+    / 'packages'
+    / 'kumo-databricks'
+    / 'src'
+    / 'kumo_databricks',
 }
 ROOT = r'(?:kumo\.engine|kumo_core|kumoapi|kumo_snowflake|kumo_databricks)'
 DOTTED = re.compile(rf'`({ROOT}(?:\.[A-Za-z_][A-Za-z0-9_]*)+)`')
 FENCE = re.compile(r'^[ \t]*```[^\n]*\n(.*?)^[ \t]*```', re.DOTALL | re.MULTILINE)
-FROM_IMPORT = re.compile(rf'^[ \t]*from[ \t]+({ROOT}(?:\.\w+)*)[ \t]+import[ \t]+(\([^)]*\)|[^\n]*)', re.MULTILINE)
+FROM_IMPORT = re.compile(
+    rf'^[ \t]*from[ \t]+({ROOT}(?:\.\w+)*)[ \t]+import[ \t]+(\([^)]*\)|[^\n]*)',
+    re.MULTILINE,
+)
 PLAIN_IMPORT = re.compile(r'^[ \t]*import[ \t]+([^\n#]*)', re.MULTILINE)
 ALIAS = re.compile(r'\bkumo\.([A-Za-z_][A-Za-z0-9_]*)')
 
 # Names the skills say do not exist (superseded or hosted-only) and must never be emitted.
 NOT_EXPORTED = {
-    'ComputeType', 'Dtype', 'EdgeType', 'FilesystemArtifactLocation', 'LocalBackend', 'NodeType',
-    'Session', 'Storage', 'Stype', 'create_identity', 'get_backend', 'init', 'set_backend',
+    'ComputeType',
+    'Dtype',
+    'EdgeType',
+    'FilesystemArtifactLocation',
+    'LocalBackend',
+    'NodeType',
+    'Session',
+    'Storage',
+    'Stype',
+    'create_identity',
+    'get_backend',
+    'init',
+    'set_backend',
     'test_identity_credentials',
 }
 
@@ -77,7 +96,7 @@ class Module:
         package = self.name.split('.')
         if self.file.name != '__init__.py':
             package.pop()
-        package = package[:len(package) - (node.level - 1)]
+        package = package[: len(package) - (node.level - 1)]
         return '.'.join(package + ([node.module] if node.module else []))
 
 
@@ -93,9 +112,15 @@ def bindings(body: list[ast.stmt], attr: str) -> list[tuple[ast.stmt, str | None
             if any(isinstance(t, ast.Name) and t.id == attr for t in targets):
                 found.append((node, None))
         elif isinstance(node, ast.ImportFrom):
-            found += [(node, a.name) for a in node.names if (a.asname or a.name) == attr]
+            found += [
+                (node, a.name) for a in node.names if (a.asname or a.name) == attr
+            ]
         elif isinstance(node, ast.Import):
-            found += [(node, None) for a in node.names if (a.asname or a.name).split('.')[0] == attr]
+            found += [
+                (node, None)
+                for a in node.names
+                if (a.asname or a.name).split('.')[0] == attr
+            ]
         elif isinstance(node, ast.If):
             found += bindings(node.body + node.orelse, attr)
         elif isinstance(node, ast.Try):
@@ -105,8 +130,14 @@ def bindings(body: list[ast.stmt], attr: str) -> list[tuple[ast.stmt, str | None
     return found
 
 
-def walk(body: list[ast.stmt], mod: Module, attrs: list[str], owner: str,
-         bases: list[ast.expr], seen: frozenset[str]) -> str | None:
+def walk(
+    body: list[ast.stmt],
+    mod: Module,
+    attrs: list[str],
+    owner: str,
+    bases: list[ast.expr],
+    seen: frozenset[str],
+) -> str | None:
     """Follow `attrs` through a module or class body, crossing re-exports and base classes.
 
     Walking stops, and the name is accepted, at anything the monorepo cannot answer for: a
@@ -146,7 +177,7 @@ def resolve(dotted: str, seen: frozenset[str] = frozenset()) -> str | None:
         return None  # a re-export cycle; nothing further to learn
     seen = seen | {dotted}
     prefix = next(p for p in PACKAGES if dotted == p or dotted.startswith(p + '.'))
-    parts = dotted[len(prefix):].lstrip('.').split('.') if dotted != prefix else []
+    parts = dotted[len(prefix) :].lstrip('.').split('.') if dotted != prefix else []
     path, name = PACKAGES[prefix], prefix
     while parts and path.is_dir():
         nxt = child(path, parts[0])
@@ -163,7 +194,8 @@ def resolve(dotted: str, seen: frozenset[str] = frozenset()) -> str | None:
 def exported() -> set[str]:
     for node in parse(PACKAGES['kumo.engine'] / '__init__.py').body:
         if isinstance(node, ast.Assign) and any(
-                isinstance(t, ast.Name) and t.id == '__all__' for t in node.targets):
+            isinstance(t, ast.Name) and t.id == '__all__' for t in node.targets
+        ):
             return set(ast.literal_eval(node.value))
     raise AssertionError('kumo.engine.__init__ has no __all__')
 
@@ -175,7 +207,9 @@ def code_imports(markdown: str) -> set[str]:
         for module, names in FROM_IMPORT.findall(block):
             for line in names.strip('()').split('\n'):
                 for name in line.split('#')[0].split(','):
-                    name = name.replace('(', '').replace(')', '').split(' as ')[0].strip()
+                    name = (
+                        name.replace('(', '').replace(')', '').split(' as ')[0].strip()
+                    )
                     if name.isidentifier():  # skips `*`
                         found.add(f'{module}.{name}')
         for statement in PLAIN_IMPORT.findall(block):
@@ -190,7 +224,9 @@ CITED = sorted(set(DOTTED.findall(skill_text())) | code_imports(skill_text()))
 
 
 def test_citations_are_found() -> None:
-    assert len(CITED) >= 30, CITED  # guards against the pattern silently matching nothing
+    assert len(CITED) >= 30, (
+        CITED
+    )  # guards against the pattern silently matching nothing
 
 
 @pytest.mark.parametrize('dotted', CITED)
@@ -201,9 +237,15 @@ def test_cited_module_exists(dotted: str) -> None:
 def test_kumo_names_match_the_public_api() -> None:
     used = set(ALIAS.findall(skill_text())) - {'engine'}
     public = exported()
-    assert used - public - NOT_EXPORTED == set(), 'kumo.<name> cited but not in kumo.engine.__all__'
-    assert NOT_EXPORTED & public == set(), 'a name the skills call nonexistent is now exported'
-    assert NOT_EXPORTED - used == set(), 'NOT_EXPORTED lists a name the skills no longer mention'
+    assert used - public - NOT_EXPORTED == set(), (
+        'kumo.<name> cited but not in kumo.engine.__all__'
+    )
+    assert NOT_EXPORTED & public == set(), (
+        'a name the skills call nonexistent is now exported'
+    )
+    assert NOT_EXPORTED - used == set(), (
+        'NOT_EXPORTED lists a name the skills no longer mention'
+    )
 
 
 def test_resolve_reports_missing_names() -> None:
@@ -212,13 +254,15 @@ def test_resolve_reports_missing_names() -> None:
     assert resolve('kumo_core.no_such_module') is not None
     assert resolve('kumo.engine.Trainer.fit') is None
     assert resolve('kumo.engine.Trainer.no_such_method') is not None
-    assert resolve('kumo_core.Train.trainer') is not None  # wrong case must not match `train/`
+    assert (
+        resolve('kumo_core.Train.trainer') is not None
+    )  # wrong case must not match `train/`
     assert resolve('kumo.engine.Trainer') is None
     assert resolve('kumo_snowflake.spcs.no_such_name') is not None
 
 
 def test_code_imports_are_parsed() -> None:
-    sample = '''Prose: from kumoapi.nope import Ignored
+    sample = """Prose: from kumoapi.nope import Ignored
 
 ```python
 import kumo.engine as kumo
@@ -231,9 +275,13 @@ from kumoapi.model_plan import (
 from kumoml.thing import NotChecked
 from kumo_snowflake.spcs import SPCS_TOKEN_PATH
 ```
-'''
+"""
     assert code_imports(sample) == {
-        'kumo.engine', 'kumo_core.train', 'kumoapi.typing.Dtype', 'kumoapi.typing.Stype',
-        'kumoapi.model_plan.GNNModelPlan', 'kumoapi.model_plan.RunMode',
+        'kumo.engine',
+        'kumo_core.train',
+        'kumoapi.typing.Dtype',
+        'kumoapi.typing.Stype',
+        'kumoapi.model_plan.GNNModelPlan',
+        'kumoapi.model_plan.RunMode',
         'kumo_snowflake.spcs.SPCS_TOKEN_PATH',
     }

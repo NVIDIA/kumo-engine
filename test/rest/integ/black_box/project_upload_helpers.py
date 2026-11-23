@@ -17,9 +17,10 @@ def project_upload_connector_id(
     api_prefix: str = '/v0',
 ) -> str:
     response = client.get(
-        f"{api_prefix}/projects/{project_id}/connectors/uploads/connector")
+        f'{api_prefix}/projects/{project_id}/connectors/uploads/connector'
+    )
     assert response.status_code == HTTPStatus.OK, response.text
-    return response.json()["connector_id"]
+    return response.json()['connector_id']
 
 
 def upload_project_csv(
@@ -31,34 +32,36 @@ def upload_project_csv(
 ) -> str:
     source_table_name = source_path.stem
     start = client.post(
-        f"{api_prefix}/projects/{project_id}/connectors/uploads/start",
+        f'{api_prefix}/projects/{project_id}/connectors/uploads/start',
         json={
-            "source_table_name": source_table_name,
-            "file_type": "CSV",
-            "num_parts": 1,
+            'source_table_name': source_table_name,
+            'file_type': 'CSV',
+            'num_parts': 1,
         },
     )
     assert start.status_code == HTTPStatus.OK, start.text
     upload = start.json()
 
     part = client.put(
-        upload["presigned_part_urls"]["1"],
+        upload['presigned_part_urls']['1'],
         content=source_path.read_bytes(),
     )
     assert part.status_code == HTTPStatus.OK, part.text
 
     complete = client.post(
-        f"{api_prefix}/projects/{project_id}/connectors/uploads/complete",
+        f'{api_prefix}/projects/{project_id}/connectors/uploads/complete',
         json={
-            "source_table_name": source_table_name,
-            "file_type": "CSV",
-            "temp_upload_path": upload["temp_upload_path"],
-            "upload_id": upload["upload_id"],
-            "parts_metadata": [{
-                "part_number": 1,
-                "etag": part.json()["etag"],
-            }],
-            "validate_data": False,
+            'source_table_name': source_table_name,
+            'file_type': 'CSV',
+            'temp_upload_path': upload['temp_upload_path'],
+            'upload_id': upload['upload_id'],
+            'parts_metadata': [
+                {
+                    'part_number': 1,
+                    'etag': part.json()['etag'],
+                }
+            ],
+            'validate_data': False,
         },
     )
     assert complete.status_code == HTTPStatus.OK, complete.text

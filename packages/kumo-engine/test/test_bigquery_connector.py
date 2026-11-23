@@ -17,9 +17,9 @@ from kumo.engine.connector.identity import BigQueryIdentity
         ('gs://staging/kumo', True, ReadMode.STAGED),
     ],
 )
-def test_read_configuration_reaches_the_cached_backend(staging_uri,
-                                                       require_staged,
-                                                       expected_mode):
+def test_read_configuration_reaches_the_cached_backend(
+    staging_uri, require_staged, expected_mode
+):
     identity = BigQueryIdentity()
     connector = BigQueryConnector(
         project_id='data-project',
@@ -73,10 +73,9 @@ def test_fit_rejects_model_export_to_bigquery_up_front():
     from kumo.engine.trainer.output_config import ModelOutputConfig
     from kumo.engine.trainer.trainer import Trainer
 
-    connector = BigQueryConnector(project_id='data-project',
-                                  dataset_id='analytics')
+    connector = BigQueryConnector(project_id='data-project', dataset_id='analytics')
 
     with pytest.raises(NotImplementedError, match='cannot publish models'):
         Trainer(ModelPlan()).fit(
-            None, snapshot=None,
-            export_config=ModelOutputConfig(connector, path='m'))
+            None, snapshot=None, export_config=ModelOutputConfig(connector, path='m')
+        )

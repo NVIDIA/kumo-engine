@@ -48,11 +48,14 @@ def plot_gradient(
     except ModuleNotFoundError as error:
         if error.name and error.name.split('.')[0] == 'matplotlib':
             raise ImportError(
-                'Plotting requires Matplotlib; install kumo-engine[plots].') from error
+                'Plotting requires Matplotlib; install kumo-engine[plots].'
+            ) from error
         raise
-    figure, axis = plt.subplots(figsize=(8, max(3, len(selected) * .35)))
-    axis.barh([f'{table}.{column}' for table, column, _ in selected],
-              [score for _, _, score in selected])
+    figure, axis = plt.subplots(figsize=(8, max(3, len(selected) * 0.35)))
+    axis.barh(
+        [f'{table}.{column}' for table, column, _ in selected],
+        [score for _, _, score in selected],
+    )
     axis.invert_yaxis()
     axis.set_xlabel('Gradient score')
     axis.set_title('Training column importance')
@@ -92,10 +95,12 @@ def plot_cohort(
     except ModuleNotFoundError as error:
         if error.name and error.name.split('.')[0] == 'matplotlib':
             raise ImportError(
-                'Plotting requires Matplotlib; install kumo-engine[plots].') from error
+                'Plotting requires Matplotlib; install kumo-engine[plots].'
+            ) from error
         raise
-    figure, axes = plt.subplots(2, 1, sharex=True, figsize=(8, 6),
-                                gridspec_kw={'height_ratios': [2, 1]})
+    figure, axes = plt.subplots(
+        2, 1, sharex=True, figsize=(8, 6), gridspec_kw={'height_ratios': [2, 1]}
+    )
     prediction_axis, population_axis = axes
     positions = list(range(count))
     prediction_axis.plot(positions, values, marker='o', label='Prediction')

@@ -88,60 +88,57 @@ class TrainingJobsResource:
         self._pquery_settings = driver._pquery_settings
 
         self.router = APIRouter(
-            prefix="/v0/training_jobs",
-            tags=["TrainingJobs"],
+            prefix='/v0/training_jobs',
+            tags=['TrainingJobs'],
             dependencies=[Depends(auth.authenticate_request_header)],
-            responses={HTTPStatus.NOT_FOUND: {
-                "description": "Not found"
-            }},
+            responses={HTTPStatus.NOT_FOUND: {'description': 'Not found'}},
         )
 
         self.router.add_api_route(
-            "/{id}",
+            '/{id}',
             self.get_training_job,
             response_model=TrainingJobResponse,
             methods=['GET'],
         )
 
         self.router.add_api_route(
-            "/train",
+            '/train',
             self.train,
             response_model=TrainingJobID,
             methods=['POST'],
-            summary="Create a new training job. This will cascadingly also "
-            "create graph snapshot job and training table generation job.",
+            summary='Create a new training job. This will cascadingly also '
+            'create graph snapshot job and training table generation job.',
             responses={
                 HTTPStatus.UNPROCESSABLE_ENTITY: {
-                    'description':
-                    "Unable to create a training job with the provided "
-                    "inputs"
+                    'description': 'Unable to create a training job with the provided '
+                    'inputs'
                 }
             },
         )
 
         self.router.add_api_route(
-            "/{id}/workflow",
+            '/{id}/workflow',
             self.get_generation_and_training_jobs,
             response_model=TrainingWorkflowResponse,
             methods=['GET'],
         )
 
         self.router.add_api_route(
-            "/{id}/materialization_info",
+            '/{id}/materialization_info',
             self.get_materialization_info,
             response_model=MaterializationInfoResponse,
             methods=['GET'],
         )
 
         self.router.add_api_route(
-            "/{id}/warnings",
+            '/{id}/warnings',
             self.get_warnings,
             response_model=Dict[str, ErrWarnResponse],
             methods=['POST'],
         )
 
         self.router.add_api_route(
-            "/{id}/get_train_table_generation_stats",
+            '/{id}/get_train_table_generation_stats',
             self.get_train_table_generation_stats,
             response_model=TrainTableGenerationProgress,
             methods=['GET'],
@@ -149,7 +146,7 @@ class TrainingJobsResource:
         )
 
         self.router.add_api_route(
-            "/{id}/get_train_table_split_stats",
+            '/{id}/get_train_table_split_stats',
             self.get_train_table_split_stats,
             # Optional: LP (and other pre-stats states) legitimately have no
             # per-stage split stats -- the handler returns None there, which a
@@ -161,168 +158,168 @@ class TrainingJobsResource:
         )
 
         self.router.add_api_route(
-            "/{id}/download_holdout",
+            '/{id}/download_holdout',
             self.generate_holdout_presigned_url,
             response_model=OutputPresignedUrlResponse,
             methods=['GET'],
         )
 
         self.router.add_api_route(
-            "/{id}/model_plans",
+            '/{id}/model_plans',
             self.get_model_plans,
             response_model=ModelPlansResponse,
             methods=['GET'],
         )
 
         self.router.add_api_route(
-            "/{id}/encoders",
+            '/{id}/encoders',
             self.get_encoders_for_training_job,
             response_model=Optional[Dict[str, str]],
             methods=['GET'],
             responses={
                 **nullable_response(),
                 HTTPStatus.NOT_FOUND: {
-                    'description':
-                    "The training job does not exist, or it failed or was "
-                    "cancelled without producing encoders."
+                    'description': 'The training job does not exist, or it failed or was '
+                    'cancelled without producing encoders.'
                 },
             },
         )
 
         self.router.add_api_route(
-            "/{id}/eval/binary_classification",
+            '/{id}/eval/binary_classification',
             self.get_binary_classification,
             response_model=ClassificationEvaluationResponse,
             methods=['GET'],
         )
 
         self.router.add_api_route(
-            "/{id}/eval/regression_histogram",
+            '/{id}/eval/regression_histogram',
             self.get_regression_histogram,
             response_model=AllTargetRegressionStats,
             methods=['GET'],
         )
 
         self.router.add_api_route(
-            "/{id}/eval/regression_heatmap",
+            '/{id}/eval/regression_heatmap',
             self.get_regression_heatmap,
             response_model=RegressionHeatmapResponse,
             methods=['GET'],
         )
 
         self.router.add_api_route(
-            "/{id}/eval/xai",
+            '/{id}/eval/xai',
             self.get_xai,
             response_model=XAIResponse,
             methods=['GET'],
         )
 
         self.router.add_api_route(
-            "/{id}/eval/available_xai_entities",
+            '/{id}/eval/available_xai_entities',
             self.get_available_xai_entities,
             response_model=StrategyMappings,
             methods=['GET'],
         )
 
         self.router.add_api_route(
-            "/{id}/eval/entity_subgraph/{entity_id}",
+            '/{id}/eval/entity_subgraph/{entity_id}',
             self.get_entity_old_subgraph,
             response_model=OldSubgraph,
             methods=['GET'],
         )
 
         self.router.add_api_route(
-            "/{id}/eval/subgraph/{entity_id}",
+            '/{id}/eval/subgraph/{entity_id}',
             self.get_subgraph,
             response_model=Subgraph,
             methods=['GET'],
         )
 
         self.router.add_api_route(
-            "/{id}/eval/node_pred_rfm/{entity_id}",
+            '/{id}/eval/node_pred_rfm/{entity_id}',
             self.get_node_pred_rfm,
             response_model=NodePredRFM,
             methods=['GET'],
         )
 
         self.router.add_api_route(
-            "/{id}/eval/category_node_pred_rfm/{category}",
+            '/{id}/eval/category_node_pred_rfm/{category}',
             self.get_category_node_pred_rfm,
             response_model=NodePredRFM,
             methods=['GET'],
         )
 
         self.router.add_api_route(
-            "/{id}/eval/link_pred_rfm/{entity_id}",
+            '/{id}/eval/link_pred_rfm/{entity_id}',
             self.get_link_pred_rfm,
             response_model=LinkPredRFM,
             methods=['GET'],
         )
 
         self.router.add_api_route(
-            "/{id}/eval/topk_feature/{entity_id}/{topk}",
+            '/{id}/eval/topk_feature/{entity_id}/{topk}',
             self.get_topk_feature,
             response_model=List[Feature],
             methods=['GET'],
         )
 
         self.router.add_api_route(
-            "/{id}/eval/category_link_pred_rfm/{category}",
+            '/{id}/eval/category_link_pred_rfm/{category}',
             self.get_category_link_pred_rfm,
             response_model=LinkPredRFM,
             methods=['GET'],
         )
 
         self.router.add_api_route(
-            ("/{id}/eval/category_aggr_feature/{category}"
-             "/{table_name}/{column_name}/{op}"),
+            (
+                '/{id}/eval/category_aggr_feature/{category}'
+                '/{table_name}/{column_name}/{op}'
+            ),
             self.get_category_aggr_feature,
             response_model=Feature,
             methods=['GET'],
         )
 
         self.router.add_api_route(
-            ("/{id}/eval/aggr_feature/{entity_id}"
-             "/{table_name}/{column_name}/{op}"),
+            ('/{id}/eval/aggr_feature/{entity_id}/{table_name}/{column_name}/{op}'),
             self.get_aggr_feature,
             response_model=Feature,
             methods=['GET'],
         )
 
         self.router.add_api_route(
-            "/{id}/eval/entity_output/{entity_id}",
+            '/{id}/eval/entity_output/{entity_id}',
             self.get_entity_output,
             response_model=EntityOutput,
             methods=['GET'],
         )
 
         self.router.add_api_route(
-            "/{id}/eval/entity_historical_items/{entity_id}",
+            '/{id}/eval/entity_historical_items/{entity_id}',
             self.get_entity_historical_items,
             response_model=HistoricalItems,
             methods=['GET'],
         )
 
         self.router.add_api_route(
-            "/{id}/cancel",
+            '/{id}/cancel',
             self.cancel,
             methods=['POST'],
-            description="Cancel a training job.",
+            description='Cancel a training job.',
             response_model=bool,
         )
 
         self.router.add_api_route(
-            "/{training_job_id}/sdk",
+            '/{training_job_id}/sdk',
             self.training_to_sdk,
             response_model=str,
             methods=['GET'],
         )
 
     async def cancel(
-            self,
-            id: TrainingJobID,
-            project_id: str,
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        id: TrainingJobID,
+        project_id: str,
+        ctx: RequestContext = Depends(get_ctx),
     ) -> bool:
         project_id = require_project_id(project_id)
         await self.get_training_job(id=id, project_id=project_id, ctx=ctx)
@@ -330,10 +327,10 @@ class TrainingJobsResource:
         return await self._ml_job_backend.cancel_training_job(id)
 
     async def get_warnings(
-            self,
-            id: TrainingJobID,
-            project_id: str,
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        id: TrainingJobID,
+        project_id: str,
+        ctx: RequestContext = Depends(get_ctx),
     ) -> Dict[str, ErrWarnResponse]:
         """Get all warnings and errors after validating the given TrainingJob
 
@@ -344,13 +341,11 @@ class TrainingJobsResource:
         if DISABLE_UI_WARNINGS:
             return {id: ErrWarnResponse(errors=[], warnings=[], info_items=[])}
 
-        with wrap_validation_exceptions(
-                not_exists_error=TrainingJobDoesNotExistError):
+        with wrap_validation_exceptions(not_exists_error=TrainingJobDoesNotExistError):
             return await self._driver.get_training_job_warnings([id])
 
     async def get_training_job(
-        self, id: TrainingJobID, project_id: str,
-        ctx: RequestContext = Depends(get_ctx)
+        self, id: TrainingJobID, project_id: str, ctx: RequestContext = Depends(get_ctx)
     ) -> TrainingJobResponse:
         r"""Get the training job metadata and status
 
@@ -366,23 +361,22 @@ class TrainingJobsResource:
             require_requested_project_visible_for_user(
                 project_id,
                 user_authorization=ctx.user_authorization,
-                not_found_error_factory=lambda: TrainingJobDoesNotExistError(id
-                                                                             ),
+                not_found_error_factory=lambda: TrainingJobDoesNotExistError(id),
             )
             training_job = await self._driver.get_training_job(
-                ctx, id, strip_expensive_fields=True)
+                ctx, id, strip_expensive_fields=True
+            )
             return require_visible_project_resource_for_user(
                 training_job,
                 requested_project_id=project_id,
                 user_authorization=ctx.user_authorization,
-                not_found_error_factory=lambda: TrainingJobDoesNotExistError(id
-                                                                             ),
+                not_found_error_factory=lambda: TrainingJobDoesNotExistError(id),
             )
 
     async def train(
-            self,
-            request: TrainingJobRequest,
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        request: TrainingJobRequest,
+        ctx: RequestContext = Depends(get_ctx),
     ) -> TrainingJobID:
         """
         Handler for creating a new training job.
@@ -432,33 +426,33 @@ class TrainingJobsResource:
             require_requested_project_visible_for_user(
                 project_id,
                 user_authorization=ctx.user_authorization,
-                not_found_error_factory=lambda: TrainingJobDoesNotExistError(id
-                                                                             ),
+                not_found_error_factory=lambda: TrainingJobDoesNotExistError(id),
             )
             training_job = await self._driver.get_training_job(ctx, id)
             training_job = require_visible_project_resource_for_user(
                 training_job,
                 requested_project_id=project_id,
                 user_authorization=ctx.user_authorization,
-                not_found_error_factory=lambda: TrainingJobDoesNotExistError(id
-                                                                             ),
+                not_found_error_factory=lambda: TrainingJobDoesNotExistError(id),
             )
 
             # Get predictive query info
-            pq = await self._get_pq_obj(training_job,
-                                        skip_validation=skip_validation)
+            pq = await self._get_pq_obj(training_job, skip_validation=skip_validation)
             pqid = PredictiveQueryID.compose(fpid=training_job.pquery_def_fpid)
 
             pq_definition = await self._driver.get_predictive_query_v2(
-                pqid, ProjectID(project_id))
+                pqid, ProjectID(project_id)
+            )
 
             graph_snapshot_id: GraphSnapshotID | None = None
             graph_definition = GraphDefinition(
-                **dataclasses.asdict(pq_definition.graph))
+                **dataclasses.asdict(pq_definition.graph)
+            )
 
             if training_job.graph_data_version is not None:
                 graph_snapshot_id = DataSnapshot.GRAPH.format_id(
-                    graph_definition.fpid, training_job.graph_data_version)
+                    graph_definition.fpid, training_job.graph_data_version
+                )
 
             # Keep populating the existing response field for consumers that
             # use it to recover the graph FPID for follow-on jobs.
@@ -466,24 +460,29 @@ class TrainingJobsResource:
 
             if training_job.generate_train_table_job_id is None:
                 return TrainingWorkflowResponse(
-                    pquery_definition=pq_definition, training_job=training_job,
-                    task_type=pq.task_type, query_type=pq.query_type,
+                    pquery_definition=pq_definition,
+                    training_job=training_job,
+                    task_type=pq.task_type,
+                    query_type=pq.query_type,
                     legacy_graph_id=legacy_graph_id,
                     job_source=training_job.job_source,
-                    graph_snapshot_id=graph_snapshot_id)
+                    graph_snapshot_id=graph_snapshot_id,
+                )
 
-            generation_job = (await
-                              self._driver.get_training_table_generation_job(
-                                  ctx,
-                                  GenerateTrainTableJobID(
-                                      training_job.generate_train_table_job_id),
-                              ))
+            generation_job = await self._driver.get_training_table_generation_job(
+                ctx,
+                GenerateTrainTableJobID(training_job.generate_train_table_job_id),
+            )
             return TrainingWorkflowResponse(
-                pquery_definition=pq_definition, training_job=training_job,
-                generation_job=generation_job, task_type=pq.task_type,
-                query_type=pq.query_type, legacy_graph_id=legacy_graph_id,
+                pquery_definition=pq_definition,
+                training_job=training_job,
+                generation_job=generation_job,
+                task_type=pq.task_type,
+                query_type=pq.query_type,
+                legacy_graph_id=legacy_graph_id,
                 job_source=training_job.job_source,
-                graph_snapshot_id=graph_snapshot_id)
+                graph_snapshot_id=graph_snapshot_id,
+            )
 
     async def get_materialization_info(
         self,
@@ -498,9 +497,9 @@ class TrainingJobsResource:
         with wrap_validation_exceptions(TrainingJobDoesNotExistError):
             info = await self._driver.get_training_job_materialization_info(id)
         if info is None:
-            status = "Materialization info is not yet available."
+            status = 'Materialization info is not yet available.'
         else:
-            status = "Materialization info is available."
+            status = 'Materialization info is available.'
         return MaterializationInfoResponse(
             status=status,
             info=info,
@@ -559,10 +558,10 @@ class TrainingJobsResource:
             raise ValidationHTTPException(str(err), err)
 
     async def generate_holdout_presigned_url(
-            self,
-            id: TrainingJobID,
-            project_id: str,
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        id: TrainingJobID,
+        project_id: str,
+        ctx: RequestContext = Depends(get_ctx),
     ) -> OutputPresignedUrlResponse:
         r"""Generate the holdout dataset download url.
 
@@ -585,10 +584,10 @@ class TrainingJobsResource:
             raise ValidationHTTPException(str(err), err)
 
     async def get_model_plans(
-            self,
-            id: TrainingJobID,
-            project_id: str,
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        id: TrainingJobID,
+        project_id: str,
+        ctx: RequestContext = Depends(get_ctx),
     ) -> ModelPlansResponse:
         r"""Get the model plans for all existing experiments
 
@@ -608,20 +607,19 @@ class TrainingJobsResource:
                 training_job = require_visible_project_resource(
                     training_job,
                     requested_project_id=project_id,
-                    not_found_error_factory=lambda:
-                    TrainingJobDoesNotExistError(id),
+                    not_found_error_factory=lambda: TrainingJobDoesNotExistError(id),
                 )
 
                 # Get predictive query info
                 # Skip validation since it is a read-only operation
                 pq = await self._get_pq_obj(training_job, skip_validation=True)
 
-                return (await self._driver.get_model_plans_per_experiment(
+                return await self._driver.get_model_plans_per_experiment(
                     ctx=ctx,
                     training_job_id=id,
                     task_type=pq.task_type,
                     query_type=pq.query_type,
-                ))
+                )
         except (ValueError, KeyError, NotImplementedError) as err:
             raise ValidationHTTPException(str(err), err)
 
@@ -671,20 +669,21 @@ class TrainingJobsResource:
             if not training_job or not training_job.execution.results:
                 raise HTTPException(
                     HTTPStatus.NOT_FOUND,
-                    RestStatusCode.EVALUATION_NOT_YET_COMPLETED.value)
+                    RestStatusCode.EVALUATION_NOT_YET_COMPLETED.value,
+                )
             if not training_job.execution.results.test_eval:
                 raise HTTPException(
-                    HTTPStatus.NOT_FOUND,
-                    RestStatusCode.EVALUATION_NOT_AVAILABLE.value)
+                    HTTPStatus.NOT_FOUND, RestStatusCode.EVALUATION_NOT_AVAILABLE.value
+                )
 
-            return (
-                ClassificationEvaluationResponse.from_binary_confusion_matrix(
-                    training_job.execution.results.test_eval.confusion_matrix))
+            return ClassificationEvaluationResponse.from_binary_confusion_matrix(
+                training_job.execution.results.test_eval.confusion_matrix
+            )
 
     async def get_regression_histogram(
-            self,
-            id: TrainingJobID,
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        id: TrainingJobID,
+        ctx: RequestContext = Depends(get_ctx),
     ) -> AllTargetRegressionStats:
         r"""Get histograms for the target column of the training table for a
         regression task. See #7243
@@ -701,12 +700,13 @@ class TrainingJobsResource:
         """
         with wrap_validation_exceptions(TrainingJobDoesNotExistError):
             return await self._rest_driver.get_regression_histogram(
-                ctx=ctx, id=None, job_id=id)
+                ctx=ctx, id=None, job_id=id
+            )
 
     async def get_regression_heatmap(
-            self,
-            id: TrainingJobID,
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        id: TrainingJobID,
+        ctx: RequestContext = Depends(get_ctx),
     ) -> RegressionHeatmapResponse:
         r"""Get a heatmap for predicted vs actual samples for each train, val,
         test split
@@ -723,11 +723,12 @@ class TrainingJobsResource:
         """
         with wrap_validation_exceptions(TrainingJobDoesNotExistError):
             return await self._rest_driver.get_regression_heatmap(
-                ctx=ctx, id=None, job_id=id)
+                ctx=ctx, id=None, job_id=id
+            )
 
     async def get_xai(
-        self, id: TrainingJobID,
-        ctx: RequestContext = Depends(get_ctx)) -> XAIResponse:
+        self, id: TrainingJobID, ctx: RequestContext = Depends(get_ctx)
+    ) -> XAIResponse:
         r"""Get explanation for a pquery.
         Args:
             id (str): Id of the trained predictive query to get eval stats for.
@@ -737,8 +738,7 @@ class TrainingJobsResource:
             from root (entity) table.
         """
         with wrap_validation_exceptions(TrainingJobDoesNotExistError):
-            response = await self._rest_driver.get_xai(ctx=ctx, id=None,
-                                                       job_id=id)
+            response = await self._rest_driver.get_xai(ctx=ctx, id=None, job_id=id)
             assert isinstance(response, XAIResponse)
             return response
 
@@ -756,11 +756,12 @@ class TrainingJobsResource:
         """
         with wrap_validation_exceptions(TrainingJobDoesNotExistError):
             return await self._rest_driver.get_available_xai_entities(
-                ctx=ctx, id=None, job_id=id)
+                ctx=ctx, id=None, job_id=id
+            )
 
     async def get_entity_old_subgraph(
-        self, id: TrainingJobID, entity_id: str,
-        ctx: RequestContext = Depends(get_ctx)) -> OldSubgraph:
+        self, id: TrainingJobID, entity_id: str, ctx: RequestContext = Depends(get_ctx)
+    ) -> OldSubgraph:
         r"""Get XAI subgraph of an entity (old version).
 
         Args:
@@ -771,107 +772,141 @@ class TrainingJobsResource:
         """
         with wrap_validation_exceptions(TrainingJobDoesNotExistError):
             return await self._rest_driver.get_entity_old_subgraph(
-                ctx=ctx, id=None, job_id=id, entity_id=entity_id)
+                ctx=ctx, id=None, job_id=id, entity_id=entity_id
+            )
 
     async def get_node_pred_rfm(
-        self, id: TrainingJobID, entity_id: str,
-        ctx: RequestContext = Depends(get_ctx)) -> NodePredRFM:
-        r"""Get node prediction RFM of an entity.
-        """
+        self, id: TrainingJobID, entity_id: str, ctx: RequestContext = Depends(get_ctx)
+    ) -> NodePredRFM:
+        r"""Get node prediction RFM of an entity."""
         with wrap_validation_exceptions(TrainingJobDoesNotExistError):
             return await self._rest_driver.get_node_pred_rfm(
-                ctx=ctx, id=None, job_id=id, entity_id=entity_id)
+                ctx=ctx, id=None, job_id=id, entity_id=entity_id
+            )
 
     async def get_category_node_pred_rfm(
-        self, id: TrainingJobID, category: str,
-        ctx: RequestContext = Depends(get_ctx)) -> NodePredRFM:
+        self, id: TrainingJobID, category: str, ctx: RequestContext = Depends(get_ctx)
+    ) -> NodePredRFM:
         r"""Get node prediction RFM of a category, where the category is
         how we select the entities to explain.
         """
         with wrap_validation_exceptions(TrainingJobDoesNotExistError):
             return await self._rest_driver.get_category_node_pred_rfm(
-                ctx=ctx, id=None, job_id=id, category=category)
+                ctx=ctx, id=None, job_id=id, category=category
+            )
 
     async def get_link_pred_rfm(
-        self, id: TrainingJobID, entity_id: str,
-        ctx: RequestContext = Depends(get_ctx)) -> LinkPredRFM:
-        r"""Get link prediction RFM of an entity.
-        """
+        self, id: TrainingJobID, entity_id: str, ctx: RequestContext = Depends(get_ctx)
+    ) -> LinkPredRFM:
+        r"""Get link prediction RFM of an entity."""
         with wrap_validation_exceptions(TrainingJobDoesNotExistError):
             return await self._rest_driver.get_link_pred_rfm(
-                ctx=ctx, id=None, job_id=id, entity_id=entity_id)
+                ctx=ctx, id=None, job_id=id, entity_id=entity_id
+            )
 
     async def get_topk_feature(
-        self, id: TrainingJobID, entity_id: str, topk: int,
-        ctx: RequestContext = Depends(get_ctx)) -> List[Feature]:
-        r"""Get topk feature of an entity.
-        """
+        self,
+        id: TrainingJobID,
+        entity_id: str,
+        topk: int,
+        ctx: RequestContext = Depends(get_ctx),
+    ) -> List[Feature]:
+        r"""Get topk feature of an entity."""
         with wrap_validation_exceptions(TrainingJobDoesNotExistError):
             return await self._rest_driver.get_topk_feature(
-                ctx=ctx, id=None, job_id=id, entity_id=entity_id, topk=topk)
+                ctx=ctx, id=None, job_id=id, entity_id=entity_id, topk=topk
+            )
 
     async def get_category_link_pred_rfm(
-        self, id: TrainingJobID, category: str,
-        ctx: RequestContext = Depends(get_ctx)) -> LinkPredRFM:
+        self, id: TrainingJobID, category: str, ctx: RequestContext = Depends(get_ctx)
+    ) -> LinkPredRFM:
         r"""Get link prediction RFM of a category, where the category is
         how we select the entities to explain.
         """
         with wrap_validation_exceptions(TrainingJobDoesNotExistError):
             return await self._rest_driver.get_category_link_pred_rfm(
-                ctx=ctx, id=None, job_id=id, category=category)
+                ctx=ctx, id=None, job_id=id, category=category
+            )
 
     async def get_aggr_feature(
-        self, id: TrainingJobID, entity_id: str, table_name: str,
-        column_name: str, op: str,
-        ctx: RequestContext = Depends(get_ctx)) -> Feature:
-        r"""Get RFM aggregate feature of an entity.
-        """
+        self,
+        id: TrainingJobID,
+        entity_id: str,
+        table_name: str,
+        column_name: str,
+        op: str,
+        ctx: RequestContext = Depends(get_ctx),
+    ) -> Feature:
+        r"""Get RFM aggregate feature of an entity."""
         if op not in [
-                "sum",
-                "mean",
-                "max",
-                "min",
-                "most_frequent",
-                "least_frequent",
+            'sum',
+            'mean',
+            'max',
+            'min',
+            'most_frequent',
+            'least_frequent',
         ]:
             raise HTTPException(
                 status_code=400,
-                detail=(f"Invalid operation: {op}. "
-                        f"Valid operations are: sum, mean, max, "
-                        f"min, most_frequent, least_frequent"))
+                detail=(
+                    f'Invalid operation: {op}. '
+                    f'Valid operations are: sum, mean, max, '
+                    f'min, most_frequent, least_frequent'
+                ),
+            )
         with wrap_validation_exceptions(TrainingJobDoesNotExistError):
             return await self._rest_driver.get_aggr_feature(
-                ctx=ctx, id=None, job_id=id, entity_id=entity_id,
-                table_name=table_name, column_name=column_name, op=op)
+                ctx=ctx,
+                id=None,
+                job_id=id,
+                entity_id=entity_id,
+                table_name=table_name,
+                column_name=column_name,
+                op=op,
+            )
 
     async def get_category_aggr_feature(
-        self, id: TrainingJobID, category: str, table_name: str,
-        column_name: str, op: str,
-        ctx: RequestContext = Depends(get_ctx)) -> Feature:
+        self,
+        id: TrainingJobID,
+        category: str,
+        table_name: str,
+        column_name: str,
+        op: str,
+        ctx: RequestContext = Depends(get_ctx),
+    ) -> Feature:
         r"""Get RFM aggregate feature of a category, where the category is
         how we select the entities to explain.
         """
         if op not in [
-                "sum",
-                "mean",
-                "max",
-                "min",
-                "most_frequent",
-                "least_frequent",
+            'sum',
+            'mean',
+            'max',
+            'min',
+            'most_frequent',
+            'least_frequent',
         ]:
             raise HTTPException(
                 status_code=400,
-                detail=(f"Invalid operation: {op}. "
-                        f"Valid operations are: sum, mean, max, "
-                        f"min, most_frequent, least_frequent"))
+                detail=(
+                    f'Invalid operation: {op}. '
+                    f'Valid operations are: sum, mean, max, '
+                    f'min, most_frequent, least_frequent'
+                ),
+            )
         with wrap_validation_exceptions(TrainingJobDoesNotExistError):
             return await self._rest_driver.get_category_aggr_feature(
-                ctx=ctx, id=None, job_id=id, category=category,
-                table_name=table_name, column_name=column_name, op=op)
+                ctx=ctx,
+                id=None,
+                job_id=id,
+                category=category,
+                table_name=table_name,
+                column_name=column_name,
+                op=op,
+            )
 
     async def get_subgraph(
-        self, id: TrainingJobID, entity_id: str,
-        ctx: RequestContext = Depends(get_ctx)) -> Subgraph:
+        self, id: TrainingJobID, entity_id: str, ctx: RequestContext = Depends(get_ctx)
+    ) -> Subgraph:
         r"""Get XAI subgraph of an entity.
 
         Args:
@@ -881,13 +916,13 @@ class TrainingJobsResource:
         Returns (Subgraph): Subgraph of the entity.
         """
         with wrap_validation_exceptions(TrainingJobDoesNotExistError):
-            return await self._rest_driver.get_subgraph(ctx=ctx, id=None,
-                                                        job_id=id,
-                                                        entity_id=entity_id)
+            return await self._rest_driver.get_subgraph(
+                ctx=ctx, id=None, job_id=id, entity_id=entity_id
+            )
 
     async def get_entity_output(
-        self, id: TrainingJobID, entity_id: str,
-        ctx: RequestContext = Depends(get_ctx)) -> EntityOutput:
+        self, id: TrainingJobID, entity_id: str, ctx: RequestContext = Depends(get_ctx)
+    ) -> EntityOutput:
         r"""Get XAI output of an entity.
 
         Args:
@@ -898,11 +933,12 @@ class TrainingJobsResource:
         """
         with wrap_validation_exceptions(TrainingJobDoesNotExistError):
             return await self._rest_driver.get_entity_output(
-                ctx=ctx, id=None, job_id=id, entity_id=entity_id)
+                ctx=ctx, id=None, job_id=id, entity_id=entity_id
+            )
 
     async def get_entity_historical_items(
-        self, id: TrainingJobID, entity_id: str,
-        ctx: RequestContext = Depends(get_ctx)) -> HistoricalItems:
+        self, id: TrainingJobID, entity_id: str, ctx: RequestContext = Depends(get_ctx)
+    ) -> HistoricalItems:
         r"""Get XAI historical items of an entity for link prediction tasks.
 
         Args:
@@ -913,7 +949,8 @@ class TrainingJobsResource:
         """
         with wrap_validation_exceptions(TrainingJobDoesNotExistError):
             return await self._rest_driver.get_entity_historical_items(
-                ctx=ctx, id=None, job_id=id, entity_id=entity_id)
+                ctx=ctx, id=None, job_id=id, entity_id=entity_id
+            )
 
     async def _get_pq_obj(
         self,
@@ -935,10 +972,10 @@ class TrainingJobsResource:
         )
 
     async def training_to_sdk(
-            self,
-            training_job_id: TrainingJobID,
-            project_id: str,
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        training_job_id: TrainingJobID,
+        project_id: str,
+        ctx: RequestContext = Depends(get_ctx),
     ) -> str:
         r"""
         Used to generate a fully executable Python SDK script to reproduce a training pipeline
@@ -967,6 +1004,7 @@ class TrainingJobsResource:
             HTTPException: If training job cannot be retrieved.
         """
         with wrap_validation_exceptions(TrainingJobDoesNotExistError):
-            await self.get_training_job(id=training_job_id,
-                                        project_id=project_id, ctx=ctx)
+            await self.get_training_job(
+                id=training_job_id, project_id=project_id, ctx=ctx
+            )
             return await self._driver.training_to_sdk(training_job_id, ctx)

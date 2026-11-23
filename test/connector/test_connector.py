@@ -25,9 +25,13 @@ def test_csv_and_snowflake_connector():
     root_dir = osp.join(root_dir, '..', 'csv_data', 'FINANCIAL')
     connector1 = CSVConnector('csv', root_dir)
 
-    connector2 = SnowflakeConnector('snowflake', account='xva19026',
-                                    warehouse='WH_XS', database='KUMO',
-                                    schema_name='FINANCIAL')
+    connector2 = SnowflakeConnector(
+        'snowflake',
+        account='xva19026',
+        warehouse='WH_XS',
+        database='KUMO',
+        schema_name='FINANCIAL',
+    )
 
     pkey = 'LOAN_ID'
     cols = [
@@ -43,8 +47,7 @@ def test_csv_and_snowflake_connector():
     # pandas-2 infers a narrower int dtype for the pkey index from one source
     # (int16) than the other (int64). check_dtype=False only relaxes column
     # dtypes, so also relax the index dtype to compare values, not dtypes.
-    pd.testing.assert_frame_equal(df1, df2, check_dtype=False,
-                                  check_index_type=False)
+    pd.testing.assert_frame_equal(df1, df2, check_dtype=False, check_index_type=False)
 
 
 @withDatabricksOauthCredentials
@@ -63,8 +66,12 @@ def test_databricks_connector():
     df = connector.read_table('hm.customers', pkey=pkey, num_rows=100)
     assert len(df) == 100
     for col in [
-            'FN', 'Active', 'club_member_status', 'fashion_news_frequency',
-            'age', 'postal_code'
+        'FN',
+        'Active',
+        'club_member_status',
+        'fashion_news_frequency',
+        'age',
+        'postal_code',
     ]:
         assert col in df
     assert df.index.name == 'customer_id'

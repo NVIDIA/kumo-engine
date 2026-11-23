@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Requested prediction artifacts must exist before export configuration."""
+
 from types import SimpleNamespace
 
 import pytest
@@ -37,18 +38,20 @@ def _job_input(outputs: list) -> SimpleNamespace:
     return SimpleNamespace(
         config=SimpleNamespace(outputs=outputs),
         output_connectors={
-            CONNECTOR_ID:
-            ConnectorExecutionRef(project_id=PROJECT_ID,
-                                  connector_id=CONNECTOR_ID)
+            CONNECTOR_ID: ConnectorExecutionRef(
+                project_id=PROJECT_ID, connector_id=CONNECTOR_ID
+            )
         },
     )
 
 
 def test_missing_requested_embeddings_raises() -> None:
-    job_input = _job_input([
-        _s3_output(PredictionArtifactType.PREDICTIONS),
-        _s3_output(PredictionArtifactType.EMBEDDINGS),
-    ])
+    job_input = _job_input(
+        [
+            _s3_output(PredictionArtifactType.PREDICTIONS),
+            _s3_output(PredictionArtifactType.EMBEDDINGS),
+        ]
+    )
     # The producer returned only one of the two requested artifacts.
     artifact_paths = {
         PredictionArtifactType.PREDICTIONS: '/out/processed_predictions',
@@ -62,10 +65,12 @@ def test_embeddings_kept_when_present() -> None:
     """When embeddings WERE produced (two-tower / shallow / hybrid), the
     EMBEDDINGS output stays in the export config -- byte-identical to before.
     """
-    job_input = _job_input([
-        _s3_output(PredictionArtifactType.PREDICTIONS),
-        _s3_output(PredictionArtifactType.EMBEDDINGS),
-    ])
+    job_input = _job_input(
+        [
+            _s3_output(PredictionArtifactType.PREDICTIONS),
+            _s3_output(PredictionArtifactType.EMBEDDINGS),
+        ]
+    )
     artifact_paths = {
         PredictionArtifactType.PREDICTIONS: '/out/processed_predictions',
         PredictionArtifactType.EMBEDDINGS: '/out/processed_embeddings',
@@ -86,8 +91,7 @@ def test_predictions_only_request_unaffected() -> None:
 
     export_input = ArtifactExportInput.from_bp_input(job_input, artifact_paths)
 
-    assert list(
-        export_input.output_config) == [PredictionArtifactType.PREDICTIONS]
+    assert list(export_input.output_config) == [PredictionArtifactType.PREDICTIONS]
 
 
 def test_selected_inventory_stays_a_bounded_manifest_reference() -> None:
@@ -110,7 +114,7 @@ def test_selected_inventory_stays_a_bounded_manifest_reference() -> None:
     )
 
     assert export_input.prediction_selection == selection
-    assert export_input.prediction_artifact_types == (artifact_type, )
+    assert export_input.prediction_artifact_types == (artifact_type,)
     assert export_input.artifact_paths == {}
 
 
@@ -122,10 +126,8 @@ def test_embeddings_only_request_creates_no_prediction_export() -> None:
 
     export_input = ArtifactExportInput.from_bp_input(job_input, artifact_paths)
 
-    assert list(
-        export_input.artifact_paths) == [PredictionArtifactType.EMBEDDINGS]
-    assert list(
-        export_input.output_config) == [PredictionArtifactType.EMBEDDINGS]
+    assert list(export_input.artifact_paths) == [PredictionArtifactType.EMBEDDINGS]
+    assert list(export_input.output_config) == [PredictionArtifactType.EMBEDDINGS]
 
 
 def test_embeddings_only_rejects_unrequested_prediction_path() -> None:
@@ -165,7 +167,7 @@ def test_databricks_output_requires_direct_producer_stage() -> None:
     with pytest.raises(ValueError, match='producer-uploaded managed-volume'):
         ArtifactExportInput.from_bp_input(job_input, artifact_paths={})
 
-    stage_path = ('/Volumes/catalog/schema/_kumo_staging/artifact-export/job')
+    stage_path = '/Volumes/catalog/schema/_kumo_staging/artifact-export/job'
     stage = DatabricksManagedVolumeStage(
         path=stage_path,
         files=[f'{stage_path}/part-00000000.parquet'],
@@ -178,5 +180,4 @@ def test_databricks_output_requires_direct_producer_stage() -> None:
 
     config = export.output_config[PredictionArtifactType.PREDICTIONS][0]
     assert config.managed_volume_stage == stage
-    assert export.artifact_paths[
-        PredictionArtifactType.PREDICTIONS] == stage_path
+    assert export.artifact_paths[PredictionArtifactType.PREDICTIONS] == stage_path

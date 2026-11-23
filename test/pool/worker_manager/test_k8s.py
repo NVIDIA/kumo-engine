@@ -9,13 +9,14 @@ BatchV1Api clients. No cluster, no kubeconfig, no real Kubernetes —
 runs in <1 s and validates the spec we hand to the K8s API plus the
 control-flow around it.
 """
+
 # Stub injection for laptop runs (opt-in via
 # KUMO_WORKER_MANAGER_TEST_STUBS=1). Must run before ``import pool.*``.
 import os as _os  # noqa: E402,I100
 import sys as _sys  # noqa: E402
 
-if _os.environ.get("KUMO_WORKER_MANAGER_TEST_STUBS") == "1":
-    _sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), "_stubs"))
+if _os.environ.get('KUMO_WORKER_MANAGER_TEST_STUBS') == '1':
+    _sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), '_stubs'))
 
 import asyncio  # noqa: E402
 import datetime  # noqa: E402
@@ -104,11 +105,11 @@ from pool.worker_manager.types import (
     UnclassifiedApiError,
 )
 
-NAMESPACE = "diskgraph-test"
-TENANT = "test"
+NAMESPACE = 'diskgraph-test'
+TENANT = 'test'
 POD_TEMPLATE_LABELS = {
-    "azure.workload.identity/use": "true",
-    LABEL_APP: "caller-must-not-override",
+    'azure.workload.identity/use': 'true',
+    LABEL_APP: 'caller-must-not-override',
 }
 
 # ---------------------------------------------------------------------------
@@ -122,7 +123,7 @@ def _make_manager(
     batch: Optional[MagicMock] = None,
     policy: Optional[MagicMock] = None,
     pod_template_labels: Optional[dict[str, str]] = None,
-    storage_class: str = "topolvm-ssd",
+    storage_class: str = 'topolvm-ssd',
 ) -> K8sPoolWorkerManager:
     core = core or MagicMock(spec=k8s_client.CoreV1Api)
     if batch is None:
@@ -132,9 +133,9 @@ def _make_manager(
         namespace=NAMESPACE,
         tenant=TENANT,
         storage_class=storage_class,
-        daemon_image="kumo/daemon:test",
-        daemon_command=["/usr/bin/daemon"],
-        daemon_args=["--mode=test"],
+        daemon_image='kumo/daemon:test',
+        daemon_command=['/usr/bin/daemon'],
+        daemon_args=['--mode=test'],
         pod_template_labels=pod_template_labels,
         load_kube_config=False,
         core_v1_api=core,
@@ -147,9 +148,9 @@ def _make_manager(
 def _make_pod(
     name: str,
     *,
-    phase: str = "Running",
+    phase: str = 'Running',
     container_ready: bool = True,
-    node_name: str = "node-1",
+    node_name: str = 'node-1',
     deletion_timestamp=None,
     labels: Optional[dict] = None,
     annotations: Optional[dict] = None,
@@ -157,8 +158,11 @@ def _make_pod(
     waiting_reason: Optional[str] = None,
     conditions: Optional[list] = None,
 ) -> V1Pod:
-    cs_state = (V1ContainerState(waiting=V1ContainerStateWaiting(
-        reason=waiting_reason)) if waiting_reason else None)
+    cs_state = (
+        V1ContainerState(waiting=V1ContainerStateWaiting(reason=waiting_reason))
+        if waiting_reason
+        else None
+    )
     return V1Pod(
         metadata=V1ObjectMeta(
             name=name,
@@ -173,10 +177,10 @@ def _make_pod(
             phase=phase,
             container_statuses=[
                 V1ContainerStatus(
-                    name="c",
+                    name='c',
                     ready=container_ready,
-                    image="kumo/x:test",
-                    image_id="",
+                    image='kumo/x:test',
+                    image_id='',
                     restart_count=0,
                     state=cs_state,
                 ),
@@ -186,7 +190,7 @@ def _make_pod(
     )
 
 
-def _api_exc(status: int, body: str = "") -> ApiException:
+def _api_exc(status: int, body: str = '') -> ApiException:
     exc = ApiException(status=status)
     exc.body = body
     return exc
@@ -202,39 +206,39 @@ def _assert_runtime_filesystem(spec, read_only):
     assert container.security_context.read_only_root_filesystem is read_only
     mounts = {m.mount_path: m for m in container.volume_mounts}
     volumes = {v.name: v for v in spec.volumes}
-    for path in ("/tmp", "/home/kumouser/.cache"):
+    for path in ('/tmp', '/home/kumouser/.cache'):
         assert not mounts[path].read_only
         assert volumes[mounts[path].name].empty_dir is not None
-    assert "/home/kumouser" not in mounts
+    assert '/home/kumouser' not in mounts
 
 
 def test_derive_pod_status_pending():
-    pod = _make_pod("p", phase="Pending", container_ready=False)
-    assert _derive_pod_status(pod) == "Pending"
+    pod = _make_pod('p', phase='Pending', container_ready=False)
+    assert _derive_pod_status(pod) == 'Pending'
 
 
 def test_derive_pod_status_running_container_not_ready():
-    pod = _make_pod("p", phase="Running", container_ready=False)
-    assert _derive_pod_status(pod) == "Running"
+    pod = _make_pod('p', phase='Running', container_ready=False)
+    assert _derive_pod_status(pod) == 'Running'
 
 
 def test_derive_pod_status_running_all_ready_is_registered():
-    pod = _make_pod("p", phase="Running", container_ready=True)
-    assert _derive_pod_status(pod) == "Registered"
+    pod = _make_pod('p', phase='Running', container_ready=True)
+    assert _derive_pod_status(pod) == 'Registered'
 
 
 def test_derive_pod_status_failed():
-    pod = _make_pod("p", phase="Failed", container_ready=False)
-    assert _derive_pod_status(pod) == "Failed"
+    pod = _make_pod('p', phase='Failed', container_ready=False)
+    assert _derive_pod_status(pod) == 'Failed'
 
 
 def test_derive_pod_status_terminating_via_deletion_timestamp():
     pod = _make_pod(
-        "p",
-        phase="Running",
+        'p',
+        phase='Running',
         deletion_timestamp=datetime.datetime(2026, 1, 1),
     )
-    assert _derive_pod_status(pod) == "Terminating"
+    assert _derive_pod_status(pod) == 'Terminating'
 
 
 def test_derive_pod_status_succeeded():
@@ -243,34 +247,34 @@ def test_derive_pod_status_succeeded():
     # filter on `status == 'Succeeded'` to find finished-but-reapable
     # pods (vs in-progress-deletion pods, which carry a deletion_
     # timestamp and map to 'Terminating').
-    pod = _make_pod("p", phase="Succeeded", container_ready=True)
-    assert _derive_pod_status(pod) == "Succeeded"
+    pod = _make_pod('p', phase='Succeeded', container_ready=True)
+    assert _derive_pod_status(pod) == 'Succeeded'
 
 
 def test_pod_to_pool_worker_info_populates_fields():
     created_at = datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)
     pod = _make_pod(
-        "daemon-abc-yyy",
-        node_name="ip-10-0-1-1",
+        'daemon-abc-yyy',
+        node_name='ip-10-0-1-1',
         creation_timestamp=created_at,
     )
-    info = _pod_to_pool_worker_info(pod, "abc")
-    assert info.pool_worker_uid == "abc"
-    assert info.pvc_name == "diskgraph-pvc-abc"
-    assert info.daemon_pod_name == "daemon-abc-yyy"
-    assert info.node_name == "ip-10-0-1-1"
-    assert info.status == "Registered"
+    info = _pod_to_pool_worker_info(pod, 'abc')
+    assert info.pool_worker_uid == 'abc'
+    assert info.pvc_name == 'diskgraph-pvc-abc'
+    assert info.daemon_pod_name == 'daemon-abc-yyy'
+    assert info.node_name == 'ip-10-0-1-1'
+    assert info.status == 'Registered'
     assert info.created_at == created_at.timestamp()
     assert info.deletion_started_at is None
 
 
 def test_pod_to_pool_worker_info_maps_deletion_timestamp():
     deleted_at = datetime.datetime(2026, 1, 2, tzinfo=datetime.timezone.utc)
-    pod = _make_pod("daemon-abc-yyy", deletion_timestamp=deleted_at)
+    pod = _make_pod('daemon-abc-yyy', deletion_timestamp=deleted_at)
 
-    info = _pod_to_pool_worker_info(pod, "abc")
+    info = _pod_to_pool_worker_info(pod, 'abc')
 
-    assert info.status == "Terminating"
+    assert info.status == 'Terminating'
     assert info.deletion_started_at == deleted_at.timestamp()
 
 
@@ -279,28 +283,28 @@ def test_pod_to_activity_pod_info_reads_labels():
     # carries the (opaque) hash, the annotation preserves the raw
     # value for callers / `kubectl describe`.
     pod = _make_pod(
-        "act-1",
+        'act-1',
         labels={
-            LABEL_POOL_WORKER_UID: "abc",
-            LABEL_JOB_ID_HASH: _hash_job_id("job-9"),
+            LABEL_POOL_WORKER_UID: 'abc',
+            LABEL_JOB_ID_HASH: _hash_job_id('job-9'),
         },
-        annotations={ANNOTATION_JOB_ID: "job-9"},
+        annotations={ANNOTATION_JOB_ID: 'job-9'},
     )
     info = _pod_to_activity_pod_info(pod)
-    assert info.pod_name == "act-1"
-    assert info.pool_worker_uid == "abc"
-    assert info.job_id == "job-9"
+    assert info.pod_name == 'act-1'
+    assert info.pool_worker_uid == 'abc'
+    assert info.job_id == 'job-9'
 
 
 def test_pod_to_activity_pod_info_eph_has_no_pool_worker_uid():
     pod = _make_pod(
-        "eph-1",
-        labels={LABEL_JOB_ID_HASH: _hash_job_id("j")},
-        annotations={ANNOTATION_JOB_ID: "j"},
+        'eph-1',
+        labels={LABEL_JOB_ID_HASH: _hash_job_id('j')},
+        annotations={ANNOTATION_JOB_ID: 'j'},
     )
     info = _pod_to_activity_pod_info(pod)
     assert info.pool_worker_uid is None
-    assert info.job_id == "j"
+    assert info.job_id == 'j'
 
 
 def test_dshm_volume_bounds_cpu_activities():
@@ -330,8 +334,10 @@ def test_deployment_name_for_uid_static_method():
     # Exposed so the placement strategy can derive the daemon's
     # k8s_deployment_name (the stable label that survives pod restart)
     # without re-implementing the format string.
-    assert K8sPoolWorkerManager.deployment_name_for_uid(
-        'pool-worker-abc123') == 'diskgraph-daemon-pool-worker-abc123'
+    assert (
+        K8sPoolWorkerManager.deployment_name_for_uid('pool-worker-abc123')
+        == 'diskgraph-daemon-pool-worker-abc123'
+    )
 
 
 def test_manager_namespace_and_kube_context_properties():
@@ -356,7 +362,7 @@ def test_daemon_anti_affinity_uses_hostname_topology():
     terms = aa.required_during_scheduling_ignored_during_execution
     assert terms is not None
     term = terms[0]
-    assert term.topology_key == "kubernetes.io/hostname"
+    assert term.topology_key == 'kubernetes.io/hostname'
     assert term.label_selector is not None
     assert term.label_selector.match_labels == {
         LABEL_APP: LABEL_APP_VALUE_DAEMON,
@@ -366,8 +372,8 @@ def test_daemon_anti_affinity_uses_hostname_topology():
 def test_storage_size_from_pvc_spec_uses_size_gib_directly():
     mgr = _make_manager()
     # PvcSpec carries the exact tier GiB; no headroom applied.
-    assert mgr._storage_size_from_pvc_spec(PvcSpec(size_gib=900)) == "900Gi"
-    assert mgr._storage_size_from_pvc_spec(PvcSpec(size_gib=1800)) == "1800Gi"
+    assert mgr._storage_size_from_pvc_spec(PvcSpec(size_gib=900)) == '900Gi'
+    assert mgr._storage_size_from_pvc_spec(PvcSpec(size_gib=1800)) == '1800Gi'
 
 
 # ---------------------------------------------------------------------------
@@ -376,7 +382,7 @@ def test_storage_size_from_pvc_spec_uses_size_gib_directly():
 
 
 def test_translate_quota_exceeded():
-    out = _translate_api_error(_api_exc(403, "exceeded quota: storage"))
+    out = _translate_api_error(_api_exc(403, 'exceeded quota: storage'))
     assert isinstance(out, QuotaExceededError)
 
 
@@ -385,7 +391,9 @@ def test_translate_403_rbac_is_permission_error():
         _api_exc(
             403,
             'pods is forbidden: User "system:serviceaccount:kumo-dataplane-x:'
-            'kumo-temporal" cannot create resource "pods" in API group ""'))
+            'kumo-temporal" cannot create resource "pods" in API group ""',
+        )
+    )
     assert isinstance(out, K8sPermissionError)
     # Not retryable: K8sPermissionError must NOT inherit RuntimeError so
     # AutoRPC's ``is_retryable`` falls through to non-retryable.
@@ -396,19 +404,21 @@ def test_translate_403_quota_takes_precedence_over_rbac():
     # If the body contains 'exceeded quota', that wins — quota is the
     # transient 403 case.
     out = _translate_api_error(
-        _api_exc(403, "pods exceeded quota: requests.cpu used 100 limit 100"))
+        _api_exc(403, 'pods exceeded quota: requests.cpu used 100 limit 100')
+    )
     assert isinstance(out, QuotaExceededError)
     assert not isinstance(out, K8sPermissionError)
 
 
 def test_translate_nodeclass_not_found():
     out = _translate_api_error(
-        _api_exc(404, "ec2nodeclass.karpenter.k8s.aws not found"), )
+        _api_exc(404, 'ec2nodeclass.karpenter.k8s.aws not found'),
+    )
     assert isinstance(out, NodePoolNotFoundError)
 
 
 def test_translate_invalid_resource_returns_invalidhint():
-    out = _translate_api_error(_api_exc(422, "invalid resource request"))
+    out = _translate_api_error(_api_exc(422, 'invalid resource request'))
     assert isinstance(out, InvalidPvcSpecError)
 
 
@@ -420,7 +430,7 @@ def test_translate_unknown_wraps_in_unclassified_api_error():
     # ``raise translate(exc) from exc`` — Temporal's failure
     # serializer infinite-recurses on cycles. __cause__ itself is
     # set by the caller's ``raise ... from exc``, not by this helper.
-    exc = _api_exc(400, "bad request")
+    exc = _api_exc(400, 'bad request')
     out = _translate_api_error(exc)
     assert isinstance(out, UnclassifiedApiError)
     assert out is not exc
@@ -437,7 +447,8 @@ def test_translate_unknown_wraps_in_unclassified_api_error():
     ],
 )
 def test_translate_api_error_keeps_provider_response_restricted(
-        status, body, expected_type):
+    status, body, expected_type
+):
     exc = _api_exc(status, body)
 
     translated = _translate_api_error(exc)
@@ -447,7 +458,8 @@ def test_translate_api_error_keeps_provider_response_restricted(
     assert exception_message_should_be_logged_at_error(translated)
     assert not exception_message_should_be_logged_at_error(exc)
     assert safe_exception_message_for_log(exc) == (
-        f'Kubernetes API operation failed (status={status})')
+        f'Kubernetes API operation failed (status={status})'
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -457,7 +469,8 @@ def test_translate_api_error_keeps_provider_response_restricted(
 
 @pytest.mark.parametrize('read_only', [True, False])
 def test_provision_pool_worker_creates_pvc_then_deployment(
-        monkeypatch, read_only, worker_identity):
+    monkeypatch, read_only, worker_identity
+):
     monkeypatch.setenv('POOL_WORKER_READ_ONLY_ROOT_FILESYSTEM', str(read_only))
     core = MagicMock(spec=k8s_client.CoreV1Api)
     apps = MagicMock(spec=k8s_client.AppsV1Api)
@@ -465,43 +478,48 @@ def test_provision_pool_worker_creates_pvc_then_deployment(
     core.list_namespaced_pod.return_value = V1PodList(
         items=[
             _make_pod(
-                "diskgraph-daemon-uid-xxx",
+                'diskgraph-daemon-uid-xxx',
                 labels={
                     LABEL_APP: LABEL_APP_VALUE_DAEMON,
-                    LABEL_POOL_WORKER_UID: "uid",
+                    LABEL_POOL_WORKER_UID: 'uid',
                 },
             ),
-        ], )
+        ],
+    )
 
     mgr = _make_manager(core=core, apps=apps)
     info = asyncio.run(
-        mgr.provision_pool_worker(pool_worker_uid="uid", timeout=5.0), )
+        mgr.provision_pool_worker(pool_worker_uid='uid', timeout=5.0),
+    )
 
-    assert info.status == "Registered"
-    assert info.pool_worker_uid == "uid"
-    assert info.pvc_name == "diskgraph-pvc-uid"
+    assert info.status == 'Registered'
+    assert info.pool_worker_uid == 'uid'
+    assert info.pvc_name == 'diskgraph-pvc-uid'
     assert core.create_namespaced_persistent_volume_claim.called
     assert apps.create_namespaced_deployment.called
     pvc_call = core.create_namespaced_persistent_volume_claim.call_args
-    pvc_body = pvc_call.kwargs["body"]
+    pvc_body = pvc_call.kwargs['body']
     # PVC must be RWO so daemon + activity pods can co-mount on the
     # same node (design §6.2). RWOP would block this.
-    assert pvc_body.spec.access_modes == ["ReadWriteOnce"]
-    assert pvc_body.spec.storage_class_name == "topolvm-ssd"
-    assert pvc_body.metadata.labels[LABEL_POOL_WORKER_UID] == "uid"
-    daemon_spec = (apps.create_namespaced_deployment.call_args.kwargs["body"].
-                   spec.template.spec)
+    assert pvc_body.spec.access_modes == ['ReadWriteOnce']
+    assert pvc_body.spec.storage_class_name == 'topolvm-ssd'
+    assert pvc_body.metadata.labels[LABEL_POOL_WORKER_UID] == 'uid'
+    daemon_spec = apps.create_namespaced_deployment.call_args.kwargs[
+        'body'
+    ].spec.template.spec
     assert daemon_spec.security_context.fs_group == 999
-    assert daemon_spec.security_context.fs_group_change_policy == "OnRootMismatch"
-    assert daemon_spec.security_context.seccomp_profile.type == "RuntimeDefault"
+    assert daemon_spec.security_context.fs_group_change_policy == 'OnRootMismatch'
+    assert daemon_spec.security_context.seccomp_profile.type == 'RuntimeDefault'
     _assert_runtime_filesystem(daemon_spec, read_only)
     daemon_security = daemon_spec.containers[0].security_context
-    assert (daemon_security.run_as_user,
-            daemon_security.run_as_group) == worker_identity
+    assert (
+        daemon_security.run_as_user,
+        daemon_security.run_as_group,
+    ) == worker_identity
     assert daemon_security.privileged is False
     assert daemon_security.allow_privilege_escalation is False
     assert daemon_security.run_as_non_root is True
-    assert daemon_security.capabilities.drop == ["ALL"]
+    assert daemon_security.capabilities.drop == ['ALL']
 
 
 def test_provision_pool_worker_rolls_back_pvc_on_deployment_failure():
@@ -513,7 +531,7 @@ def test_provision_pool_worker_rolls_back_pvc_on_deployment_failure():
     apps = MagicMock(spec=k8s_client.AppsV1Api)
     apps.create_namespaced_deployment.side_effect = _api_exc(
         422,
-        "invalid pod spec",
+        'invalid pod spec',
     )
 
     mgr = _make_manager(core=core, apps=apps)
@@ -533,35 +551,37 @@ def test_provision_pool_worker_timeout_raises():
         V1PersistentVolumeClaim,
         V1PersistentVolumeClaimStatus,
     )
+
     core = MagicMock(spec=k8s_client.CoreV1Api)
     apps = MagicMock(spec=k8s_client.AppsV1Api)
     core.list_namespaced_pod.return_value = V1PodList(
         items=[
             _make_pod(
-                "p",
-                phase="Pending",
+                'p',
+                phase='Pending',
                 container_ready=False,
                 labels={
                     LABEL_APP: LABEL_APP_VALUE_DAEMON,
-                    LABEL_POOL_WORKER_UID: "uid",
+                    LABEL_POOL_WORKER_UID: 'uid',
                 },
             ),
-        ], )
+        ],
+    )
     # PVC is Bound — so timeout disambiguator falls through to the
     # generic ProvisionTimeoutError, not PVCBindTimeoutError.
-    core.read_namespaced_persistent_volume_claim.return_value = (
-        V1PersistentVolumeClaim(
-            metadata=V1ObjectMeta(name="diskgraph-pvc-uid"),
-            status=V1PersistentVolumeClaimStatus(phase="Bound"),
-        ))
+    core.read_namespaced_persistent_volume_claim.return_value = V1PersistentVolumeClaim(
+        metadata=V1ObjectMeta(name='diskgraph-pvc-uid'),
+        status=V1PersistentVolumeClaimStatus(phase='Bound'),
+    )
 
     mgr = _make_manager(core=core, apps=apps)
     with pytest.raises(ProvisionTimeoutError):
         asyncio.run(
             mgr.provision_pool_worker(
-                pool_worker_uid="uid",
+                pool_worker_uid='uid',
                 timeout=0.1,
-            ), )
+            ),
+        )
 
 
 def test_provision_pool_worker_pvc_bind_timeout_raises_specialised():
@@ -573,23 +593,24 @@ def test_provision_pool_worker_pvc_bind_timeout_raises_specialised():
         V1PersistentVolumeClaim,
         V1PersistentVolumeClaimStatus,
     )
+
     core = MagicMock(spec=k8s_client.CoreV1Api)
     apps = MagicMock(spec=k8s_client.AppsV1Api)
     # No daemon pod yet; PVC stuck in Pending.
     core.list_namespaced_pod.return_value = V1PodList(items=[])
-    core.read_namespaced_persistent_volume_claim.return_value = (
-        V1PersistentVolumeClaim(
-            metadata=V1ObjectMeta(name="diskgraph-pvc-uid"),
-            status=V1PersistentVolumeClaimStatus(phase="Pending"),
-        ))
+    core.read_namespaced_persistent_volume_claim.return_value = V1PersistentVolumeClaim(
+        metadata=V1ObjectMeta(name='diskgraph-pvc-uid'),
+        status=V1PersistentVolumeClaimStatus(phase='Pending'),
+    )
 
     mgr = _make_manager(core=core, apps=apps)
-    with pytest.raises(PVCBindTimeoutError, match="Pending"):
+    with pytest.raises(PVCBindTimeoutError, match='Pending'):
         asyncio.run(
             mgr.provision_pool_worker(
-                pool_worker_uid="uid",
+                pool_worker_uid='uid',
                 timeout=0.1,
-            ), )
+            ),
+        )
 
 
 def test_daemon_deployment_spec_has_required_properties():
@@ -602,54 +623,62 @@ def test_daemon_deployment_spec_has_required_properties():
     maxUnavailable:0, not a node annotation)."""
     core = MagicMock(spec=k8s_client.CoreV1Api)
     apps = MagicMock(spec=k8s_client.AppsV1Api)
-    core.list_namespaced_pod.return_value = V1PodList(items=[
-        _make_pod(
-            "p",
-            labels={
-                LABEL_APP: LABEL_APP_VALUE_DAEMON,
-                LABEL_POOL_WORKER_UID: "uid",
-            },
-        ),
-    ])
+    core.list_namespaced_pod.return_value = V1PodList(
+        items=[
+            _make_pod(
+                'p',
+                labels={
+                    LABEL_APP: LABEL_APP_VALUE_DAEMON,
+                    LABEL_POOL_WORKER_UID: 'uid',
+                },
+            ),
+        ]
+    )
 
     mgr = _make_manager(core=core, apps=apps)
-    asyncio.run(mgr.provision_pool_worker(pool_worker_uid="uid", timeout=5.0), )
+    asyncio.run(
+        mgr.provision_pool_worker(pool_worker_uid='uid', timeout=5.0),
+    )
 
-    body = apps.create_namespaced_deployment.call_args.kwargs["body"]
+    body = apps.create_namespaced_deployment.call_args.kwargs['body']
     pod_spec = body.spec.template.spec
     # Recreate strategy: design §7.2 + §9 row 2.
-    assert body.spec.strategy.type == "Recreate"
+    assert body.spec.strategy.type == 'Recreate'
     assert pod_spec.termination_grace_period_seconds == 30
     # Pod template MUST NOT carry do-not-disrupt annotation — daemon-pod
     # disruption protection is now a namespaced PodDisruptionBudget
     # (maxUnavailable:0), not a node annotation.
     pod_annotations = body.spec.template.metadata.annotations or {}
-    assert "karpenter.sh/do-not-disrupt" not in pod_annotations
+    assert 'karpenter.sh/do-not-disrupt' not in pod_annotations
     # Tolerates the cache-pool taint: kumo-delivery stamps
     # `dedicated=diskgraph-<tenant>` on cache NodePools, derived from
     # the manager's `tenant` ctor param.
     tolerations = pod_spec.tolerations
-    assert any(t.key == "dedicated" and t.value == f"diskgraph-{TENANT}"
-               and t.effect == "NoSchedule" for t in tolerations)
+    assert any(
+        t.key == 'dedicated'
+        and t.value == f'diskgraph-{TENANT}'
+        and t.effect == 'NoSchedule'
+        for t in tolerations
+    )
     # podAntiAffinity on hostname for at-most-one-daemon-per-node.
     aa = pod_spec.affinity.pod_anti_affinity
     term = aa.required_during_scheduling_ignored_during_execution[0]
-    assert term.topology_key == "kubernetes.io/hostname"
+    assert term.topology_key == 'kubernetes.io/hostname'
     # No nodeAffinity: node sizing is handled by the cache-node-type
     # nodeSelector (cloud-neutral), not a Karpenter instance-local-nvme floor.
     assert pod_spec.affinity.node_affinity is None
     # Container picks up custom command/args from the constructor.
     container = pod_spec.containers[0]
     assert container.security_context.read_only_root_filesystem is True
-    assert container.command == ["/usr/bin/daemon"]
-    assert container.args == ["--mode=test"]
+    assert container.command == ['/usr/bin/daemon']
+    assert container.args == ['--mode=test']
     # Daemon container has both NVMe and EBS scratch mounts.
     mount_paths = {m.mount_path: m.name for m in container.volume_mounts}
     assert mount_paths == {
-        "/mnt/localssd": "ssd",
-        "/mnt/ebs-scratch": "ebs-scratch",
-        "/tmp": "runtime-tmp",
-        "/home/kumouser/.cache": "runtime-cache",
+        '/mnt/localssd': 'ssd',
+        '/mnt/ebs-scratch': 'ebs-scratch',
+        '/tmp': 'runtime-tmp',
+        '/home/kumouser/.cache': 'runtime-cache',
     }
     # Pod has both volumes: NVMe PVC + EBS-backed emptyDir scratch.
     # The EBS volume itself is attached at the node level via the
@@ -657,9 +686,9 @@ def test_daemon_deployment_spec_has_required_properties():
     # pod only declares the emptyDir, kubelet places it on the
     # /var/lib/kubelet mount point that backs the EBS volume.
     vols_by_name = {v.name: v for v in pod_spec.volumes}
-    pvc_vol = vols_by_name["ssd"]
-    assert (pvc_vol.persistent_volume_claim.claim_name == "diskgraph-pvc-uid")
-    ebs_vol = vols_by_name["ebs-scratch"]
+    pvc_vol = vols_by_name['ssd']
+    assert pvc_vol.persistent_volume_claim.claim_name == 'diskgraph-pvc-uid'
+    ebs_vol = vols_by_name['ebs-scratch']
     assert ebs_vol.empty_dir is not None
     assert ebs_vol.persistent_volume_claim is None
     assert ebs_vol.ephemeral is None
@@ -674,28 +703,31 @@ def test_provision_pool_worker_creates_pdb_max_unavailable_zero():
     core = MagicMock(spec=k8s_client.CoreV1Api)
     apps = MagicMock(spec=k8s_client.AppsV1Api)
     policy = MagicMock(spec=k8s_client.PolicyV1Api)
-    core.list_namespaced_pod.return_value = V1PodList(items=[
-        _make_pod(
-            "p",
-            labels={
-                LABEL_APP: LABEL_APP_VALUE_DAEMON,
-                LABEL_POOL_WORKER_UID: "uid",
-            },
-        ),
-    ])
+    core.list_namespaced_pod.return_value = V1PodList(
+        items=[
+            _make_pod(
+                'p',
+                labels={
+                    LABEL_APP: LABEL_APP_VALUE_DAEMON,
+                    LABEL_POOL_WORKER_UID: 'uid',
+                },
+            ),
+        ]
+    )
 
     mgr = _make_manager(core=core, apps=apps, policy=policy)
-    asyncio.run(mgr.provision_pool_worker(pool_worker_uid="uid", timeout=5.0), )
+    asyncio.run(
+        mgr.provision_pool_worker(pool_worker_uid='uid', timeout=5.0),
+    )
 
     policy.create_namespaced_pod_disruption_budget.assert_called_once()
-    body = (
-        policy.create_namespaced_pod_disruption_budget.call_args.kwargs["body"])
-    assert body.metadata.name == _pdb_name_for_uid("uid")
-    assert body.metadata.name == "diskgraph-pdb-uid"
+    body = policy.create_namespaced_pod_disruption_budget.call_args.kwargs['body']
+    assert body.metadata.name == _pdb_name_for_uid('uid')
+    assert body.metadata.name == 'diskgraph-pdb-uid'
     assert body.spec.max_unavailable == 0
     assert body.spec.selector.match_labels == {
         LABEL_APP: LABEL_APP_VALUE_DAEMON,
-        LABEL_POOL_WORKER_UID: "uid",
+        LABEL_POOL_WORKER_UID: 'uid',
     }
 
 
@@ -707,21 +739,26 @@ def test_provision_pool_worker_pdb_already_exists_is_idempotent():
     apps = MagicMock(spec=k8s_client.AppsV1Api)
     policy = MagicMock(spec=k8s_client.PolicyV1Api)
     policy.create_namespaced_pod_disruption_budget.side_effect = _api_exc(
-        409, "already exists")
-    core.list_namespaced_pod.return_value = V1PodList(items=[
-        _make_pod(
-            "p",
-            labels={
-                LABEL_APP: LABEL_APP_VALUE_DAEMON,
-                LABEL_POOL_WORKER_UID: "uid",
-            },
-        ),
-    ])
+        409, 'already exists'
+    )
+    core.list_namespaced_pod.return_value = V1PodList(
+        items=[
+            _make_pod(
+                'p',
+                labels={
+                    LABEL_APP: LABEL_APP_VALUE_DAEMON,
+                    LABEL_POOL_WORKER_UID: 'uid',
+                },
+            ),
+        ]
+    )
 
     mgr = _make_manager(core=core, apps=apps, policy=policy)
     # Explicit uid → reclaim path; the pre-existing PDB is recovery
     # signal, not an error.
-    asyncio.run(mgr.provision_pool_worker(pool_worker_uid="uid", timeout=5.0), )
+    asyncio.run(
+        mgr.provision_pool_worker(pool_worker_uid='uid', timeout=5.0),
+    )
 
 
 def test_provision_pool_worker_rollback_deletes_pdb():
@@ -735,7 +772,8 @@ def test_provision_pool_worker_rollback_deletes_pdb():
     # out and raises. Fresh-mint (no explicit uid) → rollback runs.
     core.list_namespaced_pod.return_value = V1PodList(items=[])
     core.read_namespaced_persistent_volume_claim.side_effect = _api_exc(
-        404, "not found")
+        404, 'not found'
+    )
 
     mgr = _make_manager(core=core, apps=apps, policy=policy)
     with pytest.raises(Exception):
@@ -763,8 +801,9 @@ def _empty_pool_worker_lookup_mocks() -> tuple:
     core = MagicMock(spec=k8s_client.CoreV1Api)
     apps = MagicMock(spec=k8s_client.AppsV1Api)
     core.list_namespaced_pod.return_value = V1PodList(items=[])
-    core.read_namespaced_persistent_volume_claim.side_effect = (_api_exc(
-        404, "not found"))
+    core.read_namespaced_persistent_volume_claim.side_effect = _api_exc(
+        404, 'not found'
+    )
     return core, apps
 
 
@@ -775,35 +814,34 @@ def test_delete_pool_worker_deletes_deployment_and_pvc():
     core, apps = _empty_pool_worker_lookup_mocks()
 
     mgr = _make_manager(core=core, apps=apps)
-    asyncio.run(mgr.delete_pool_worker("uid"))
+    asyncio.run(mgr.delete_pool_worker('uid'))
 
     apps.patch_namespaced_deployment_scale.assert_called_once()
     apps.delete_namespaced_deployment.assert_called_once()
     core.delete_namespaced_persistent_volume_claim.assert_called_once()
-    scale_kwargs = (apps.patch_namespaced_deployment_scale.call_args.kwargs)
-    assert scale_kwargs["name"] == "diskgraph-daemon-uid"
-    assert scale_kwargs["body"] == {"spec": {"replicas": 0}}
+    scale_kwargs = apps.patch_namespaced_deployment_scale.call_args.kwargs
+    assert scale_kwargs['name'] == 'diskgraph-daemon-uid'
+    assert scale_kwargs['body'] == {'spec': {'replicas': 0}}
     dep_kwargs = apps.delete_namespaced_deployment.call_args.kwargs
-    assert dep_kwargs["name"] == "diskgraph-daemon-uid"
-    pvc_kwargs = (
-        core.delete_namespaced_persistent_volume_claim.call_args.kwargs)
-    assert pvc_kwargs["name"] == "diskgraph-pvc-uid"
+    assert dep_kwargs['name'] == 'diskgraph-daemon-uid'
+    pvc_kwargs = core.delete_namespaced_persistent_volume_claim.call_args.kwargs
+    assert pvc_kwargs['name'] == 'diskgraph-pvc-uid'
 
 
 def test_delete_pool_worker_idempotent_when_deployment_already_gone():
     core, apps = _empty_pool_worker_lookup_mocks()
     apps.delete_namespaced_deployment.side_effect = _api_exc(
         404,
-        "not found",
+        'not found',
     )
     apps.patch_namespaced_deployment_scale.side_effect = _api_exc(
         404,
-        "not found",
+        'not found',
     )
 
     mgr = _make_manager(core=core, apps=apps)
     # Should NOT raise — already-gone is success.
-    asyncio.run(mgr.delete_pool_worker("uid"))
+    asyncio.run(mgr.delete_pool_worker('uid'))
 
 
 def test_delete_pool_worker_step_2_fences_activity_pod_deletion():
@@ -814,12 +852,12 @@ def test_delete_pool_worker_step_2_fences_activity_pod_deletion():
     batch.list_namespaced_job.return_value = V1JobList(items=[])
 
     mgr = _make_manager(core=core, apps=apps, batch=batch)
-    asyncio.run(mgr.delete_pool_worker("uid"))
+    asyncio.run(mgr.delete_pool_worker('uid'))
 
     batch.delete_collection_namespaced_job.assert_called_once()
     kwargs = batch.delete_collection_namespaced_job.call_args.kwargs
-    assert kwargs["grace_period_seconds"] == 0
-    assert kwargs["propagation_policy"] == "Foreground"
+    assert kwargs['grace_period_seconds'] == 0
+    assert kwargs['propagation_policy'] == 'Foreground'
     batch.list_namespaced_job.assert_called_once()
 
 
@@ -831,12 +869,12 @@ def test_delete_pool_worker_propagates_non_404_from_activity_cleanup():
     batch = MagicMock(spec=k8s_client.BatchV1Api)
     batch.delete_collection_namespaced_job.side_effect = _api_exc(
         500,
-        "internal server error",
+        'internal server error',
     )
 
     mgr = _make_manager(core=core, apps=apps, batch=batch)
     with pytest.raises(ApiServerTransientError):
-        asyncio.run(mgr.delete_pool_worker("uid"))
+        asyncio.run(mgr.delete_pool_worker('uid'))
 
 
 def test_delete_pool_worker_propagates_404_from_activity_cleanup():
@@ -846,12 +884,12 @@ def test_delete_pool_worker_propagates_404_from_activity_cleanup():
     batch = MagicMock(spec=k8s_client.BatchV1Api)
     batch.delete_collection_namespaced_job.side_effect = _api_exc(
         404,
-        "not found",
+        'not found',
     )
 
     mgr = _make_manager(core=core, apps=apps, batch=batch)
     with pytest.raises(UnclassifiedApiError):
-        asyncio.run(mgr.delete_pool_worker("uid"))
+        asyncio.run(mgr.delete_pool_worker('uid'))
 
 
 def test_try_delete_pvc_propagates_non_404_on_initial_delete():
@@ -859,12 +897,13 @@ def test_try_delete_pvc_propagates_non_404_on_initial_delete():
     403, etc.) — silently dropping them would leave an orphan PVC
     while the teardown caller reports success."""
     core, apps = _empty_pool_worker_lookup_mocks()
-    core.delete_namespaced_persistent_volume_claim.side_effect = (_api_exc(
-        503, "service unavailable"))
+    core.delete_namespaced_persistent_volume_claim.side_effect = _api_exc(
+        503, 'service unavailable'
+    )
 
     mgr = _make_manager(core=core, apps=apps)
     with pytest.raises(ApiException):
-        asyncio.run(mgr.delete_pool_worker("uid"))
+        asyncio.run(mgr.delete_pool_worker('uid'))
 
 
 # ---------------------------------------------------------------------------
@@ -877,8 +916,8 @@ def test_get_status_raises_pool_worker_not_found_on_empty():
     core.list_namespaced_pod.return_value = V1PodList(items=[])
 
     mgr = _make_manager(core=core)
-    with pytest.raises(PoolWorkerNotFoundError, match="uid"):
-        asyncio.run(mgr.get_status("uid"))
+    with pytest.raises(PoolWorkerNotFoundError, match='uid'):
+        asyncio.run(mgr.get_status('uid'))
 
 
 def test_get_status_picks_newest_pod_during_rollover():
@@ -888,20 +927,20 @@ def test_get_status_picks_newest_pod_during_rollover():
     """
     core = MagicMock(spec=k8s_client.CoreV1Api)
     older = _make_pod(
-        "p-old",
-        node_name="node-old",
+        'p-old',
+        node_name='node-old',
         labels={
             LABEL_APP: LABEL_APP_VALUE_DAEMON,
-            LABEL_POOL_WORKER_UID: "uid",
+            LABEL_POOL_WORKER_UID: 'uid',
         },
         creation_timestamp=datetime.datetime(2026, 1, 1, 0, 0, 0),
     )
     newer = _make_pod(
-        "p-new",
-        node_name="node-new",
+        'p-new',
+        node_name='node-new',
         labels={
             LABEL_APP: LABEL_APP_VALUE_DAEMON,
-            LABEL_POOL_WORKER_UID: "uid",
+            LABEL_POOL_WORKER_UID: 'uid',
         },
         creation_timestamp=datetime.datetime(2026, 1, 2, 0, 0, 0),
     )
@@ -909,9 +948,9 @@ def test_get_status_picks_newest_pod_during_rollover():
     core.list_namespaced_pod.return_value = V1PodList(items=[older, newer])
 
     mgr = _make_manager(core=core)
-    info = asyncio.run(mgr.get_status("uid"))
-    assert info.daemon_pod_name == "p-new"
-    assert info.node_name == "node-new"
+    info = asyncio.run(mgr.get_status('uid'))
+    assert info.daemon_pod_name == 'p-new'
+    assert info.node_name == 'node-new'
 
 
 def test_list_pool_workers_filters_to_daemons_with_uid_label():
@@ -919,48 +958,49 @@ def test_list_pool_workers_filters_to_daemons_with_uid_label():
     core.list_namespaced_pod.return_value = V1PodList(
         items=[
             _make_pod(
-                "p1",
+                'p1',
                 labels={
                     LABEL_APP: LABEL_APP_VALUE_DAEMON,
-                    LABEL_POOL_WORKER_UID: "uid1",
+                    LABEL_POOL_WORKER_UID: 'uid1',
                 },
             ),
             _make_pod(
-                "p2",
+                'p2',
                 labels={
                     LABEL_APP: LABEL_APP_VALUE_DAEMON,
-                    LABEL_POOL_WORKER_UID: "uid2",
+                    LABEL_POOL_WORKER_UID: 'uid2',
                 },
             ),
             # No uid label → should be skipped.
-            _make_pod("p3", labels={LABEL_APP: LABEL_APP_VALUE_DAEMON}),
-        ], )
+            _make_pod('p3', labels={LABEL_APP: LABEL_APP_VALUE_DAEMON}),
+        ],
+    )
 
     mgr = _make_manager(core=core)
     workers = asyncio.run(mgr.list_pool_workers())
 
-    assert {w.pool_worker_uid for w in workers} == {"uid1", "uid2"}
+    assert {w.pool_worker_uid for w in workers} == {'uid1', 'uid2'}
     # Selector includes the daemon app label and tenant.
-    selector = (core.list_namespaced_pod.call_args.kwargs["label_selector"])
-    assert f"{LABEL_APP}={LABEL_APP_VALUE_DAEMON}" in selector
-    assert f"{LABEL_TENANT}={TENANT}" in selector
+    selector = core.list_namespaced_pod.call_args.kwargs['label_selector']
+    assert f'{LABEL_APP}={LABEL_APP_VALUE_DAEMON}' in selector
+    assert f'{LABEL_TENANT}={TENANT}' in selector
 
 
 def _current_registered_cache_worker(mgr: K8sPoolWorkerManager):
     worker = PoolWorkerInfo(
-        pool_worker_uid="uid",
-        pvc_name="diskgraph-pvc-uid",
-        daemon_pod_name="daemon-uid",
-        node_name="node-1",
-        status="Registered",
+        pool_worker_uid='uid',
+        pvc_name='diskgraph-pvc-uid',
+        daemon_pod_name='daemon-uid',
+        node_name='node-1',
+        status='Registered',
     )
     scheduling = mgr.cache_canary_scheduling(800, 1)
     pod = _make_pod(
-        "daemon-uid",
+        'daemon-uid',
         labels={
             LABEL_APP: LABEL_APP_VALUE_DAEMON,
             LABEL_TENANT: TENANT,
-            LABEL_POOL_WORKER_UID: "uid",
+            LABEL_POOL_WORKER_UID: 'uid',
         },
     )
     assert pod.spec is not None
@@ -968,20 +1008,21 @@ def _current_registered_cache_worker(mgr: K8sPoolWorkerManager):
     pod.spec.tolerations = scheduling.tolerations
     pod.spec.volumes = [
         V1Volume(
-            name="ssd",
+            name='ssd',
             persistent_volume_claim=V1PersistentVolumeClaimVolumeSource(
-                claim_name=worker.pvc_name),
+                claim_name=worker.pvc_name
+            ),
         )
     ]
     pvc = V1PersistentVolumeClaim(
         metadata=V1ObjectMeta(name=worker.pvc_name, namespace=NAMESPACE),
         spec=V1PersistentVolumeClaimSpec(
-            access_modes=["ReadWriteOnce"],
-            storage_class_name="topolvm-ssd",
-            volume_name="pv-uid",
-            resources=V1ResourceRequirements(requests={"storage": "800Gi"}),
+            access_modes=['ReadWriteOnce'],
+            storage_class_name='topolvm-ssd',
+            volume_name='pv-uid',
+            resources=V1ResourceRequirements(requests={'storage': '800Gi'}),
         ),
-        status=V1PersistentVolumeClaimStatus(phase="Bound"),
+        status=V1PersistentVolumeClaimStatus(phase='Bound'),
     )
     return worker, pod, pvc
 
@@ -995,28 +1036,29 @@ def test_registered_worker_current_cache_tier_requires_live_envelope():
 
     assert asyncio.run(
         mgr.registered_worker_matches_current_cache_tier(
-            worker, PvcSpec(size_gib=800, gpu_count=1)))
+            worker, PvcSpec(size_gib=800, gpu_count=1)
+        )
+    )
 
 
 @pytest.mark.parametrize(
-    "stale_dimension",
+    'stale_dimension',
     [
-        "portable-rebind-selector",
-        "non-registered-pod",
-        "old-taint",
-        "missing-pvc-volume",
-        "old-storage-class",
-        "old-size",
-        "old-access-mode",
-        "pending-pvc",
-        "unbound-pvc",
+        'portable-rebind-selector',
+        'non-registered-pod',
+        'old-taint',
+        'missing-pvc-volume',
+        'old-storage-class',
+        'old-size',
+        'old-access-mode',
+        'pending-pvc',
+        'unbound-pvc',
     ],
 )
-def test_registered_worker_old_envelope_does_not_prevalidate_tier(
-        stale_dimension):
+def test_registered_worker_old_envelope_does_not_prevalidate_tier(stale_dimension):
     core = MagicMock(spec=k8s_client.CoreV1Api)
-    portable_rebind = stale_dimension == "portable-rebind-selector"
-    storage_class = "managed-csi" if portable_rebind else "topolvm-ssd"
+    portable_rebind = stale_dimension == 'portable-rebind-selector'
+    storage_class = 'managed-csi' if portable_rebind else 'topolvm-ssd'
     mgr = _make_manager(core=core, storage_class=storage_class)
     worker, pod, pvc = _current_registered_cache_worker(mgr)
     spec = PvcSpec(size_gib=800, gpu_count=1)
@@ -1025,41 +1067,42 @@ def test_registered_worker_old_envelope_does_not_prevalidate_tier(
     assert pvc.spec is not None
     assert pvc.status is not None
     if portable_rebind:
-        worker.node_name = pod.spec.node_name = "cache-800-gpu1"
+        worker.node_name = pod.spec.node_name = 'cache-800-gpu1'
         pod.spec.node_selector = {
             DISKGRAPH_POOL_TYPE_LABEL: POOL_TYPE_CACHE,
         }
         pvc.spec.storage_class_name = storage_class
-        pvc.spec.resources.requests["storage"] = "3400Gi"
+        pvc.spec.resources.requests['storage'] = '3400Gi'
         spec = PvcSpec(size_gib=3400, gpu_count=4)
-    elif stale_dimension == "non-registered-pod":
+    elif stale_dimension == 'non-registered-pod':
         pod.status.container_statuses[0].ready = False
-    elif stale_dimension == "old-taint":
+    elif stale_dimension == 'old-taint':
         pod.spec.tolerations = [
             V1Toleration(
-                key="dedicated",
-                operator="Equal",
-                value="diskgraph-old-tenant",
-                effect="NoSchedule",
+                key='dedicated',
+                operator='Equal',
+                value='diskgraph-old-tenant',
+                effect='NoSchedule',
             )
         ]
-    elif stale_dimension == "missing-pvc-volume":
+    elif stale_dimension == 'missing-pvc-volume':
         pod.spec.volumes = []
-    elif stale_dimension == "old-storage-class":
-        pvc.spec.storage_class_name = "topolvm-old"
-    elif stale_dimension == "old-size":
-        pvc.spec.resources.requests["storage"] = "400Gi"
-    elif stale_dimension == "old-access-mode":
-        pvc.spec.access_modes = ["ReadWriteMany"]
-    elif stale_dimension == "pending-pvc":
-        pvc.status.phase = "Pending"
+    elif stale_dimension == 'old-storage-class':
+        pvc.spec.storage_class_name = 'topolvm-old'
+    elif stale_dimension == 'old-size':
+        pvc.spec.resources.requests['storage'] = '400Gi'
+    elif stale_dimension == 'old-access-mode':
+        pvc.spec.access_modes = ['ReadWriteMany']
+    elif stale_dimension == 'pending-pvc':
+        pvc.status.phase = 'Pending'
     else:
         pvc.spec.volume_name = None
     core.read_namespaced_pod.return_value = pod
     core.read_namespaced_persistent_volume_claim.return_value = pvc
 
     assert not asyncio.run(
-        mgr.registered_worker_matches_current_cache_tier(worker, spec))
+        mgr.registered_worker_matches_current_cache_tier(worker, spec)
+    )
 
 
 def test_registered_worker_missing_live_object_does_not_prevalidate_tier():
@@ -1070,7 +1113,9 @@ def test_registered_worker_missing_live_object_does_not_prevalidate_tier():
 
     assert not asyncio.run(
         mgr.registered_worker_matches_current_cache_tier(
-            worker, PvcSpec(size_gib=800, gpu_count=1)))
+            worker, PvcSpec(size_gib=800, gpu_count=1)
+        )
+    )
 
 
 def test_registered_worker_unexpected_api_error_propagates():
@@ -1082,7 +1127,9 @@ def test_registered_worker_unexpected_api_error_propagates():
     with pytest.raises(K8sPermissionError):
         asyncio.run(
             mgr.registered_worker_matches_current_cache_tier(
-                worker, PvcSpec(size_gib=800, gpu_count=1)))
+                worker, PvcSpec(size_gib=800, gpu_count=1)
+            )
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1091,15 +1138,17 @@ def test_registered_worker_unexpected_api_error_propagates():
 
 
 def _registered_daemon_for(uid: str) -> V1PodList:
-    return V1PodList(items=[
-        _make_pod(
-            f"daemon-{uid}",
-            labels={
-                LABEL_APP: LABEL_APP_VALUE_DAEMON,
-                LABEL_POOL_WORKER_UID: uid,
-            },
-        ),
-    ])
+    return V1PodList(
+        items=[
+            _make_pod(
+                f'daemon-{uid}',
+                labels={
+                    LABEL_APP: LABEL_APP_VALUE_DAEMON,
+                    LABEL_POOL_WORKER_UID: uid,
+                },
+            ),
+        ]
+    )
 
 
 def test_provision_activity_pod_raises_not_found_when_uid_missing():
@@ -1111,12 +1160,13 @@ def test_provision_activity_pod_raises_not_found_when_uid_missing():
     with pytest.raises(PoolWorkerNotFoundError):
         asyncio.run(
             mgr.provision_activity_pod(
-                pool_worker_uid="ghost",
-                job_id="j1",
-                snapshot_id="s1",
-                activity="train",
-                image="kumo/activity:test",
-            ))
+                pool_worker_uid='ghost',
+                job_id='j1',
+                snapshot_id='s1',
+                activity='train',
+                image='kumo/activity:test',
+            )
+        )
     # Job MUST NOT be created if the pool worker isn't found.
     assert not batch.create_namespaced_job.called
 
@@ -1125,34 +1175,38 @@ def test_provision_activity_pod_raises_not_ready_when_daemon_pending():
     core = MagicMock(spec=k8s_client.CoreV1Api)
     batch = MagicMock(spec=k8s_client.BatchV1Api)
     # Daemon is Pending — not yet Registered.
-    core.list_namespaced_pod.return_value = V1PodList(items=[
-        _make_pod(
-            "daemon-uid",
-            phase="Pending",
-            container_ready=False,
-            labels={
-                LABEL_APP: LABEL_APP_VALUE_DAEMON,
-                LABEL_POOL_WORKER_UID: "uid",
-            },
-        ),
-    ])
+    core.list_namespaced_pod.return_value = V1PodList(
+        items=[
+            _make_pod(
+                'daemon-uid',
+                phase='Pending',
+                container_ready=False,
+                labels={
+                    LABEL_APP: LABEL_APP_VALUE_DAEMON,
+                    LABEL_POOL_WORKER_UID: 'uid',
+                },
+            ),
+        ]
+    )
 
     mgr = _make_manager(core=core, batch=batch)
-    with pytest.raises(PoolWorkerNotReadyError, match="Pending"):
+    with pytest.raises(PoolWorkerNotReadyError, match='Pending'):
         asyncio.run(
             mgr.provision_activity_pod(
-                pool_worker_uid="uid",
-                job_id="j1",
-                snapshot_id="s1",
-                activity="train",
-                image="kumo/activity:test",
-            ))
+                pool_worker_uid='uid',
+                job_id='j1',
+                snapshot_id='s1',
+                activity='train',
+                image='kumo/activity:test',
+            )
+        )
     assert not batch.create_namespaced_job.called
 
 
 @pytest.mark.parametrize('read_only', [True, False])
 def test_provision_activity_pod_translates_env_dict_and_stamps_labels(
-        monkeypatch, read_only, worker_identity):
+    monkeypatch, read_only, worker_identity
+):
     """The manager is agnostic to the daemon image's env contract:
     whatever ``env`` dict the caller passes is faithfully translated
     to ``V1EnvVar`` entries on the container, and labels are stamped
@@ -1163,15 +1217,15 @@ def test_provision_activity_pod_translates_env_dict_and_stamps_labels(
     core = MagicMock(spec=k8s_client.CoreV1Api)
     batch = MagicMock(spec=k8s_client.BatchV1Api)
 
-    daemon_pods = _registered_daemon_for("uid")
+    daemon_pods = _registered_daemon_for('uid')
     activity_pod = _make_pod(
-        "act-pod-1",
+        'act-pod-1',
         labels={
             LABEL_APP: LABEL_APP_VALUE_ACTIVITY,
-            LABEL_POOL_WORKER_UID: "uid",
-            LABEL_JOB_ID_HASH: _hash_job_id("j7"),
+            LABEL_POOL_WORKER_UID: 'uid',
+            LABEL_JOB_ID_HASH: _hash_job_id('j7'),
         },
-        annotations={ANNOTATION_JOB_ID: "j7"},
+        annotations={ANNOTATION_JOB_ID: 'j7'},
     )
     core.list_namespaced_pod.side_effect = [
         daemon_pods,
@@ -1180,127 +1234,132 @@ def test_provision_activity_pod_translates_env_dict_and_stamps_labels(
 
     # Caller composes the env dict — manager doesn't peek at keys.
     caller_env = {
-        "POOL_WORKER_UID": "uid",
-        "POOL_TASK_QUEUE": "diskgraph-activity-tq-j7",
-        "SNAPSHOT_ID": "snap-7",
-        "DISK_ROOT": "/mnt/localssd",
+        'POOL_WORKER_UID': 'uid',
+        'POOL_TASK_QUEUE': 'diskgraph-activity-tq-j7',
+        'SNAPSHOT_ID': 'snap-7',
+        'DISK_ROOT': '/mnt/localssd',
     }
 
-    mgr = _make_manager(core=core, batch=batch,
-                        pod_template_labels=POD_TEMPLATE_LABELS)
+    mgr = _make_manager(core=core, batch=batch, pod_template_labels=POD_TEMPLATE_LABELS)
     asyncio.run(
         mgr.provision_activity_pod(
-            pool_worker_uid="uid",
-            job_id="j7",
-            snapshot_id="snap-7",
-            activity="predict",
-            image="kumo/activity:v2",
+            pool_worker_uid='uid',
+            job_id='j7',
+            snapshot_id='snap-7',
+            activity='predict',
+            image='kumo/activity:v2',
             env=caller_env,
-        ))
+        )
+    )
     info = asyncio.run(
         mgr.wait_for_activity_job_pod_running(
-            job_name=mgr.activity_job_name("j7", "durable"),
+            job_name=mgr.activity_job_name('j7', 'durable'),
             timeout=5.0,
-        ))
+        )
+    )
 
     assert batch.create_namespaced_job.called
-    job_body = batch.create_namespaced_job.call_args.kwargs["body"]
+    job_body = batch.create_namespaced_job.call_args.kwargs['body']
     assert job_body.spec.backoff_limit == 2
     template_spec = job_body.spec.template.spec
-    assert template_spec.security_context.seccomp_profile.type == "RuntimeDefault"
-    assert template_spec.restart_policy == "Never"
+    assert template_spec.security_context.seccomp_profile.type == 'RuntimeDefault'
+    assert template_spec.restart_policy == 'Never'
     assert template_spec.termination_grace_period_seconds == 30
     assert template_spec.security_context.fs_group == 999
-    assert template_spec.security_context.fs_group_change_policy == "OnRootMismatch"
+    assert template_spec.security_context.fs_group_change_policy == 'OnRootMismatch'
     container = template_spec.containers[0]
     _assert_runtime_filesystem(template_spec, read_only)
-    assert (container.security_context.run_as_user,
-            container.security_context.run_as_group) == worker_identity
+    assert (
+        container.security_context.run_as_user,
+        container.security_context.run_as_group,
+    ) == worker_identity
     assert container.security_context.privileged is False
     assert container.security_context.allow_privilege_escalation is False
     assert container.security_context.run_as_non_root is True
-    assert container.security_context.capabilities.drop == ["ALL"]
-    assert container.image == "kumo/activity:v2"
+    assert container.security_context.capabilities.drop == ['ALL']
+    assert container.image == 'kumo/activity:v2'
 
     # Caller env stays intact; the manager adds only the downward-API pod name
     # used to identify this exact Temporal poller.
-    actual_env = {
-        e.name: e.value
-        for e in container.env if e.value_from is None
-    }
+    actual_env = {e.name: e.value for e in container.env if e.value_from is None}
     assert actual_env == caller_env
-    identity_env = next(e for e in container.env
-                        if e.name == ACTIVITY_WORKER_POD_NAME_ENV)
-    assert identity_env.value_from.field_ref.field_path == "metadata.name"
+    identity_env = next(
+        e for e in container.env if e.name == ACTIVITY_WORKER_POD_NAME_ENV
+    )
+    assert identity_env.value_from.field_ref.field_path == 'metadata.name'
 
     # Azure Disk PV affinity is zonal, so the activity also pins to this
     # worker's daemon host to avoid a cross-node RWO Multi-Attach.
-    affinity_term = (template_spec.affinity.pod_affinity.
-                     required_during_scheduling_ignored_during_execution[0])
-    assert affinity_term.topology_key == "kubernetes.io/hostname"
+    affinity_term = template_spec.affinity.pod_affinity.required_during_scheduling_ignored_during_execution[
+        0
+    ]
+    assert affinity_term.topology_key == 'kubernetes.io/hostname'
     assert affinity_term.label_selector.match_labels == {
         LABEL_APP: LABEL_APP_VALUE_DAEMON,
-        LABEL_POOL_WORKER_UID: "uid",
+        LABEL_POOL_WORKER_UID: 'uid',
     }
 
     # PVC mount remains the shared data path.
     pvc_vol = template_spec.volumes[0]
-    assert (pvc_vol.persistent_volume_claim.claim_name == "diskgraph-pvc-uid")
+    assert pvc_vol.persistent_volume_claim.claim_name == 'diskgraph-pvc-uid'
     # Labels still derived from method params (used for K8s
     # selector queries — see delete_activity_pods). Both job-id and
     # snapshot-id are stored hashed; raw values live on annotations.
     labels = job_body.metadata.labels
     assert labels[LABEL_APP] == LABEL_APP_VALUE_ACTIVITY
-    assert labels[LABEL_POOL_WORKER_UID] == "uid"
-    assert labels[LABEL_JOB_ID_HASH] == _hash_job_id("j7")
-    assert labels[LABEL_SNAPSHOT_ID_HASH] == _hash_snapshot_id("snap-7")
-    assert labels[LABEL_ACTIVITY] == "predict"
+    assert labels[LABEL_POOL_WORKER_UID] == 'uid'
+    assert labels[LABEL_JOB_ID_HASH] == _hash_job_id('j7')
+    assert labels[LABEL_SNAPSHOT_ID_HASH] == _hash_snapshot_id('snap-7')
+    assert labels[LABEL_ACTIVITY] == 'predict'
     assert labels[DISKGRAPH_POOL_TYPE_LABEL] == POOL_TYPE_CACHE
     pod_labels = job_body.spec.template.metadata.labels
-    assert pod_labels["azure.workload.identity/use"] == "true"
+    assert pod_labels['azure.workload.identity/use'] == 'true'
     assert pod_labels[LABEL_APP] == LABEL_APP_VALUE_ACTIVITY
     # Raw values preserved on annotations for human readability,
     # propagated to the pod template so spawned pods inherit them.
     annotations = job_body.metadata.annotations
-    assert annotations[ANNOTATION_JOB_ID] == "j7"
-    assert annotations[ANNOTATION_SNAPSHOT_ID] == "snap-7"
+    assert annotations[ANNOTATION_JOB_ID] == 'j7'
+    assert annotations[ANNOTATION_SNAPSHOT_ID] == 'snap-7'
     pod_annotations = job_body.spec.template.metadata.annotations
-    assert pod_annotations[ANNOTATION_JOB_ID] == "j7"
-    assert pod_annotations[ANNOTATION_SNAPSHOT_ID] == "snap-7"
-    assert info.pool_worker_uid == "uid"
-    assert info.job_id == "j7"
+    assert pod_annotations[ANNOTATION_JOB_ID] == 'j7'
+    assert pod_annotations[ANNOTATION_SNAPSHOT_ID] == 'snap-7'
+    assert info.pool_worker_uid == 'uid'
+    assert info.job_id == 'j7'
 
 
 @pytest.mark.parametrize('read_only', [True, False])
 def test_provision_eph_activity_pod_uses_emptydir_and_eph_storage(
-        monkeypatch, read_only, worker_identity):
+    monkeypatch, read_only, worker_identity
+):
     monkeypatch.setenv('POOL_WORKER_READ_ONLY_ROOT_FILESYSTEM', str(read_only))
     core = MagicMock(spec=k8s_client.CoreV1Api)
     batch = MagicMock(spec=k8s_client.BatchV1Api)
     activity_pod = _make_pod(
-        "eph-act-1",
+        'eph-act-1',
         labels={
             LABEL_APP: LABEL_APP_VALUE_ACTIVITY_EPH,
-            LABEL_JOB_ID_HASH: "j-eph",
+            LABEL_JOB_ID_HASH: 'j-eph',
         },
     )
-    core.list_namespaced_pod.return_value = V1PodList(items=[activity_pod], )
+    core.list_namespaced_pod.return_value = V1PodList(
+        items=[activity_pod],
+    )
 
-    mgr = _make_manager(core=core, batch=batch,
-                        pod_template_labels=POD_TEMPLATE_LABELS)
+    mgr = _make_manager(core=core, batch=batch, pod_template_labels=POD_TEMPLATE_LABELS)
     asyncio.run(
         mgr.provision_ephemeral_activity_pod(
-            job_id="j-eph",
-            snapshot_id="snap-eph",
-            activity="ingest",
-            image="kumo/activity:eph",
+            job_id='j-eph',
+            snapshot_id='snap-eph',
+            activity='ingest',
+            image='kumo/activity:eph',
             ephemeral_storage_bytes=10 * (1 << 30),
-        ))
+        )
+    )
 
-    job_body = batch.create_namespaced_job.call_args.kwargs["body"]
+    job_body = batch.create_namespaced_job.call_args.kwargs['body']
     template_spec = job_body.spec.template.spec
     assert template_spec.security_context.fs_group is None
-    assert template_spec.security_context.seccomp_profile.type == "RuntimeDefault"
+    assert template_spec.security_context.seccomp_profile.type == 'RuntimeDefault'
     assert template_spec.termination_grace_period_seconds == 30
     # Targets ephemeral capacity; the tenant-specific toleration gates access.
     assert template_spec.node_selector == {
@@ -1309,8 +1368,8 @@ def test_provision_eph_activity_pod_uses_emptydir_and_eph_storage(
     # Toleration matches kumo-delivery's nodepool-eph.libsonnet
     # `dedicated=diskgraph-eph-<tenant>` taint.
     tol = template_spec.tolerations[0]
-    assert tol.key == "dedicated"
-    assert tol.value == f"diskgraph-eph-{TENANT}"
+    assert tol.key == 'dedicated'
+    assert tol.value == f'diskgraph-eph-{TENANT}'
     # Volume is emptyDir, NOT persistentVolumeClaim.
     vol = template_spec.volumes[0]
     assert vol.empty_dir is not None
@@ -1321,20 +1380,22 @@ def test_provision_eph_activity_pod_uses_emptydir_and_eph_storage(
     # while the node sits empty (backlog #18).
     container = template_spec.containers[0]
     _assert_runtime_filesystem(template_spec, read_only)
-    assert (container.security_context.run_as_user,
-            container.security_context.run_as_group) == worker_identity
+    assert (
+        container.security_context.run_as_user,
+        container.security_context.run_as_group,
+    ) == worker_identity
     assert container.security_context.privileged is False
     assert container.security_context.allow_privilege_escalation is False
     assert container.security_context.run_as_non_root is True
-    assert container.security_context.capabilities.drop == ["ALL"]
-    assert container.resources.requests["ephemeral-storage"] == str(10 *
-                                                                    (1 << 30))
-    assert "ephemeral-storage" not in (container.resources.limits or {})
+    assert container.security_context.capabilities.drop == ['ALL']
+    assert container.resources.requests['ephemeral-storage'] == str(10 * (1 << 30))
+    assert 'ephemeral-storage' not in (container.resources.limits or {})
     assert vol.empty_dir.size_limit is None
     # No pool-worker-uid label on eph activity Jobs.
     assert LABEL_POOL_WORKER_UID not in job_body.metadata.labels
-    assert (job_body.spec.template.metadata.
-            labels["azure.workload.identity/use"] == "true")
+    assert (
+        job_body.spec.template.metadata.labels['azure.workload.identity/use'] == 'true'
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1346,25 +1407,28 @@ def test_delete_activity_pods_deletes_jobs_and_matching_orphans():
     batch = MagicMock(spec=k8s_client.BatchV1Api)
     core = MagicMock(spec=k8s_client.CoreV1Api)
     core.list_namespaced_pod.return_value = V1PodList(
-        items=[_make_pod('orphan-activity')])
+        items=[_make_pod('orphan-activity')]
+    )
     mgr = _make_manager(batch=batch, core=core)
     asyncio.run(mgr.delete_activity_pods())
 
     batch.delete_collection_namespaced_job.assert_called_once()
     kwargs = batch.delete_collection_namespaced_job.call_args.kwargs
-    assert kwargs["namespace"] == NAMESPACE
+    assert kwargs['namespace'] == NAMESPACE
     # Background propagation lets Job deletion return while matching pods are
     # deleted explicitly below.
-    assert kwargs["propagation_policy"] == "Background"
+    assert kwargs['propagation_policy'] == 'Background'
     # Default selector includes both cache + eph activity app values.
-    selector = kwargs["label_selector"]
+    selector = kwargs['label_selector']
     assert LABEL_APP_VALUE_ACTIVITY in selector
     assert LABEL_APP_VALUE_ACTIVITY_EPH in selector
-    assert f"{LABEL_TENANT}={TENANT}" in selector
-    core.list_namespaced_pod.assert_called_once_with(namespace=NAMESPACE,
-                                                     label_selector=selector)
-    core.delete_namespaced_pod.assert_called_once_with(name='orphan-activity',
-                                                       namespace=NAMESPACE)
+    assert f'{LABEL_TENANT}={TENANT}' in selector
+    core.list_namespaced_pod.assert_called_once_with(
+        namespace=NAMESPACE, label_selector=selector
+    )
+    core.delete_namespaced_pod.assert_called_once_with(
+        name='orphan-activity', namespace=NAMESPACE
+    )
 
 
 def test_delete_activity_pods_filters_and_waits_for_deletion(monkeypatch):
@@ -1372,7 +1436,7 @@ def test_delete_activity_pods_filters_and_waits_for_deletion(monkeypatch):
     batch = MagicMock(spec=k8s_client.BatchV1Api)
     batch.list_namespaced_job.side_effect = [
         MagicMock(items=[MagicMock()]),
-        MagicMock(items=[])
+        MagicMock(items=[]),
     ]
     core = MagicMock(spec=k8s_client.CoreV1Api)
     core.list_namespaced_pod.side_effect = [
@@ -1383,27 +1447,28 @@ def test_delete_activity_pods_filters_and_waits_for_deletion(monkeypatch):
     mgr = _make_manager(batch=batch, core=core)
     asyncio.run(
         mgr.delete_activity_pods(
-            pool_worker_uid="uid-1",
-            pool_type="ephemeral",
-            job_id="job-7",
+            pool_worker_uid='uid-1',
+            pool_type='ephemeral',
+            job_id='job-7',
             grace_period_seconds=0,
             wait_for_deletion=True,
             deletion_timeout=5,
-        ))
+        )
+    )
 
     kwargs = batch.delete_collection_namespaced_job.call_args.kwargs
-    selector = kwargs["label_selector"]
-    assert f"{LABEL_POOL_WORKER_UID}=uid-1" in selector
-    assert f"{DISKGRAPH_POOL_TYPE_LABEL}=ephemeral" in selector
-    assert (f"{LABEL_JOB_ID_HASH}={_hash_job_id('job-7')}" in selector)
-    assert "job-id-hash=job-7" not in selector
+    selector = kwargs['label_selector']
+    assert f'{LABEL_POOL_WORKER_UID}=uid-1' in selector
+    assert f'{DISKGRAPH_POOL_TYPE_LABEL}=ephemeral' in selector
+    assert f'{LABEL_JOB_ID_HASH}={_hash_job_id("job-7")}' in selector
+    assert 'job-id-hash=job-7' not in selector
     assert kwargs['propagation_policy'] == 'Foreground'
     assert kwargs['grace_period_seconds'] == 0
     assert batch.list_namespaced_job.call_count == 2
     assert core.list_namespaced_pod.call_count == 3
-    core.delete_namespaced_pod.assert_called_once_with(name='orphan-activity',
-                                                       namespace=NAMESPACE,
-                                                       grace_period_seconds=0)
+    core.delete_namespaced_pod.assert_called_once_with(
+        name='orphan-activity', namespace=NAMESPACE, grace_period_seconds=0
+    )
 
 
 def test_list_activity_pods_filter_by_uid():
@@ -1411,21 +1476,22 @@ def test_list_activity_pods_filter_by_uid():
     core.list_namespaced_pod.return_value = V1PodList(
         items=[
             _make_pod(
-                "act-1",
+                'act-1',
                 labels={
                     LABEL_APP: LABEL_APP_VALUE_ACTIVITY,
-                    LABEL_POOL_WORKER_UID: "uid-1",
-                    LABEL_JOB_ID_HASH: "j",
+                    LABEL_POOL_WORKER_UID: 'uid-1',
+                    LABEL_JOB_ID_HASH: 'j',
                 },
             ),
-        ], )
+        ],
+    )
     mgr = _make_manager(core=core)
-    pods = asyncio.run(mgr.list_activity_pods(pool_worker_uid="uid-1"))
+    pods = asyncio.run(mgr.list_activity_pods(pool_worker_uid='uid-1'))
 
     assert len(pods) == 1
-    assert pods[0].pool_worker_uid == "uid-1"
-    selector = (core.list_namespaced_pod.call_args.kwargs["label_selector"])
-    assert f"{LABEL_POOL_WORKER_UID}=uid-1" in selector
+    assert pods[0].pool_worker_uid == 'uid-1'
+    selector = core.list_namespaced_pod.call_args.kwargs['label_selector']
+    assert f'{LABEL_POOL_WORKER_UID}=uid-1' in selector
 
 
 def test_list_activity_pods_no_filter_covers_both_cache_and_eph():
@@ -1436,10 +1502,10 @@ def test_list_activity_pods_no_filter_covers_both_cache_and_eph():
     mgr = _make_manager(core=core)
     asyncio.run(mgr.list_activity_pods())
 
-    selector = (core.list_namespaced_pod.call_args.kwargs["label_selector"])
-    assert (f"{LABEL_APP} in "
-            f"({LABEL_APP_VALUE_ACTIVITY},{LABEL_APP_VALUE_ACTIVITY_EPH})"
-            ) in selector
+    selector = core.list_namespaced_pod.call_args.kwargs['label_selector']
+    assert (
+        f'{LABEL_APP} in ({LABEL_APP_VALUE_ACTIVITY},{LABEL_APP_VALUE_ACTIVITY_EPH})'
+    ) in selector
 
 
 # ---------------------------------------------------------------------------
@@ -1461,25 +1527,29 @@ def test_delete_pool_worker_follows_design_5_3_sequence():
     core, apps = _empty_pool_worker_lookup_mocks()
     policy = MagicMock(spec=k8s_client.PolicyV1Api)
     sequence = []
-    apps.patch_namespaced_deployment_scale.side_effect = (
-        lambda *a, **kw: sequence.append("scale-to-0"))
-    core.delete_namespaced_persistent_volume_claim.side_effect = (
-        lambda *a, **kw: sequence.append("pvc"))
-    apps.delete_namespaced_deployment.side_effect = (
-        lambda *a, **kw: sequence.append("deployment"))
-    policy.delete_namespaced_pod_disruption_budget.side_effect = (
-        lambda *a, **kw: sequence.append("pdb"))
+    apps.patch_namespaced_deployment_scale.side_effect = lambda *a, **kw: (
+        sequence.append('scale-to-0')
+    )
+    core.delete_namespaced_persistent_volume_claim.side_effect = lambda *a, **kw: (
+        sequence.append('pvc')
+    )
+    apps.delete_namespaced_deployment.side_effect = lambda *a, **kw: sequence.append(
+        'deployment'
+    )
+    policy.delete_namespaced_pod_disruption_budget.side_effect = lambda *a, **kw: (
+        sequence.append('pdb')
+    )
 
     mgr = _make_manager(core=core, apps=apps, policy=policy)
-    asyncio.run(mgr.delete_pool_worker("uid"))
+    asyncio.run(mgr.delete_pool_worker('uid'))
 
-    assert sequence == [
-        "pdb", "scale-to-0", "pvc", "deployment"
-    ], (f"expected pdb → scale-to-0 → pvc → deployment; got {sequence}")
+    assert sequence == ['pdb', 'scale-to-0', 'pvc', 'deployment'], (
+        f'expected pdb → scale-to-0 → pvc → deployment; got {sequence}'
+    )
     # PDB is deleted by its uid-derived name so Karpenter can reclaim
     # the now-empty node.
     pdb_kwargs = policy.delete_namespaced_pod_disruption_budget.call_args.kwargs
-    assert pdb_kwargs["name"] == "diskgraph-pdb-uid"
+    assert pdb_kwargs['name'] == 'diskgraph-pdb-uid'
 
 
 def test_delete_pool_worker_propagates_grace_period_seconds():
@@ -1489,10 +1559,10 @@ def test_delete_pool_worker_propagates_grace_period_seconds():
     core, apps = _empty_pool_worker_lookup_mocks()
     mgr = _make_manager(core=core, apps=apps)
 
-    asyncio.run(mgr.delete_pool_worker("uid", grace_period_seconds=0))
+    asyncio.run(mgr.delete_pool_worker('uid', grace_period_seconds=0))
 
     kwargs = apps.delete_namespaced_deployment.call_args.kwargs
-    assert kwargs["grace_period_seconds"] == 0
+    assert kwargs['grace_period_seconds'] == 0
 
 
 def test_delete_pool_worker_deletes_pdb():
@@ -1504,11 +1574,11 @@ def test_delete_pool_worker_deletes_pdb():
     policy = MagicMock(spec=k8s_client.PolicyV1Api)
 
     mgr = _make_manager(core=core, apps=apps, policy=policy)
-    asyncio.run(mgr.delete_pool_worker("uid"))
+    asyncio.run(mgr.delete_pool_worker('uid'))
 
     policy.delete_namespaced_pod_disruption_budget.assert_called_once()
     kwargs = policy.delete_namespaced_pod_disruption_budget.call_args.kwargs
-    assert kwargs["name"] == "diskgraph-pdb-uid"
+    assert kwargs['name'] == 'diskgraph-pdb-uid'
 
 
 def test_delete_pool_worker_pdb_already_gone_is_idempotent():
@@ -1518,11 +1588,12 @@ def test_delete_pool_worker_pdb_already_gone_is_idempotent():
     core, apps = _empty_pool_worker_lookup_mocks()
     policy = MagicMock(spec=k8s_client.PolicyV1Api)
     policy.delete_namespaced_pod_disruption_budget.side_effect = _api_exc(
-        404, "not found")
+        404, 'not found'
+    )
 
     mgr = _make_manager(core=core, apps=apps, policy=policy)
     # Should NOT raise.
-    asyncio.run(mgr.delete_pool_worker("uid"))
+    asyncio.run(mgr.delete_pool_worker('uid'))
 
 
 def test_provision_pool_worker_with_explicit_uid_uses_it_in_resource_names():
@@ -1534,40 +1605,43 @@ def test_provision_pool_worker_with_explicit_uid_uses_it_in_resource_names():
     core = MagicMock(spec=k8s_client.CoreV1Api)
     apps = MagicMock(spec=k8s_client.AppsV1Api)
     policy = MagicMock(spec=k8s_client.PolicyV1Api)
-    core.list_namespaced_pod.return_value = V1PodList(items=[
-        _make_pod(
-            "p", labels={
-                LABEL_APP: LABEL_APP_VALUE_DAEMON,
-                LABEL_POOL_WORKER_UID: "rebind-uid",
-            }),
-    ])
+    core.list_namespaced_pod.return_value = V1PodList(
+        items=[
+            _make_pod(
+                'p',
+                labels={
+                    LABEL_APP: LABEL_APP_VALUE_DAEMON,
+                    LABEL_POOL_WORKER_UID: 'rebind-uid',
+                },
+            ),
+        ]
+    )
 
     mgr = _make_manager(core=core, apps=apps, policy=policy)
     info = asyncio.run(
         mgr.provision_pool_worker(
-            pool_worker_uid="rebind-uid",
+            pool_worker_uid='rebind-uid',
             timeout=5.0,
-        ))
+        )
+    )
 
-    assert info.pool_worker_uid == "rebind-uid"
-    pvc_body = (
-        core.create_namespaced_persistent_volume_claim.call_args.kwargs["body"])
-    assert pvc_body.metadata.name == "diskgraph-pvc-rebind-uid"
-    dep_body = apps.create_namespaced_deployment.call_args.kwargs["body"]
-    assert dep_body.metadata.name == "diskgraph-daemon-rebind-uid"
+    assert info.pool_worker_uid == 'rebind-uid'
+    pvc_body = core.create_namespaced_persistent_volume_claim.call_args.kwargs['body']
+    assert pvc_body.metadata.name == 'diskgraph-pvc-rebind-uid'
+    dep_body = apps.create_namespaced_deployment.call_args.kwargs['body']
+    assert dep_body.metadata.name == 'diskgraph-daemon-rebind-uid'
     # The PDB is named from the same uid so the rebind protects the
     # daemon under a predictable, idempotent name.
-    pdb_body = (
-        policy.create_namespaced_pod_disruption_budget.call_args.kwargs["body"])
-    assert pdb_body.metadata.name == "diskgraph-pdb-rebind-uid"
+    pdb_body = policy.create_namespaced_pod_disruption_budget.call_args.kwargs['body']
+    assert pdb_body.metadata.name == 'diskgraph-pdb-rebind-uid'
 
 
 @pytest.mark.parametrize(
-    "phase,container_ready",
+    'phase,container_ready',
     [
-        ("Pending", False),
-        ("Running", False),  # Pod Running but container not Ready yet
-        ("Failed", False),
+        ('Pending', False),
+        ('Running', False),  # Pod Running but container not Ready yet
+        ('Failed', False),
     ],
 )
 def test_provision_activity_pod_raises_not_ready_for_non_registered_phases(
@@ -1580,28 +1654,31 @@ def test_provision_activity_pod_raises_not_ready_for_non_registered_phases(
     """
     core = MagicMock(spec=k8s_client.CoreV1Api)
     batch = MagicMock(spec=k8s_client.BatchV1Api)
-    core.list_namespaced_pod.return_value = V1PodList(items=[
-        _make_pod(
-            "daemon-uid",
-            phase=phase,
-            container_ready=container_ready,
-            labels={
-                LABEL_APP: LABEL_APP_VALUE_DAEMON,
-                LABEL_POOL_WORKER_UID: "uid",
-            },
-        ),
-    ])
+    core.list_namespaced_pod.return_value = V1PodList(
+        items=[
+            _make_pod(
+                'daemon-uid',
+                phase=phase,
+                container_ready=container_ready,
+                labels={
+                    LABEL_APP: LABEL_APP_VALUE_DAEMON,
+                    LABEL_POOL_WORKER_UID: 'uid',
+                },
+            ),
+        ]
+    )
 
     mgr = _make_manager(core=core, batch=batch)
     with pytest.raises(PoolWorkerNotReadyError):
         asyncio.run(
             mgr.provision_activity_pod(
-                pool_worker_uid="uid",
-                job_id="j",
-                snapshot_id="s",
-                activity="train",
-                image="kumo/activity:test",
-            ))
+                pool_worker_uid='uid',
+                job_id='j',
+                snapshot_id='s',
+                activity='train',
+                image='kumo/activity:test',
+            )
+        )
     assert not batch.create_namespaced_job.called
 
 
@@ -1612,40 +1689,41 @@ def test_provision_eph_activity_pod_translates_env_dict():
     """
     core = MagicMock(spec=k8s_client.CoreV1Api)
     batch = MagicMock(spec=k8s_client.BatchV1Api)
-    core.list_namespaced_pod.return_value = V1PodList(items=[
-        _make_pod(
-            "eph",
-            labels={
-                LABEL_APP: LABEL_APP_VALUE_ACTIVITY_EPH,
-                LABEL_JOB_ID_HASH: "j-eph",
-            },
-        ),
-    ])
+    core.list_namespaced_pod.return_value = V1PodList(
+        items=[
+            _make_pod(
+                'eph',
+                labels={
+                    LABEL_APP: LABEL_APP_VALUE_ACTIVITY_EPH,
+                    LABEL_JOB_ID_HASH: 'j-eph',
+                },
+            ),
+        ]
+    )
     caller_env = {
-        "POOL_TASK_QUEUE": "diskgraph-activity-tq-j-eph",
-        "SNAPSHOT_ID": "snap-eph",
-        "DISK_ROOT": "/mnt/localssd",
+        'POOL_TASK_QUEUE': 'diskgraph-activity-tq-j-eph',
+        'SNAPSHOT_ID': 'snap-eph',
+        'DISK_ROOT': '/mnt/localssd',
     }
     mgr = _make_manager(core=core, batch=batch)
     asyncio.run(
         mgr.provision_ephemeral_activity_pod(
-            job_id="j-eph",
-            snapshot_id="snap-eph",
-            activity="ingest",
-            image="kumo/activity:eph",
+            job_id='j-eph',
+            snapshot_id='snap-eph',
+            activity='ingest',
+            image='kumo/activity:eph',
             ephemeral_storage_bytes=10 * (1 << 30),
             env=caller_env,
-        ))
-    body = batch.create_namespaced_job.call_args.kwargs["body"]
+        )
+    )
+    body = batch.create_namespaced_job.call_args.kwargs['body']
     container = body.spec.template.spec.containers[0]
-    actual_env = {
-        e.name: e.value
-        for e in container.env if e.value_from is None
-    }
+    actual_env = {e.name: e.value for e in container.env if e.value_from is None}
     assert actual_env == caller_env
-    identity_env = next(e for e in container.env
-                        if e.name == ACTIVITY_WORKER_POD_NAME_ENV)
-    assert identity_env.value_from.field_ref.field_path == "metadata.name"
+    identity_env = next(
+        e for e in container.env if e.name == ACTIVITY_WORKER_POD_NAME_ENV
+    )
+    assert identity_env.value_from.field_ref.field_path == 'metadata.name'
 
 
 def test_create_pvc_translates_quota_error_to_typed_exception():
@@ -1655,16 +1733,18 @@ def test_create_pvc_translates_quota_error_to_typed_exception():
     """
     core = MagicMock(spec=k8s_client.CoreV1Api)
     apps = MagicMock(spec=k8s_client.AppsV1Api)
-    core.create_namespaced_persistent_volume_claim.side_effect = (_api_exc(
-        403, "exceeded quota: storage"))
+    core.create_namespaced_persistent_volume_claim.side_effect = _api_exc(
+        403, 'exceeded quota: storage'
+    )
 
     mgr = _make_manager(core=core, apps=apps)
     with pytest.raises(QuotaExceededError):
         asyncio.run(
             mgr.provision_pool_worker(
-                pool_worker_uid="uid",
+                pool_worker_uid='uid',
                 timeout=2.0,
-            ))
+            )
+        )
     # Deployment never gets created if PVC creation failed.
     assert not apps.create_namespaced_deployment.called
 
@@ -1674,7 +1754,7 @@ def test_translate_api_error_chains_via_from_exc():
     can still get at the original via ``__cause__`` (set by
     ``raise X from exc``).
     """
-    api_exc = _api_exc(403, "exceeded quota")
+    api_exc = _api_exc(403, 'exceeded quota')
     typed = _translate_api_error(api_exc)
     # _translate_api_error itself returns the typed instance; the
     # ``from exc`` happens at the raise site (e.g., _create_pvc_sync).
@@ -1690,7 +1770,7 @@ def test_storage_size_from_pvc_spec_formats_gib_string():
     quantity string — the controller picks the tier, no headroom applied here.
     """
     mgr = _make_manager()
-    assert mgr._storage_size_from_pvc_spec(PvcSpec(size_gib=1750)) == "1750Gi"
+    assert mgr._storage_size_from_pvc_spec(PvcSpec(size_gib=1750)) == '1750Gi'
 
 
 def test_provision_then_delete_then_provision_same_uid_smoke():
@@ -1702,10 +1782,12 @@ def test_provision_then_delete_then_provision_same_uid_smoke():
     core = MagicMock(spec=k8s_client.CoreV1Api)
     apps = MagicMock(spec=k8s_client.AppsV1Api)
     registered_pod = _make_pod(
-        "p", labels={
+        'p',
+        labels={
             LABEL_APP: LABEL_APP_VALUE_DAEMON,
-            LABEL_POOL_WORKER_UID: "rebind-uid",
-        })
+            LABEL_POOL_WORKER_UID: 'rebind-uid',
+        },
+    )
     # The teardown's `_wait_for_daemon_pod_gone` polls list-pods
     # until empty — feed it an empty result during the delete window
     # then go back to a Registered pod for the second provision.
@@ -1719,34 +1801,36 @@ def test_provision_then_delete_then_provision_same_uid_smoke():
     # PVC reads always 404 — short-circuits the _try_delete_pvc poll.
     core.read_namespaced_persistent_volume_claim.side_effect = _api_exc(
         404,
-        "not found",
+        'not found',
     )
 
     mgr = _make_manager(core=core, apps=apps)
 
     asyncio.run(
         mgr.provision_pool_worker(
-            pool_worker_uid="rebind-uid",
+            pool_worker_uid='rebind-uid',
             timeout=5.0,
-        ), )
-    asyncio.run(mgr.delete_pool_worker("rebind-uid"))
+        ),
+    )
+    asyncio.run(mgr.delete_pool_worker('rebind-uid'))
     asyncio.run(
         mgr.provision_pool_worker(
-            pool_worker_uid="rebind-uid",
+            pool_worker_uid='rebind-uid',
             timeout=5.0,
-        ), )
+        ),
+    )
 
     # Two PVC creates + two Deployment creates over the round-trip.
-    assert (core.create_namespaced_persistent_volume_claim.call_count == 2)
+    assert core.create_namespaced_persistent_volume_claim.call_count == 2
     assert apps.create_namespaced_deployment.call_count == 2
     # Both reference the same PVC name (predictable rebind).
     pvc_names = [
-        c.kwargs["body"].metadata.name
+        c.kwargs['body'].metadata.name
         for c in core.create_namespaced_persistent_volume_claim.call_args_list
     ]
     assert pvc_names == [
-        "diskgraph-pvc-rebind-uid",
-        "diskgraph-pvc-rebind-uid",
+        'diskgraph-pvc-rebind-uid',
+        'diskgraph-pvc-rebind-uid',
     ]
 
 
@@ -1765,23 +1849,22 @@ def test_derive_pod_status_terminating_takes_precedence_over_succeeded():
     to design §6.5 cleanup callers.
     """
     pod = _make_pod(
-        "p",
-        phase="Succeeded",
+        'p',
+        phase='Succeeded',
         container_ready=True,
         deletion_timestamp=datetime.datetime(2026, 1, 1),
     )
-    assert _derive_pod_status(pod) == "Terminating"
+    assert _derive_pod_status(pod) == 'Terminating'
 
 
-def test_pod_to_pool_worker_info_returns_none_daemon_pod_name_when_metadata_missing(
-):  # noqa: E501
+def test_pod_to_pool_worker_info_returns_none_daemon_pod_name_when_metadata_missing():  # noqa: E501
     """`_pod_to_pool_worker_info` must return `None` (not `''`) for
     daemon_pod_name when `pod.metadata` is absent — pinning the
     Optional[str] contract from PoolWorkerInfo so callers can use
     `is None` instead of comparing against an empty-string sentinel.
     """
     pod = V1Pod(metadata=None, spec=None, status=None)
-    info = _pod_to_pool_worker_info(pod, "uid-x")
+    info = _pod_to_pool_worker_info(pod, 'uid-x')
     assert info.daemon_pod_name is None
     assert info.node_name is None
 
@@ -1792,7 +1875,7 @@ def test_pod_to_pool_worker_info_returns_none_daemon_pod_name_when_metadata_miss
 
 
 def test_translate_api_error_429_throttled():
-    out = _translate_api_error(_api_exc(429, "too many requests"))
+    out = _translate_api_error(_api_exc(429, 'too many requests'))
     assert isinstance(out, ApiServerThrottledError)
 
 
@@ -1800,14 +1883,15 @@ def test_translate_api_error_5xx_transient():
     # 500 / 502 / 503 / 504 all map to the same transient bucket so
     # the controller can apply one retry policy.
     for status in (500, 502, 503, 504):
-        out = _translate_api_error(_api_exc(status, "boom"))
+        out = _translate_api_error(_api_exc(status, 'boom'))
         assert isinstance(out, ApiServerTransientError), (
-            f"status {status} should be ApiServerTransientError, "
-            f"got {type(out).__name__}")
+            f'status {status} should be ApiServerTransientError, '
+            f'got {type(out).__name__}'
+        )
 
 
 def test_translate_api_error_409_already_exists():
-    out = _translate_api_error(_api_exc(409, "already exists"))
+    out = _translate_api_error(_api_exc(409, 'already exists'))
     assert isinstance(out, PoolWorkerAlreadyExistsError)
 
 
@@ -1821,7 +1905,7 @@ def test_try_delete_pvc_timeout_preserves_csi_finalizers():
 
     mgr = _make_manager(core=core, apps=apps)
     with pytest.raises(PoolWorkerCleanupFailedError):
-        asyncio.run(mgr.delete_pool_worker("uid", pvc_delete_timeout=0.5))
+        asyncio.run(mgr.delete_pool_worker('uid', pvc_delete_timeout=0.5))
     core.patch_namespaced_persistent_volume_claim.assert_not_called()
 
 
@@ -1833,22 +1917,25 @@ def test_wait_for_daemon_pod_gone_raises_on_timeout_by_default():
     core = MagicMock(spec=k8s_client.CoreV1Api)
     apps = MagicMock(spec=k8s_client.AppsV1Api)
     daemon_pod = _make_pod(
-        "p",
-        node_name="node-X",
+        'p',
+        node_name='node-X',
         labels={
             LABEL_APP: LABEL_APP_VALUE_DAEMON,
-            LABEL_POOL_WORKER_UID: "uid",
+            LABEL_POOL_WORKER_UID: 'uid',
         },
     )
     # First list call (in _get_pool_worker_info) returns the daemon
     # so we know its node_name. Subsequent calls (the wait poll)
     # always return the pod alive — never reaped.
-    core.list_namespaced_pod.side_effect = lambda **kwargs: V1PodList(items=[
-    ] if "diskgraph-activity-pod" in kwargs["label_selector"] else [daemon_pod])
+    core.list_namespaced_pod.side_effect = lambda **kwargs: V1PodList(
+        items=[]
+        if 'diskgraph-activity-pod' in kwargs['label_selector']
+        else [daemon_pod]
+    )
 
     mgr = _make_manager(core=core, apps=apps)
     with pytest.raises(PoolWorkerCleanupFailedError):
-        asyncio.run(mgr.delete_pool_worker("uid", scale_down_timeout=0.5))
+        asyncio.run(mgr.delete_pool_worker('uid', scale_down_timeout=0.5))
 
 
 def test_wait_for_daemon_pod_gone_with_force_on_timeout_returns():
@@ -1858,10 +1945,10 @@ def test_wait_for_daemon_pod_gone_with_force_on_timeout_returns():
     # force_on_timeout=True should return None instead of raising.
     core = MagicMock(spec=k8s_client.CoreV1Api)
     daemon_pod = _make_pod(
-        "p",
+        'p',
         labels={
             LABEL_APP: LABEL_APP_VALUE_DAEMON,
-            LABEL_POOL_WORKER_UID: "uid",
+            LABEL_POOL_WORKER_UID: 'uid',
         },
     )
     core.list_namespaced_pod.return_value = V1PodList(items=[daemon_pod])
@@ -1871,10 +1958,11 @@ def test_wait_for_daemon_pod_gone_with_force_on_timeout_returns():
     # though the pod is never reaped.
     result = asyncio.run(
         mgr._wait_for_daemon_pod_gone(
-            "uid",
+            'uid',
             timeout=0.3,
             force_on_timeout=True,
-        ))
+        )
+    )
     assert result is None
 
 
@@ -1886,29 +1974,39 @@ def test_wait_for_daemon_pod_gone_with_force_on_timeout_returns():
 def test_wait_for_activity_job_pod_running_immediate_terminal_on_crash_loop():
     """CrashLoopBackOff is immediately terminal — no grace window."""
     core = MagicMock(spec=k8s_client.CoreV1Api)
-    core.list_namespaced_pod.return_value = V1PodList(items=[
-        _make_pod('act', phase='Pending', container_ready=False,
-                  waiting_reason='CrashLoopBackOff'),
-    ])
+    core.list_namespaced_pod.return_value = V1PodList(
+        items=[
+            _make_pod(
+                'act',
+                phase='Pending',
+                container_ready=False,
+                waiting_reason='CrashLoopBackOff',
+            ),
+        ]
+    )
     mgr = _make_manager(core=core)
     with pytest.raises(ProvisionTerminalError, match='CrashLoopBackOff'):
         asyncio.run(
             mgr.wait_for_activity_job_pod_running(
-                job_name='diskgraph-activity-abc', timeout=5.0))
+                job_name='diskgraph-activity-abc', timeout=5.0
+            )
+        )
     assert core.list_namespaced_pod.call_count == 1  # fail on first poll
 
 
-def test_wait_for_activity_job_pod_running_image_pull_backoff_grace_window(
-        monkeypatch):
+def test_wait_for_activity_job_pod_running_image_pull_backoff_grace_window(monkeypatch):
     """Each Job attempt gets its own transient image-pull grace."""
-    monkeypatch.setattr(
-        'pool.worker_manager.k8s._IMAGE_PULL_BACKOFF_GRACE_SECS', 0)
+    monkeypatch.setattr('pool.worker_manager.k8s._IMAGE_PULL_BACKOFF_GRACE_SECS', 0)
     core = MagicMock(spec=k8s_client.CoreV1Api)
-    old = _make_pod('old', phase='Pending', container_ready=False,
-                    waiting_reason='ImagePullBackOff')
-    replacement = _make_pod('replacement', phase='Pending',
-                            container_ready=False,
-                            waiting_reason='ImagePullBackOff')
+    old = _make_pod(
+        'old', phase='Pending', container_ready=False, waiting_reason='ImagePullBackOff'
+    )
+    replacement = _make_pod(
+        'replacement',
+        phase='Pending',
+        container_ready=False,
+        waiting_reason='ImagePullBackOff',
+    )
     core.list_namespaced_pod.side_effect = [
         V1PodList(items=[old]),
         V1PodList(items=[replacement]),
@@ -1918,7 +2016,9 @@ def test_wait_for_activity_job_pod_running_image_pull_backoff_grace_window(
     with pytest.raises(ProvisionTerminalError, match='ImagePullBackOff'):
         asyncio.run(
             mgr.wait_for_activity_job_pod_running(
-                job_name='diskgraph-activity-abc', timeout=5.0))
+                job_name='diskgraph-activity-abc', timeout=5.0
+            )
+        )
     assert core.list_namespaced_pod.call_count == 3
 
 
@@ -1927,31 +2027,36 @@ def test_wait_for_cache_activity_pod_allows_gpu_handoff_to_finish(monkeypatch):
     monkeypatch.setattr('pool.worker_manager.k8s._POLL_INTERVAL_SECS', 0)
     core = MagicMock(spec=k8s_client.CoreV1Api)
     core.list_namespaced_pod.side_effect = [
-        V1PodList(items=[
-            _make_pod(
-                'act',
-                phase='Pending',
-                container_ready=False,
-                labels={DISKGRAPH_POOL_TYPE_LABEL: POOL_TYPE_CACHE},
-                conditions=[
-                    V1PodCondition(
-                        type='PodScheduled',
-                        status='False',
-                        reason='Unschedulable',
-                        message=('0/1 nodes are available: '
-                                 'Insufficient nvidia.com/gpu.'),
-                    ),
-                ],
-            ),
-        ]),
-        V1PodList(items=[
-            _make_pod(
-                'act',
-                phase='Running',
-                labels={DISKGRAPH_POOL_TYPE_LABEL: POOL_TYPE_CACHE},
-                annotations={ANNOTATION_JOB_ID: 'job-1'},
-            ),
-        ]),
+        V1PodList(
+            items=[
+                _make_pod(
+                    'act',
+                    phase='Pending',
+                    container_ready=False,
+                    labels={DISKGRAPH_POOL_TYPE_LABEL: POOL_TYPE_CACHE},
+                    conditions=[
+                        V1PodCondition(
+                            type='PodScheduled',
+                            status='False',
+                            reason='Unschedulable',
+                            message=(
+                                '0/1 nodes are available: Insufficient nvidia.com/gpu.'
+                            ),
+                        ),
+                    ],
+                ),
+            ]
+        ),
+        V1PodList(
+            items=[
+                _make_pod(
+                    'act',
+                    phase='Running',
+                    labels={DISKGRAPH_POOL_TYPE_LABEL: POOL_TYPE_CACHE},
+                    annotations={ANNOTATION_JOB_ID: 'job-1'},
+                ),
+            ]
+        ),
     ]
     mgr = _make_manager(core=core)
 
@@ -1959,7 +2064,8 @@ def test_wait_for_cache_activity_pod_allows_gpu_handoff_to_finish(monkeypatch):
         mgr.wait_for_activity_job_pod_running(
             job_name='diskgraph-activity-abc',
             timeout=5.0,
-        ))
+        )
+    )
 
     assert info.pod_name == 'act'
     assert core.list_namespaced_pod.call_count == 2
@@ -1968,23 +2074,26 @@ def test_wait_for_cache_activity_pod_allows_gpu_handoff_to_finish(monkeypatch):
 def test_wait_for_cache_activity_gpu_shortage_times_out_retryably(monkeypatch):
     monkeypatch.setattr('pool.worker_manager.k8s._POLL_INTERVAL_SECS', 0)
     core = MagicMock(spec=k8s_client.CoreV1Api)
-    core.list_namespaced_pod.return_value = V1PodList(items=[
-        _make_pod(
-            'act',
-            phase='Pending',
-            container_ready=False,
-            labels={DISKGRAPH_POOL_TYPE_LABEL: POOL_TYPE_CACHE},
-            conditions=[
-                V1PodCondition(
-                    type='PodScheduled',
-                    status='False',
-                    reason='Unschedulable',
-                    message=('0/1 nodes are available: '
-                             'Insufficient nvidia.com/gpu.'),
-                ),
-            ],
-        ),
-    ])
+    core.list_namespaced_pod.return_value = V1PodList(
+        items=[
+            _make_pod(
+                'act',
+                phase='Pending',
+                container_ready=False,
+                labels={DISKGRAPH_POOL_TYPE_LABEL: POOL_TYPE_CACHE},
+                conditions=[
+                    V1PodCondition(
+                        type='PodScheduled',
+                        status='False',
+                        reason='Unschedulable',
+                        message=(
+                            '0/1 nodes are available: Insufficient nvidia.com/gpu.'
+                        ),
+                    ),
+                ],
+            ),
+        ]
+    )
     mgr = _make_manager(core=core)
 
     with pytest.raises(ProvisionTimeoutError, match='did not reach Running'):
@@ -1992,39 +2101,43 @@ def test_wait_for_cache_activity_gpu_shortage_times_out_retryably(monkeypatch):
             mgr.wait_for_activity_job_pod_running(
                 job_name='diskgraph-activity-abc',
                 timeout=0.01,
-            ))
+            )
+        )
 
 
-def test_wait_for_ephemeral_activity_pod_ignores_transient_unschedulable(
-        monkeypatch):
+def test_wait_for_ephemeral_activity_pod_ignores_transient_unschedulable(monkeypatch):
     """Ephemeral pods may be Unschedulable while Karpenter scales capacity."""
     monkeypatch.setattr('pool.worker_manager.k8s._POLL_INTERVAL_SECS', 0)
     core = MagicMock(spec=k8s_client.CoreV1Api)
     core.list_namespaced_pod.side_effect = [
-        V1PodList(items=[
-            _make_pod(
-                'act',
-                phase='Pending',
-                container_ready=False,
-                labels={DISKGRAPH_POOL_TYPE_LABEL: POOL_TYPE_EPHEMERAL},
-                conditions=[
-                    V1PodCondition(
-                        type='PodScheduled',
-                        status='False',
-                        reason='Unschedulable',
-                        message='0/1 nodes are available: scale-up pending.',
-                    ),
-                ],
-            ),
-        ]),
-        V1PodList(items=[
-            _make_pod(
-                'act',
-                phase='Running',
-                labels={DISKGRAPH_POOL_TYPE_LABEL: POOL_TYPE_EPHEMERAL},
-                annotations={ANNOTATION_JOB_ID: 'job-1'},
-            ),
-        ]),
+        V1PodList(
+            items=[
+                _make_pod(
+                    'act',
+                    phase='Pending',
+                    container_ready=False,
+                    labels={DISKGRAPH_POOL_TYPE_LABEL: POOL_TYPE_EPHEMERAL},
+                    conditions=[
+                        V1PodCondition(
+                            type='PodScheduled',
+                            status='False',
+                            reason='Unschedulable',
+                            message='0/1 nodes are available: scale-up pending.',
+                        ),
+                    ],
+                ),
+            ]
+        ),
+        V1PodList(
+            items=[
+                _make_pod(
+                    'act',
+                    phase='Running',
+                    labels={DISKGRAPH_POOL_TYPE_LABEL: POOL_TYPE_EPHEMERAL},
+                    annotations={ANNOTATION_JOB_ID: 'job-1'},
+                ),
+            ]
+        ),
     ]
     mgr = _make_manager(core=core)
 
@@ -2032,14 +2145,14 @@ def test_wait_for_ephemeral_activity_pod_ignores_transient_unschedulable(
         mgr.wait_for_activity_job_pod_running(
             job_name='diskgraph-eph-activity-abc',
             timeout=5.0,
-        ))
+        )
+    )
 
     assert info.pod_name == 'act'
     assert core.list_namespaced_pod.call_count == 2
 
 
-def test_wait_for_activity_job_waits_for_job_retry_after_failed_pod(
-        monkeypatch):
+def test_wait_for_activity_job_waits_for_job_retry_after_failed_pod(monkeypatch):
     monkeypatch.setattr('pool.worker_manager.k8s._POLL_INTERVAL_SECS', 0)
     core = MagicMock(spec=k8s_client.CoreV1Api)
     failed = _make_pod('old-failed', phase='Failed')
@@ -2049,28 +2162,34 @@ def test_wait_for_activity_job_waits_for_job_retry_after_failed_pod(
         V1PodList(items=[failed, running]),
     ]
     batch = MagicMock(spec=k8s_client.BatchV1Api)
-    batch.read_namespaced_job_status.return_value = MagicMock(status=MagicMock(
-        conditions=[]))
+    batch.read_namespaced_job_status.return_value = MagicMock(
+        status=MagicMock(conditions=[])
+    )
     mgr = _make_manager(core=core, batch=batch)
 
     info = asyncio.run(
-        mgr.wait_for_activity_job_pod_running(job_name='diskgraph-activity-abc',
-                                              timeout=5.0))
+        mgr.wait_for_activity_job_pod_running(
+            job_name='diskgraph-activity-abc', timeout=5.0
+        )
+    )
 
     assert info.pod_name == 'new-running'
     batch.read_namespaced_job_status.assert_called_once()
 
 
-@pytest.mark.parametrize('remaining_pod', [
-    None,
-    _make_pod('terminating', deletion_timestamp=datetime.datetime(2026, 1, 1)),
-    _make_pod('failed', phase='Failed'),
-])
-def test_wait_for_activity_job_fails_fast_when_persisted_job_is_gone(
-        remaining_pod):
+@pytest.mark.parametrize(
+    'remaining_pod',
+    [
+        None,
+        _make_pod('terminating', deletion_timestamp=datetime.datetime(2026, 1, 1)),
+        _make_pod('failed', phase='Failed'),
+    ],
+)
+def test_wait_for_activity_job_fails_fast_when_persisted_job_is_gone(remaining_pod):
     core = MagicMock(spec=k8s_client.CoreV1Api)
     core.list_namespaced_pod.return_value = V1PodList(
-        items=[] if remaining_pod is None else [remaining_pod])
+        items=[] if remaining_pod is None else [remaining_pod]
+    )
     batch = MagicMock(spec=k8s_client.BatchV1Api)
     batch.read_namespaced_job_status.side_effect = _api_exc(404, 'not found')
     mgr = _make_manager(core=core, batch=batch)
@@ -2078,7 +2197,9 @@ def test_wait_for_activity_job_fails_fast_when_persisted_job_is_gone(
     with pytest.raises(ProvisionTimeoutError, match='disappeared'):
         asyncio.run(
             mgr.wait_for_activity_job_pod_running(
-                job_name='diskgraph-activity-missing', timeout=5.0))
+                job_name='diskgraph-activity-missing', timeout=5.0
+            )
+        )
 
 
 @pytest.mark.parametrize(
@@ -2089,18 +2210,22 @@ def test_wait_for_activity_job_fails_fast_when_persisted_job_is_gone(
     ],
 )
 def test_wait_for_activity_job_fails_fast_for_terminal_job_without_pods(
-        condition_type, error_type, message):
+    condition_type, error_type, message
+):
     core = MagicMock(spec=k8s_client.CoreV1Api)
     core.list_namespaced_pod.return_value = V1PodList(items=[])
     batch = MagicMock(spec=k8s_client.BatchV1Api)
-    batch.read_namespaced_job_status.return_value = MagicMock(status=MagicMock(
-        conditions=[MagicMock(type=condition_type, status='True')]))
+    batch.read_namespaced_job_status.return_value = MagicMock(
+        status=MagicMock(conditions=[MagicMock(type=condition_type, status='True')])
+    )
     mgr = _make_manager(core=core, batch=batch)
 
     with pytest.raises(error_type, match=message):
         asyncio.run(
             mgr.wait_for_activity_job_pod_running(
-                job_name='diskgraph-activity-terminal', timeout=5.0))
+                job_name='diskgraph-activity-terminal', timeout=5.0
+            )
+        )
 
 
 def test_provision_activity_pod_does_not_rollback_on_wait_failure():
@@ -2111,37 +2236,42 @@ def test_provision_activity_pod_does_not_rollback_on_wait_failure():
     # Daemon pod is Registered so the precondition check passes.
     core.list_namespaced_pod.side_effect = [
         # _get_pool_worker_info call:
-        V1PodList(items=[
-            _make_pod(
-                "p",
-                labels={
-                    LABEL_APP: LABEL_APP_VALUE_DAEMON,
-                    LABEL_POOL_WORKER_UID: "uid",
-                },
-            )
-        ]),
+        V1PodList(
+            items=[
+                _make_pod(
+                    'p',
+                    labels={
+                        LABEL_APP: LABEL_APP_VALUE_DAEMON,
+                        LABEL_POOL_WORKER_UID: 'uid',
+                    },
+                )
+            ]
+        ),
         # _wait_for_activity_job_pod_running poll: pod stays Failed.
-        V1PodList(items=[_make_pod("act-1", phase="Failed")]),
+        V1PodList(items=[_make_pod('act-1', phase='Failed')]),
     ]
     batch.create_namespaced_job.return_value = MagicMock()
-    batch.read_namespaced_job_status.return_value = MagicMock(status=MagicMock(
-        conditions=[MagicMock(type='Failed', status='True')]))
+    batch.read_namespaced_job_status.return_value = MagicMock(
+        status=MagicMock(conditions=[MagicMock(type='Failed', status='True')])
+    )
 
     mgr = _make_manager(core=core, apps=apps, batch=batch)
     asyncio.run(
         mgr.provision_activity_pod(
-            pool_worker_uid="uid",
-            job_id="job-1",
-            snapshot_id="snap-1",
-            activity="materialize",
-            image="img:test",
-        ))
+            pool_worker_uid='uid',
+            job_id='job-1',
+            snapshot_id='snap-1',
+            activity='materialize',
+            image='img:test',
+        )
+    )
     with pytest.raises(ProvisionTimeoutError):
         asyncio.run(
             mgr.wait_for_activity_job_pod_running(
-                job_name=mgr.activity_job_name("job-1", "durable"),
+                job_name=mgr.activity_job_name('job-1', 'durable'),
                 timeout=2.0,
-            ))
+            )
+        )
 
     # The controller owns cleanup after readiness fails.
     batch.delete_namespaced_job.assert_not_called()
@@ -2153,25 +2283,29 @@ def test_provision_ephemeral_activity_pod_does_not_rollback_on_wait_failure():
     apps = MagicMock(spec=k8s_client.AppsV1Api)
     batch = MagicMock(spec=k8s_client.BatchV1Api)
     core.list_namespaced_pod.return_value = V1PodList(
-        items=[_make_pod("eph-1", phase="Succeeded")])
+        items=[_make_pod('eph-1', phase='Succeeded')]
+    )
     batch.create_namespaced_job.return_value = MagicMock()
 
     mgr = _make_manager(core=core, apps=apps, batch=batch)
     asyncio.run(
         mgr.provision_ephemeral_activity_pod(
-            job_id="job-1",
-            snapshot_id="snap-1",
-            activity="materialize",
-            image="img:test",
+            job_id='job-1',
+            snapshot_id='snap-1',
+            activity='materialize',
+            image='img:test',
             ephemeral_storage_bytes=10 * (1 << 30),
-        ))
-    with pytest.raises(ProvisionTerminalError,
-                       match='completed before its Temporal poller'):
+        )
+    )
+    with pytest.raises(
+        ProvisionTerminalError, match='completed before its Temporal poller'
+    ):
         asyncio.run(
             mgr.wait_for_activity_job_pod_running(
-                job_name=mgr.activity_job_name("job-1", "overflow"),
+                job_name=mgr.activity_job_name('job-1', 'overflow'),
                 timeout=2.0,
-            ))
+            )
+        )
 
     batch.delete_namespaced_job.assert_not_called()
 
@@ -2202,12 +2336,13 @@ def test_provision_pool_worker_rolls_back_deployment_on_wait_failure():
 # ---------------------------------------------------------------------------
 
 
-def _live_pool_worker_resources(uid="existing-uid"):
+def _live_pool_worker_resources(uid='existing-uid'):
     return (
         V1PersistentVolumeClaim(
-            metadata=V1ObjectMeta(name=f"diskgraph-pvc-{uid}"), ),
+            metadata=V1ObjectMeta(name=f'diskgraph-pvc-{uid}'),
+        ),
         V1Deployment(
-            metadata=V1ObjectMeta(name=f"diskgraph-daemon-{uid}"),
+            metadata=V1ObjectMeta(name=f'diskgraph-daemon-{uid}'),
             spec=V1DeploymentSpec(
                 replicas=1,
                 selector=V1LabelSelector(),
@@ -2224,15 +2359,16 @@ def _assert_no_pool_worker_resources_created(core, apps, policy):
 
 
 @pytest.mark.parametrize(
-    "resource_state, expected_error",
+    'resource_state, expected_error',
     [
-        ("missing-pvc", PoolWorkerNotFoundError),
-        ("terminating-deployment", PoolWorkerNotReadyError),
-        ("scaled-down-deployment", PoolWorkerNotReadyError),
+        ('missing-pvc', PoolWorkerNotFoundError),
+        ('terminating-deployment', PoolWorkerNotReadyError),
+        ('scaled-down-deployment', PoolWorkerNotReadyError),
     ],
 )
 def test_existing_only_activity_rechecks_resources_after_worker_reclaim(
-        resource_state, expected_error):
+    resource_state, expected_error
+):
     core = MagicMock(spec=k8s_client.CoreV1Api)
     apps = MagicMock(spec=k8s_client.AppsV1Api)
     batch = MagicMock(spec=k8s_client.BatchV1Api)
@@ -2240,55 +2376,57 @@ def test_existing_only_activity_rechecks_resources_after_worker_reclaim(
     pvc, deployment = _live_pool_worker_resources()
     core.read_namespaced_persistent_volume_claim.return_value = pvc
     apps.read_namespaced_deployment.return_value = deployment
-    core.list_namespaced_pod.return_value = _registered_daemon_for(
-        "existing-uid")
+    core.list_namespaced_pod.return_value = _registered_daemon_for('existing-uid')
     manager = _make_manager(core=core, apps=apps, batch=batch, policy=policy)
 
     asyncio.run(
         manager.provision_pool_worker(
-            pool_worker_uid="existing-uid",
+            pool_worker_uid='existing-uid',
             timeout=2.0,
             require_existing_resources=True,
-        ), )
+        ),
+    )
 
-    if resource_state == "missing-pvc":
+    if resource_state == 'missing-pvc':
         core.read_namespaced_persistent_volume_claim.side_effect = _api_exc(404)
-    elif resource_state == "terminating-deployment":
+    elif resource_state == 'terminating-deployment':
         assert deployment.metadata is not None
         deployment.metadata.deletion_timestamp = datetime.datetime(2026, 1, 1)
     else:
         assert deployment.spec is not None
         deployment.spec.replicas = 0
 
-    with pytest.raises(expected_error, match="existing-uid"):
+    with pytest.raises(expected_error, match='existing-uid'):
         asyncio.run(
             manager.provision_activity_pod(
-                pool_worker_uid="existing-uid",
-                job_id="job-1",
-                snapshot_id="snapshot-1",
-                activity="train",
-                image="kumo/activity:test",
+                pool_worker_uid='existing-uid',
+                job_id='job-1',
+                snapshot_id='snapshot-1',
+                activity='train',
+                image='kumo/activity:test',
                 require_existing_resources=True,
-            ), )
+            ),
+        )
 
     batch.create_namespaced_job.assert_not_called()
     _assert_no_pool_worker_resources_created(core, apps, policy)
 
 
 @pytest.mark.parametrize(
-    "resource_state, expected_error",
+    'resource_state, expected_error',
     [
-        ("missing-deployment", PoolWorkerNotFoundError),
-        ("terminating-pvc", PoolWorkerNotReadyError),
+        ('missing-deployment', PoolWorkerNotFoundError),
+        ('terminating-pvc', PoolWorkerNotReadyError),
     ],
 )
 def test_provision_pool_worker_existing_only_rejects_before_wait(
-        resource_state, expected_error):
+    resource_state, expected_error
+):
     core = MagicMock(spec=k8s_client.CoreV1Api)
     apps = MagicMock(spec=k8s_client.AppsV1Api)
     policy = MagicMock(spec=k8s_client.PolicyV1Api)
     pvc, deployment = _live_pool_worker_resources()
-    if resource_state == "missing-deployment":
+    if resource_state == 'missing-deployment':
         core.read_namespaced_persistent_volume_claim.return_value = pvc
         apps.read_namespaced_deployment.side_effect = _api_exc(404)
     else:
@@ -2298,34 +2436,35 @@ def test_provision_pool_worker_existing_only_rejects_before_wait(
         apps.read_namespaced_deployment.return_value = deployment
 
     mgr = _make_manager(core=core, apps=apps, policy=policy)
-    with pytest.raises(expected_error, match="existing-uid"):
+    with pytest.raises(expected_error, match='existing-uid'):
         asyncio.run(
             mgr.provision_pool_worker(
-                pool_worker_uid="existing-uid",
+                pool_worker_uid='existing-uid',
                 timeout=2.0,
                 require_existing_resources=True,
-            ), )
+            ),
+        )
 
     core.list_namespaced_pod.assert_not_called()
     _assert_no_pool_worker_resources_created(core, apps, policy)
 
 
 @pytest.mark.parametrize(
-    "resource_state, expected_error",
+    'resource_state, expected_error',
     [
-        ("missing-pvc", PoolWorkerNotFoundError),
-        ("terminating-deployment", PoolWorkerNotReadyError),
+        ('missing-pvc', PoolWorkerNotFoundError),
+        ('terminating-deployment', PoolWorkerNotReadyError),
     ],
 )
 def test_provision_pool_worker_existing_only_rejects_after_wait(
-        resource_state, expected_error):
+    resource_state, expected_error
+):
     core = MagicMock(spec=k8s_client.CoreV1Api)
     apps = MagicMock(spec=k8s_client.AppsV1Api)
     policy = MagicMock(spec=k8s_client.PolicyV1Api)
     pvc, deployment = _live_pool_worker_resources()
-    core.list_namespaced_pod.return_value = _registered_daemon_for(
-        "existing-uid")
-    if resource_state == "missing-pvc":
+    core.list_namespaced_pod.return_value = _registered_daemon_for('existing-uid')
+    if resource_state == 'missing-pvc':
         core.read_namespaced_persistent_volume_claim.side_effect = [
             pvc,
             _api_exc(404),
@@ -2335,9 +2474,10 @@ def test_provision_pool_worker_existing_only_rejects_after_wait(
         assert deployment.metadata is not None
         terminating_deployment = V1Deployment(
             metadata=V1ObjectMeta(
-                name="diskgraph-daemon-existing-uid",
+                name='diskgraph-daemon-existing-uid',
                 deletion_timestamp=datetime.datetime(2026, 1, 1),
-            ), )
+            ),
+        )
         core.read_namespaced_persistent_volume_claim.return_value = pvc
         apps.read_namespaced_deployment.side_effect = [
             deployment,
@@ -2345,13 +2485,14 @@ def test_provision_pool_worker_existing_only_rejects_after_wait(
         ]
 
     mgr = _make_manager(core=core, apps=apps, policy=policy)
-    with pytest.raises(expected_error, match="existing-uid"):
+    with pytest.raises(expected_error, match='existing-uid'):
         asyncio.run(
             mgr.provision_pool_worker(
-                pool_worker_uid="existing-uid",
+                pool_worker_uid='existing-uid',
                 timeout=2.0,
                 require_existing_resources=True,
-            ), )
+            ),
+        )
 
     core.list_namespaced_pod.assert_called()
     _assert_no_pool_worker_resources_created(core, apps, policy)
@@ -2366,16 +2507,17 @@ def test_provision_pool_worker_reclaim_recovers_from_409_on_pvc_create():
     core = MagicMock(spec=k8s_client.CoreV1Api)
     apps = MagicMock(spec=k8s_client.AppsV1Api)
     # PVC create surfaces 409 (translated to PoolWorkerAlreadyExistsError).
-    core.create_namespaced_persistent_volume_claim.side_effect = (_api_exc(
-        409, "persistentvolumeclaims already exists"))
+    core.create_namespaced_persistent_volume_claim.side_effect = _api_exc(
+        409, 'persistentvolumeclaims already exists'
+    )
     # Deployment create succeeds (or also 409 — either is fine).
     apps.create_namespaced_deployment.return_value = MagicMock()
     # _wait_for_daemon_registered finds a Registered daemon.
     registered_pod = _make_pod(
-        "p",
+        'p',
         labels={
             LABEL_APP: LABEL_APP_VALUE_DAEMON,
-            LABEL_POOL_WORKER_UID: "existing-uid",
+            LABEL_POOL_WORKER_UID: 'existing-uid',
         },
     )
     core.list_namespaced_pod.return_value = V1PodList(items=[registered_pod])
@@ -2383,11 +2525,12 @@ def test_provision_pool_worker_reclaim_recovers_from_409_on_pvc_create():
     mgr = _make_manager(core=core, apps=apps)
     info = asyncio.run(
         mgr.provision_pool_worker(
-            pool_worker_uid="existing-uid",
+            pool_worker_uid='existing-uid',
             timeout=2.0,
-        ), )
-    assert info.pool_worker_uid == "existing-uid"
-    assert info.status == "Registered"
+        ),
+    )
+    assert info.pool_worker_uid == 'existing-uid'
+    assert info.status == 'Registered'
 
 
 def test_provision_pool_worker_reclaim_recovers_from_409_on_deployment_create():
@@ -2398,14 +2541,15 @@ def test_provision_pool_worker_reclaim_recovers_from_409_on_deployment_create():
     core = MagicMock(spec=k8s_client.CoreV1Api)
     apps = MagicMock(spec=k8s_client.AppsV1Api)
     # PVC create succeeds.
-    core.create_namespaced_persistent_volume_claim.return_value = (MagicMock())
-    apps.create_namespaced_deployment.side_effect = (_api_exc(
-        409, "deployments already exists"))
+    core.create_namespaced_persistent_volume_claim.return_value = MagicMock()
+    apps.create_namespaced_deployment.side_effect = _api_exc(
+        409, 'deployments already exists'
+    )
     registered_pod = _make_pod(
-        "p",
+        'p',
         labels={
             LABEL_APP: LABEL_APP_VALUE_DAEMON,
-            LABEL_POOL_WORKER_UID: "existing-uid",
+            LABEL_POOL_WORKER_UID: 'existing-uid',
         },
     )
     core.list_namespaced_pod.return_value = V1PodList(items=[registered_pod])
@@ -2413,10 +2557,11 @@ def test_provision_pool_worker_reclaim_recovers_from_409_on_deployment_create():
     mgr = _make_manager(core=core, apps=apps)
     info = asyncio.run(
         mgr.provision_pool_worker(
-            pool_worker_uid="existing-uid",
+            pool_worker_uid='existing-uid',
             timeout=2.0,
-        ), )
-    assert info.status == "Registered"
+        ),
+    )
+    assert info.status == 'Registered'
 
 
 def test_provision_pool_worker_reclaim_skips_rollback_on_wait_failure():
@@ -2428,18 +2573,18 @@ def test_provision_pool_worker_reclaim_skips_rollback_on_wait_failure():
     core = MagicMock(spec=k8s_client.CoreV1Api)
     apps = MagicMock(spec=k8s_client.AppsV1Api)
     # Both creates raise 409 (full reclaim — both resources existed).
-    core.create_namespaced_persistent_volume_claim.side_effect = (_api_exc(
-        409, "already exists"))
-    apps.create_namespaced_deployment.side_effect = (_api_exc(
-        409, "already exists"))
+    core.create_namespaced_persistent_volume_claim.side_effect = _api_exc(
+        409, 'already exists'
+    )
+    apps.create_namespaced_deployment.side_effect = _api_exc(409, 'already exists')
     # Daemon never reaches Registered → ProvisionTimeoutError.
     core.list_namespaced_pod.return_value = V1PodList(items=[])
 
     mgr = _make_manager(core=core, apps=apps)
     with pytest.raises(ProvisionTimeoutError):
         asyncio.run(
-            mgr.provision_pool_worker(pool_worker_uid="existing-uid",
-                                      timeout=0.3))
+            mgr.provision_pool_worker(pool_worker_uid='existing-uid', timeout=0.3)
+        )
 
     # Rollback skipped on reclaim — neither delete API was called.
     apps.delete_namespaced_deployment.assert_not_called()
@@ -2454,8 +2599,9 @@ def test_provision_pool_worker_fresh_mint_propagates_409():
     """
     core = MagicMock(spec=k8s_client.CoreV1Api)
     apps = MagicMock(spec=k8s_client.AppsV1Api)
-    core.create_namespaced_persistent_volume_claim.side_effect = (_api_exc(
-        409, "already exists"))
+    core.create_namespaced_persistent_volume_claim.side_effect = _api_exc(
+        409, 'already exists'
+    )
 
     mgr = _make_manager(core=core, apps=apps)
     with pytest.raises(PoolWorkerAlreadyExistsError):
@@ -2480,70 +2626,76 @@ def test_provision_activity_pod_job_name_is_deterministic_in_job_id():
     core = MagicMock(spec=k8s_client.CoreV1Api)
     batch = MagicMock(spec=k8s_client.BatchV1Api)
     core.list_namespaced_pod.side_effect = [
-        _registered_daemon_for("uid"),
-        V1PodList(items=[
-            _make_pod(
-                "act",
-                labels={
-                    LABEL_APP: LABEL_APP_VALUE_ACTIVITY,
-                    LABEL_POOL_WORKER_UID: "uid",
-                    LABEL_JOB_ID_HASH: _hash_job_id("j-det"),
-                },
-            )
-        ]),
+        _registered_daemon_for('uid'),
+        V1PodList(
+            items=[
+                _make_pod(
+                    'act',
+                    labels={
+                        LABEL_APP: LABEL_APP_VALUE_ACTIVITY,
+                        LABEL_POOL_WORKER_UID: 'uid',
+                        LABEL_JOB_ID_HASH: _hash_job_id('j-det'),
+                    },
+                )
+            ]
+        ),
     ]
     mgr = _make_manager(core=core, batch=batch)
     asyncio.run(
         mgr.provision_activity_pod(
-            pool_worker_uid="uid",
-            job_id="j-det",
-            snapshot_id="snap",
-            activity="ingest",
-            image="img",
-        ))
+            pool_worker_uid='uid',
+            job_id='j-det',
+            snapshot_id='snap',
+            activity='ingest',
+            image='img',
+        )
+    )
     asyncio.run(
         mgr.wait_for_activity_job_pod_running(
-            job_name=mgr.activity_job_name("j-det", "durable"),
+            job_name=mgr.activity_job_name('j-det', 'durable'),
             timeout=2.0,
-        ))
-    name_first = batch.create_namespaced_job.call_args.kwargs[
-        "body"].metadata.name
+        )
+    )
+    name_first = batch.create_namespaced_job.call_args.kwargs['body'].metadata.name
 
     # Second call — fresh mock state but same job_id.
     core2 = MagicMock(spec=k8s_client.CoreV1Api)
     batch2 = MagicMock(spec=k8s_client.BatchV1Api)
     core2.list_namespaced_pod.side_effect = [
-        _registered_daemon_for("uid"),
-        V1PodList(items=[
-            _make_pod(
-                "act",
-                labels={
-                    LABEL_APP: LABEL_APP_VALUE_ACTIVITY,
-                    LABEL_POOL_WORKER_UID: "uid",
-                    LABEL_JOB_ID_HASH: _hash_job_id("j-det"),
-                },
-            )
-        ]),
+        _registered_daemon_for('uid'),
+        V1PodList(
+            items=[
+                _make_pod(
+                    'act',
+                    labels={
+                        LABEL_APP: LABEL_APP_VALUE_ACTIVITY,
+                        LABEL_POOL_WORKER_UID: 'uid',
+                        LABEL_JOB_ID_HASH: _hash_job_id('j-det'),
+                    },
+                )
+            ]
+        ),
     ]
     mgr2 = _make_manager(core=core2, batch=batch2)
     asyncio.run(
         mgr2.provision_activity_pod(
-            pool_worker_uid="uid",
-            job_id="j-det",
-            snapshot_id="snap",
-            activity="ingest",
-            image="img",
-        ))
+            pool_worker_uid='uid',
+            job_id='j-det',
+            snapshot_id='snap',
+            activity='ingest',
+            image='img',
+        )
+    )
     asyncio.run(
         mgr2.wait_for_activity_job_pod_running(
-            job_name=mgr2.activity_job_name("j-det", "durable"),
+            job_name=mgr2.activity_job_name('j-det', 'durable'),
             timeout=2.0,
-        ))
-    name_second = batch2.create_namespaced_job.call_args.kwargs[
-        "body"].metadata.name
+        )
+    )
+    name_second = batch2.create_namespaced_job.call_args.kwargs['body'].metadata.name
 
     assert name_first == name_second
-    assert name_first == f"diskgraph-activity-{_hash_job_id('j-det')}"
+    assert name_first == f'diskgraph-activity-{_hash_job_id("j-det")}'
 
 
 def test_provision_activity_pod_recovers_from_409_on_create():
@@ -2556,39 +2708,42 @@ def test_provision_activity_pod_recovers_from_409_on_create():
     """
     core = MagicMock(spec=k8s_client.CoreV1Api)
     batch = MagicMock(spec=k8s_client.BatchV1Api)
-    batch.create_namespaced_job.side_effect = (_api_exc(
-        409, "jobs.batch already exists"))
+    batch.create_namespaced_job.side_effect = _api_exc(409, 'jobs.batch already exists')
     core.list_namespaced_pod.side_effect = [
-        _registered_daemon_for("uid"),
+        _registered_daemon_for('uid'),
         # Pod from the prior attempt is now Running.
-        V1PodList(items=[
-            _make_pod(
-                "act",
-                phase="Running",
-                labels={
-                    LABEL_APP: LABEL_APP_VALUE_ACTIVITY,
-                    LABEL_POOL_WORKER_UID: "uid",
-                    LABEL_JOB_ID_HASH: _hash_job_id("j-reclaim"),
-                },
-            )
-        ]),
+        V1PodList(
+            items=[
+                _make_pod(
+                    'act',
+                    phase='Running',
+                    labels={
+                        LABEL_APP: LABEL_APP_VALUE_ACTIVITY,
+                        LABEL_POOL_WORKER_UID: 'uid',
+                        LABEL_JOB_ID_HASH: _hash_job_id('j-reclaim'),
+                    },
+                )
+            ]
+        ),
     ]
 
     mgr = _make_manager(core=core, batch=batch)
     asyncio.run(
         mgr.provision_activity_pod(
-            pool_worker_uid="uid",
-            job_id="j-reclaim",
-            snapshot_id="snap",
-            activity="materialize",
-            image="img",
-        ))
+            pool_worker_uid='uid',
+            job_id='j-reclaim',
+            snapshot_id='snap',
+            activity='materialize',
+            image='img',
+        )
+    )
     info = asyncio.run(
         mgr.wait_for_activity_job_pod_running(
-            job_name=mgr.activity_job_name("j-reclaim", "durable"),
+            job_name=mgr.activity_job_name('j-reclaim', 'durable'),
             timeout=2.0,
-        ))
-    assert info.pod_name == "act"
+        )
+    )
+    assert info.pod_name == 'act'
     # Manager must NOT roll back a Job it found in-flight.
     batch.delete_namespaced_job.assert_not_called()
 
@@ -2607,54 +2762,58 @@ def test_provision_ephemeral_activity_pod_job_name_is_deterministic_in_job_id():
     """
     core = MagicMock(spec=k8s_client.CoreV1Api)
     batch = MagicMock(spec=k8s_client.BatchV1Api)
-    core.list_namespaced_pod.return_value = V1PodList(items=[
-        _make_pod(
-            "eph",
-            labels={
-                LABEL_APP: LABEL_APP_VALUE_ACTIVITY_EPH,
-                LABEL_JOB_ID_HASH: _hash_job_id("j-det"),
-            },
-        )
-    ])
+    core.list_namespaced_pod.return_value = V1PodList(
+        items=[
+            _make_pod(
+                'eph',
+                labels={
+                    LABEL_APP: LABEL_APP_VALUE_ACTIVITY_EPH,
+                    LABEL_JOB_ID_HASH: _hash_job_id('j-det'),
+                },
+            )
+        ]
+    )
 
     mgr = _make_manager(core=core, batch=batch)
     asyncio.run(
         mgr.provision_ephemeral_activity_pod(
-            job_id="j-det",
-            snapshot_id="snap",
-            activity="ingest",
-            image="img",
+            job_id='j-det',
+            snapshot_id='snap',
+            activity='ingest',
+            image='img',
             ephemeral_storage_bytes=1 * (1 << 30),
-        ))
-    name_first = batch.create_namespaced_job.call_args.kwargs[
-        "body"].metadata.name
+        )
+    )
+    name_first = batch.create_namespaced_job.call_args.kwargs['body'].metadata.name
 
     # Second call — fresh mock state but same job_id.
     core2 = MagicMock(spec=k8s_client.CoreV1Api)
     batch2 = MagicMock(spec=k8s_client.BatchV1Api)
-    core2.list_namespaced_pod.return_value = V1PodList(items=[
-        _make_pod(
-            "eph",
-            labels={
-                LABEL_APP: LABEL_APP_VALUE_ACTIVITY_EPH,
-                LABEL_JOB_ID_HASH: _hash_job_id("j-det"),
-            },
-        )
-    ])
+    core2.list_namespaced_pod.return_value = V1PodList(
+        items=[
+            _make_pod(
+                'eph',
+                labels={
+                    LABEL_APP: LABEL_APP_VALUE_ACTIVITY_EPH,
+                    LABEL_JOB_ID_HASH: _hash_job_id('j-det'),
+                },
+            )
+        ]
+    )
     mgr2 = _make_manager(core=core2, batch=batch2)
     asyncio.run(
         mgr2.provision_ephemeral_activity_pod(
-            job_id="j-det",
-            snapshot_id="snap",
-            activity="ingest",
-            image="img",
+            job_id='j-det',
+            snapshot_id='snap',
+            activity='ingest',
+            image='img',
             ephemeral_storage_bytes=1 * (1 << 30),
-        ))
-    name_second = batch2.create_namespaced_job.call_args.kwargs[
-        "body"].metadata.name
+        )
+    )
+    name_second = batch2.create_namespaced_job.call_args.kwargs['body'].metadata.name
 
     assert name_first == name_second
-    assert name_first == f"diskgraph-eph-activity-{_hash_job_id('j-det')}"
+    assert name_first == f'diskgraph-eph-activity-{_hash_job_id("j-det")}'
 
 
 def test_provision_ephemeral_activity_pod_recovers_from_409_on_create():
@@ -2667,36 +2826,39 @@ def test_provision_ephemeral_activity_pod_recovers_from_409_on_create():
     """
     core = MagicMock(spec=k8s_client.CoreV1Api)
     batch = MagicMock(spec=k8s_client.BatchV1Api)
-    batch.create_namespaced_job.side_effect = (_api_exc(
-        409, "jobs.batch already exists"))
+    batch.create_namespaced_job.side_effect = _api_exc(409, 'jobs.batch already exists')
     # Pod from the prior attempt is now Running on the freshly
     # provisioned Karpenter node.
-    core.list_namespaced_pod.return_value = V1PodList(items=[
-        _make_pod(
-            "eph",
-            phase="Running",
-            labels={
-                LABEL_APP: LABEL_APP_VALUE_ACTIVITY_EPH,
-                LABEL_JOB_ID_HASH: _hash_job_id("j-reclaim"),
-            },
-        )
-    ])
+    core.list_namespaced_pod.return_value = V1PodList(
+        items=[
+            _make_pod(
+                'eph',
+                phase='Running',
+                labels={
+                    LABEL_APP: LABEL_APP_VALUE_ACTIVITY_EPH,
+                    LABEL_JOB_ID_HASH: _hash_job_id('j-reclaim'),
+                },
+            )
+        ]
+    )
 
     mgr = _make_manager(core=core, batch=batch)
     asyncio.run(
         mgr.provision_ephemeral_activity_pod(
-            job_id="j-reclaim",
-            snapshot_id="snap",
-            activity="materialize",
-            image="img",
+            job_id='j-reclaim',
+            snapshot_id='snap',
+            activity='materialize',
+            image='img',
             ephemeral_storage_bytes=1 * (1 << 30),
-        ))
+        )
+    )
     info = asyncio.run(
         mgr.wait_for_activity_job_pod_running(
-            job_name=mgr.activity_job_name("j-reclaim", "overflow"),
+            job_name=mgr.activity_job_name('j-reclaim', 'overflow'),
             timeout=2.0,
-        ))
-    assert info.pod_name == "eph"
+        )
+    )
+    assert info.pod_name == 'eph'
     # Manager must NOT roll back a Job it found in-flight.
     batch.delete_namespaced_job.assert_not_called()
 
@@ -2710,38 +2872,42 @@ def test_provision_activity_pod_with_no_env_dict_only_adds_pod_identity():
     core = MagicMock(spec=k8s_client.CoreV1Api)
     batch = MagicMock(spec=k8s_client.BatchV1Api)
     core.list_namespaced_pod.side_effect = [
-        _registered_daemon_for("uid"),
-        V1PodList(items=[
-            _make_pod(
-                "act",
-                labels={
-                    LABEL_APP: LABEL_APP_VALUE_ACTIVITY,
-                    LABEL_POOL_WORKER_UID: "uid",
-                    LABEL_JOB_ID_HASH: "j-noenv",
-                },
-            )
-        ]),
+        _registered_daemon_for('uid'),
+        V1PodList(
+            items=[
+                _make_pod(
+                    'act',
+                    labels={
+                        LABEL_APP: LABEL_APP_VALUE_ACTIVITY,
+                        LABEL_POOL_WORKER_UID: 'uid',
+                        LABEL_JOB_ID_HASH: 'j-noenv',
+                    },
+                )
+            ]
+        ),
     ]
 
     mgr = _make_manager(core=core, batch=batch)
     asyncio.run(
         mgr.provision_activity_pod(
-            pool_worker_uid="uid",
-            job_id="j-noenv",
-            snapshot_id="snap",
-            activity="train",
-            image="kumo/activity:test",
+            pool_worker_uid='uid',
+            job_id='j-noenv',
+            snapshot_id='snap',
+            activity='train',
+            image='kumo/activity:test',
             # env intentionally omitted — exercise the default-None path.
-        ))
+        )
+    )
     asyncio.run(
         mgr.wait_for_activity_job_pod_running(
-            job_name=mgr.activity_job_name("j-noenv", "durable"),
+            job_name=mgr.activity_job_name('j-noenv', 'durable'),
             timeout=2.0,
-        ))
-    body = batch.create_namespaced_job.call_args.kwargs["body"]
+        )
+    )
+    body = batch.create_namespaced_job.call_args.kwargs['body']
     container = body.spec.template.spec.containers[0]
     assert [env.name for env in container.env] == [ACTIVITY_WORKER_POD_NAME_ENV]
-    assert container.env[0].value_from.field_ref.field_path == "metadata.name"
+    assert container.env[0].value_from.field_ref.field_path == 'metadata.name'
 
 
 def test_delete_pool_worker_passes_force_on_timeout_through():
@@ -2753,11 +2919,11 @@ def test_delete_pool_worker_passes_force_on_timeout_through():
     core = MagicMock(spec=k8s_client.CoreV1Api)
     apps = MagicMock(spec=k8s_client.AppsV1Api)
     daemon_pod = _make_pod(
-        "p",
-        node_name="node-X",
+        'p',
+        node_name='node-X',
         labels={
             LABEL_APP: LABEL_APP_VALUE_DAEMON,
-            LABEL_POOL_WORKER_UID: "uid",
+            LABEL_POOL_WORKER_UID: 'uid',
         },
     )
     # Daemon pod NEVER reaps — _wait_for_daemon_pod_gone would
@@ -2765,11 +2931,14 @@ def test_delete_pool_worker_passes_force_on_timeout_through():
     # force_on_timeout=True it should log + return so the rest of
     # delete_pool_worker (PVC delete, Deployment delete, PDB delete)
     # can run.
-    core.list_namespaced_pod.side_effect = lambda **kwargs: V1PodList(items=[
-    ] if "diskgraph-activity-pod" in kwargs["label_selector"] else [daemon_pod])
+    core.list_namespaced_pod.side_effect = lambda **kwargs: V1PodList(
+        items=[]
+        if 'diskgraph-activity-pod' in kwargs['label_selector']
+        else [daemon_pod]
+    )
     core.read_namespaced_persistent_volume_claim.side_effect = _api_exc(
         404,
-        "not found",
+        'not found',
     )
 
     mgr = _make_manager(core=core, apps=apps)
@@ -2777,37 +2946,43 @@ def test_delete_pool_worker_passes_force_on_timeout_through():
     # PoolWorkerCleanupFailedError.
     asyncio.run(
         mgr.delete_pool_worker(
-            "uid",
+            'uid',
             scale_down_timeout=0.3,
             force_on_timeout=True,
-        ))
+        )
+    )
 
 
 def test_provision_ephemeral_activity_pod_with_no_env_only_adds_pod_identity():
     core = MagicMock(spec=k8s_client.CoreV1Api)
     batch = MagicMock(spec=k8s_client.BatchV1Api)
-    core.list_namespaced_pod.return_value = V1PodList(items=[
-        _make_pod(
-            "eph", labels={
-                LABEL_APP: LABEL_APP_VALUE_ACTIVITY_EPH,
-                LABEL_JOB_ID_HASH: "j-eph-noenv",
-            }),
-    ])
+    core.list_namespaced_pod.return_value = V1PodList(
+        items=[
+            _make_pod(
+                'eph',
+                labels={
+                    LABEL_APP: LABEL_APP_VALUE_ACTIVITY_EPH,
+                    LABEL_JOB_ID_HASH: 'j-eph-noenv',
+                },
+            ),
+        ]
+    )
 
     mgr = _make_manager(core=core, batch=batch)
     asyncio.run(
         mgr.provision_ephemeral_activity_pod(
-            job_id="j-eph-noenv",
-            snapshot_id="snap",
-            activity="ingest",
-            image="kumo/activity:eph",
+            job_id='j-eph-noenv',
+            snapshot_id='snap',
+            activity='ingest',
+            image='kumo/activity:eph',
             ephemeral_storage_bytes=1 * (1 << 30),
             # env intentionally omitted.
-        ))
-    body = batch.create_namespaced_job.call_args.kwargs["body"]
+        )
+    )
+    body = batch.create_namespaced_job.call_args.kwargs['body']
     container = body.spec.template.spec.containers[0]
     assert [env.name for env in container.env] == [ACTIVITY_WORKER_POD_NAME_ENV]
-    assert container.env[0].value_from.field_ref.field_path == "metadata.name"
+    assert container.env[0].value_from.field_ref.field_path == 'metadata.name'
 
 
 # ---------------------------------------------------------------------------
@@ -2826,20 +3001,20 @@ def test_default_service_account_is_kumo_temporal_for_all_pods():
     core = MagicMock(spec=k8s_client.CoreV1Api)
     apps = MagicMock(spec=k8s_client.AppsV1Api)
     batch = MagicMock(spec=k8s_client.BatchV1Api)
-    daemon_pods = _registered_daemon_for("uid")
+    daemon_pods = _registered_daemon_for('uid')
     activity_pod = _make_pod(
-        "act-pod",
+        'act-pod',
         labels={
             LABEL_APP: LABEL_APP_VALUE_ACTIVITY,
-            LABEL_POOL_WORKER_UID: "uid",
-            LABEL_JOB_ID_HASH: "j-sa",
+            LABEL_POOL_WORKER_UID: 'uid',
+            LABEL_JOB_ID_HASH: 'j-sa',
         },
     )
     eph_pod = _make_pod(
-        "eph-pod",
+        'eph-pod',
         labels={
             LABEL_APP: LABEL_APP_VALUE_ACTIVITY_EPH,
-            LABEL_JOB_ID_HASH: "j-sa-eph",
+            LABEL_JOB_ID_HASH: 'j-sa-eph',
         },
     )
     # Calls in order: provision_pool_worker (registered daemon),
@@ -2853,49 +3028,56 @@ def test_default_service_account_is_kumo_temporal_for_all_pods():
     ]
 
     mgr = _make_manager(core=core, apps=apps, batch=batch)
-    asyncio.run(mgr.provision_pool_worker(
-        pool_worker_uid="uid",
-        timeout=2.0,
-    ))
+    asyncio.run(
+        mgr.provision_pool_worker(
+            pool_worker_uid='uid',
+            timeout=2.0,
+        )
+    )
     asyncio.run(
         mgr.provision_activity_pod(
-            pool_worker_uid="uid",
-            job_id="j-sa",
-            snapshot_id="snap",
-            activity="train",
-            image="kumo/activity:test",
-        ))
+            pool_worker_uid='uid',
+            job_id='j-sa',
+            snapshot_id='snap',
+            activity='train',
+            image='kumo/activity:test',
+        )
+    )
     asyncio.run(
         mgr.wait_for_activity_job_pod_running(
-            job_name=mgr.activity_job_name("j-sa", "durable"),
+            job_name=mgr.activity_job_name('j-sa', 'durable'),
             timeout=2.0,
-        ))
+        )
+    )
     asyncio.run(
         mgr.provision_ephemeral_activity_pod(
-            job_id="j-sa-eph",
-            snapshot_id="snap",
-            activity="ingest",
-            image="kumo/activity:eph",
+            job_id='j-sa-eph',
+            snapshot_id='snap',
+            activity='ingest',
+            image='kumo/activity:eph',
             ephemeral_storage_bytes=1 * (1 << 30),
-        ))
+        )
+    )
     asyncio.run(
         mgr.wait_for_activity_job_pod_running(
-            job_name=mgr.activity_job_name("j-sa-eph", "overflow"),
+            job_name=mgr.activity_job_name('j-sa-eph', 'overflow'),
             timeout=2.0,
-        ))
+        )
+    )
 
-    dep_spec = (apps.create_namespaced_deployment.call_args.kwargs["body"].spec.
-                template.spec)
-    assert dep_spec.service_account_name == "kumo-temporal"
+    dep_spec = apps.create_namespaced_deployment.call_args.kwargs[
+        'body'
+    ].spec.template.spec
+    assert dep_spec.service_account_name == 'kumo-temporal'
 
     # Both Job creates land on the same mock; inspect each call's body.
     job_specs = [
-        c.kwargs["body"].spec.template.spec
+        c.kwargs['body'].spec.template.spec
         for c in batch.create_namespaced_job.call_args_list
     ]
     assert len(job_specs) == 2
     for spec in job_specs:
-        assert spec.service_account_name == "kumo-temporal"
+        assert spec.service_account_name == 'kumo-temporal'
 
 
 def test_provision_pool_worker_translates_env_dict_for_daemon():
@@ -2907,22 +3089,23 @@ def test_provision_pool_worker_translates_env_dict_for_daemon():
     """
     core = MagicMock(spec=k8s_client.CoreV1Api)
     apps = MagicMock(spec=k8s_client.AppsV1Api)
-    core.list_namespaced_pod.return_value = _registered_daemon_for("uid")
+    core.list_namespaced_pod.return_value = _registered_daemon_for('uid')
 
     caller_env = {
-        "POOL_WORKER_UID": "uid",
-        "DISK_ROOT": "/mnt/localssd",
-        "EBS_SCRATCH_ROOT": "/mnt/ebs-scratch",
+        'POOL_WORKER_UID': 'uid',
+        'DISK_ROOT': '/mnt/localssd',
+        'EBS_SCRATCH_ROOT': '/mnt/ebs-scratch',
     }
     mgr = _make_manager(core=core, apps=apps)
     asyncio.run(
         mgr.provision_pool_worker(
-            pool_worker_uid="uid",
+            pool_worker_uid='uid',
             env=caller_env,
             timeout=2.0,
-        ))
+        )
+    )
 
-    dep_body = apps.create_namespaced_deployment.call_args.kwargs["body"]
+    dep_body = apps.create_namespaced_deployment.call_args.kwargs['body']
     container = dep_body.spec.template.spec.containers[0]
     actual_env = {e.name: e.value for e in container.env}
     assert actual_env == caller_env
@@ -2936,17 +3119,18 @@ def test_provision_pool_worker_with_no_env_dict_uses_empty_env():
     """
     core = MagicMock(spec=k8s_client.CoreV1Api)
     apps = MagicMock(spec=k8s_client.AppsV1Api)
-    core.list_namespaced_pod.return_value = _registered_daemon_for("uid")
+    core.list_namespaced_pod.return_value = _registered_daemon_for('uid')
 
     mgr = _make_manager(core=core, apps=apps)
     asyncio.run(
         mgr.provision_pool_worker(
-            pool_worker_uid="uid",
+            pool_worker_uid='uid',
             # env intentionally omitted.
             timeout=2.0,
-        ))
+        )
+    )
 
-    dep_body = apps.create_namespaced_deployment.call_args.kwargs["body"]
+    dep_body = apps.create_namespaced_deployment.call_args.kwargs['body']
     container = dep_body.spec.template.spec.containers[0]
     assert container.env == []
 
@@ -2960,25 +3144,25 @@ def test_pool_taint_values_are_derived_from_tenant_for_both_pools():
     refactor that hardcodes the prefix or drops the per-pool split
     fails loudly.
     """
-    custom_tenant = "acme-prod"
+    custom_tenant = 'acme-prod'
     core = MagicMock(spec=k8s_client.CoreV1Api)
     apps = MagicMock(spec=k8s_client.AppsV1Api)
     batch = MagicMock(spec=k8s_client.BatchV1Api)
 
-    daemon_pods = _registered_daemon_for("uid")
+    daemon_pods = _registered_daemon_for('uid')
     activity_pod = _make_pod(
-        "act-pod",
+        'act-pod',
         labels={
             LABEL_APP: LABEL_APP_VALUE_ACTIVITY,
-            LABEL_POOL_WORKER_UID: "uid",
-            LABEL_JOB_ID_HASH: "j-tnt",
+            LABEL_POOL_WORKER_UID: 'uid',
+            LABEL_JOB_ID_HASH: 'j-tnt',
         },
     )
     eph_pod = _make_pod(
-        "eph-pod",
+        'eph-pod',
         labels={
             LABEL_APP: LABEL_APP_VALUE_ACTIVITY_EPH,
-            LABEL_JOB_ID_HASH: "j-tnt-eph",
+            LABEL_JOB_ID_HASH: 'j-tnt-eph',
         },
     )
     core.list_namespaced_pod.side_effect = [
@@ -2990,61 +3174,72 @@ def test_pool_taint_values_are_derived_from_tenant_for_both_pools():
     mgr = K8sPoolWorkerManager(
         namespace=NAMESPACE,
         tenant=custom_tenant,
-        storage_class="topolvm-ssd",
-        daemon_image="kumo/daemon:test",
-        daemon_command=["/usr/bin/daemon"],
-        daemon_args=["--mode=test"],
+        storage_class='topolvm-ssd',
+        daemon_image='kumo/daemon:test',
+        daemon_command=['/usr/bin/daemon'],
+        daemon_args=['--mode=test'],
         load_kube_config=False,
         core_v1_api=core,
         apps_v1_api=apps,
         batch_v1_api=batch,
         policy_v1_api=MagicMock(spec=k8s_client.PolicyV1Api),
     )
-    asyncio.run(mgr.provision_pool_worker(
-        pool_worker_uid="uid",
-        timeout=2.0,
-    ))
+    asyncio.run(
+        mgr.provision_pool_worker(
+            pool_worker_uid='uid',
+            timeout=2.0,
+        )
+    )
     asyncio.run(
         mgr.provision_activity_pod(
-            pool_worker_uid="uid",
-            job_id="j-tnt",
-            snapshot_id="snap",
-            activity="train",
-            image="kumo/activity:test",
-        ))
+            pool_worker_uid='uid',
+            job_id='j-tnt',
+            snapshot_id='snap',
+            activity='train',
+            image='kumo/activity:test',
+        )
+    )
     asyncio.run(
         mgr.wait_for_activity_job_pod_running(
-            job_name=mgr.activity_job_name("j-tnt", "durable"),
+            job_name=mgr.activity_job_name('j-tnt', 'durable'),
             timeout=2.0,
-        ))
+        )
+    )
     asyncio.run(
         mgr.provision_ephemeral_activity_pod(
-            job_id="j-tnt-eph",
-            snapshot_id="snap",
-            activity="ingest",
-            image="kumo/activity:eph",
+            job_id='j-tnt-eph',
+            snapshot_id='snap',
+            activity='ingest',
+            image='kumo/activity:eph',
             ephemeral_storage_bytes=1 * (1 << 30),
-        ))
+        )
+    )
     asyncio.run(
         mgr.wait_for_activity_job_pod_running(
-            job_name=mgr.activity_job_name("j-tnt-eph", "overflow"),
+            job_name=mgr.activity_job_name('j-tnt-eph', 'overflow'),
             timeout=2.0,
-        ))
+        )
+    )
 
-    dep_tols = (apps.create_namespaced_deployment.call_args.kwargs["body"].spec.
-                template.spec.tolerations)
-    assert any(t.key == "dedicated" and t.value == f"diskgraph-{custom_tenant}"
-               for t in dep_tols)
+    dep_tols = apps.create_namespaced_deployment.call_args.kwargs[
+        'body'
+    ].spec.template.spec.tolerations
+    assert any(
+        t.key == 'dedicated' and t.value == f'diskgraph-{custom_tenant}'
+        for t in dep_tols
+    )
     job_calls = batch.create_namespaced_job.call_args_list
     assert len(job_calls) == 2
-    cache_act_tols = (
-        job_calls[0].kwargs["body"].spec.template.spec.tolerations)
-    eph_act_tols = (job_calls[1].kwargs["body"].spec.template.spec.tolerations)
-    assert any(t.key == "dedicated" and t.value == f"diskgraph-{custom_tenant}"
-               for t in cache_act_tols)
+    cache_act_tols = job_calls[0].kwargs['body'].spec.template.spec.tolerations
+    eph_act_tols = job_calls[1].kwargs['body'].spec.template.spec.tolerations
     assert any(
-        t.key == "dedicated" and t.value == f"diskgraph-eph-{custom_tenant}"
-        for t in eph_act_tols)
+        t.key == 'dedicated' and t.value == f'diskgraph-{custom_tenant}'
+        for t in cache_act_tols
+    )
+    assert any(
+        t.key == 'dedicated' and t.value == f'diskgraph-eph-{custom_tenant}'
+        for t in eph_act_tols
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -3062,29 +3257,32 @@ def test_provision_activity_pod_with_gpu_count_zero_omits_gpu_resource():
     core = MagicMock(spec=k8s_client.CoreV1Api)
     batch = MagicMock(spec=k8s_client.BatchV1Api)
     core.list_namespaced_pod.side_effect = [
-        _registered_daemon_for("uid"),
-        V1PodList(items=[
-            _make_pod(
-                "act",
-                labels={
-                    LABEL_APP: LABEL_APP_VALUE_ACTIVITY,
-                    LABEL_POOL_WORKER_UID: "uid",
-                    LABEL_JOB_ID_HASH: "j-cpu",
-                },
-            )
-        ]),
+        _registered_daemon_for('uid'),
+        V1PodList(
+            items=[
+                _make_pod(
+                    'act',
+                    labels={
+                        LABEL_APP: LABEL_APP_VALUE_ACTIVITY,
+                        LABEL_POOL_WORKER_UID: 'uid',
+                        LABEL_JOB_ID_HASH: 'j-cpu',
+                    },
+                )
+            ]
+        ),
     ]
     mgr = _make_manager(core=core, batch=batch)
     asyncio.run(
         mgr.provision_activity_pod(
-            pool_worker_uid="uid",
-            job_id="j-cpu",
-            snapshot_id="snap",
-            activity="ingest",
-            image="kumo/activity:test",
+            pool_worker_uid='uid',
+            job_id='j-cpu',
+            snapshot_id='snap',
+            activity='ingest',
+            image='kumo/activity:test',
             # gpu_count omitted — defaults to 0.
-        ))
-    body = batch.create_namespaced_job.call_args.kwargs["body"]
+        )
+    )
+    body = batch.create_namespaced_job.call_args.kwargs['body']
     container = body.spec.template.spec.containers[0]
     assert container.resources is None
 
@@ -3097,33 +3295,36 @@ def test_provision_activity_pod_with_gpu_count_positive_sets_gpu_resource():
     core = MagicMock(spec=k8s_client.CoreV1Api)
     batch = MagicMock(spec=k8s_client.BatchV1Api)
     core.list_namespaced_pod.side_effect = [
-        _registered_daemon_for("uid"),
-        V1PodList(items=[
-            _make_pod(
-                "act",
-                labels={
-                    LABEL_APP: LABEL_APP_VALUE_ACTIVITY,
-                    LABEL_POOL_WORKER_UID: "uid",
-                    LABEL_JOB_ID_HASH: "j-gpu",
-                },
-            )
-        ]),
+        _registered_daemon_for('uid'),
+        V1PodList(
+            items=[
+                _make_pod(
+                    'act',
+                    labels={
+                        LABEL_APP: LABEL_APP_VALUE_ACTIVITY,
+                        LABEL_POOL_WORKER_UID: 'uid',
+                        LABEL_JOB_ID_HASH: 'j-gpu',
+                    },
+                )
+            ]
+        ),
     ]
     mgr = _make_manager(core=core, batch=batch)
     asyncio.run(
         mgr.provision_activity_pod(
-            pool_worker_uid="uid",
-            job_id="j-gpu",
-            snapshot_id="snap",
-            activity="train",
-            image="kumo/activity:gpu",
+            pool_worker_uid='uid',
+            job_id='j-gpu',
+            snapshot_id='snap',
+            activity='train',
+            image='kumo/activity:gpu',
             resources=ResourceSpec(gpu_count=2),
-        ))
-    body = batch.create_namespaced_job.call_args.kwargs["body"]
+        )
+    )
+    body = batch.create_namespaced_job.call_args.kwargs['body']
     container = body.spec.template.spec.containers[0]
     assert container.resources is not None
-    assert container.resources.requests == {"nvidia.com/gpu": "2"}
-    assert container.resources.limits == {"nvidia.com/gpu": "2"}
+    assert container.resources.requests == {'nvidia.com/gpu': '2'}
+    assert container.resources.limits == {'nvidia.com/gpu': '2'}
 
 
 def test_provision_eph_activity_pod_with_gpu_count_zero_keeps_storage_only():
@@ -3134,31 +3335,36 @@ def test_provision_eph_activity_pod_with_gpu_count_zero_keeps_storage_only():
     """
     core = MagicMock(spec=k8s_client.CoreV1Api)
     batch = MagicMock(spec=k8s_client.BatchV1Api)
-    core.list_namespaced_pod.return_value = V1PodList(items=[
-        _make_pod(
-            "eph", labels={
-                LABEL_APP: LABEL_APP_VALUE_ACTIVITY_EPH,
-                LABEL_JOB_ID_HASH: "j-eph-cpu",
-            }),
-    ])
+    core.list_namespaced_pod.return_value = V1PodList(
+        items=[
+            _make_pod(
+                'eph',
+                labels={
+                    LABEL_APP: LABEL_APP_VALUE_ACTIVITY_EPH,
+                    LABEL_JOB_ID_HASH: 'j-eph-cpu',
+                },
+            ),
+        ]
+    )
     eph_storage = 2 * (1 << 30)
     mgr = _make_manager(core=core, batch=batch)
     asyncio.run(
         mgr.provision_ephemeral_activity_pod(
-            job_id="j-eph-cpu",
-            snapshot_id="snap",
-            activity="ingest",
-            image="kumo/activity:eph",
+            job_id='j-eph-cpu',
+            snapshot_id='snap',
+            activity='ingest',
+            image='kumo/activity:eph',
             ephemeral_storage_bytes=eph_storage,
             # gpu_count omitted — defaults to 0.
-        ))
-    body = batch.create_namespaced_job.call_args.kwargs["body"]
+        )
+    )
+    body = batch.create_namespaced_job.call_args.kwargs['body']
     container = body.spec.template.spec.containers[0]
     assert container.resources.requests == {
-        "ephemeral-storage": str(eph_storage),
+        'ephemeral-storage': str(eph_storage),
     }
     # No ephemeral-storage limit (backlog #18); no other resources here.
-    assert "ephemeral-storage" not in (container.resources.limits or {})
+    assert 'ephemeral-storage' not in (container.resources.limits or {})
 
 
 def test_provision_eph_activity_pod_with_gpu_count_positive_adds_gpu():
@@ -3168,34 +3374,39 @@ def test_provision_eph_activity_pod_with_gpu_count_positive_adds_gpu():
     """
     core = MagicMock(spec=k8s_client.CoreV1Api)
     batch = MagicMock(spec=k8s_client.BatchV1Api)
-    core.list_namespaced_pod.return_value = V1PodList(items=[
-        _make_pod(
-            "eph", labels={
-                LABEL_APP: LABEL_APP_VALUE_ACTIVITY_EPH,
-                LABEL_JOB_ID_HASH: "j-eph-gpu",
-            }),
-    ])
+    core.list_namespaced_pod.return_value = V1PodList(
+        items=[
+            _make_pod(
+                'eph',
+                labels={
+                    LABEL_APP: LABEL_APP_VALUE_ACTIVITY_EPH,
+                    LABEL_JOB_ID_HASH: 'j-eph-gpu',
+                },
+            ),
+        ]
+    )
     eph_storage = 2 * (1 << 30)
     mgr = _make_manager(core=core, batch=batch)
     asyncio.run(
         mgr.provision_ephemeral_activity_pod(
-            job_id="j-eph-gpu",
-            snapshot_id="snap",
-            activity="train",
-            image="kumo/activity:eph-gpu",
+            job_id='j-eph-gpu',
+            snapshot_id='snap',
+            activity='train',
+            image='kumo/activity:eph-gpu',
             ephemeral_storage_bytes=eph_storage,
             resources=ResourceSpec(gpu_count=1),
-        ))
-    body = batch.create_namespaced_job.call_args.kwargs["body"]
+        )
+    )
+    body = batch.create_namespaced_job.call_args.kwargs['body']
     container = body.spec.template.spec.containers[0]
     assert container.resources.requests == {
-        "ephemeral-storage": str(eph_storage),
-        "nvidia.com/gpu": "1",
+        'ephemeral-storage': str(eph_storage),
+        'nvidia.com/gpu': '1',
     }
     # ephemeral-storage intentionally absent from limits (backlog #18);
     # GPU stays request==limit.
     assert container.resources.limits == {
-        "nvidia.com/gpu": "1",
+        'nvidia.com/gpu': '1',
     }
 
 
@@ -3204,7 +3415,7 @@ def test_resource_spec_rejects_negative_gpu_count():
     via ``__post_init__`` — fail-fast on misconfig before any K8s
     API call.
     """
-    with pytest.raises(ValueError, match="gpu_count must be >= 0"):
+    with pytest.raises(ValueError, match='gpu_count must be >= 0'):
         ResourceSpec(gpu_count=-1)
 
 
@@ -3221,20 +3432,20 @@ def test_daemon_with_cpu_memory_limits_emits_guaranteed_qos_shape():
     """
     core = MagicMock(spec=k8s_client.CoreV1Api)
     apps = MagicMock(spec=k8s_client.AppsV1Api)
-    core.list_namespaced_pod.return_value = _registered_daemon_for("uid")
+    core.list_namespaced_pod.return_value = _registered_daemon_for('uid')
 
     mgr = K8sPoolWorkerManager(
         namespace=NAMESPACE,
         tenant=TENANT,
-        storage_class="topolvm-ssd",
-        daemon_image="kumo/daemon:test",
-        daemon_command=["/usr/bin/daemon"],
-        daemon_args=["--mode=test"],
+        storage_class='topolvm-ssd',
+        daemon_image='kumo/daemon:test',
+        daemon_command=['/usr/bin/daemon'],
+        daemon_args=['--mode=test'],
         daemon_resources=ResourceSpec(
-            cpu_request="2",
-            cpu_limit="2",
-            memory_request="4Gi",
-            memory_limit="4Gi",
+            cpu_request='2',
+            cpu_limit='2',
+            memory_request='4Gi',
+            memory_limit='4Gi',
         ),
         load_kube_config=False,
         core_v1_api=core,
@@ -3242,15 +3453,17 @@ def test_daemon_with_cpu_memory_limits_emits_guaranteed_qos_shape():
         batch_v1_api=MagicMock(spec=k8s_client.BatchV1Api),
         policy_v1_api=MagicMock(spec=k8s_client.PolicyV1Api),
     )
-    asyncio.run(mgr.provision_pool_worker(
-        pool_worker_uid="uid",
-        timeout=2.0,
-    ))
+    asyncio.run(
+        mgr.provision_pool_worker(
+            pool_worker_uid='uid',
+            timeout=2.0,
+        )
+    )
 
-    dep_body = apps.create_namespaced_deployment.call_args.kwargs["body"]
+    dep_body = apps.create_namespaced_deployment.call_args.kwargs['body']
     container = dep_body.spec.template.spec.containers[0]
-    assert container.resources.requests == {"cpu": "2", "memory": "4Gi"}
-    assert container.resources.limits == {"cpu": "2", "memory": "4Gi"}
+    assert container.resources.requests == {'cpu': '2', 'memory': '4Gi'}
+    assert container.resources.limits == {'cpu': '2', 'memory': '4Gi'}
 
 
 def test_provision_activity_pod_with_cpu_memory_emits_resource_entries():
@@ -3263,45 +3476,48 @@ def test_provision_activity_pod_with_cpu_memory_emits_resource_entries():
     core = MagicMock(spec=k8s_client.CoreV1Api)
     batch = MagicMock(spec=k8s_client.BatchV1Api)
     core.list_namespaced_pod.side_effect = [
-        _registered_daemon_for("uid"),
-        V1PodList(items=[
-            _make_pod(
-                "act",
-                labels={
-                    LABEL_APP: LABEL_APP_VALUE_ACTIVITY,
-                    LABEL_POOL_WORKER_UID: "uid",
-                    LABEL_JOB_ID_HASH: "j-cm",
-                },
-            )
-        ]),
+        _registered_daemon_for('uid'),
+        V1PodList(
+            items=[
+                _make_pod(
+                    'act',
+                    labels={
+                        LABEL_APP: LABEL_APP_VALUE_ACTIVITY,
+                        LABEL_POOL_WORKER_UID: 'uid',
+                        LABEL_JOB_ID_HASH: 'j-cm',
+                    },
+                )
+            ]
+        ),
     ]
     mgr = _make_manager(core=core, batch=batch)
     asyncio.run(
         mgr.provision_activity_pod(
-            pool_worker_uid="uid",
-            job_id="j-cm",
-            snapshot_id="snap",
-            activity="train",
-            image="kumo/activity:gpu",
+            pool_worker_uid='uid',
+            job_id='j-cm',
+            snapshot_id='snap',
+            activity='train',
+            image='kumo/activity:gpu',
             resources=ResourceSpec(
-                cpu_request="8",
-                cpu_limit="8",
-                memory_request="32Gi",
-                memory_limit="32Gi",
+                cpu_request='8',
+                cpu_limit='8',
+                memory_request='32Gi',
+                memory_limit='32Gi',
                 gpu_count=1,
             ),
-        ))
-    body = batch.create_namespaced_job.call_args.kwargs["body"]
+        )
+    )
+    body = batch.create_namespaced_job.call_args.kwargs['body']
     container = body.spec.template.spec.containers[0]
     assert container.resources.requests == {
-        "cpu": "8",
-        "memory": "32Gi",
-        "nvidia.com/gpu": "1",
+        'cpu': '8',
+        'memory': '32Gi',
+        'nvidia.com/gpu': '1',
     }
     assert container.resources.limits == {
-        "cpu": "8",
-        "memory": "32Gi",
-        "nvidia.com/gpu": "1",
+        'cpu': '8',
+        'memory': '32Gi',
+        'nvidia.com/gpu': '1',
     }
 
 
@@ -3312,44 +3528,49 @@ def test_provision_eph_activity_pod_with_cpu_memory_emits_resource_entries():
     """
     core = MagicMock(spec=k8s_client.CoreV1Api)
     batch = MagicMock(spec=k8s_client.BatchV1Api)
-    core.list_namespaced_pod.return_value = V1PodList(items=[
-        _make_pod(
-            "eph", labels={
-                LABEL_APP: LABEL_APP_VALUE_ACTIVITY_EPH,
-                LABEL_JOB_ID_HASH: "j-eph-cm",
-            }),
-    ])
+    core.list_namespaced_pod.return_value = V1PodList(
+        items=[
+            _make_pod(
+                'eph',
+                labels={
+                    LABEL_APP: LABEL_APP_VALUE_ACTIVITY_EPH,
+                    LABEL_JOB_ID_HASH: 'j-eph-cm',
+                },
+            ),
+        ]
+    )
     eph_storage = 4 * (1 << 30)
     mgr = _make_manager(core=core, batch=batch)
     asyncio.run(
         mgr.provision_ephemeral_activity_pod(
-            job_id="j-eph-cm",
-            snapshot_id="snap",
-            activity="train",
-            image="kumo/activity:eph-gpu",
+            job_id='j-eph-cm',
+            snapshot_id='snap',
+            activity='train',
+            image='kumo/activity:eph-gpu',
             ephemeral_storage_bytes=eph_storage,
             resources=ResourceSpec(
-                cpu_request="4",
-                cpu_limit="8",
-                memory_request="16Gi",
-                memory_limit="32Gi",
+                cpu_request='4',
+                cpu_limit='8',
+                memory_request='16Gi',
+                memory_limit='32Gi',
                 gpu_count=1,
             ),
-        ))
-    body = batch.create_namespaced_job.call_args.kwargs["body"]
+        )
+    )
+    body = batch.create_namespaced_job.call_args.kwargs['body']
     container = body.spec.template.spec.containers[0]
     assert container.resources.requests == {
-        "cpu": "4",
-        "memory": "16Gi",
-        "ephemeral-storage": str(eph_storage),
-        "nvidia.com/gpu": "1",
+        'cpu': '4',
+        'memory': '16Gi',
+        'ephemeral-storage': str(eph_storage),
+        'nvidia.com/gpu': '1',
     }
     # ephemeral-storage intentionally absent from limits (backlog #18);
     # cpu/memory/gpu limits unchanged.
     assert container.resources.limits == {
-        "cpu": "8",
-        "memory": "32Gi",
-        "nvidia.com/gpu": "1",
+        'cpu': '8',
+        'memory': '32Gi',
+        'nvidia.com/gpu': '1',
     }
 
 
@@ -3363,8 +3584,7 @@ def test_provision_eph_activity_pod_with_cpu_memory_emits_resource_entries():
 # manager MUST hash this before stamping it as a label, and MUST hash
 # it again before building any selector. The raw form must survive on
 # the kumo.ai/job-id annotation.
-_RAW_TEMPORAL_JOB_ID = (
-    "dg-ingest:NA-abc123def@graph-data-version-456:01HXYZ789")
+_RAW_TEMPORAL_JOB_ID = 'dg-ingest:NA-abc123def@graph-data-version-456:01HXYZ789'
 
 
 def test_hash_job_id_meets_k8s_label_value_constraints():
@@ -3373,7 +3593,7 @@ def test_hash_job_id_meets_k8s_label_value_constraints():
     assert len(h) == 16  # _JOB_ID_HASH_HEX_LEN
     # K8s label values must match [A-Za-z0-9._-]; the hex subset is a
     # strict subset of that.
-    assert all(c in "0123456789abcdef" for c in h)
+    assert all(c in '0123456789abcdef' for c in h)
     # Stable across calls — the selector path depends on this.
     assert _hash_job_id(_RAW_TEMPORAL_JOB_ID) == h
 
@@ -3387,38 +3607,42 @@ def test_provision_activity_pod_hashes_temporal_workflow_id():
     core = MagicMock(spec=k8s_client.CoreV1Api)
     batch = MagicMock(spec=k8s_client.BatchV1Api)
     core.list_namespaced_pod.side_effect = [
-        _registered_daemon_for("uid"),
-        V1PodList(items=[
-            _make_pod(
-                "act",
-                labels={
-                    LABEL_APP: LABEL_APP_VALUE_ACTIVITY,
-                    LABEL_POOL_WORKER_UID: "uid",
-                    LABEL_JOB_ID_HASH: _hash_job_id(_RAW_TEMPORAL_JOB_ID),
-                },
-                annotations={ANNOTATION_JOB_ID: _RAW_TEMPORAL_JOB_ID},
-            )
-        ]),
+        _registered_daemon_for('uid'),
+        V1PodList(
+            items=[
+                _make_pod(
+                    'act',
+                    labels={
+                        LABEL_APP: LABEL_APP_VALUE_ACTIVITY,
+                        LABEL_POOL_WORKER_UID: 'uid',
+                        LABEL_JOB_ID_HASH: _hash_job_id(_RAW_TEMPORAL_JOB_ID),
+                    },
+                    annotations={ANNOTATION_JOB_ID: _RAW_TEMPORAL_JOB_ID},
+                )
+            ]
+        ),
     ]
     mgr = _make_manager(core=core, batch=batch)
     asyncio.run(
         mgr.provision_activity_pod(
-            pool_worker_uid="uid",
+            pool_worker_uid='uid',
             job_id=_RAW_TEMPORAL_JOB_ID,
-            snapshot_id="snap",
-            activity="ingest",
-            image="kumo/activity:test",
-        ))
+            snapshot_id='snap',
+            activity='ingest',
+            image='kumo/activity:test',
+        )
+    )
     info = asyncio.run(
         mgr.wait_for_activity_job_pod_running(
-            job_name=mgr.activity_job_name(_RAW_TEMPORAL_JOB_ID, "durable"),
+            job_name=mgr.activity_job_name(_RAW_TEMPORAL_JOB_ID, 'durable'),
             timeout=2.0,
-        ))
+        )
+    )
 
-    job_body = batch.create_namespaced_job.call_args.kwargs["body"]
+    job_body = batch.create_namespaced_job.call_args.kwargs['body']
     # Job name must be DNS-1123 subdomain compliant — no ':' / '@'.
     job_name = job_body.metadata.name
-    assert ":" not in job_name and "@" not in job_name
+    assert ':' not in job_name and '@' not in job_name
     assert _hash_job_id(_RAW_TEMPORAL_JOB_ID) in job_name
     assert _RAW_TEMPORAL_JOB_ID not in job_name
 
@@ -3428,10 +3652,9 @@ def test_provision_activity_pod_hashes_temporal_workflow_id():
     assert _RAW_TEMPORAL_JOB_ID not in labels.values()
 
     # Annotation = raw, on both Job and pod template.
-    assert (job_body.metadata.annotations[ANNOTATION_JOB_ID] ==
-            _RAW_TEMPORAL_JOB_ID)
+    assert job_body.metadata.annotations[ANNOTATION_JOB_ID] == _RAW_TEMPORAL_JOB_ID
     pod_template = job_body.spec.template.metadata
-    assert (pod_template.annotations[ANNOTATION_JOB_ID] == _RAW_TEMPORAL_JOB_ID)
+    assert pod_template.annotations[ANNOTATION_JOB_ID] == _RAW_TEMPORAL_JOB_ID
 
     # Caller sees the raw value back via ActivityPodInfo.
     assert info.job_id == _RAW_TEMPORAL_JOB_ID
@@ -3441,37 +3664,39 @@ def test_provision_ephemeral_activity_pod_hashes_temporal_workflow_id():
     """Eph variant: same hash-on-label / raw-on-annotation contract."""
     core = MagicMock(spec=k8s_client.CoreV1Api)
     batch = MagicMock(spec=k8s_client.BatchV1Api)
-    core.list_namespaced_pod.return_value = V1PodList(items=[
-        _make_pod(
-            "eph",
-            labels={
-                LABEL_APP: LABEL_APP_VALUE_ACTIVITY_EPH,
-                LABEL_JOB_ID_HASH: _hash_job_id(_RAW_TEMPORAL_JOB_ID),
-            },
-            annotations={ANNOTATION_JOB_ID: _RAW_TEMPORAL_JOB_ID},
-        )
-    ])
+    core.list_namespaced_pod.return_value = V1PodList(
+        items=[
+            _make_pod(
+                'eph',
+                labels={
+                    LABEL_APP: LABEL_APP_VALUE_ACTIVITY_EPH,
+                    LABEL_JOB_ID_HASH: _hash_job_id(_RAW_TEMPORAL_JOB_ID),
+                },
+                annotations={ANNOTATION_JOB_ID: _RAW_TEMPORAL_JOB_ID},
+            )
+        ]
+    )
     mgr = _make_manager(core=core, batch=batch)
     asyncio.run(
         mgr.provision_ephemeral_activity_pod(
             job_id=_RAW_TEMPORAL_JOB_ID,
-            snapshot_id="snap",
-            activity="ingest",
-            image="kumo/activity:eph",
+            snapshot_id='snap',
+            activity='ingest',
+            image='kumo/activity:eph',
             ephemeral_storage_bytes=1 * (1 << 30),
-        ))
+        )
+    )
     info = asyncio.run(
         mgr.wait_for_activity_job_pod_running(
-            job_name=mgr.activity_job_name(_RAW_TEMPORAL_JOB_ID, "overflow"),
+            job_name=mgr.activity_job_name(_RAW_TEMPORAL_JOB_ID, 'overflow'),
             timeout=2.0,
-        ))
-    body = batch.create_namespaced_job.call_args.kwargs["body"]
-    assert ":" not in body.metadata.name
-    assert "@" not in body.metadata.name
-    assert (body.metadata.labels[LABEL_JOB_ID_HASH] == _hash_job_id(
-        _RAW_TEMPORAL_JOB_ID))
-    assert (
-        body.metadata.annotations[ANNOTATION_JOB_ID] == _RAW_TEMPORAL_JOB_ID)
+        )
+    )
+    body = batch.create_namespaced_job.call_args.kwargs['body']
+    assert ':' not in body.metadata.name
+    assert '@' not in body.metadata.name
+    assert body.metadata.labels[LABEL_JOB_ID_HASH] == _hash_job_id(_RAW_TEMPORAL_JOB_ID)
+    assert body.metadata.annotations[ANNOTATION_JOB_ID] == _RAW_TEMPORAL_JOB_ID
     assert info.job_id == _RAW_TEMPORAL_JOB_ID
 
 
@@ -3482,13 +3707,11 @@ def test_delete_activity_pods_hashes_job_id_in_selector():
     batch = MagicMock(spec=k8s_client.BatchV1Api)
     mgr = _make_manager(batch=batch)
     asyncio.run(mgr.delete_activity_pods(job_id=_RAW_TEMPORAL_JOB_ID))
-    selector = (batch.delete_collection_namespaced_job.call_args.
-                kwargs["label_selector"])
-    assert (f"{LABEL_JOB_ID_HASH}={_hash_job_id(_RAW_TEMPORAL_JOB_ID)}"
-            in selector)
+    selector = batch.delete_collection_namespaced_job.call_args.kwargs['label_selector']
+    assert f'{LABEL_JOB_ID_HASH}={_hash_job_id(_RAW_TEMPORAL_JOB_ID)}' in selector
     # Raw chars must never appear in the selector string.
-    assert ":" not in selector
-    assert "@" not in selector
+    assert ':' not in selector
+    assert '@' not in selector
 
 
 def test_list_activity_pods_hashes_job_id_in_selector():
@@ -3499,10 +3722,9 @@ def test_list_activity_pods_hashes_job_id_in_selector():
     core.list_namespaced_pod.return_value = V1PodList(items=[])
     mgr = _make_manager(core=core)
     asyncio.run(mgr.list_activity_pods(job_id=_RAW_TEMPORAL_JOB_ID))
-    selector = (core.list_namespaced_pod.call_args.kwargs["label_selector"])
-    assert (f"{LABEL_JOB_ID_HASH}={_hash_job_id(_RAW_TEMPORAL_JOB_ID)}"
-            in selector)
-    assert ":" not in selector and "@" not in selector
+    selector = core.list_namespaced_pod.call_args.kwargs['label_selector']
+    assert f'{LABEL_JOB_ID_HASH}={_hash_job_id(_RAW_TEMPORAL_JOB_ID)}' in selector
+    assert ':' not in selector and '@' not in selector
 
 
 # ---------------------------------------------------------------------------
@@ -3511,7 +3733,7 @@ def test_list_activity_pods_hashes_job_id_in_selector():
 
 # A snapshot id that would violate K8s label-value constraints if
 # stamped raw: contains a uri-like ':' / '/' and uppercase chars.
-_RAW_SNAPSHOT_ID = "s3://example-snapshots/v2:graph-NA-abc123:ts=01HZZZ"
+_RAW_SNAPSHOT_ID = 's3://example-snapshots/v2:graph-NA-abc123:ts=01HZZZ'
 
 
 def test_provision_activity_pod_hashes_snapshot_id():
@@ -3522,86 +3744,89 @@ def test_provision_activity_pod_hashes_snapshot_id():
     core = MagicMock(spec=k8s_client.CoreV1Api)
     batch = MagicMock(spec=k8s_client.BatchV1Api)
     core.list_namespaced_pod.side_effect = [
-        _registered_daemon_for("uid"),
-        V1PodList(items=[
-            _make_pod(
-                "act",
-                labels={
-                    LABEL_APP: LABEL_APP_VALUE_ACTIVITY,
-                    LABEL_POOL_WORKER_UID: "uid",
-                    LABEL_JOB_ID_HASH: _hash_job_id("j-snap"),
-                    LABEL_SNAPSHOT_ID_HASH: _hash_snapshot_id(_RAW_SNAPSHOT_ID),
-                },
-                annotations={
-                    ANNOTATION_JOB_ID: "j-snap",
-                    ANNOTATION_SNAPSHOT_ID: _RAW_SNAPSHOT_ID,
-                },
-            )
-        ]),
+        _registered_daemon_for('uid'),
+        V1PodList(
+            items=[
+                _make_pod(
+                    'act',
+                    labels={
+                        LABEL_APP: LABEL_APP_VALUE_ACTIVITY,
+                        LABEL_POOL_WORKER_UID: 'uid',
+                        LABEL_JOB_ID_HASH: _hash_job_id('j-snap'),
+                        LABEL_SNAPSHOT_ID_HASH: _hash_snapshot_id(_RAW_SNAPSHOT_ID),
+                    },
+                    annotations={
+                        ANNOTATION_JOB_ID: 'j-snap',
+                        ANNOTATION_SNAPSHOT_ID: _RAW_SNAPSHOT_ID,
+                    },
+                )
+            ]
+        ),
     ]
     mgr = _make_manager(core=core, batch=batch)
     asyncio.run(
         mgr.provision_activity_pod(
-            pool_worker_uid="uid",
-            job_id="j-snap",
+            pool_worker_uid='uid',
+            job_id='j-snap',
             snapshot_id=_RAW_SNAPSHOT_ID,
-            activity="ingest",
-            image="kumo/activity:test",
-        ))
+            activity='ingest',
+            image='kumo/activity:test',
+        )
+    )
 
-    job_body = batch.create_namespaced_job.call_args.kwargs["body"]
+    job_body = batch.create_namespaced_job.call_args.kwargs['body']
     labels = job_body.metadata.labels
-    assert (
-        labels[LABEL_SNAPSHOT_ID_HASH] == _hash_snapshot_id(_RAW_SNAPSHOT_ID))
+    assert labels[LABEL_SNAPSHOT_ID_HASH] == _hash_snapshot_id(_RAW_SNAPSHOT_ID)
     # Raw ':' / '/' must NEVER leak into label values.
     assert _RAW_SNAPSHOT_ID not in labels.values()
     for v in labels.values():
-        assert ":" not in v and "/" not in v
+        assert ':' not in v and '/' not in v
 
     # Annotation carries the raw value, on both Job and pod template.
-    assert (job_body.metadata.annotations[ANNOTATION_SNAPSHOT_ID] ==
-            _RAW_SNAPSHOT_ID)
+    assert job_body.metadata.annotations[ANNOTATION_SNAPSHOT_ID] == _RAW_SNAPSHOT_ID
     pod_template_annotations = job_body.spec.template.metadata.annotations
-    assert (
-        pod_template_annotations[ANNOTATION_SNAPSHOT_ID] == _RAW_SNAPSHOT_ID)
+    assert pod_template_annotations[ANNOTATION_SNAPSHOT_ID] == _RAW_SNAPSHOT_ID
 
 
 def test_provision_ephemeral_activity_pod_hashes_snapshot_id():
     """Eph variant: same contract."""
     core = MagicMock(spec=k8s_client.CoreV1Api)
     batch = MagicMock(spec=k8s_client.BatchV1Api)
-    core.list_namespaced_pod.return_value = V1PodList(items=[
-        _make_pod(
-            "eph",
-            labels={
-                LABEL_APP: LABEL_APP_VALUE_ACTIVITY_EPH,
-                LABEL_JOB_ID_HASH: _hash_job_id("j-eph-snap"),
-                LABEL_SNAPSHOT_ID_HASH: _hash_snapshot_id(_RAW_SNAPSHOT_ID),
-            },
-            annotations={
-                ANNOTATION_JOB_ID: "j-eph-snap",
-                ANNOTATION_SNAPSHOT_ID: _RAW_SNAPSHOT_ID,
-            },
-        )
-    ])
+    core.list_namespaced_pod.return_value = V1PodList(
+        items=[
+            _make_pod(
+                'eph',
+                labels={
+                    LABEL_APP: LABEL_APP_VALUE_ACTIVITY_EPH,
+                    LABEL_JOB_ID_HASH: _hash_job_id('j-eph-snap'),
+                    LABEL_SNAPSHOT_ID_HASH: _hash_snapshot_id(_RAW_SNAPSHOT_ID),
+                },
+                annotations={
+                    ANNOTATION_JOB_ID: 'j-eph-snap',
+                    ANNOTATION_SNAPSHOT_ID: _RAW_SNAPSHOT_ID,
+                },
+            )
+        ]
+    )
     mgr = _make_manager(core=core, batch=batch)
     asyncio.run(
         mgr.provision_ephemeral_activity_pod(
-            job_id="j-eph-snap",
+            job_id='j-eph-snap',
             snapshot_id=_RAW_SNAPSHOT_ID,
-            activity="ingest",
-            image="kumo/activity:eph",
+            activity='ingest',
+            image='kumo/activity:eph',
             ephemeral_storage_bytes=1 * (1 << 30),
-        ))
-    body = batch.create_namespaced_job.call_args.kwargs["body"]
+        )
+    )
+    body = batch.create_namespaced_job.call_args.kwargs['body']
     labels = body.metadata.labels
-    assert (
-        labels[LABEL_SNAPSHOT_ID_HASH] == _hash_snapshot_id(_RAW_SNAPSHOT_ID))
+    assert labels[LABEL_SNAPSHOT_ID_HASH] == _hash_snapshot_id(_RAW_SNAPSHOT_ID)
     assert _RAW_SNAPSHOT_ID not in labels.values()
+    assert body.metadata.annotations[ANNOTATION_SNAPSHOT_ID] == _RAW_SNAPSHOT_ID
     assert (
-        body.metadata.annotations[ANNOTATION_SNAPSHOT_ID] == _RAW_SNAPSHOT_ID)
-    assert (body.spec.template.metadata.annotations[ANNOTATION_SNAPSHOT_ID] ==
-            _RAW_SNAPSHOT_ID)
+        body.spec.template.metadata.annotations[ANNOTATION_SNAPSHOT_ID]
+        == _RAW_SNAPSHOT_ID
+    )
 
 
 def test_hash_snapshot_id_charset_and_length():
@@ -3609,7 +3834,7 @@ def test_hash_snapshot_id_charset_and_length():
     constraints (≤63 chars, hex-only charset, stable)."""
     h = _hash_snapshot_id(_RAW_SNAPSHOT_ID)
     assert len(h) == 16
-    assert all(c in "0123456789abcdef" for c in h)
+    assert all(c in '0123456789abcdef' for c in h)
     assert _hash_snapshot_id(_RAW_SNAPSHOT_ID) == h
 
 
@@ -3625,37 +3850,43 @@ def test_daemon_uses_capacity_selectors_and_no_node_affinity():
 
     core = MagicMock(spec=k8s_client.CoreV1Api)
     apps = MagicMock(spec=k8s_client.AppsV1Api)
-    core.list_namespaced_pod.return_value = V1PodList(items=[
-        _make_pod(
-            "p",
-            labels={
-                LABEL_APP: LABEL_APP_VALUE_DAEMON,
-                LABEL_POOL_WORKER_UID: "uid",
-            },
-        ),
-    ])
+    core.list_namespaced_pod.return_value = V1PodList(
+        items=[
+            _make_pod(
+                'p',
+                labels={
+                    LABEL_APP: LABEL_APP_VALUE_DAEMON,
+                    LABEL_POOL_WORKER_UID: 'uid',
+                },
+            ),
+        ]
+    )
 
     mgr = _make_manager(core=core, apps=apps)
     # Explicit uid (deterministic readiness mock) AND a pvc_spec so the sized
     # fresh-provision path stamps the ssd-size label (= the PVC size).
     asyncio.run(
         mgr.provision_pool_worker(
-            pool_worker_uid="uid",
+            pool_worker_uid='uid',
             pvc_spec=PvcSpec(size_gib=1750, gpu_count=4),
             timeout=5.0,
-        ))
+        )
+    )
 
-    pod_spec = apps.create_namespaced_deployment.call_args.kwargs["body"] \
-        .spec.template.spec
+    pod_spec = apps.create_namespaced_deployment.call_args.kwargs[
+        'body'
+    ].spec.template.spec
     assert pod_spec.node_selector == {
         DISKGRAPH_POOL_TYPE_LABEL: POOL_TYPE_CACHE,
-        DISKGRAPH_SSD_SIZE_LABEL: "1750",
-        DISKGRAPH_GPU_COUNT_LABEL: "4",
+        DISKGRAPH_SSD_SIZE_LABEL: '1750',
+        DISKGRAPH_GPU_COUNT_LABEL: '4',
     }
     assert pod_spec.affinity.node_affinity is None
     # Isolation + structural guardrail preserved.
-    assert any(t.key == "dedicated" and t.value == f"diskgraph-{TENANT}"
-               for t in pod_spec.tolerations)
+    assert any(
+        t.key == 'dedicated' and t.value == f'diskgraph-{TENANT}'
+        for t in pod_spec.tolerations
+    )
     assert pod_spec.affinity.pod_anti_affinity is not None
 
 
@@ -3665,24 +3896,25 @@ def test_daemon_rebind_keeps_role_omits_ssd_size():
     the original node) — but the cache pool role is still pinned."""
     core = MagicMock(spec=k8s_client.CoreV1Api)
     apps = MagicMock(spec=k8s_client.AppsV1Api)
-    core.list_namespaced_pod.return_value = V1PodList(items=[
-        _make_pod(
-            "p",
-            labels={
-                LABEL_APP: LABEL_APP_VALUE_DAEMON,
-                LABEL_POOL_WORKER_UID: "uid",
-            },
-        ),
-    ])
+    core.list_namespaced_pod.return_value = V1PodList(
+        items=[
+            _make_pod(
+                'p',
+                labels={
+                    LABEL_APP: LABEL_APP_VALUE_DAEMON,
+                    LABEL_POOL_WORKER_UID: 'uid',
+                },
+            ),
+        ]
+    )
 
     mgr = _make_manager(core=core, apps=apps)
-    asyncio.run(mgr.provision_pool_worker(pool_worker_uid="uid", timeout=5.0))
+    asyncio.run(mgr.provision_pool_worker(pool_worker_uid='uid', timeout=5.0))
 
-    pod_spec = apps.create_namespaced_deployment.call_args.kwargs["body"] \
-        .spec.template.spec
-    assert pod_spec.node_selector == {
-        DISKGRAPH_POOL_TYPE_LABEL: POOL_TYPE_CACHE
-    }
+    pod_spec = apps.create_namespaced_deployment.call_args.kwargs[
+        'body'
+    ].spec.template.spec
+    assert pod_spec.node_selector == {DISKGRAPH_POOL_TYPE_LABEL: POOL_TYPE_CACHE}
     assert pod_spec.affinity.node_affinity is None
 
 
@@ -3691,34 +3923,39 @@ def test_daemon_rebind_bound_pvc_keeps_capacity_selectors_with_pvc_spec():
     core = MagicMock(spec=k8s_client.CoreV1Api)
     apps = MagicMock(spec=k8s_client.AppsV1Api)
     core.create_namespaced_persistent_volume_claim.side_effect = _api_exc(
-        409, "already exists")
+        409, 'already exists'
+    )
     pvc = MagicMock()
-    pvc.status.phase = "Bound"
+    pvc.status.phase = 'Bound'
     core.read_namespaced_persistent_volume_claim.return_value = pvc
-    core.list_namespaced_pod.return_value = V1PodList(items=[
-        _make_pod(
-            "p",
-            labels={
-                LABEL_APP: LABEL_APP_VALUE_DAEMON,
-                LABEL_POOL_WORKER_UID: "uid",
-            },
-        ),
-    ])
+    core.list_namespaced_pod.return_value = V1PodList(
+        items=[
+            _make_pod(
+                'p',
+                labels={
+                    LABEL_APP: LABEL_APP_VALUE_DAEMON,
+                    LABEL_POOL_WORKER_UID: 'uid',
+                },
+            ),
+        ]
+    )
 
     mgr = _make_manager(core=core, apps=apps)
     asyncio.run(
         mgr.provision_pool_worker(
-            pool_worker_uid="uid",
+            pool_worker_uid='uid',
             pvc_spec=PvcSpec(size_gib=1750, gpu_count=4),
             timeout=5.0,
-        ))
+        )
+    )
 
-    pod_spec = apps.create_namespaced_deployment.call_args.kwargs["body"] \
-        .spec.template.spec
+    pod_spec = apps.create_namespaced_deployment.call_args.kwargs[
+        'body'
+    ].spec.template.spec
     assert pod_spec.node_selector == {
         DISKGRAPH_POOL_TYPE_LABEL: POOL_TYPE_CACHE,
-        DISKGRAPH_SSD_SIZE_LABEL: "1750",
-        DISKGRAPH_GPU_COUNT_LABEL: "4",
+        DISKGRAPH_SSD_SIZE_LABEL: '1750',
+        DISKGRAPH_GPU_COUNT_LABEL: '4',
     }
 
 
@@ -3728,54 +3965,56 @@ def test_cache_activity_pod_targets_cache_role_only():
     batch = MagicMock(spec=k8s_client.BatchV1Api)
 
     activity_pod = _make_pod(
-        "act-pod-1",
+        'act-pod-1',
         labels={
             LABEL_APP: LABEL_APP_VALUE_ACTIVITY,
-            LABEL_POOL_WORKER_UID: "uid",
-            LABEL_JOB_ID_HASH: _hash_job_id("j1"),
+            LABEL_POOL_WORKER_UID: 'uid',
+            LABEL_JOB_ID_HASH: _hash_job_id('j1'),
         },
-        annotations={ANNOTATION_JOB_ID: "j1"},
+        annotations={ANNOTATION_JOB_ID: 'j1'},
     )
     core.list_namespaced_pod.side_effect = [
-        _registered_daemon_for("uid"),
+        _registered_daemon_for('uid'),
         V1PodList(items=[activity_pod]),
     ]
 
     mgr = _make_manager(core=core, batch=batch)
     asyncio.run(
         mgr.provision_activity_pod(
-            pool_worker_uid="uid",
-            job_id="j1",
-            snapshot_id="s1",
-            activity="train",
-            image="kumo/activity:test",
-        ))
+            pool_worker_uid='uid',
+            job_id='j1',
+            snapshot_id='s1',
+            activity='train',
+            image='kumo/activity:test',
+        )
+    )
 
-    template_spec = batch.create_namespaced_job.call_args.kwargs["body"] \
-        .spec.template.spec
-    assert template_spec.node_selector == {
-        DISKGRAPH_POOL_TYPE_LABEL: POOL_TYPE_CACHE
-    }
-    assert any(t.key == "dedicated" and t.value == f"diskgraph-{TENANT}"
-               for t in template_spec.tolerations)
+    template_spec = batch.create_namespaced_job.call_args.kwargs[
+        'body'
+    ].spec.template.spec
+    assert template_spec.node_selector == {DISKGRAPH_POOL_TYPE_LABEL: POOL_TYPE_CACHE}
+    assert any(
+        t.key == 'dedicated' and t.value == f'diskgraph-{TENANT}'
+        for t in template_spec.tolerations
+    )
 
 
-def _make_wired_manager(
-        apps: Optional[MagicMock] = None) -> K8sPoolWorkerManager:
+def _make_wired_manager(apps: Optional[MagicMock] = None) -> K8sPoolWorkerManager:
     """Manager configured with Temporal mTLS and shared env."""
     return K8sPoolWorkerManager(
         namespace=NAMESPACE,
         tenant=TENANT,
-        storage_class="topolvm-ssd",
-        daemon_image="kumo/daemon:test",
-        daemon_command=["/usr/bin/daemon"],
-        daemon_args=["--mode=test"],
+        storage_class='topolvm-ssd',
+        daemon_image='kumo/daemon:test',
+        daemon_command=['/usr/bin/daemon'],
+        daemon_args=['--mode=test'],
         load_kube_config=False,
-        pod_env_configmap="kumo-env",
-        temporal_cert_secret="temporal-mtls",
-        temporal_cert_dir="/etc/temporal/certs",
-        tenant_secret_key_ref=SecretKeyRef(secret_name="kumo-acme-secret-key",
-                                           key="credentials_encryption_key"),
+        pod_env_configmap='kumo-env',
+        temporal_cert_secret='temporal-mtls',
+        temporal_cert_dir='/etc/temporal/certs',
+        tenant_secret_key_ref=SecretKeyRef(
+            secret_name='kumo-acme-secret-key', key='credentials_encryption_key'
+        ),
         pod_template_labels=POD_TEMPLATE_LABELS,
         core_v1_api=MagicMock(spec=k8s_client.CoreV1Api),
         apps_v1_api=apps or MagicMock(spec=k8s_client.AppsV1Api),
@@ -3789,11 +4028,10 @@ def _built_daemon_pod_spec(mgr: K8sPoolWorkerManager, apps: MagicMock):
     return the pod spec that would be created. Uses the daemon builder rather
     than provision_activity_pod so the test doesn't depend on a live daemon
     pod lookup."""
-    mgr._create_daemon_deployment_sync("dep-uid", "pvc-uid", "uid",
-                                       {"DISK_ROOT": "/mnt/localssd"},
-                                       ssd_size_gib=800)
-    return apps.create_namespaced_deployment.call_args.kwargs["body"] \
-        .spec.template.spec
+    mgr._create_daemon_deployment_sync(
+        'dep-uid', 'pvc-uid', 'uid', {'DISK_ROOT': '/mnt/localssd'}, ssd_size_gib=800
+    )
+    return apps.create_namespaced_deployment.call_args.kwargs['body'].spec.template.spec
 
 
 def _make_gcp_wired_manager(
@@ -3805,15 +4043,15 @@ def _make_gcp_wired_manager(
     return K8sPoolWorkerManager(
         namespace=NAMESPACE,
         tenant=TENANT,
-        storage_class="topolvm-ssd",
-        daemon_image="kumo/daemon:test",
-        daemon_command=["/usr/bin/daemon"],
-        daemon_args=["--mode=test"],
+        storage_class='topolvm-ssd',
+        daemon_image='kumo/daemon:test',
+        daemon_command=['/usr/bin/daemon'],
+        daemon_args=['--mode=test'],
         load_kube_config=False,
-        pod_env_configmap="kumo-config",
-        gcp_application_credentials_secret="gcp-application-credentials",
-        gcp_application_credentials_secret_key="credentials.json",
-        gcp_application_credentials_path="/customer/adc/runtime-key.json",
+        pod_env_configmap='kumo-config',
+        gcp_application_credentials_secret='gcp-application-credentials',
+        gcp_application_credentials_secret_key='credentials.json',
+        gcp_application_credentials_path='/customer/adc/runtime-key.json',
         core_v1_api=MagicMock(spec=k8s_client.CoreV1Api),
         apps_v1_api=apps or MagicMock(spec=k8s_client.AppsV1Api),
         batch_v1_api=batch or MagicMock(spec=k8s_client.BatchV1Api),
@@ -3825,20 +4063,21 @@ def _assert_gcp_credentials_wiring(spec: V1PodSpec) -> None:
     assert spec.containers is not None
     container = spec.containers[0]
     assert container.env_from is not None
-    assert any(source.config_map_ref.name == "kumo-config"
-               for source in container.env_from)
+    assert any(
+        source.config_map_ref.name == 'kumo-config' for source in container.env_from
+    )
     assert spec.volumes is not None
-    volume = next(v for v in spec.volumes
-                  if v.name == "gcp-application-credentials")
-    assert volume.secret.secret_name == "gcp-application-credentials"
+    volume = next(v for v in spec.volumes if v.name == 'gcp-application-credentials')
+    assert volume.secret.secret_name == 'gcp-application-credentials'
     assert volume.secret.default_mode == 292
     assert [(item.key, item.path) for item in volume.secret.items] == [
-        ("credentials.json", "runtime-key.json"),
+        ('credentials.json', 'runtime-key.json'),
     ]
     assert container.volume_mounts is not None
-    mount = next(m for m in container.volume_mounts
-                 if m.name == "gcp-application-credentials")
-    assert mount.mount_path == "/customer/adc"
+    mount = next(
+        m for m in container.volume_mounts if m.name == 'gcp-application-credentials'
+    )
+    assert mount.mount_path == '/customer/adc'
     assert mount.read_only is True
 
 
@@ -3849,20 +4088,20 @@ def test_daemon_pod_mounts_selected_gcp_credentials_key():
     _assert_gcp_credentials_wiring(spec)
 
 
-@pytest.mark.parametrize("pool_type", ["cache", "ephemeral"])
+@pytest.mark.parametrize('pool_type', ['cache', 'ephemeral'])
 def test_activity_jobs_mount_selected_gcp_credentials_key(pool_type):
     batch = MagicMock(spec=k8s_client.BatchV1Api)
     mgr = _make_gcp_wired_manager(batch=batch)
 
-    if pool_type == "cache":
+    if pool_type == 'cache':
         mgr._create_activity_job_sync(
-            "job-cache",
-            "uid",
-            "pvc-uid",
-            "job-id",
-            "snapshot-id",
-            "train",
-            "kumo/activity:test",
+            'job-cache',
+            'uid',
+            'pvc-uid',
+            'job-id',
+            'snapshot-id',
+            'train',
+            'kumo/activity:test',
             None,
             None,
             None,
@@ -3871,11 +4110,11 @@ def test_activity_jobs_mount_selected_gcp_credentials_key(pool_type):
         )
     else:
         mgr._create_eph_activity_job_sync(
-            "job-ephemeral",
-            "job-id",
-            "snapshot-id",
-            "predict",
-            "kumo/activity:test",
+            'job-ephemeral',
+            'job-id',
+            'snapshot-id',
+            'predict',
+            'kumo/activity:test',
             None,
             None,
             None,
@@ -3884,8 +4123,7 @@ def test_activity_jobs_mount_selected_gcp_credentials_key(pool_type):
             2,
         )
 
-    spec = batch.create_namespaced_job.call_args.kwargs[
-        "body"].spec.template.spec
+    spec = batch.create_namespaced_job.call_args.kwargs['body'].spec.template.spec
     _assert_gcp_credentials_wiring(spec)
 
 
@@ -3893,21 +4131,20 @@ def test_daemon_pod_substrate_wiring_when_configured():
     apps = MagicMock(spec=k8s_client.AppsV1Api)
     spec = _built_daemon_pod_spec(_make_wired_manager(apps=apps), apps)
     labels = apps.create_namespaced_deployment.call_args.kwargs[
-        "body"].spec.template.metadata.labels
-    assert labels["azure.workload.identity/use"] == "true"
+        'body'
+    ].spec.template.metadata.labels
+    assert labels['azure.workload.identity/use'] == 'true'
     container = spec.containers[0]
-    assert any(e.config_map_ref and e.config_map_ref.name == "kumo-env"
-               for e in (container.env_from or []))
-    vol_secrets = {
-        v.name: v.secret.secret_name
-        for v in spec.volumes if v.secret
-    }
-    assert vol_secrets.get("temporal-mtls") == "temporal-mtls"
+    assert any(
+        e.config_map_ref and e.config_map_ref.name == 'kumo-env'
+        for e in (container.env_from or [])
+    )
+    vol_secrets = {v.name: v.secret.secret_name for v in spec.volumes if v.secret}
+    assert vol_secrets.get('temporal-mtls') == 'temporal-mtls'
     mount_paths = {m.name: m.mount_path for m in container.volume_mounts}
-    assert mount_paths.get("temporal-mtls") == "/etc/temporal/certs"
-    assert all(v.name != "gcp-application-credentials" for v in spec.volumes)
-    assert all(m.name != "gcp-application-credentials"
-               for m in container.volume_mounts)
+    assert mount_paths.get('temporal-mtls') == '/etc/temporal/certs'
+    assert all(v.name != 'gcp-application-credentials' for v in spec.volumes)
+    assert all(m.name != 'gcp-application-credentials' for m in container.volume_mounts)
 
 
 def test_daemon_pod_mounts_statedb_secret_when_password_auth():
@@ -3918,29 +4155,23 @@ def test_daemon_pod_mounts_statedb_secret_when_password_auth():
     mgr = K8sPoolWorkerManager(
         namespace=NAMESPACE,
         tenant=TENANT,
-        storage_class="topolvm-ssd",
-        daemon_image="kumo/daemon:test",
-        daemon_command=["/usr/bin/daemon"],
-        daemon_args=["--mode=test"],
+        storage_class='topolvm-ssd',
+        daemon_image='kumo/daemon:test',
+        daemon_command=['/usr/bin/daemon'],
+        daemon_args=['--mode=test'],
         load_kube_config=False,
-        statedb_secret="kumo-statedb",
-        secrets_mount_path="/var/run/secrets/kumo",
+        statedb_secret='kumo-statedb',
+        secrets_mount_path='/var/run/secrets/kumo',
         core_v1_api=MagicMock(spec=k8s_client.CoreV1Api),
         apps_v1_api=apps,
         batch_v1_api=MagicMock(spec=k8s_client.BatchV1Api),
         policy_v1_api=MagicMock(spec=k8s_client.PolicyV1Api),
     )
     spec = _built_daemon_pod_spec(mgr, apps)
-    vol_secrets = {
-        v.name: v.secret.secret_name
-        for v in spec.volumes if v.secret
-    }
-    assert vol_secrets.get("kumo-secrets") == "kumo-statedb"
-    mount_paths = {
-        m.name: m.mount_path
-        for m in spec.containers[0].volume_mounts
-    }
-    assert mount_paths.get("kumo-secrets") == "/var/run/secrets/kumo"
+    vol_secrets = {v.name: v.secret.secret_name for v in spec.volumes if v.secret}
+    assert vol_secrets.get('kumo-secrets') == 'kumo-statedb'
+    mount_paths = {m.name: m.mount_path for m in spec.containers[0].volume_mounts}
+    assert mount_paths.get('kumo-secrets') == '/var/run/secrets/kumo'
 
 
 def test_daemon_pod_has_no_statedb_mount_under_iam_auth():
@@ -3949,7 +4180,7 @@ def test_daemon_pod_has_no_statedb_mount_under_iam_auth():
     the CA is mounted into pool pods."""
     apps = MagicMock(spec=k8s_client.AppsV1Api)
     spec = _built_daemon_pod_spec(_make_wired_manager(apps=apps), apps)
-    for name in ("kumo-secrets", "kumo-statedb-ca"):
+    for name in ('kumo-secrets', 'kumo-statedb-ca'):
         assert all(v.name != name for v in spec.volumes)
         assert all(m.name != name for m in spec.containers[0].volume_mounts)
 
@@ -3962,20 +4193,23 @@ def test_daemon_pod_tenant_secret_env_when_configured():
     apps = MagicMock(spec=k8s_client.AppsV1Api)
     spec = _built_daemon_pod_spec(_make_wired_manager(apps=apps), apps)
     env = {e.name: e for e in spec.containers[0].env}
-    assert env["FERNET_SECRET_NAME"].value == "credentials_encryption_key"
-    for name in ("credentials_encryption_key", "API_KEY_PEPPER",
-                 "PASSWORD_RESET_TOKEN_PEPPER"):
+    assert env['FERNET_SECRET_NAME'].value == 'credentials_encryption_key'
+    for name in (
+        'credentials_encryption_key',
+        'API_KEY_PEPPER',
+        'PASSWORD_RESET_TOKEN_PEPPER',
+    ):
         ref = env[name].value_from.secret_key_ref
-        assert ref.name == "kumo-acme-secret-key"
-        assert ref.key == "credentials_encryption_key"
+        assert ref.name == 'kumo-acme-secret-key'
+        assert ref.key == 'credentials_encryption_key'
 
 
 def test_daemon_pod_tenant_secret_env_absent_when_unconfigured():
     apps = MagicMock(spec=k8s_client.AppsV1Api)
     spec = _built_daemon_pod_spec(_make_manager(apps=apps), apps)
     env_names = {e.name for e in spec.containers[0].env}
-    assert "FERNET_SECRET_NAME" not in env_names
-    assert "credentials_encryption_key" not in env_names
+    assert 'FERNET_SECRET_NAME' not in env_names
+    assert 'credentials_encryption_key' not in env_names
 
 
 def test_daemon_pod_no_substrate_wiring_by_default():
@@ -3985,7 +4219,7 @@ def test_daemon_pod_no_substrate_wiring_by_default():
     spec = _built_daemon_pod_spec(_make_manager(apps=apps), apps)
     assert not (spec.containers[0].env_from or [])
     vol_names = {v.name for v in (spec.volumes or [])}
-    assert "temporal-mtls" not in vol_names
+    assert 'temporal-mtls' not in vol_names
 
 
 def test_daemon_pod_mounts_statedb_ca_beside_the_connection_secret():
@@ -3996,35 +4230,28 @@ def test_daemon_pod_mounts_statedb_ca_beside_the_connection_secret():
     mgr = K8sPoolWorkerManager(
         namespace=NAMESPACE,
         tenant=TENANT,
-        storage_class="topolvm-ssd",
-        daemon_image="kumo/daemon:test",
-        daemon_command=["/usr/bin/daemon"],
-        daemon_args=["--mode=test"],
+        storage_class='topolvm-ssd',
+        daemon_image='kumo/daemon:test',
+        daemon_command=['/usr/bin/daemon'],
+        daemon_args=['--mode=test'],
         load_kube_config=False,
-        statedb_secret="kumo-statedb",
-        statedb_ca_secret="cloudsql-ca",
-        statedb_ca_secret_key="ca.crt",
-        secrets_mount_path="/var/run/secrets/kumo",
+        statedb_secret='kumo-statedb',
+        statedb_ca_secret='cloudsql-ca',
+        statedb_ca_secret_key='ca.crt',
+        secrets_mount_path='/var/run/secrets/kumo',
         core_v1_api=MagicMock(spec=k8s_client.CoreV1Api),
         apps_v1_api=apps,
         batch_v1_api=MagicMock(spec=k8s_client.BatchV1Api),
         policy_v1_api=MagicMock(spec=k8s_client.PolicyV1Api),
     )
     spec = _built_daemon_pod_spec(mgr, apps)
-    vol_secrets = {
-        v.name: v.secret.secret_name
-        for v in spec.volumes if v.secret
-    }
-    assert vol_secrets.get("kumo-statedb-ca") == "cloudsql-ca"
-    mount_paths = {
-        m.name: m.mount_path
-        for m in spec.containers[0].volume_mounts
-    }
-    assert mount_paths.get("kumo-statedb-ca") == "/var/run/secrets/kumo/ca"
+    vol_secrets = {v.name: v.secret.secret_name for v in spec.volumes if v.secret}
+    assert vol_secrets.get('kumo-statedb-ca') == 'cloudsql-ca'
+    mount_paths = {m.name: m.mount_path for m in spec.containers[0].volume_mounts}
+    assert mount_paths.get('kumo-statedb-ca') == '/var/run/secrets/kumo/ca'
     # The connection Secret still owns the parent directory.
-    assert mount_paths.get("kumo-secrets") == "/var/run/secrets/kumo"
+    assert mount_paths.get('kumo-secrets') == '/var/run/secrets/kumo'
     # The source key is remapped to a fixed filename, so tls.sslrootcert is the
     # same constant whatever the operator's Secret happens to call it.
-    ca_vol = next(v for v in spec.volumes if v.name == "kumo-statedb-ca")
-    assert [(i.key, i.path)
-            for i in ca_vol.secret.items] == [("ca.crt", "ca.pem")]
+    ca_vol = next(v for v in spec.volumes if v.name == 'kumo-statedb-ca')
+    assert [(i.key, i.path) for i in ca_vol.secret.items] == [('ca.crt', 'ca.pem')]

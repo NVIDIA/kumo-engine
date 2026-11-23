@@ -18,8 +18,7 @@ def _checkpoint(event, **details):
         **details,
     }
     try:
-        os.write(_PROGRESS_FD,
-                 (json.dumps(payload, sort_keys=True) + '\n').encode())
+        os.write(_PROGRESS_FD, (json.dumps(payload, sort_keys=True) + '\n').encode())
     except OSError:
         # Diagnostics are best-effort if the parent has closed the pipe.
         pass
@@ -29,7 +28,8 @@ def _checkpoint(event, **details):
 # imports below. A timeout report can therefore distinguish entering the
 # at-fork callback sequence from reaching its end.
 os.register_at_fork(
-    after_in_child=lambda: _checkpoint('child_at_fork_callbacks_started'))
+    after_in_child=lambda: _checkpoint('child_at_fork_callbacks_started')
+)
 
 import argparse  # noqa: E402
 import contextlib  # noqa: E402
@@ -55,6 +55,7 @@ _TERMINATE_GRACE_S = 1.0
 
 class _BlockingStream:
     """A stream whose write remains poisoned in a forked child."""
+
     def __init__(self, entered, release):
         self._entered = entered
         self._release = release
@@ -69,12 +70,15 @@ class _BlockingStream:
 
 
 def _thread_inventory():
-    return [{
-        'name': thread.name,
-        'ident': thread.ident,
-        'daemon': thread.daemon,
-        'alive': thread.is_alive(),
-    } for thread in threading.enumerate()]
+    return [
+        {
+            'name': thread.name,
+            'ident': thread.ident,
+            'daemon': thread.daemon,
+            'alive': thread.is_alive(),
+        }
+        for thread in threading.enumerate()
+    ]
 
 
 def _child_logs(simulate_stuck):
@@ -108,11 +112,13 @@ def _read_progress(progress_fd, buffer, events):
         try:
             events.append(json.loads(line))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            events.append({
-                'event': 'malformed_checkpoint',
-                'payload': line.decode(errors='replace'),
-                'error': repr(exc),
-            })
+            events.append(
+                {
+                    'event': 'malformed_checkpoint',
+                    'payload': line.decode(errors='replace'),
+                    'error': repr(exc),
+                }
+            )
     return lines[-1]
 
 
@@ -140,11 +146,13 @@ def _wait_for_child(process, progress_fd, timeout):
         selector.close()
 
     if timed_out and process.pid is not None:
-        events.append({
-            'event': 'parent_requested_child_stack',
-            'pid': os.getpid(),
-            'child_pid': process.pid,
-        })
+        events.append(
+            {
+                'event': 'parent_requested_child_stack',
+                'pid': os.getpid(),
+                'child_pid': process.pid,
+            }
+        )
         try:
             os.kill(process.pid, signal.SIGUSR1)
         except ProcessLookupError:
@@ -153,28 +161,34 @@ def _wait_for_child(process, progress_fd, timeout):
         process.join(_STACK_DUMP_GRACE_S)
 
     if process.is_alive():
-        events.append({
-            'event': 'parent_terminated_child',
-            'pid': os.getpid(),
-            'child_pid': process.pid,
-        })
+        events.append(
+            {
+                'event': 'parent_terminated_child',
+                'pid': os.getpid(),
+                'child_pid': process.pid,
+            }
+        )
         process.terminate()
         process.join(_TERMINATE_GRACE_S)
     if process.is_alive():
-        events.append({
-            'event': 'parent_killed_child',
-            'pid': os.getpid(),
-            'child_pid': process.pid,
-        })
+        events.append(
+            {
+                'event': 'parent_killed_child',
+                'pid': os.getpid(),
+                'child_pid': process.pid,
+            }
+        )
         process.kill()
         process.join(_TERMINATE_GRACE_S)
 
     buffer = _read_progress(progress_fd, buffer, events)
     if buffer:
-        events.append({
-            'event': 'trailing_checkpoint_bytes',
-            'payload': buffer.decode(errors='replace'),
-        })
+        events.append(
+            {
+                'event': 'trailing_checkpoint_bytes',
+                'payload': buffer.decode(errors='replace'),
+            }
+        )
     return timed_out, events
 
 
@@ -247,11 +261,12 @@ def _run(log_path, timeout, simulate_stuck, force_quiesce_timeout):
         # Registered last, after multiprocessing's resource-tracker hook and
         # the production logging hook. Reaching it proves those callbacks
         # returned.
-        os.register_at_fork(after_in_child=lambda: _checkpoint(
-            'child_at_fork_callbacks_completed'))
+        os.register_at_fork(
+            after_in_child=lambda: _checkpoint('child_at_fork_callbacks_completed')
+        )
         process = context.Process(
             target=_child_logs,
-            args=(simulate_stuck, ),
+            args=(simulate_stuck,),
         )
         try:
             process.start()
@@ -311,8 +326,9 @@ def main():
     args = parser.parse_args()
 
     try:
-        report = _run(args.log_path, args.timeout, args.simulate_stuck,
-                      args.force_quiesce_timeout)
+        report = _run(
+            args.log_path, args.timeout, args.simulate_stuck, args.force_quiesce_timeout
+        )
     except Exception as exc:  # pylint: disable=broad-except
         report = {
             'status': 'helper_error',
@@ -320,8 +336,7 @@ def main():
             'error': repr(exc),
             'traceback': traceback.format_exc(),
         }
-    Path(args.report_path).write_text(
-        json.dumps(report, indent=2, sort_keys=True))
+    Path(args.report_path).write_text(json.dumps(report, indent=2, sort_keys=True))
 
 
 if __name__ == '__main__':

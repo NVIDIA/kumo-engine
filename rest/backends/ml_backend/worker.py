@@ -74,7 +74,9 @@ from rest.settings import DataBackendSettings
 
 # isort: off
 from rest.backends.ml_backend.workflows.split_workflow import (
-    SplitTrainingTableWorkflow, )
+    SplitTrainingTableWorkflow,
+)
+
 # isort: on
 from rest.settings import DataScaleLimits, get_db_storage_root
 from service_framework.deploy_stage import DeployStage
@@ -98,10 +100,10 @@ TRAINING_CFG_FAST_DEV = {
 
 
 async def _create_backend_activities(
-    worker_env: WorkerEnv
+    worker_env: WorkerEnv,
 ) -> Tuple[MLBackendActivities, TrainingJobActivities, JobOutputActivities]:
     deploy_config = worker_env.deploy_config
-    log.info(f"Creating MLWorkflowWorker with deploy_config: {deploy_config}")
+    log.info(f'Creating MLWorkflowWorker with deploy_config: {deploy_config}')
     ml_backend_settings = generate_ml_backend_settings(worker_env)
     state_db = await open_state_db_from_deploy_config(
         deploy_config,
@@ -125,11 +127,13 @@ async def _create_backend_activities(
     # read_only=False: the ml-workflow-worker is now the single lifecycle owner
     # (reconcile + admission recovery). Both passes are idempotent and
     # concurrency-safe, so multiple workflow-worker replicas are fine.
-    ml_job_backend = MLJobBackend(ml_backend_settings,
-                                  worker_env.temporal_client, state_db)
+    ml_job_backend = MLJobBackend(
+        ml_backend_settings, worker_env.temporal_client, state_db
+    )
     await ml_job_backend.start(read_only=False)
     data_backend_ctx = DataBackendContext(
-        deploy_config, DataBackendSettings(disable_async_ingestion=False))
+        deploy_config, DataBackendSettings(disable_async_ingestion=False)
+    )
     ml_be_activities = MLBackendActivities(
         job_queue,
         ml_job_backend,
@@ -152,14 +156,14 @@ async def build_ml_workflow_worker(worker_env: WorkerEnv) -> List[Worker]:
     # The data persist dir is derived from deploy_env() on demand
     # (kumo.data.get_persist_dir); the engine layer (DiskGraph) holds no
     # process-global state to prime here.
-    log.info("Starting to create backend activities")
+    log.info('Starting to create backend activities')
 
     (
         ml_be_activities,
         training_activities,
         job_output_activities,
     ) = await _create_backend_activities(worker_env)
-    log.info("Completed creating backend activities")
+    log.info('Completed creating backend activities')
 
     # Training/prediction run in-process via SnapshotActivities (the pool
     # path); the legacy K8s launch/poll/delete activities have been removed.
@@ -244,7 +248,7 @@ def generate_ml_backend_settings(worker_env: WorkerEnv) -> MLBackendSettings:
     data_limits = DataScaleLimits.parse_from_env()
     deploy_mode = worker_env.deploy_config.deploy_mode
     slack_url = worker_env.get_variable(SLACK_URL)
-    log.info("Slack URL: %s", slack_url)
+    log.info('Slack URL: %s', slack_url)
     if not slack_url or not slack_url.startswith('https'):
         slack_url = ''
 
@@ -252,9 +256,11 @@ def generate_ml_backend_settings(worker_env: WorkerEnv) -> MLBackendSettings:
         slack_url=slack_url,
         ml_job_settings=MLJobSettings(
             pred_max_num_entities_per_partition=worker_env.get_variable(
-                ML_PRED_MAX_NUM_ENTITIES_PER_PARTITION),
+                ML_PRED_MAX_NUM_ENTITIES_PER_PARTITION
+            ),
             pred_max_num_rows_per_partition=worker_env.get_variable(
-                ML_PRED_MAX_NUM_ROWS_PER_PARTITION),
+                ML_PRED_MAX_NUM_ROWS_PER_PARTITION
+            ),
             max_total_table_size=data_limits.max_graph_total_size_bytes,
             max_total_graph_edges=data_limits.max_graph_total_edges,
         ),

@@ -76,7 +76,11 @@ from statedb.db import StateDB, StateServices, open_state_db_from_deploy_config
 
 log = logging.getLogger(__name__)
 instrumentor = Instrumentator()
-instrumentor.add(metrics.default(latency_lowr_buckets=(1, 10, 30, 60), ))
+instrumentor.add(
+    metrics.default(
+        latency_lowr_buckets=(1, 10, 30, 60),
+    )
+)
 
 
 def _build_cors_app(app: ASGIApp) -> ASGIApp:
@@ -85,7 +89,7 @@ def _build_cors_app(app: ASGIApp) -> ASGIApp:
         allow_origins=['*'],
         allow_credentials=False,
         allow_methods=['GET', 'POST', 'DELETE'],
-        allow_headers=["*"],
+        allow_headers=['*'],
         expose_headers=[APPLIED_TAG_FILTERS_HEADER],
     )
 
@@ -160,15 +164,17 @@ class AppBuilder:
         self._state_services: Optional[StateServices] = state_services
         self._direct_connect_auth_store = DirectConnectAuthStore()
         self._api_key_driver = APIKeyDriver(
-            direct_connect_auth_store=self._direct_connect_auth_store)
+            direct_connect_auth_store=self._direct_connect_auth_store
+        )
         group_resolver = DirectConnectGroupResolver(
-            auth_store=self._direct_connect_auth_store)
+            auth_store=self._direct_connect_auth_store
+        )
         project_resolver = ProjectResolver()
         self._group_resolver = group_resolver
         self._project_resolver = project_resolver
 
         self._app.add_api_route(
-            "/",
+            '/',
             self.root,
             methods=['GET'],
             response_class=RedirectResponse,
@@ -226,22 +232,21 @@ class AppBuilder:
 
         auth = Authentication(settings=auth_settings, is_unit_test=is_unit_test)
 
-        authorization_context_middleware: partial[Coroutine[
-            Any, Any, Any]] = partial(
-                authorization_middleware_public,
-                auth_disabled=auth.settings.disable,
-                auth_proxied=auth.settings.proxy,
-                is_unit_test=is_unit_test,
-                group_resolver=group_resolver,
-                project_resolver=project_resolver,
-                api_key_driver=self._api_key_driver,
-            )
-        self._app.middleware("http")(authorization_context_middleware)
+        authorization_context_middleware: partial[Coroutine[Any, Any, Any]] = partial(
+            authorization_middleware_public,
+            auth_disabled=auth.settings.disable,
+            auth_proxied=auth.settings.proxy,
+            is_unit_test=is_unit_test,
+            group_resolver=group_resolver,
+            project_resolver=project_resolver,
+            api_key_driver=self._api_key_driver,
+        )
+        self._app.middleware('http')(authorization_context_middleware)
 
         # Print slow requests to the log
         self._app.add_middleware(
             RequestTimeMiddleware,
-            exclude_prefixes=["/metrics"],
+            exclude_prefixes=['/metrics'],
             threshold_sec=10,
         )
 
@@ -250,38 +255,46 @@ class AppBuilder:
 
         # Initialize OpenTelemetry tracing for requests to this API
         if monitoring_settings.init_tracing:
-            tracing_provider = tracing.init_tracing('kumo-rest-public',
-                                                    monitoring_settings)
+            tracing_provider = tracing.init_tracing(
+                'kumo-rest-public', monitoring_settings
+            )
             tracing.connect_fastapi(self._app, tracing_provider)
 
         # Job routers share the single in-process MLJobBackend (no AutoRPC).
         authentication_router = AuthenticationRouter(self._api_key_auth)
-        artifact_router_v1 = ArtifactRouterV1(self._api_key_auth,
-                                              artifact_api_driver, auth)
-        training_router_v1 = TrainingRouterV1(self._api_key_auth, driver, auth,
-                                              self._ml_backend)
-        prediction_router_v1 = PredictionRouterV1(self._api_key_auth, driver,
-                                                  auth, self._ml_backend)
+        artifact_router_v1 = ArtifactRouterV1(
+            self._api_key_auth, artifact_api_driver, auth
+        )
+        training_router_v1 = TrainingRouterV1(
+            self._api_key_auth, driver, auth, self._ml_backend
+        )
+        prediction_router_v1 = PredictionRouterV1(
+            self._api_key_auth, driver, auth, self._ml_backend
+        )
         pquery_router = PQueryRouter(self._api_key_auth, driver, auth)
         connector_router = ConnectorRouter(self._api_key_auth, connector_driver)
-        identity_router = IdentityRouter(self._api_key_auth, connector_driver,
-                                         auth)
-        source_table_router = SourceTableRouter(self._api_key_auth,
-                                                connector_driver, auth)
+        identity_router = IdentityRouter(self._api_key_auth, connector_driver, auth)
+        source_table_router = SourceTableRouter(
+            self._api_key_auth, connector_driver, auth
+        )
         table_router = TableRouter(
             self._api_key_auth,
             table_driver,
             auth,
         )
         graph_router = GraphRouter(self._api_key_auth, graph_driver, auth)
-        table_snapshot_router = TableSnapshotRouter(self._api_key_auth,
-                                                    data_snapshot_driver, auth)
-        graph_snapshot_router = GraphSnapshotRouter(self._api_key_auth,
-                                                    data_snapshot_driver, auth)
+        table_snapshot_router = TableSnapshotRouter(
+            self._api_key_auth, data_snapshot_driver, auth
+        )
+        graph_snapshot_router = GraphSnapshotRouter(
+            self._api_key_auth, data_snapshot_driver, auth
+        )
         gen_train_table_router = GenerateTrainTableRouter(
-            self._api_key_auth, driver, auth, self._ml_backend)
+            self._api_key_auth, driver, auth, self._ml_backend
+        )
         gen_pred_table_router = GeneratePredictionTableRouter(
-            self._api_key_auth, driver, auth, self._ml_backend)
+            self._api_key_auth, driver, auth, self._ml_backend
+        )
         # V1 APIs: designed for SDK functionalities.
         self._app.include_router(authentication_router.router, prefix='/v1')
         self._app.include_router(artifact_router_v1.router, prefix='/v1')
@@ -300,8 +313,7 @@ class AppBuilder:
         self._app.include_router(gen_pred_table_router.router, prefix='/v1')
         groups_router = GroupsRouter(self._api_key_auth, groups_driver, auth)
         self._app.include_router(groups_router.router, prefix='/v1')
-        projects_router = ProjectsRouter(self._api_key_auth, projects_driver,
-                                         auth)
+        projects_router = ProjectsRouter(self._api_key_auth, projects_driver, auth)
         self._app.include_router(projects_router.router, prefix='/v1')
 
         for route in self._app.routes:
@@ -310,52 +322,52 @@ class AppBuilder:
                 if func and inspect.iscoroutinefunction(func):
                     log.debug(
                         'Enable asyncio blocking detection on path %s: %s',
-                        route.path, route.name)
+                        route.path,
+                        route.name,
+                    )
                     route.dependant.call = measure_blocking_code(func)
 
-        async def public_exception_handler(request: Request,
-                                           exc: PublicException):
+        async def public_exception_handler(request: Request, exc: PublicException):
             return JSONResponse(
-                status_code=exc.http_code, content={
-                    "error": exc.get_user_message(),
-                    "error_type": exc.__class__.__name__,
-                })
+                status_code=exc.http_code,
+                content={
+                    'error': exc.get_user_message(),
+                    'error_type': exc.__class__.__name__,
+                },
+            )
 
-        async def core_public_exception_handler(request: Request,
-                                                exc: Exception):
+        async def core_public_exception_handler(request: Request, exc: Exception):
             platform_error = as_platform_public_exception(exc)
             assert platform_error is not None
             return await public_exception_handler(request, platform_error)
 
-        async def optimistic_lock_exception_handler(request: Request,
-                                                    exc: OptimisticLockError):
+        async def optimistic_lock_exception_handler(
+            request: Request, exc: OptimisticLockError
+        ):
             # OptimisticLockError is not a PublicException, so it needs its own
             # handler to return 409 + a retry signal on a concurrent-write
             # conflict (otherwise it would surface as a generic 500).
             return JSONResponse(
                 status_code=409,  # Conflict
                 content={
-                    "error":
-                    str(exc),
-                    "error_type":
-                    "OptimisticLockError",
-                    "retry":
-                    True,
-                    "message":
-                    "The resource was modified by another request. "
-                    "Please retry your operation.",
-                })
+                    'error': str(exc),
+                    'error_type': 'OptimisticLockError',
+                    'retry': True,
+                    'message': 'The resource was modified by another request. '
+                    'Please retry your operation.',
+                },
+            )
 
-        self._app.add_exception_handler(PublicException,
-                                        public_exception_handler)
-        self._app.add_exception_handler(PublicError,
-                                        core_public_exception_handler)
-        self._app.add_exception_handler(TrainingValidationError,
-                                        core_public_exception_handler)
-        self._app.add_exception_handler(OptimisticLockError,
-                                        optimistic_lock_exception_handler)
+        self._app.add_exception_handler(PublicException, public_exception_handler)
+        self._app.add_exception_handler(PublicError, core_public_exception_handler)
+        self._app.add_exception_handler(
+            TrainingValidationError, core_public_exception_handler
+        )
+        self._app.add_exception_handler(
+            OptimisticLockError, optimistic_lock_exception_handler
+        )
 
-        self._app.on_event("startup")(self.startup_event)
+        self._app.on_event('startup')(self.startup_event)
 
         self._cors_app = _build_cors_app(self._app)
 
@@ -371,10 +383,11 @@ class AppBuilder:
         return RedirectResponse(url='redoc')
 
     async def health(self) -> JSONResponse:
-        return JSONResponse({"status": "ok"})
+        return JSONResponse({'status': 'ok'})
 
     async def validate_api_key(
-        self, api_key: str = Depends(get_api_key)) -> EmptyResponse:
+        self, api_key: str = Depends(get_api_key)
+    ) -> EmptyResponse:
         # The dependency has already verified the key. Never log any portion
         # of the bearer credential, including structured prefixes or suffixes.
         log.info('Validated API key')
@@ -384,10 +397,10 @@ class AppBuilder:
         return JSONResponse(self._app.openapi())
 
     async def get_documentation(self) -> HTMLResponse:
-        return get_swagger_ui_html(openapi_url="./openapi.json", title="docs")
+        return get_swagger_ui_html(openapi_url='./openapi.json', title='docs')
 
     async def get_redoc(self) -> HTMLResponse:
-        return get_redoc_html(openapi_url="./openapi.json", title="redoc")
+        return get_redoc_html(openapi_url='./openapi.json', title='redoc')
 
     async def startup_event(self):
         Connector.disable_interactive_input()
@@ -405,8 +418,7 @@ class AppBuilder:
         # lifecycle owner that runs reconciliation/admission/migration).
         self._ml_backend._configure_state_db(self._state_services.state_db)
         await self._ml_backend.start(read_only=True)
-        default_group, _ = (
-            await self._state_services.groups.ensure_default_resources())
+        default_group, _ = await self._state_services.groups.ensure_default_resources()
         await ensure_startup_ambient_identities(
             self._state_services.identities,
             default_group.id,
@@ -415,25 +427,26 @@ class AppBuilder:
         self._api_key_driver.configure_state_services(self._state_services)
         if self._direct_connect_auth_store is not None:
             self._direct_connect_auth_store.configure_auth_service(
-                self._state_services.direct_connect_auth)
+                self._state_services.direct_connect_auth
+            )
         if self._group_resolver is not None and hasattr(
-                self._group_resolver, "configure_state_services"):
+            self._group_resolver, 'configure_state_services'
+        ):
             self._group_resolver.configure_state_services(self._state_services)
         if self._project_resolver is not None:
-            self._project_resolver.configure_state_services(
-                self._state_services)
+            self._project_resolver.configure_state_services(self._state_services)
 
         # Wire every product-metadata driver to this process's StateDB so its
         # route handlers read/write StateDB locally.
         for metadata_driver in (
-                self._driver,
-                self._connector_driver,
-                self._data_snapshot_driver,
-                self._table_driver,
-                self._artifact_api_driver,
-                self._graph_driver,
-                self._groups_driver,
-                self._projects_driver,
+            self._driver,
+            self._connector_driver,
+            self._data_snapshot_driver,
+            self._table_driver,
+            self._artifact_api_driver,
+            self._graph_driver,
+            self._groups_driver,
+            self._projects_driver,
         ):
             if metadata_driver is not None:
                 metadata_driver._configure_state_services(self._state_services)

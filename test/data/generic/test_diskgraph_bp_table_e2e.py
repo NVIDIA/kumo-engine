@@ -51,6 +51,7 @@ Run with::
     cd ~/work/kumo
     pytest test/data/generic/test_diskgraph_bp_table_e2e.py -v
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -107,18 +108,22 @@ from .test_diskgraph_train_table_e2e import (
 # execution. Same pending production issue skipped in the sibling TT-gen file
 # (``_STRING_ARRAY_DTYPE_MISMATCH_SKIP_REASON``).
 _STRING_ARRAY_DTYPE_MISMATCH_SKIP_REASON = (
-    "native-list parquet column: col-stats seed dtype (stringlist) mismatches "
-    "stype-inference dtype (string), pending production fix")
+    'native-list parquet column: col-stats seed dtype (stringlist) mismatches '
+    'stype-inference dtype (string), pending production fix'
+)
 
 
-@pytest.mark.parametrize("source_shape", [
-    "utf8_delim",
-    pytest.param(
-        "string_array",
-        marks=pytest.mark.skip(reason=_STRING_ARRAY_DTYPE_MISMATCH_SKIP_REASON),
-    ),
-    "int64_array",
-])
+@pytest.mark.parametrize(
+    'source_shape',
+    [
+        'utf8_delim',
+        pytest.param(
+            'string_array',
+            marks=pytest.mark.skip(reason=_STRING_ARRAY_DTYPE_MISMATCH_SKIP_REASON),
+        ),
+        'int64_array',
+    ],
+)
 def test_nodepred_bp_multilabel_classification(
     tmp_path: Path,
     source_shape: str,
@@ -131,19 +136,19 @@ def test_nodepred_bp_multilabel_classification(
     3-user / 4-order multicat fixture. Asserts the staged predict-seed parquet
     contains one seed row per entity with the expected ENTITY ids.
     """
-    data_dir = tmp_path / "data"
+    data_dir = tmp_path / 'data'
     data_dir.mkdir()
-    index_dir = tmp_path / "index"
-    output_root = tmp_path / "bp_out"
+    index_dir = tmp_path / 'index'
+    output_root = tmp_path / 'bp_out'
     output_root.mkdir()
 
     graph = _build_kumo_graph(data_dir, source_shape)
     index_path = _ingest_index_handrolled(data_dir, index_dir, source_shape)
 
-    pql = "PREDICT LIST_DISTINCT(orders.tags, 0, 5000) CLASSIFY FOR EACH users.user_id"
+    pql = 'PREDICT LIST_DISTINCT(orders.tags, 0, 5000) CLASSIFY FOR EACH users.user_id'
     validated_query = get_validated_query(graph, pql)
 
-    job_id = "bp-nodepred"
+    job_id = 'bp-nodepred'
     total_rows, total_partitions = generate_batch_pred_table_via_diskgraph_ttng(
         query=validated_query,
         task_type=TaskType.MULTILABEL_CLASSIFICATION,
@@ -156,41 +161,45 @@ def test_nodepred_bp_multilabel_classification(
         index_path=index_path,
         output_root=str(output_root),
         input_timestamp_unit=TimeUnit.SECONDS,
-        target_stype="multicategorical",
+        target_stype='multicategorical',
         entity_time_col=None,
         job_id=job_id,
     )
     assert total_rows == len(USER_IDS), (
-        f"BP node-pred should emit one row per entity; got {total_rows} "
-        f"for {len(USER_IDS)} users on shape={source_shape}")
+        f'BP node-pred should emit one row per entity; got {total_rows} '
+        f'for {len(USER_IDS)} users on shape={source_shape}'
+    )
 
     # TT-NG BP gens the predict seeds into the KEPT staging dir named by
     # ``predict_staging_tt_id(job_id)`` (materialize ingests it later).
     staging_dir = ttng_staging_dir(index_path, predict_staging_tt_id(job_id))
-    output_path = Path(staging_dir) / "tt.parquet"
-    assert output_path.exists(), f"BP staging parquet missing at {output_path}"
+    output_path = Path(staging_dir) / 'tt.parquet'
+    assert output_path.exists(), f'BP staging parquet missing at {output_path}'
 
     table = pq.read_table(str(output_path))
     schema_names = set(table.schema.names)
     # TT-NG predict staging carries the raw producer ``ENTITY1`` seed column
     # (the legacy ``ENTITY``/``arange`` writer columns were an
     # ``execute_tt_plan_with_artifacts`` artifact). No TARGET at predict time.
-    assert "ENTITY1" in schema_names, (
-        f"BP predict seeds must have ENTITY1 column; got {schema_names}")
-    assert "TARGET" not in schema_names and "TARGET1" not in schema_names, (
-        f"BP node-pred must not emit a target column; got {schema_names}")
+    assert 'ENTITY1' in schema_names, (
+        f'BP predict seeds must have ENTITY1 column; got {schema_names}'
+    )
+    assert 'TARGET' not in schema_names and 'TARGET1' not in schema_names, (
+        f'BP node-pred must not emit a target column; got {schema_names}'
+    )
 
-    entities = sorted(table.column("ENTITY1").to_pylist())
+    entities = sorted(table.column('ENTITY1').to_pylist())
     assert entities == sorted(USER_IDS), (
-        f"BP entity set mismatch on shape={source_shape}; got {entities}")
+        f'BP entity set mismatch on shape={source_shape}; got {entities}'
+    )
 
     # Gen ALSO materializes the customer-facing serving pred table at
     # ``output_root`` so GET /genpredtable_jobs/{id}/table_data returns a
     # readable path (ENTITY renamed, arange added; node-pred drops TARGET).
-    serving = output_root / "part-00000.parquet"
-    assert serving.exists(), f"serving pred parquet missing at {serving}"
+    serving = output_root / 'part-00000.parquet'
+    assert serving.exists(), f'serving pred parquet missing at {serving}'
     serving_cols = set(pq.read_table(str(serving)).schema.names)
-    assert serving_cols == {"ENTITY", "TIMESTAMP", "arange"}, serving_cols
+    assert serving_cols == {'ENTITY', 'TIMESTAMP', 'arange'}, serving_cols
 
 
 # ---------------------------------------------------------------------------
@@ -212,20 +221,22 @@ def test_linkpred_bp_fk_target_arrayout(tmp_path: Path):
     - LHS staging schema carries ENTITY1 and no target column.
     - LHS ENTITY set covers all users in the fixture.
     """
-    data_dir = tmp_path / "data"
+    data_dir = tmp_path / 'data'
     data_dir.mkdir()
-    index_dir = tmp_path / "index"
-    output_root = tmp_path / "lhs_out"
+    index_dir = tmp_path / 'index'
+    output_root = tmp_path / 'lhs_out'
     output_root.mkdir()
 
     graph = _build_linkpred_graph(data_dir)
     index_path = _ingest_linkpred_index(data_dir, index_dir)
 
-    pql = ("PREDICT LIST_DISTINCT(orders.product_id, 0, 5000) RANK TOP 3 "
-           "FOR EACH users.user_id")
+    pql = (
+        'PREDICT LIST_DISTINCT(orders.product_id, 0, 5000) RANK TOP 3 '
+        'FOR EACH users.user_id'
+    )
     validated_query = get_validated_query(graph, pql)
 
-    job_id = "bp-lp-arrayout"
+    job_id = 'bp-lp-arrayout'
     total_rows, _total_partitions = generate_batch_pred_table_via_diskgraph_ttng(
         query=validated_query,
         task_type=TaskType.TEMPORAL_LINK_PREDICTION,
@@ -238,7 +249,7 @@ def test_linkpred_bp_fk_target_arrayout(tmp_path: Path):
         index_path=index_path,
         output_root=str(output_root),
         input_timestamp_unit=TimeUnit.SECONDS,
-        target_stype="multicategorical",
+        target_stype='multicategorical',
         entity_time_col=None,
         job_id=job_id,
     )
@@ -247,23 +258,27 @@ def test_linkpred_bp_fk_target_arrayout(tmp_path: Path):
     # dir; the RHS candidate set is seeded at INGEST (no RHS parquet, no HStack
     # cross-product is materialized on TT-NG). One seed row per LHS entity.
     assert total_rows == len(USER_IDS), (
-        f"LP BP should emit one predict seed per LHS entity; got {total_rows}")
+        f'LP BP should emit one predict seed per LHS entity; got {total_rows}'
+    )
 
     staging_dir = ttng_staging_dir(index_path, predict_staging_tt_id(job_id))
-    lhs_path = Path(staging_dir) / "tt.parquet"
-    assert lhs_path.exists(), f"LHS staging parquet missing at {lhs_path}"
+    lhs_path = Path(staging_dir) / 'tt.parquet'
+    assert lhs_path.exists(), f'LHS staging parquet missing at {lhs_path}'
 
     lhs_table = pq.read_table(str(lhs_path))
     lhs_schema = set(lhs_table.schema.names)
-    assert "ENTITY1" in lhs_schema, (
-        f"LP BP LHS seeds must have ENTITY1 column; got {lhs_schema}")
+    assert 'ENTITY1' in lhs_schema, (
+        f'LP BP LHS seeds must have ENTITY1 column; got {lhs_schema}'
+    )
     # LHS predict seeds carry no target column (the RHS candidate pool is
     # seeded downstream at ingest, not joined here).
-    assert "TARGET" not in lhs_schema and "TARGET1" not in lhs_schema, (
-        f"LP BP LHS seeds must not carry a target column; got {lhs_schema}")
-    lhs_entities = sorted(lhs_table.column("ENTITY1").to_pylist())
+    assert 'TARGET' not in lhs_schema and 'TARGET1' not in lhs_schema, (
+        f'LP BP LHS seeds must not carry a target column; got {lhs_schema}'
+    )
+    lhs_entities = sorted(lhs_table.column('ENTITY1').to_pylist())
     assert lhs_entities == sorted(USER_IDS), (
-        f"LHS entity set mismatch; got {lhs_entities}")
+        f'LHS entity set mismatch; got {lhs_entities}'
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -286,20 +301,22 @@ def test_linkpred_bp_fk_target_hstack(tmp_path: Path):
     FK-free / array-target (separate LHS/RHS) layout is the only supported LP
     BP arm on TT-NG.
     """
-    data_dir = tmp_path / "data"
+    data_dir = tmp_path / 'data'
     data_dir.mkdir()
-    index_dir = tmp_path / "index"
-    output_root = tmp_path / "hstack_out"
+    index_dir = tmp_path / 'index'
+    output_root = tmp_path / 'hstack_out'
     output_root.mkdir()
 
     graph = _build_linkpred_graph(data_dir)
     index_path = _ingest_linkpred_index(data_dir, index_dir)
 
-    pql = ("PREDICT LIST_DISTINCT(orders.product_id, 0, 5000) RANK TOP 3 "
-           "FOR EACH users.user_id")
+    pql = (
+        'PREDICT LIST_DISTINCT(orders.product_id, 0, 5000) RANK TOP 3 '
+        'FOR EACH users.user_id'
+    )
     validated_query = get_validated_query(graph, pql)
 
-    with pytest.raises(NotImplementedError, match="separate|HStack|array"):
+    with pytest.raises(NotImplementedError, match='separate|HStack|array'):
         generate_batch_pred_table_via_diskgraph_ttng(
             query=validated_query,
             task_type=TaskType.TEMPORAL_LINK_PREDICTION,
@@ -312,7 +329,7 @@ def test_linkpred_bp_fk_target_hstack(tmp_path: Path):
             index_path=index_path,
             output_root=str(output_root),
             input_timestamp_unit=TimeUnit.SECONDS,
-            target_stype="multicategorical",
+            target_stype='multicategorical',
             entity_time_col=None,
-            job_id="bp-lp-hstack",
+            job_id='bp-lp-hstack',
         )

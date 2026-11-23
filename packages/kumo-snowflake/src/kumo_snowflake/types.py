@@ -44,8 +44,7 @@ _DTYPE_BY_SNOWFLAKE_TYPE = {
 }
 
 
-def dtype_for(data_type: str,
-              numeric_scale: Optional[Union[int, str]] = None) -> Dtype:
+def dtype_for(data_type: str, numeric_scale: Optional[Union[int, str]] = None) -> Dtype:
     r"""``NUMBER`` covers both integers and decimals, separated by scale: a
     scale of zero is an integer.
     """

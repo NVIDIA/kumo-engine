@@ -12,6 +12,7 @@ parquet fixtures collide on ``data_version`` (parquet mtime, same second).
 Resetting both the in-memory active cache and wiping the on-disk cache under
 ``get_persist_dir()`` between tests breaks the leak.
 """
+
 import os.path as osp
 
 import pytest

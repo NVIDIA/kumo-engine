@@ -15,7 +15,8 @@ def onlyFullTest(func: Callable) -> Callable:
     r"""A decorator to specify that this function belongs to the full test
     suite."""
     import pytest
+
     return pytest.mark.skipif(
         not is_full_test(),
-        reason="Fast test run",
+        reason='Fast test run',
     )(func)

@@ -58,7 +58,8 @@ _NO_CREDENTIALS_EXCEPTIONS = (NoCredentialsError, PartialCredentialsError)
 
 def _unsigned_s3_client():
     config = threadsafe_boto._config.merge(  # pylint: disable=protected-access
-        Config(signature_version=UNSIGNED))
+        Config(signature_version=UNSIGNED)
+    )
     return threadsafe_boto.session().client(
         's3',
         config=config,
@@ -73,7 +74,7 @@ def _read_with_unsigned_fallback(operation):
     except _NO_CREDENTIALS_EXCEPTIONS:
         if credentials_for_provider('s3') is not None:
             raise
-        logger.info("No AWS credentials found; retrying S3 read anonymously")
+        logger.info('No AWS credentials found; retrying S3 read anonymously')
         return operation(_unsigned_s3_client())
 
 
@@ -89,15 +90,17 @@ def filesize(uri: S3URI) -> Optional[int]:
 
     try:
         obj = _read_with_unsigned_fallback(
-            lambda client: client.head_object(Bucket=bucket, Key=key))
+            lambda client: client.head_object(Bucket=bucket, Key=key)
+        )
         return obj['ContentLength']
     except Exception as e:
-        if not (isinstance(e, s3_ctx._s3_client.exceptions.NoSuchKey)
-                or isinstance(e, s3_ctx._s3_client.exceptions.ClientError)):
+        if not (
+            isinstance(e, s3_ctx._s3_client.exceptions.NoSuchKey)
+            or isinstance(e, s3_ctx._s3_client.exceptions.ClientError)
+        ):
             logger.warning(
-                "Unexpected exception in S3 filesize "
-                "(error_type=%s)",
-                type(e).__name__)
+                'Unexpected exception in S3 filesize (error_type=%s)', type(e).__name__
+            )
         return None
 
 
@@ -109,7 +112,8 @@ def object_identity(uri: S3URI) -> api.ObjectIdentity:
     bucket, key = uri.file_bucket_key()
     try:
         result = _read_with_unsigned_fallback(
-            lambda selected: selected.head_object(Bucket=bucket, Key=key))
+            lambda selected: selected.head_object(Bucket=bucket, Key=key)
+        )
     except ClientError as error:
         if _get_error_code(error) in ('404', 'NoSuchKey', 'NotFound'):
             raise FileNotFoundError(uri.as_s3()) from None
@@ -142,8 +146,9 @@ def read_binary(uri: S3URI, compression: bool) -> bytes:
     actual_size = len(file_bytes)  # Size of downloaded data
     if expected_size != actual_size:
         raise IOError(
-            f"File {uri} might be incomplete! Expected {expected_size} bytes, "
-            f"but got {actual_size} bytes.")
+            f'File {uri} might be incomplete! Expected {expected_size} bytes, '
+            f'but got {actual_size} bytes.'
+        )
 
     if compression:
         return gzip.decompress(file_bytes)
@@ -155,8 +160,7 @@ def read_binary(uri: S3URI, compression: bool) -> bytes:
 @fsExceptionHandler
 @trace(TraceOptions(trace_params=True))
 @s3_fs_logging_policy(allowed_exceptions=FileNotFoundError)
-def read_text(uri: S3URI, compression: bool,
-              encoding: Optional[str] = None) -> str:
+def read_text(uri: S3URI, compression: bool, encoding: Optional[str] = None) -> str:
     r = read_binary(uri, compression=compression)
     if encoding:
         return r.decode(encoding)
@@ -167,31 +171,33 @@ def read_text(uri: S3URI, compression: bool,
 @fsExceptionHandler
 @trace(TraceOptions(trace_params=['uri', 'compression', 'ttl']))
 @s3_fs_logging_policy(skip_args=[1])
-def write_binary(uri: S3URI, data: BinaryIO, compression: bool,
-                 ttl: Optional[timedelta]) -> None:
+def write_binary(
+    uri: S3URI, data: BinaryIO, compression: bool, ttl: Optional[timedelta]
+) -> None:
     client = threadsafe_boto.s3_client()
     bucket, key = uri.file_bucket_key()
-    body: BinaryIO = io.BytesIO(gzip.compress(
-        data.read())) if compression else data
+    body: BinaryIO = io.BytesIO(gzip.compress(data.read())) if compression else data
 
     extra_args = {}
     if ttl:
         expires_at = datetime.now(timezone.utc) + ttl
-        extra_args["Expires"] = expires_at  # S3 object expiry time
+        extra_args['Expires'] = expires_at  # S3 object expiry time
 
-    client.upload_fileobj(Bucket=bucket, Key=key, Fileobj=body,
-                          ExtraArgs=extra_args)
+    client.upload_fileobj(Bucket=bucket, Key=key, Fileobj=body, ExtraArgs=extra_args)
 
 
 @api.write_text.register
 @fsExceptionHandler
 @trace(TraceOptions(trace_params=['uri', 'compression', 'encoding']))
 @s3_fs_logging_policy(skip_args=[1])
-def write_text(uri: S3URI, data: str, compression: bool,
-               encoding: Optional[str] = None) -> None:
-    api.write_binary(uri.as_s3(),
-                     data.encode(encoding) if encoding else data.encode(),
-                     compression=compression)
+def write_text(
+    uri: S3URI, data: str, compression: bool, encoding: Optional[str] = None
+) -> None:
+    api.write_binary(
+        uri.as_s3(),
+        data.encode(encoding) if encoding else data.encode(),
+        compression=compression,
+    )
 
 
 @api.write_text_if_absent.register
@@ -212,8 +218,10 @@ def write_text_if_absent(uri: S3URI, data: str) -> bool:
         response = error.response
         code = str(response.get('Error', {}).get('Code', ''))
         status = response.get('ResponseMetadata', {}).get('HTTPStatusCode')
-        if code in {'PreconditionFailed', 'ConditionalRequestConflict'
-                    } or status in {409, 412}:
+        if code in {'PreconditionFailed', 'ConditionalRequestConflict'} or status in {
+            409,
+            412,
+        }:
             return False
         raise
     return True
@@ -228,13 +236,16 @@ def get_binary_handle(
     compression: bool = False,
 ) -> Generator[BinaryIO, None, None]:
     with restricted_diagnostic_boundary(
-            safe_message='S3 stream operation failed',
-            exception_types=(BotoCoreError, ClientError, OSError)):
+        safe_message='S3 stream operation failed',
+        exception_types=(BotoCoreError, ClientError, OSError),
+    ):
         with smart_open(
-                uri.as_s3(), mode, encoding=None,
-                compression=".gz" if compression else None,
-                transport_params={'client': threadsafe_boto.s3_client()
-                                  }) as f:  # type: ignore
+            uri.as_s3(),
+            mode,
+            encoding=None,
+            compression='.gz' if compression else None,
+            transport_params={'client': threadsafe_boto.s3_client()},
+        ) as f:  # type: ignore
             yield f  # type: ignore
 
 
@@ -247,13 +258,16 @@ def get_handle(
     compression: bool = False,
 ) -> Generator[TextIO, None, None]:
     with restricted_diagnostic_boundary(
-            safe_message='S3 stream operation failed',
-            exception_types=(BotoCoreError, ClientError, OSError)):
+        safe_message='S3 stream operation failed',
+        exception_types=(BotoCoreError, ClientError, OSError),
+    ):
         with smart_open(
-                uri.as_s3(), mode, encoding='utf-8',
-                compression=".gz" if compression else None,
-                transport_params={'client': threadsafe_boto.s3_client()
-                                  }) as f:  # type: ignore
+            uri.as_s3(),
+            mode,
+            encoding='utf-8',
+            compression='.gz' if compression else None,
+            transport_params={'client': threadsafe_boto.s3_client()},
+        ) as f:  # type: ignore
             yield f  # type: ignore
 
 
@@ -263,11 +277,14 @@ def get_handle(
 @s3_fs_logging_policy()
 def dirsize(uri: S3URI) -> int:
     bucket, key = uri.dir_bucket_key()
-    return sum([
-        obj.size
-        for obj in threadsafe_boto.s3_resource().Bucket(bucket).objects.filter(
-            Prefix=key)
-    ])
+    return sum(
+        [
+            obj.size
+            for obj in threadsafe_boto.s3_resource()
+            .Bucket(bucket)
+            .objects.filter(Prefix=key)
+        ]
+    )
 
 
 @api.exists.register
@@ -287,13 +304,14 @@ def exists(uri: S3URI) -> bool:
             if not uri.path:
                 return False
 
-            _read_with_unsigned_fallback(lambda client: client.head_object(
-                Bucket=uri.bucket, Key=uri.path))
+            _read_with_unsigned_fallback(
+                lambda client: client.head_object(Bucket=uri.bucket, Key=uri.path)
+            )
             return True
     except ClientError as e:
         code = _get_error_code(e)
         if code in ['NoSuchKey', 'NoSuchBucket', '404']:
-            logger.debug(f"No such key or bucket: {code}")
+            logger.debug(f'No such key or bucket: {code}')
             return False
         # A permission or transient failure is not proof that the object is
         # absent. Let callers decide whether and how to retry it.
@@ -301,8 +319,8 @@ def exists(uri: S3URI) -> bool:
 
 
 def _get_error_code(e: ClientError) -> Optional[str]:
-    error = e.response.get("Error")
-    return error.get("Code") if error else None
+    error = e.response.get('Error')
+    return error.get('Code') if error else None
 
 
 @api.isdir.register
@@ -331,13 +349,13 @@ def isdir(uri: S3URI) -> bool:
     if not prefix:
         return True
 
-    if res["KeyCount"] == 0:
+    if res['KeyCount'] == 0:
         return False
 
-    for obj in res["Contents"]:
+    for obj in res['Contents']:
         # a directory has a key other than itself
         # could be itself with a trailing slash
-        key = obj.get("Key")
+        key = obj.get('Key')
         if key and key.startswith(prefix):
             return True
     return False
@@ -374,8 +392,9 @@ def _listdir_details(
     # to avoid excess latency and memory usage if not all items are needed.
     if max_items is not None and not (1 <= max_items <= 1000):
         raise ValueError(
-            "max_items should be in the range of 1 <= max_items <= 1000"
-            "for s3 fsutil.listdir")
+            'max_items should be in the range of 1 <= max_items <= 1000'
+            'for s3 fsutil.listdir'
+        )
 
     # 'Contents' contains all the files in the directory.
     # 'CommonPrefixes' contains all the subdirectories in the directory.
@@ -390,8 +409,9 @@ def _listdir_details(
         entries: list[api.PathDetail] = []
 
         if max_items is not None:
-            response = client.list_objects_v2(Bucket=bucket, Prefix=key,
-                                              Delimiter='/', MaxKeys=max_items)
+            response = client.list_objects_v2(
+                Bucket=bucket, Prefix=key, Delimiter='/', MaxKeys=max_items
+            )
 
             if 'Contents' in response:
                 for obj in response['Contents']:
@@ -403,7 +423,8 @@ def _listdir_details(
                                     path=obj['Key'],
                                 ).as_s3(),
                                 is_directory=False,
-                            ))
+                            )
+                        )
                     if len(entries) == max_items:
                         break
 
@@ -417,35 +438,41 @@ def _listdir_details(
                                     path=obj['Prefix'][:-1],
                                 ).as_s3(),
                                 is_directory=True,
-                            ))
+                            )
+                        )
                     if len(entries) == max_items:
                         break
 
             return entries
 
         paginator = client.get_paginator('list_objects_v2')
-        for page in paginator.paginate(Bucket=bucket, Prefix=key,
-                                       Delimiter='/'):
-
+        for page in paginator.paginate(Bucket=bucket, Prefix=key, Delimiter='/'):
             if 'Contents' in page:
-                entries.extend([
-                    api.PathDetail(
-                        path=S3URI(bucket=bucket, path=obj['Key']).as_s3(),
-                        is_directory=False,
-                    ) for obj in page['Contents']
-                    if obj['Key'] != key and not obj['Key'].endswith('/')
-                ])
+                entries.extend(
+                    [
+                        api.PathDetail(
+                            path=S3URI(bucket=bucket, path=obj['Key']).as_s3(),
+                            is_directory=False,
+                        )
+                        for obj in page['Contents']
+                        if obj['Key'] != key and not obj['Key'].endswith('/')
+                    ]
+                )
 
             if 'CommonPrefixes' in page:
-                entries.extend([
-                    api.PathDetail(
-                        path=S3URI(
-                            bucket=bucket,
-                            path=obj['Prefix'][:-1],
-                        ).as_s3(),
-                        is_directory=True,
-                    ) for obj in page['CommonPrefixes'] if obj['Prefix'] != key
-                ])
+                entries.extend(
+                    [
+                        api.PathDetail(
+                            path=S3URI(
+                                bucket=bucket,
+                                path=obj['Prefix'][:-1],
+                            ).as_s3(),
+                            is_directory=True,
+                        )
+                        for obj in page['CommonPrefixes']
+                        if obj['Prefix'] != key
+                    ]
+                )
 
         return entries
 
@@ -485,8 +512,9 @@ def makedirs(uri: S3URI, exist_ok: bool = False) -> None:
 @api.rm.register
 @trace(TraceOptions(trace_params=['path']))
 @s3_fs_logging_policy()
-def rm(uri: S3URI, ignore_errors: bool = False,
-       include: Optional[List[str]] = None) -> None:
+def rm(
+    uri: S3URI, ignore_errors: bool = False, include: Optional[List[str]] = None
+) -> None:
     try:
         if isdir(uri):
             rmdir(uri.as_s3(), include=include)
@@ -531,7 +559,7 @@ def has_write_permission(uri: S3URI) -> bool:
         )
         upload_id = response['UploadId']
     except ClientError as e:
-        if e.response.get('Error', {}).get('Code') == "AccessDenied":
+        if e.response.get('Error', {}).get('Code') == 'AccessDenied':
             return False
         logger.warning('S3 output write probe failed (%s)', type(e).__name__)
         return False
@@ -569,8 +597,7 @@ def contains_subdir(uri: S3URI) -> bool:
 
     def _contains_subdir_with_client(client) -> bool:
         paginator = client.get_paginator('list_objects_v2')
-        for resp in paginator.paginate(Bucket=bucket, Prefix=prefix,
-                                       Delimiter='/'):
+        for resp in paginator.paginate(Bucket=bucket, Prefix=prefix, Delimiter='/'):
             if len(resp.get('CommonPrefixes', [])) > 0:
                 return True
         return False
@@ -599,28 +626,36 @@ def get_last_modified_time(uri: S3URI, suffix: Optional[str] = None) -> float:
         if isdir(uri):
             bucket, key = uri.dir_bucket_key()
             res = _read_with_unsigned_fallback(
-                lambda client: client.list_objects_v2(Bucket=bucket, Prefix=key,
-                                                      Delimiter='/'))
+                lambda client: client.list_objects_v2(
+                    Bucket=bucket, Prefix=key, Delimiter='/'
+                )
+            )
             return max(
-                file['LastModified'] for file in res.get('Contents', [])
-                if not suffix or file['Key'].endswith(suffix)).timestamp()
+                file['LastModified']
+                for file in res.get('Contents', [])
+                if not suffix or file['Key'].endswith(suffix)
+            ).timestamp()
     except Exception as e:
         logger.warning(
-            "Unable to get S3 last modified time for %s; returning %s "
-            "(error_type=%s)", uri.as_s3(), DEFAULT_DATA_VERSION,
-            type(e).__name__)
+            'Unable to get S3 last modified time for %s; returning %s (error_type=%s)',
+            uri.as_s3(),
+            DEFAULT_DATA_VERSION,
+            type(e).__name__,
+        )
         return DEFAULT_DATA_VERSION
 
     bucket, key = uri.file_bucket_key()
     try:
         obj = _read_with_unsigned_fallback(
-            lambda client: client.head_object(Bucket=bucket, Key=key))
+            lambda client: client.head_object(Bucket=bucket, Key=key)
+        )
         return obj['LastModified'].timestamp()
     except s3_ctx._s3_client.exceptions.ClientError as e:
         logger.error(
-            "Unable to get S3 last modified time for %s (error_type=%s)",
+            'Unable to get S3 last modified time for %s (error_type=%s)',
             uri.as_s3(),
-            type(e).__name__)
+            type(e).__name__,
+        )
         return DEFAULT_DATA_VERSION
 
 
@@ -631,6 +666,7 @@ def get_last_modified_time(uri: S3URI, suffix: Optional[str] = None) -> float:
 
 class S3PresignedHelper(api.PresignedHelper[S3URI]):
     """S3 implementation of :class:`~api.PresignedHelper`."""
+
     def __init__(self, uri: S3URI):
         super().__init__(uri)
 
@@ -639,8 +675,8 @@ class S3PresignedHelper(api.PresignedHelper[S3URI]):
         return True
 
     def _generate_download_url(self, uri: S3URI) -> str:
-        from io_utils.fsutil.s3_filesystem import \
-            generate_presigned_url_for_download  # noqa: E501
+        from io_utils.fsutil.s3_filesystem import generate_presigned_url_for_download  # noqa: E501
+
         return generate_presigned_url_for_download(uri.as_s3())
 
     def _create_multipart_upload(self, uri: S3URI, num_parts):
@@ -652,8 +688,8 @@ class S3PresignedHelper(api.PresignedHelper[S3URI]):
         resp = s3_client.create_multipart_upload(Bucket=bucket, Key=key)
         if resp['ResponseMetadata']['HTTPStatusCode'] != 200:
             raise ValueError(
-                f"Failed to create multipart upload for {s3_path}. "
-                f"Response: {resp}")
+                f'Failed to create multipart upload for {s3_path}. Response: {resp}'
+            )
 
         upload_id = resp['UploadId']
         presigned_urls = {}
@@ -679,31 +715,34 @@ class S3PresignedHelper(api.PresignedHelper[S3URI]):
         listed_part_count = sum(
             len(page.get('Parts', []))
             for page in s3_client.get_paginator('list_parts').paginate(
-                Bucket=bucket, Key=key, UploadId=upload_id))
+                Bucket=bucket, Key=key, UploadId=upload_id
+            )
+        )
         if listed_part_count != len(parts):
-            raise ValueError(f"Number of parts returned by list_parts: "
-                             f"{listed_part_count} does not match parts "
-                             f"metadata: {len(parts)}.")
+            raise ValueError(
+                f'Number of parts returned by list_parts: '
+                f'{listed_part_count} does not match parts '
+                f'metadata: {len(parts)}.'
+            )
 
-        logger.debug(f"No.of parts matched for {s3_path}: {len(parts)}, "
-                     f"completing multipart upload with upload_id: {upload_id}")
+        logger.debug(
+            f'No.of parts matched for {s3_path}: {len(parts)}, '
+            f'completing multipart upload with upload_id: {upload_id}'
+        )
         complete_resp = s3_client.complete_multipart_upload(
             Bucket=bucket,
             Key=key,
             UploadId=upload_id,
             MultipartUpload={
-                'Parts': [{
-                    'ETag': p.etag,
-                    'PartNumber': p.part_number
-                } for p in parts]
+                'Parts': [{'ETag': p.etag, 'PartNumber': p.part_number} for p in parts]
             },
         )
         if complete_resp['ResponseMetadata']['HTTPStatusCode'] != 200:
             raise ValueError(
-                f"Failed to complete multipart upload for {s3_path}. "
-                f"Response: {complete_resp}")
-        logger.info(f"Completed multipart upload for {s3_path}, "
-                    f"upload_id: {upload_id}")
+                f'Failed to complete multipart upload for {s3_path}. '
+                f'Response: {complete_resp}'
+            )
+        logger.info(f'Completed multipart upload for {s3_path}, upload_id: {upload_id}')
 
 
 @api.get_presigned_helper.register
@@ -731,8 +770,9 @@ def zip_files(
         if not isinstance(path, S3URI) or path.bucket != uri.bucket:
             raise ValueError('S3 archive inputs must use one bucket')
         selected.append(path.path)
-    return zip_files_with_same_prefix(uri.as_s3(), output_path=output_path,
-                                      object_keys=selected)
+    return zip_files_with_same_prefix(
+        uri.as_s3(), output_path=output_path, object_keys=selected
+    )
 
 
 @api.customer_facing_path.register

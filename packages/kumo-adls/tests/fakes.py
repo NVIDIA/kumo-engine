@@ -13,6 +13,7 @@ from azure.storage.filedatalake import FileProperties, PathProperties
 
 class FakeService:
     """Azure SDK-shaped storage using real public property models."""
+
     def __init__(self, account='companylake', suffix='dfs.core.windows.net'):
         self.account_name = account
         self.url = f'https://{account}.{suffix}/'
@@ -47,19 +48,19 @@ class FakeFilesystem:
     get_directory_client = get_file_client
 
     def get_paths(self, path=None, recursive=True):
-        prefix = f'{self.filesystem}/' + (path.rstrip('/') +
-                                          '/' if path else '')
+        prefix = f'{self.filesystem}/' + (path.rstrip('/') + '/' if path else '')
         for name in sorted(set(self.service.files) | self.service.directories):
             if not name.startswith(prefix):
                 continue
-            relative = name[len(prefix):]
+            relative = name[len(prefix) :]
             if not relative or not recursive and '/' in relative:
                 continue
             yield PathProperties(
-                name=name[len(self.filesystem) + 1:], is_directory=name
-                in self.service.directories,
+                name=name[len(self.filesystem) + 1 :],
+                is_directory=name in self.service.directories,
                 content_length=len(self.service.files.get(name, b'')),
-                last_modified=self.service.modified)
+                last_modified=self.service.modified,
+            )
 
 
 class FakeFile:
@@ -68,7 +69,10 @@ class FakeFile:
         self.name = name
 
     def get_file_properties(self):
-        if self.name not in self.service.files and self.name not in self.service.directories:
+        if (
+            self.name not in self.service.files
+            and self.name not in self.service.directories
+        ):
             raise ResourceNotFoundError('missing object')
         content = self.service.files.get(self.name, b'')
         return FileProperties(
@@ -77,10 +81,11 @@ class FakeFile:
                 'ETag': hashlib.sha256(content).hexdigest(),
                 'Content-Length': len(content),
                 'Last-Modified': self.service.modified,
-                'metadata': {
-                    'hdi_isfolder': 'true'
-                } if self.name in self.service.directories else {},
-            })
+                'metadata': {'hdi_isfolder': 'true'}
+                if self.name in self.service.directories
+                else {},
+            }
+        )
 
     def download_file(self, offset=None, length=None, **kwargs):
         assert kwargs['match_condition'] == MatchConditions.IfNotModified
@@ -88,14 +93,16 @@ class FakeFile:
             raise ResourceModifiedError('object was changed')
         self.service.downloads.append((self.name, offset, length, kwargs))
         content = self.service.files[self.name]
-        content = content[offset or 0:]
+        content = content[offset or 0 :]
         if length is not None:
             content = content[:length]
-        return SimpleNamespace(readall=lambda: content,
-                               readinto=lambda stream: stream.write(content))
+        return SimpleNamespace(
+            readall=lambda: content, readinto=lambda stream: stream.write(content)
+        )
 
-    def upload_data(self, stream, length, overwrite, chunk_size,
-                    max_concurrency, **kwargs):
+    def upload_data(
+        self, stream, length, overwrite, chunk_size, max_concurrency, **kwargs
+    ):
         if length == 0:
             return {}
         assert 1 <= max_concurrency <= 4
@@ -124,8 +131,7 @@ class FakeFile:
         self.service.files[self.name] = self.service.uncommitted.pop(self.name)
 
     def delete_file(self, **kwargs):
-        if kwargs.get(
-                'etag') and kwargs['etag'] != self.get_file_properties().etag:
+        if kwargs.get('etag') and kwargs['etag'] != self.get_file_properties().etag:
             raise ResourceModifiedError('object was changed')
         self.service.files.pop(self.name)
         self.service.uncommitted.pop(self.name, None)

@@ -26,23 +26,24 @@ async def ml_jobs(tmp_path) -> MLJobService:
 
 @pytest.mark.asyncio
 async def test_custom_training_connector_uses_shared_admission_boundary(
-        ml_jobs: MLJobService, monkeypatch) -> None:
+    ml_jobs: MLJobService, monkeypatch
+) -> None:
     connector_id = ConnectorID.generate()
     events = []
 
     async def record_admission(tx, project_id, connector_ids) -> None:
         events.append(('admit', project_id, list(connector_ids)))
 
-    monkeypatch.setattr(ml_jobs_module, 'require_connectors_for_admission',
-                        record_admission)
+    monkeypatch.setattr(
+        ml_jobs_module, 'require_connectors_for_admission', record_admission
+    )
     reference = SimpleNamespace(
         project_id=PROJECT_A,
         connector_id=connector_id,
     )
 
     async with ml_jobs._state_db.write_tx() as tx:
-        await ml_jobs._require_connector_ref_in_project(
-            tx, reference, PROJECT_A)
+        await ml_jobs._require_connector_ref_in_project(tx, reference, PROJECT_A)
 
     assert events == [
         ('admit', PROJECT_A, [connector_id]),
@@ -51,16 +52,17 @@ async def test_custom_training_connector_uses_shared_admission_boundary(
 
 @pytest.mark.asyncio
 async def test_batch_outputs_delegate_sorted_unique_connectors_to_admission(
-        ml_jobs: MLJobService, monkeypatch) -> None:
-    first, second = sorted(
-        [ConnectorID.generate(), ConnectorID.generate()], key=str)
+    ml_jobs: MLJobService, monkeypatch
+) -> None:
+    first, second = sorted([ConnectorID.generate(), ConnectorID.generate()], key=str)
     events = []
 
     async def record_admission(tx, project_id, connector_ids) -> None:
         events.append(('admit', project_id, list(connector_ids)))
 
-    monkeypatch.setattr(ml_jobs_module, 'require_connectors_for_admission',
-                        record_admission)
+    monkeypatch.setattr(
+        ml_jobs_module, 'require_connectors_for_admission', record_admission
+    )
     config = SimpleNamespace(
         outputs=[
             SimpleNamespace(connector_id=second),
@@ -72,8 +74,7 @@ async def test_batch_outputs_delegate_sorted_unique_connectors_to_admission(
     )
 
     async with ml_jobs._state_db.write_tx() as tx:
-        await ml_jobs._require_batch_output_connectors_in_project(
-            tx, config, PROJECT_A)
+        await ml_jobs._require_batch_output_connectors_in_project(tx, config, PROJECT_A)
 
     assert events == [
         ('admit', PROJECT_A, [first, second]),
@@ -82,7 +83,8 @@ async def test_batch_outputs_delegate_sorted_unique_connectors_to_admission(
 
 @pytest.mark.asyncio
 async def test_connector_reference_locking_preserves_validation_errors(
-        ml_jobs: MLJobService, monkeypatch) -> None:
+    ml_jobs: MLJobService, monkeypatch
+) -> None:
     connector_id = ConnectorID.generate()
     locked = []
 
@@ -90,15 +92,17 @@ async def test_connector_reference_locking_preserves_validation_errors(
         connector_ids = list(connector_ids)
         locked.append((project_id, connector_ids))
         raise ValueError(
-            f"Connector '{connector_ids[0]}' is not active in project "
-            f"'{project_id}'")
+            f"Connector '{connector_ids[0]}' is not active in project '{project_id}'"
+        )
 
-    monkeypatch.setattr(ml_jobs_module, 'require_connectors_for_admission',
-                        reject_admission)
+    monkeypatch.setattr(
+        ml_jobs_module, 'require_connectors_for_admission', reject_admission
+    )
 
     async with ml_jobs._state_db.write_tx() as tx:
-        with pytest.raises(ValueError, match=(
-                f"Connector '{connector_id}' belongs to another project")):
+        with pytest.raises(
+            ValueError, match=(f"Connector '{connector_id}' belongs to another project")
+        ):
             await ml_jobs._require_connector_ref_in_project(
                 tx,
                 SimpleNamespace(
@@ -109,9 +113,12 @@ async def test_connector_reference_locking_preserves_validation_errors(
             )
         assert locked == []
 
-        with pytest.raises(ValueError, match=(
-                f"Connector '{connector_id}' is not active in project "
-                f"'{PROJECT_A}'")):
+        with pytest.raises(
+            ValueError,
+            match=(
+                f"Connector '{connector_id}' is not active in project '{PROJECT_A}'"
+            ),
+        ):
             await ml_jobs._require_connector_ref_in_project(
                 tx,
                 SimpleNamespace(
@@ -121,9 +128,12 @@ async def test_connector_reference_locking_preserves_validation_errors(
                 PROJECT_A,
             )
 
-        with pytest.raises(ValueError, match=(
-                f"Connector '{connector_id}' is not active in project "
-                f"'{PROJECT_A}'")):
+        with pytest.raises(
+            ValueError,
+            match=(
+                f"Connector '{connector_id}' is not active in project '{PROJECT_A}'"
+            ),
+        ):
             await ml_jobs._require_batch_output_connectors_in_project(
                 tx,
                 SimpleNamespace(

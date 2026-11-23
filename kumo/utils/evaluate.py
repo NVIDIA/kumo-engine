@@ -14,6 +14,7 @@ from io_utils import kumo_dataclass
 @kumo_dataclass
 class BinaryConfusionMatrix:
     """Confusion matrix at various `thresholds."""
+
     true_positives: List[int]
     false_positives: List[int]
     true_negatives: List[int]
@@ -22,8 +23,8 @@ class BinaryConfusionMatrix:
 
 
 def get_confusion_matrix(
-        y_true: pd.Series, y_prob: pd.Series,
-        thresholds: List[int] = None) -> BinaryConfusionMatrix:
+    y_true: pd.Series, y_prob: pd.Series, thresholds: List[int] = None
+) -> BinaryConfusionMatrix:
     r"""Get confusion matrix across various `thresholds` for a binary
     classification task.
 
@@ -45,8 +46,10 @@ def get_confusion_matrix(
         confusions.append(confusion)
 
     confusions = np.stack(confusions)
-    return BinaryConfusionMatrix(true_positives=confusions[:, 1, 1].tolist(),
-                                 false_positives=confusions[:, 0, 1].tolist(),
-                                 true_negatives=confusions[:, 0, 0].tolist(),
-                                 false_negatives=confusions[:, 1, 0].tolist(),
-                                 thresholds=thresholds.tolist())
+    return BinaryConfusionMatrix(
+        true_positives=confusions[:, 1, 1].tolist(),
+        false_positives=confusions[:, 0, 1].tolist(),
+        true_negatives=confusions[:, 0, 0].tolist(),
+        false_negatives=confusions[:, 1, 0].tolist(),
+        thresholds=thresholds.tolist(),
+    )

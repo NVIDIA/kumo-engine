@@ -107,11 +107,13 @@ def test_explain_starts_and_clears_ttng_selection_capture() -> None:
         limit_predict_batches = 1.0
 
         def test(self, *, model, datamodule, ckpt_path):
-            datamodule.events.append((
-                'eval',
-                datamodule.active_stage,
-                datamodule.eval_loader_kwargs['batch_size'],
-            ))
+            datamodule.events.append(
+                (
+                    'eval',
+                    datamodule.active_stage,
+                    datamodule.eval_loader_kwargs['batch_size'],
+                )
+            )
             return []
 
     class _Trainer:
@@ -122,19 +124,21 @@ def test_explain_starts_and_clears_ttng_selection_capture() -> None:
         _collect_subgraphs = Trainer._collect_subgraphs
 
         def __init__(self) -> None:
-            self.refit_cfg = SimpleNamespace(refitted_trainval=False,
-                                             refitted_full=False)
-            self.pl_model = SimpleNamespace(explainers=[], outputs=None,
-                                            disable_eval_metrics=False)
+            self.refit_cfg = SimpleNamespace(
+                refitted_trainval=False, refitted_full=False
+            )
+            self.pl_model = SimpleNamespace(
+                explainers=[], outputs=None, disable_eval_metrics=False
+            )
             self._fully_initialized = True
             self.fit_mode = FitMode.fit
-            self.task = SimpleNamespace(
-                task_type=TaskType.BINARY_CLASSIFICATION)
+            self.task = SimpleNamespace(task_type=TaskType.BINARY_CLASSIFICATION)
             self.datamodule = _Datamodule()
             self.pl_trainer = _PLTrainer()
             self.best_ckpt = '/tmp/fake.ckpt'
             self.explain_runtime = SimpleNamespace(
-                max_batches=1, prediction_selection_nodes=1000, max_facts=16)
+                max_batches=1, prediction_selection_nodes=1000, max_facts=16
+            )
 
         def _check_readiness_for_prediction(self, fit_mode_to_use):
             pass
@@ -142,8 +146,9 @@ def test_explain_starts_and_clears_ttng_selection_capture() -> None:
         def init(self):
             pass
 
-        def set_explainers(self, stage, explain_methods, root_dir=None,
-                           collector_formats=None):
+        def set_explainers(
+            self, stage, explain_methods, root_dir=None, collector_formats=None
+        ):
             self.pl_model.explainers = []
 
     trainer = _Trainer()
@@ -196,10 +201,12 @@ def test_explain_pred_ttng_replays_selected_rows(
         def predict(self, **kwargs):
             self.calls.append((self.limit_predict_batches, kwargs))
             if 'datamodule' in kwargs:
-                return [{
-                    'pred': torch.tensor([1, 0]),
-                    'prob': torch.tensor([[0.1, 0.9], [0.8, 0.2]]),
-                }]
+                return [
+                    {
+                        'pred': torch.tensor([1, 0]),
+                        'prob': torch.tensor([[0.1, 0.9], [0.8, 0.2]]),
+                    }
+                ]
             return []
 
     class _Trainer:
@@ -211,14 +218,15 @@ def test_explain_pred_ttng_replays_selected_rows(
         subgraph_collector_dir = Trainer.subgraph_collector_dir
 
         def __init__(self) -> None:
-            self.refit_cfg = SimpleNamespace(refitted_trainval=False,
-                                             refitted_full=False)
-            self.pl_model = SimpleNamespace(explainers=[], outputs=None,
-                                            disable_eval_metrics=False)
+            self.refit_cfg = SimpleNamespace(
+                refitted_trainval=False, refitted_full=False
+            )
+            self.pl_model = SimpleNamespace(
+                explainers=[], outputs=None, disable_eval_metrics=False
+            )
             self._fully_initialized = True
             self.fit_mode = FitMode.fit
-            self.task = SimpleNamespace(
-                task_type=TaskType.BINARY_CLASSIFICATION)
+            self.task = SimpleNamespace(task_type=TaskType.BINARY_CLASSIFICATION)
             self.datamodule = _Datamodule()
             self.pl_trainer = _PLTrainer()
             self.best_ckpt = '/tmp/fake.ckpt'
@@ -228,8 +236,9 @@ def test_explain_pred_ttng_replays_selected_rows(
                 max_batches=500,
                 max_facts=16,
                 prediction_selection_nodes=1000,
-                get_prediction_inputs=lambda dm, limit: (
-                    fake_get_explain_node_inputs(dm, TrainingStage.PRED)),
+                get_prediction_inputs=lambda dm, limit: fake_get_explain_node_inputs(
+                    dm, TrainingStage.PRED
+                ),
                 prediction_rows=fake_prediction_rows,
                 get_explain_node_inputs=fake_get_explain_node_inputs,
                 select_input_nodes=fake_select_input_nodes,
@@ -243,12 +252,16 @@ def test_explain_pred_ttng_replays_selected_rows(
         def init(self):
             pass
 
-        def set_explainers(self, stage, explain_methods, root_dir=None,
-                           collector_formats=None):
+        def set_explainers(
+            self, stage, explain_methods, root_dir=None, collector_formats=None
+        ):
             from kumo_core.types import ExplainMethod
-            self.pl_model.explainers = ([
-                object()
-            ] if ExplainMethod.SUBGRAPH_COLLECTOR in explain_methods else [])
+
+            self.pl_model.explainers = (
+                [object()]
+                if ExplainMethod.SUBGRAPH_COLLECTOR in explain_methods
+                else []
+            )
 
     selected_stage_ids = torch.tensor([100, 103])
     replay_calls = []
@@ -257,8 +270,9 @@ def test_explain_pred_ttng_replays_selected_rows(
         assert stage == TrainingStage.PRED
         return torch.tensor([7, 7]), selected_stage_ids
 
-    def fake_select_input_nodes(task_type, feature_store, input_nodes, input_id,
-                                outputs, stage):
+    def fake_select_input_nodes(
+        task_type, feature_store, input_nodes, input_id, outputs, stage
+    ):
         assert task_type == TaskType.BINARY_CLASSIFICATION
         assert torch.equal(input_id, selected_stage_ids)
         assert stage == TrainingStage.PRED
@@ -308,7 +322,8 @@ def test_forecasting_model_encoder_dict_omits_train_table_features():
                 'autoregression_labels': NumericalList(),
                 'year_over_year_labels': NumericalList(),
             },
-        })
+        }
+    )
 
     table_encoder_dict = _table_encoder_dict_for_model(
         TaskType.FORECASTING,
@@ -329,10 +344,7 @@ def test_forecasting_model_encoder_dict_omits_train_table_features():
 
 
 def test_non_forecasting_model_encoder_dict_uses_encoders_directly():
-    encoders = EncodersConfig(
-        encoders={'train_table': {
-            'target': MultiCategorical()
-        }})
+    encoders = EncodersConfig(encoders={'train_table': {'target': MultiCategorical()}})
 
     table_encoder_dict = _table_encoder_dict_for_model(
         TaskType.BINARY_CLASSIFICATION,
@@ -395,7 +407,8 @@ def test_trainer_compare_config(temporal_task, task_type):
 
 
 def test_trainer_load_preserves_edge_type_with_trailing_underscore_rel(
-        tmp_path: pathlib.Path):
+    tmp_path: pathlib.Path,
+):
     """Regression test for EdgeTypeStr JSON round-trip bug (#27593): a
     trailing underscore in a FK column name (e.g. 'USER_ID_') must not
     get corrupted when ``Trainer.load()`` unqualifies an edge-type key
@@ -408,56 +421,58 @@ def test_trainer_load_preserves_edge_type_with_trailing_underscore_rel(
     by matching the corrupted string form against the resolved task edge types.
     """
     df_dict = {
-        'USERS':
-        pd.DataFrame({
-            'USER_ID': [0, 1, 2, 3],
-            'AGE': [20, 30, 40, 50],
-        }),
-        'ORDERS':
-        pd.DataFrame({
-            'ORDER_ID': [0, 1, 2, 3, 4, 5],
-            'USER_ID_': [0, 0, 1, 1, 2, 3],  # trailing underscore in FK column
-            'TIME': ['1990', '1991', '1992', '1990', '1991', '1992'],
-        }),
+        'USERS': pd.DataFrame(
+            {
+                'USER_ID': [0, 1, 2, 3],
+                'AGE': [20, 30, 40, 50],
+            }
+        ),
+        'ORDERS': pd.DataFrame(
+            {
+                'ORDER_ID': [0, 1, 2, 3, 4, 5],
+                'USER_ID_': [0, 0, 1, 1, 2, 3],  # trailing underscore in FK column
+                'TIME': ['1990', '1991', '1992', '1990', '1991', '1992'],
+            }
+        ),
     }
     schema_dict = {
-        'USERS':
-        TestTableSchema(
+        'USERS': TestTableSchema(
             stypes={'AGE': Stype.numerical},
             pkey_name='USER_ID',
         ),
-        'ORDERS':
-        TestTableSchema(
+        'ORDERS': TestTableSchema(
             stypes={'TIME': Stype.timestamp},
             fkeys=[('USER_ID_', 'USERS')],
             time_col='TIME',
         ),
     }
-    train_table_df = pd.DataFrame({
-        'USER_ID': [0, 1, 2, 3] * 3,
-        'TIME': ['1993'] * 4 + ['1994'] * 4 + ['1995'] * 4,
-        'TARGET': [True, True, False, True] * 3,
-        'TRAIN_MASK': [True] * 4 + [False] * 8,
-        'VAL_MASK': [False] * 4 + [True] * 4 + [False] * 4,
-        'TEST_MASK': [False] * 8 + [True] * 4,
-    })
+    train_table_df = pd.DataFrame(
+        {
+            'USER_ID': [0, 1, 2, 3] * 3,
+            'TIME': ['1993'] * 4 + ['1994'] * 4 + ['1995'] * 4,
+            'TARGET': [True, True, False, True] * 3,
+            'TRAIN_MASK': [True] * 4 + [False] * 8,
+            'VAL_MASK': [False] * 4 + [True] * 4 + [False] * 4,
+            'TEST_MASK': [False] * 8 + [True] * 4,
+        }
+    )
     _, graph_store, encoders = create_task_data(
         df_dict=df_dict,
         schema_dict=schema_dict,
         encoders=EncodersConfig(
             encoders={
-                "USERS": {"AGE": Numerical(_stats={ColStatType.MEAN: 35.0})},
-                "ORDERS": {
-                    "TIME": Datetime(
+                'USERS': {'AGE': Numerical(_stats={ColStatType.MEAN: 35.0})},
+                'ORDERS': {
+                    'TIME': Datetime(
                         _stats={
-                            ColStatType.MIN: "kumo_timestamp_1990-01-01 00:00:00",
-                            ColStatType.MAX: "kumo_timestamp_1992-01-01 00:00:00",
+                            ColStatType.MIN: 'kumo_timestamp_1990-01-01 00:00:00',
+                            ColStatType.MAX: 'kumo_timestamp_1992-01-01 00:00:00',
                         }
                     )
                 },
             },
             target=TargetEncoderConfig(
-                "TARGET",
+                'TARGET',
                 Index(_stats={ColStatType.CATEGORY_COUNTS: [[True, 9], [False, 3]]}),
             ),
         ),
@@ -476,8 +491,10 @@ def test_trainer_load_preserves_edge_type_with_trailing_underscore_rel(
             target_node_type='USERS',
         ),
         train_table=ResolvedTrainTable(
-            name='TRAIN_TABLE', target_column='TARGET',
-            time_column='TIME', weight_column=None,
+            name='TRAIN_TABLE',
+            target_column='TARGET',
+            time_column='TIME',
+            weight_column=None,
         ),
     )
     num_neighbors_dict = {et: [-1, -1] for et in edge_types}
@@ -488,8 +505,9 @@ def test_trainer_load_preserves_edge_type_with_trailing_underscore_rel(
         model=HeteroGNN(channels=8, num_mp_layers=2),
         head=NodePredHead(),
         encoders=encoders,
-        sampler_kwargs=dict(num_neighbors=NumNeighbors(
-            values=num_neighbors_dict, default=[-1, -1])),
+        sampler_kwargs=dict(
+            num_neighbors=NumNeighbors(values=num_neighbors_dict, default=[-1, -1])
+        ),
         root_dir=str(tmp_path),
         max_epochs=1,
     )
@@ -503,9 +521,9 @@ def test_trainer_load_preserves_edge_type_with_trailing_underscore_rel(
     raw = json.loads(config_path.read_text())
     raw['sampler_kwargs']['num_neighbors']['values'] = {
         '__'.join(edge_type): value
-        for edge_type, value in
-        zip(edge_types, raw['sampler_kwargs']['num_neighbors']['values'].
-            values())
+        for edge_type, value in zip(
+            edge_types, raw['sampler_kwargs']['num_neighbors']['values'].values()
+        )
     }
     config_path.write_text(json.dumps(raw))
 
@@ -525,7 +543,7 @@ def test_trainer_load_preserves_edge_type_with_trailing_underscore_rel(
 
 
 def test_cuda_oom_exception_handling(tmp_path: pathlib.Path):
-    fake_error_message = "RuntimeError: CUDA out of memory"
+    fake_error_message = 'RuntimeError: CUDA out of memory'
 
     trainer = Trainer(
         task=TaskConfig(TaskType.BINARY_CLASSIFICATION, name='TEST_CUDA_OOM'),
@@ -549,8 +567,8 @@ def test_cuda_oom_exception_handling(tmp_path: pathlib.Path):
 
     trainer.refit_cfg.best_val_epoch = 999
     with pytest.raises(
-            PublicTrainingError,
-            match="GPU out-of-memory error during refit.",
+        PublicTrainingError,
+        match='GPU out-of-memory error during refit.',
     ):
         trainer.refit(fit_mode=FitMode.refit_trainval)
 
@@ -584,8 +602,7 @@ def test_load_model_from_checkpoint(temporal_task, task_type):
             ckpt_path=trainer.checkpoint_path,
         )
 
-    method_name = (
-        'kumo_core.train.base_module.BaseLightningModule.load_checkpoint')
+    method_name = 'kumo_core.train.base_module.BaseLightningModule.load_checkpoint'
     trainer = Trainer(
         task=TaskConfig(task_type, name='TEST_CUDA_OOM'),
         encoder=HeteroTensorFrameEncoder(),
@@ -642,12 +659,14 @@ def test_pred_output_save(tmp_path: pathlib.Path):
 
 
 def test_pred_output_save_mixed_type_class_column(tmp_path: pathlib.Path):
-    pred_df = pd.DataFrame({
-        'ENTITY': ['a', 'a', 'b'],
-        'CLASS': [np.int64(1), '', np.int64(2)],
-        'SCORE': [0.7, 0.2, 0.1],
-        'PREDICTED': [True, False, False],
-    })
+    pred_df = pd.DataFrame(
+        {
+            'ENTITY': ['a', 'a', 'b'],
+            'CLASS': [np.int64(1), '', np.int64(2)],
+            'SCORE': [0.7, 0.2, 0.1],
+            'PREDICTED': [True, False, False],
+        }
+    )
 
     pred_output = PredOutput(pred_df)
     pred_output.save(str(tmp_path / 'pred_output'))
@@ -658,29 +677,38 @@ def test_pred_output_save_mixed_type_class_column(tmp_path: pathlib.Path):
 
 
 def test_streaming_pred_output_stabilizes_class_schema_across_batches(
-        tmp_path: pathlib.Path):
+    tmp_path: pathlib.Path,
+):
     output_dir = str(tmp_path / 'pred_output')
     with StreamingPredOutputWriter(output_dir, partition_id=0) as writer:
         writer.write(
             PredOutput(
-                pd.DataFrame({
-                    'ENTITY': ['a', 'b'],
-                    'CLASS': pd.Series([1, 2], dtype=object),
-                })))
+                pd.DataFrame(
+                    {
+                        'ENTITY': ['a', 'b'],
+                        'CLASS': pd.Series([1, 2], dtype=object),
+                    }
+                )
+            )
+        )
         writer.write(
             PredOutput(
-                pd.DataFrame({
-                    'ENTITY': ['c'],
-                    'CLASS': pd.Series(['other'], dtype=object),
-                })))
+                pd.DataFrame(
+                    {
+                        'ENTITY': ['c'],
+                        'CLASS': pd.Series(['other'], dtype=object),
+                    }
+                )
+            )
+        )
 
-    predictions = parquet_util.read_parquet(
-        osp.join(output_dir, 'predictions.parquet'))
+    predictions = parquet_util.read_parquet(osp.join(output_dir, 'predictions.parquet'))
     assert predictions['CLASS'].tolist() == ['1', '2', 'other']
 
 
 def test_streaming_pred_output_writes_artifact_specific_final_schema(
-        tmp_path: pathlib.Path):
+    tmp_path: pathlib.Path,
+):
     output_dir = str(tmp_path / 'pred_output')
     predictions_dir = tmp_path / 'pred_output' / 'predictions.parquet'
     embeddings_dir = tmp_path / 'pred_output' / 'embeddings.parquet'
@@ -698,81 +726,83 @@ def test_streaming_pred_output_writes_artifact_specific_final_schema(
         path.write_bytes(b'stale')
     job_start_time = pd.Timestamp('2026-01-02T03:04:05Z')
     with StreamingPredOutputWriter(
-            output_dir,
-            partition_id=0,
-            output_extra_fields={
-                'PREDICTIONS': ['ANCHOR_TIMESTAMP'],
-                'EMBEDDINGS': ['JOB_TIMESTAMP'],
-            },
-            job_start_time=job_start_time,
+        output_dir,
+        partition_id=0,
+        output_extra_fields={
+            'PREDICTIONS': ['ANCHOR_TIMESTAMP'],
+            'EMBEDDINGS': ['JOB_TIMESTAMP'],
+        },
+        job_start_time=job_start_time,
     ) as writer:
         writer.write(
             PredOutput(
-                pd.DataFrame({
-                    'ID': ['a'],
-                    'SCORE': [0.5],
-                    'ANCHOR_TIMESTAMP': [pd.Timestamp('2026-01-01T00:00:00')],
-                    'JOB_TIMESTAMP': [pd.Timestamp('2026-01-02T03:04:05')],
-                }),
-                pd.DataFrame({
-                    'ID': ['a'],
-                    'EMBEDDING': [[1.0, 2.0]],
-                    'ANCHOR_TIMESTAMP': [pd.Timestamp('2026-01-01T00:00:00')],
-                }),
-            ))
+                pd.DataFrame(
+                    {
+                        'ID': ['a'],
+                        'SCORE': [0.5],
+                        'ANCHOR_TIMESTAMP': [pd.Timestamp('2026-01-01T00:00:00')],
+                        'JOB_TIMESTAMP': [pd.Timestamp('2026-01-02T03:04:05')],
+                    }
+                ),
+                pd.DataFrame(
+                    {
+                        'ID': ['a'],
+                        'EMBEDDING': [[1.0, 2.0]],
+                        'ANCHOR_TIMESTAMP': [pd.Timestamp('2026-01-01T00:00:00')],
+                    }
+                ),
+            )
+        )
 
     assert all(not path.exists() for path in stale_files)
     assert all(path.exists() for path in preserved_files)
     for path in preserved_files:
         path.unlink()
-    predictions = parquet_util.read_parquet(
-        osp.join(output_dir, 'predictions.parquet'))
-    embeddings = parquet_util.read_parquet(
-        osp.join(output_dir, 'embeddings.parquet'))
+    predictions = parquet_util.read_parquet(osp.join(output_dir, 'predictions.parquet'))
+    embeddings = parquet_util.read_parquet(osp.join(output_dir, 'embeddings.parquet'))
     assert list(predictions.columns) == ['ID', 'SCORE', 'ANCHOR_TIMESTAMP']
     assert list(embeddings.columns) == ['ID', 'EMBEDDING', 'JOB_TIMESTAMP']
     assert '__index_level_0__' not in embeddings.columns
-    assert embeddings['JOB_TIMESTAMP'].iloc[0] == job_start_time.tz_localize(
-        None)
+    assert embeddings['JOB_TIMESTAMP'].iloc[0] == job_start_time.tz_localize(None)
 
 
 def test_streaming_pred_output_rejects_missing_requested_metadata(
-        tmp_path: pathlib.Path):
+    tmp_path: pathlib.Path,
+):
     with StreamingPredOutputWriter(
-            str(tmp_path / 'pred_output'),
-            partition_id=0,
-            output_extra_fields={
-                'PREDICTIONS': ['ANCHOR_TIMESTAMP'],
-            },
+        str(tmp_path / 'pred_output'),
+        partition_id=0,
+        output_extra_fields={
+            'PREDICTIONS': ['ANCHOR_TIMESTAMP'],
+        },
     ) as writer:
         with pytest.raises(
-                ValueError,
-                match='PREDICTIONS.*ANCHOR_TIMESTAMP',
+            ValueError,
+            match='PREDICTIONS.*ANCHOR_TIMESTAMP',
         ):
             writer.write(PredOutput(pd.DataFrame({'ID': ['a']})))
 
 
 def test_generate_regression_histogram(tmp_path: pathlib.Path):
-    log_dir = str(tmp_path / "log_dir")
-    job_dir = str(tmp_path / "job_dir")
+    log_dir = str(tmp_path / 'log_dir')
+    job_dir = str(tmp_path / 'job_dir')
     mgr = HomeDirManager(job_dir)
 
     # Case 1: all files missing
     generate_regression_histogram(log_dir, job_dir)
-    result = load_json(mgr.all_target_regression_stats,
-                       AllTargetRegressionStats)
+    result = load_json(mgr.all_target_regression_stats, AllTargetRegressionStats)
     assert result == AllTargetRegressionStats.empty()
 
     # Case 2: only val stats available
     stats = TargetHistogramAndStatsPair(
         label=TargetHistogramAndStats(target_mean=1),
-        prediction=TargetHistogramAndStats(target_mean=2))
+        prediction=TargetHistogramAndStats(target_mean=2),
+    )
     save_json(
-        stats,
-        EvalOutput.get_prediction_histogram_path(log_dir, TrainingStage.VAL))
+        stats, EvalOutput.get_prediction_histogram_path(log_dir, TrainingStage.VAL)
+    )
     generate_regression_histogram(log_dir, job_dir)
-    result = load_json(mgr.all_target_regression_stats,
-                       AllTargetRegressionStats)
+    result = load_json(mgr.all_target_regression_stats, AllTargetRegressionStats)
     assert result.label_distribution.val_table_stats is not None
     assert result.label_distribution.val_table_stats.target_mean == 1
     assert result.prediction_distribution.val_table_stats is not None
@@ -781,16 +811,16 @@ def test_generate_regression_histogram(tmp_path: pathlib.Path):
     # Case 2: all stats available
     stats = TargetHistogramAndStatsPair(
         label=TargetHistogramAndStats(target_mean=3),
-        prediction=TargetHistogramAndStats(target_mean=4))
+        prediction=TargetHistogramAndStats(target_mean=4),
+    )
     save_json(
-        stats,
-        EvalOutput.get_prediction_histogram_path(log_dir, TrainingStage.TEST))
+        stats, EvalOutput.get_prediction_histogram_path(log_dir, TrainingStage.TEST)
+    )
     save_json(
-        stats,
-        EvalOutput.get_prediction_histogram_path(log_dir, TrainingStage.TRAIN))
+        stats, EvalOutput.get_prediction_histogram_path(log_dir, TrainingStage.TRAIN)
+    )
     generate_regression_histogram(log_dir, job_dir)
-    result = load_json(mgr.all_target_regression_stats,
-                       AllTargetRegressionStats)
+    result = load_json(mgr.all_target_regression_stats, AllTargetRegressionStats)
     assert result.label_distribution.test_table_stats is not None
     assert result.label_distribution.train_table_stats is not None
     assert result.prediction_distribution.test_table_stats is not None
@@ -812,10 +842,12 @@ def test_create_multilabel_ranking_prediction_output(
 
     num_rows = 3
     num_classes = 4
-    df = pd.DataFrame({
-        'ENTITY': [0, 1, 2],
-        'TIMESTAMP': ['2025-01-01', '2025-01-02', '2025-01-03'],
-    })
+    df = pd.DataFrame(
+        {
+            'ENTITY': [0, 1, 2],
+            'TIMESTAMP': ['2025-01-01', '2025-01-02', '2025-01-03'],
+        }
+    )
     target = None
     if with_target:  # when not BP
         target = F.one_hot(torch.tensor([0, 1, 2]), num_classes=num_classes)
@@ -824,17 +856,20 @@ def test_create_multilabel_ranking_prediction_output(
         else:
             df['TARGET'] = ['A|B', 'B', 'C']
 
-    prob = torch.tensor([
-        [0.1, 0.2, 0.3, 0.4],
-        [0.8, 0.7, 0.6, 0.5],
-        [0.9, 0.8, 0.7, 0.6],
-    ])
+    prob = torch.tensor(
+        [
+            [0.1, 0.2, 0.3, 0.4],
+            [0.8, 0.7, 0.6, 0.5],
+            [0.9, 0.8, 0.7, 0.6],
+        ]
+    )
     category_counts = [['A', 4], ['B', 3], ['C', 2], ['D', 1]]
     target_encoder = MultiCategoricalTargetEncoder(
         tensor_mapper=MultiCategoricalTensorMapper(
             category_counts=category_counts,
             sep=None if is_array_targets else '|',
-        ))
+        )
+    )
 
     for top_k, expected_top_k in [
         (1, 1),
@@ -879,26 +914,31 @@ def test_create_multilabel_classification_prediction_output(
 
     num_rows = 3
     num_classes = 4
-    df = pd.DataFrame({
-        'ENTITY': [0, 1, 2],
-        'TIMESTAMP': ['2025-01-01', '2025-01-02', '2025-01-03'],
-    })
+    df = pd.DataFrame(
+        {
+            'ENTITY': [0, 1, 2],
+            'TIMESTAMP': ['2025-01-01', '2025-01-02', '2025-01-03'],
+        }
+    )
     target = None
     if with_target:  # when not BP
         target = F.one_hot(torch.tensor([0, 1, 2]), num_classes=num_classes)
 
-    prob = torch.tensor([
-        [0.1, 0.2, 0.3, 0.4],
-        [0.8, 0.7, 0.6, 0.5],
-        [0.9, 0.8, 0.7, 0.6],
-    ])
+    prob = torch.tensor(
+        [
+            [0.1, 0.2, 0.3, 0.4],
+            [0.8, 0.7, 0.6, 0.5],
+            [0.9, 0.8, 0.7, 0.6],
+        ]
+    )
     pred = prob > 0.5
     category_counts = [['A', 4], ['B', 3], ['C', 2], ['D', 1]]
     target_encoder = MultiCategoricalTargetEncoder(
         tensor_mapper=MultiCategoricalTensorMapper(
             category_counts=category_counts,
             sep=None if is_array_targets else '|',
-        ))
+        )
+    )
 
     for top_k, expected_top_k in [
         (1, 1),
@@ -934,8 +974,7 @@ def test_create_multilabel_classification_prediction_output(
     ('edge_type', 'expected_edge_type'),
     [
         (
-            ('transactions__KUMO_EDGE_KEY__customer_id'
-             '__KUMO_EDGE_KEY__customers'),
+            ('transactions__KUMO_EDGE_KEY__customer_id__KUMO_EDGE_KEY__customers'),
             'transactions__customer_id__customers',
         ),
         (
@@ -948,17 +987,21 @@ def test_trainer_config_loads_serialized_edge_type_sampler_key(
     edge_type, expected_edge_type, tmp_path
 ):
     path = tmp_path / 'config.json'
-    path.write_text(json.dumps({
-        'encoder': {'table_encoder_dict': {}},
-        'model': None,
-        'head': None,
-        'sampler_kwargs': {
-            'num_neighbors': {
-                'values': {edge_type: [64, 12]},
-                'default': [0, 0],
-            },
-        },
-    }))
+    path.write_text(
+        json.dumps(
+            {
+                'encoder': {'table_encoder_dict': {}},
+                'model': None,
+                'head': None,
+                'sampler_kwargs': {
+                    'num_neighbors': {
+                        'values': {edge_type: [64, 12]},
+                        'default': [0, 0],
+                    },
+                },
+            }
+        )
+    )
     config = load_training_config(str(path), TrainerConfig)
 
     assert config is not None

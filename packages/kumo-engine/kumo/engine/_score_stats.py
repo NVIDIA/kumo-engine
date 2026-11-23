@@ -27,9 +27,9 @@ _CLASS_COLUMNS = {'CLASS', 'SCORE', 'LABEL', 'PREDICTED'}
 Paths = Sequence[Union[str, Path]]
 
 
-def output_counts(paths: Paths, task_type: TaskType,
-                  edges: Optional[Mapping[str, Tuple[float, ...]]]
-                  ) -> Optional[Counts]:
+def output_counts(
+    paths: Paths, task_type: TaskType, edges: Optional[Mapping[str, Tuple[float, ...]]]
+) -> Optional[Counts]:
     r"""Score counts of prediction files; None without bins."""
     import diskgraph
     import pyarrow as pa
@@ -40,26 +40,42 @@ def output_counts(paths: Paths, task_type: TaskType,
         return None
     bins = edges[axis(name)]
     schema = parquet.read_schema(paths[0])
-    specs = [{'name': column, 'stype': 'numerical',
-              'dtype': 'float32' if pa.types.is_float32(
-                  schema.field(column).type) else 'float64'}]
+    specs = [
+        {
+            'name': column,
+            'stype': 'numerical',
+            'dtype': 'float32'
+            if pa.types.is_float32(schema.field(column).type)
+            else 'float64',
+        }
+    ]
     binary = task_type is TaskType.BINARY_CLASSIFICATION
     if binary:
-        specs.append({'name': 'TARGET_PRED', 'stype': 'categorical',
-                      'dtype': 'bool'})
+        specs.append({'name': 'TARGET_PRED', 'stype': 'categorical', 'dtype': 'bool'})
     full, _ = diskgraph.compute_col_stats_for_parquet(
-        [str(path) for path in paths], json.dumps(specs), '',
-        summary_stats_by_class=False, histograms=False,
-        max_per=[key for key in schema.names
-                 if key not in _CLASS_COLUMNS and not key.startswith('__')]
-        if column == 'SCORE' else [],
-        fixed_edges={column: list(bins)})
+        [str(path) for path in paths],
+        json.dumps(specs),
+        '',
+        summary_stats_by_class=False,
+        histograms=False,
+        max_per=[
+            key
+            for key in schema.names
+            if key not in _CLASS_COLUMNS and not key.startswith('__')
+        ]
+        if column == 'SCORE'
+        else [],
+        fixed_edges={column: list(bins)},
+    )
     stats = json.loads(full)
     fixed = stats[f'{column}__kumo.numerical__FIXED_HISTOGRAM__False']['value']
-    counts = Counts({axis(name): tuple(bins)}, {
-        name: np.asarray(fixed['counts']),
-        f'{name}/sum': np.asarray(float(fixed['sum'])),
-    })
+    counts = Counts(
+        {axis(name): tuple(bins)},
+        {
+            name: np.asarray(fixed['counts']),
+            f'{name}/sum': np.asarray(float(fixed['sum'])),
+        },
+    )
     if fixed['min'] is not None:
         counts.extents[name] = (fixed['min'], fixed['max'])
     if binary:
@@ -69,5 +85,6 @@ def output_counts(paths: Paths, task_type: TaskType,
 
 def _positives(stats: Dict[str, Any]) -> int:
     entry = stats.get('TARGET_PRED__kumo.categorical__CATEGORY_COUNTS__False')
-    return sum(count for value, count in (entry or {}).get('value') or []
-               if value in (True, 1))
+    return sum(
+        count for value, count in (entry or {}).get('value') or [] if value in (True, 1)
+    )

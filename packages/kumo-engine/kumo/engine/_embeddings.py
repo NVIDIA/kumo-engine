@@ -13,15 +13,19 @@ from kumo_core.embedding_models import EmbeddingModelStore
 
 @contextmanager
 def no_encoder_inference_warnings(
-        overridden: Optional[Collection[str]] = None) -> Iterator[None]:
+    overridden: Optional[Collection[str]] = None,
+) -> Iterator[None]:
     # Only fit reports what inference chose: training tables do not use it,
     # and a trained model encodes columns as it was trained to.
     def drop(record: logging.LogRecord) -> bool:
         if overridden is None:
             return record.levelno < logging.WARNING
-        return (record.levelno < logging.WARNING
-                or not isinstance(record.args, tuple) or not record.args
-                or record.args[0] not in overridden)
+        return (
+            record.levelno < logging.WARNING
+            or not isinstance(record.args, tuple)
+            or not record.args
+            or record.args[0] not in overridden
+        )
 
     inference = logging.getLogger('kumo_core.encoder_selection')
     inference.addFilter(drop)
@@ -31,26 +35,25 @@ def no_encoder_inference_warnings(
         inference.removeFilter(drop)
 
 
-def require_embedding_models(store: EmbeddingModelStore,
-                             feature_schema: dict[str, Any],
-                             encoder_overrides: Optional[Any] = None) -> None:
+def require_embedding_models(
+    store: EmbeddingModelStore,
+    feature_schema: dict[str, Any],
+    encoder_overrides: Optional[Any] = None,
+) -> None:
     from kumoapi.encoder import EncoderType
     from pydantic import TypeAdapter
 
     # What training will use: the inferred encoders, then the overrides.
     adapter: TypeAdapter = TypeAdapter(EncoderType)
     inferred = {
-        f"{table}.{spec['column_name']}": adapter.validate_python(
-            spec["encoder"])
-        for table, schema in feature_schema["node_types"].items()
-        for spec in schema["column_specs"]
+        f'{table}.{spec["column_name"]}': adapter.validate_python(spec['encoder'])
+        for table, schema in feature_schema['node_types'].items()
+        for spec in schema['column_specs']
     }
-    embedding_models.require_embedding_models(store, inferred,
-                                              encoder_overrides)
+    embedding_models.require_embedding_models(store, inferred, encoder_overrides)
 
 
-def require_trained_embedding_models(store: EmbeddingModelStore,
-                                     encoders: Any) -> None:
+def require_trained_embedding_models(store: EmbeddingModelStore, encoders: Any) -> None:
     # A trained model is matched by the identity of its models, not names.
     if encoders is not None:
         embedding_models.require_encoder_models(encoders, store, trained=True)
@@ -58,6 +61,7 @@ def require_trained_embedding_models(store: EmbeddingModelStore,
 
 class TextEncoderAsset:
     r"""The word vectors of a text encoder, as a model dependency."""
+
     asset_kind = 'text_encoder'
 
     def __init__(self, name: str, model: Any) -> None:
@@ -83,15 +87,14 @@ def _text_encoders(encoders: Any) -> List[Any]:
     from kumoapi.encoder import TextEmbedding
 
     found: Dict[str, Any] = {}
-    for table in (encoders.encoders.values() if encoders else ()):
+    for table in encoders.encoders.values() if encoders else ():
         for encoder in table.values():
             if isinstance(encoder, TextEmbedding) and encoder._identity:
                 found.setdefault(encoder._identity['fingerprint'], encoder)
     return list(found.values())
 
 
-def require_text_encoders(deps: Any, store: EmbeddingModelStore,
-                          encoders: Any) -> bool:
+def require_text_encoders(deps: Any, store: EmbeddingModelStore, encoders: Any) -> bool:
     r"""Records the model's text-encoder vectors; returns whether any."""
     from kumo_core.embedding_models import GloVeVectors, resolve_encoder
 
@@ -104,25 +107,36 @@ def require_text_encoders(deps: Any, store: EmbeddingModelStore,
             deps.require(TextEncoderAsset(encoder.model, model))
         else:
             deps.add(
-                Dependency(kind='asset', name=encoder.model,
-                           version=model.label, asset_kind='text_encoder',
-                           sha256=encoder._identity['fingerprint'],
-                           packing='external'))
+                Dependency(
+                    kind='asset',
+                    name=encoder.model,
+                    version=model.label,
+                    asset_kind='text_encoder',
+                    sha256=encoder._identity['fingerprint'],
+                    packing='external',
+                )
+            )
     return bool(text)
 
 
-def with_text_encoders(store: EmbeddingModelStore, encoders: Any,
-                       deps: Any) -> EmbeddingModelStore:
+def with_text_encoders(
+    store: EmbeddingModelStore, encoders: Any, deps: Any
+) -> EmbeddingModelStore:
     r"""``store`` plus the model's stored word vectors that ``deps`` finds."""
     from kumo.engine._deps import MissingDependencyError, loaded
 
     added: Dict[str, Any] = {}
     for encoder in _text_encoders(encoders):
         known = encoder._identity
-        record = next((record for record in deps.assets('text_encoder')
-                       if record.sha256 == known['fingerprint']), None)
-        if record is None or not record.entry_point or not deps.candidates(
-                record):
+        record = next(
+            (
+                record
+                for record in deps.assets('text_encoder')
+                if record.sha256 == known['fingerprint']
+            ),
+            None,
+        )
+        if record is None or not record.entry_point or not deps.candidates(record):
             continue
         try:
             directory = deps.resolve('text_encoder', record.name)
@@ -130,8 +144,7 @@ def with_text_encoders(store: EmbeddingModelStore, encoders: Any,
             if store._find(known, encoder.model) is not None:
                 continue
             raise
-        added[f"{record.name}@{record.sha256[:12]}"] = loaded(
-            directory, record).model
+        added[f'{record.name}@{record.sha256[:12]}'] = loaded(directory, record).model
     if not added:
         return store
     extended = EmbeddingModelStore()

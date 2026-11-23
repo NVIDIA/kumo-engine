@@ -5,7 +5,6 @@
 import os.path as osp
 import shutil
 from dataclasses import asdict
-from test.fixtures.dg_indexed_graph import materialize_task_dg
 from unittest.mock import patch
 
 from kumo_core.types import TaskType
@@ -19,6 +18,7 @@ from kumo.pquery.predictive_query import PredictiveQueryV2
 from kumo.task.split import RandomSplit
 from kumo.task.task import Task
 from kumo.testing.pquery import get_validated_query
+from test.fixtures.dg_indexed_graph import materialize_task_dg
 
 TEST_GRAPH_NAME = 'FINANCIAL'
 TEST_TASK_NAME = 'kumo_test_task'
@@ -72,10 +72,12 @@ def test_multilabel_ranking(create_task):
 @patch('kumo.pquery.AST.ast_node.ALLOW_ARRAY_TARGETS', new=True)
 def test_task_link_prediction(dg_indexed_static_link_pred_graph, tmp_path):
     graph, index_path = dg_indexed_static_link_pred_graph(
-        num_entities=3, set_entity_time_col=False, set_trans_time_col=False)
+        num_entities=3, set_entity_time_col=False, set_trans_time_col=False
+    )
     graph.infer_metadata()
-    query = ('PREDICT LIST_DISTINCT(TRANS.PRODUCT_ID_FK) RANK TOP 2 '
-             'FOR EACH USERS.USER_ID')
+    query = (
+        'PREDICT LIST_DISTINCT(TRANS.PRODUCT_ID_FK) RANK TOP 2 FOR EACH USERS.USER_ID'
+    )
     validated_query = get_validated_query(graph, query)
     pquery = PredictiveQueryV2(
         name=TEST_LINK_PREDICTION_TASK_NAME,
@@ -114,13 +116,11 @@ def test_task_link_prediction(dg_indexed_static_link_pred_graph, tmp_path):
     new_task = Task.load(TEST_LINK_PREDICTION_TASK_NAME, save_dir)
     assert asdict(new_task.config()) == asdict(task.config())
     assert new_task.task_type == TaskType.STATIC_LINK_PREDICTION
-    assert [fk.name
-            for fk in new_task.train_table.fkeys] == ['ENTITY', 'TARGET']
+    assert [fk.name for fk in new_task.train_table.fkeys] == ['ENTITY', 'TARGET']
 
 
 def test_task_is_temporal(create_task):
-    task = create_task(TEST_GRAPH_NAME, 'multiclass_classification',
-                       temporal=True)
+    task = create_task(TEST_GRAPH_NAME, 'multiclass_classification', temporal=True)
     assert task.is_temporal
 
     task.train_table.set_time_col(None)
@@ -159,8 +159,9 @@ def test_time_period_roundtrips_degenerate_horizon():
 
     from io_utils.json import from_json_dict, to_json_dict
 
-    period = TimePeriod(start=datetime(2020, 1, 1), end=datetime(2020, 6, 1),
-                        is_pseudo=False)
+    period = TimePeriod(
+        start=datetime(2020, 1, 1), end=datetime(2020, 6, 1), is_pseudo=False
+    )
     data = to_json_dict(period)
 
     data['end'] = '0000-09-10T00:00:00'

@@ -18,12 +18,16 @@ from kumo_core.sources.errors import (
     TransientSourceError,
 )
 
-ERROR_CODE = re.compile(r"^\[([A-Z][A-Z0-9_]*(?:\.[A-Z][A-Z0-9_]*)*)\](?:\s|$)")
-REAUTHORIZE = ("invalid access token", "token expired", "expired token",
-               "token is expired", "unauthenticated")
-DENIED = ("PERMISSION_DENIED", "INSUFFICIENT_PRIVILEGES",
-          "INSUFFICIENT_PERMISSIONS")
-NOT_FOUND_CODE = "TABLE_OR_VIEW_NOT_FOUND"
+ERROR_CODE = re.compile(r'^\[([A-Z][A-Z0-9_]*(?:\.[A-Z][A-Z0-9_]*)*)\](?:\s|$)')
+REAUTHORIZE = (
+    'invalid access token',
+    'token expired',
+    'expired token',
+    'token is expired',
+    'unauthenticated',
+)
+DENIED = ('PERMISSION_DENIED', 'INSUFFICIENT_PRIVILEGES', 'INSUFFICIENT_PERMISSIONS')
+NOT_FOUND_CODE = 'TABLE_OR_VIEW_NOT_FOUND'
 
 
 class ArtifactValidationError(ValueError):
@@ -69,8 +73,7 @@ def rules() -> Sequence[Rule]:
     )
 
 
-translated = diagnostics.source_translator("databricks", rules=rules,
-                                           summarize=summary)
+translated = diagnostics.source_translator('databricks', rules=rules, summarize=summary)
 
 
 def server_error_code(error: BaseException) -> str | None:
@@ -78,12 +81,12 @@ def server_error_code(error: BaseException) -> str | None:
 
     if not isinstance(error, ServerOperationError):
         return None
-    context = getattr(error, "context", None)
+    context = getattr(error, 'context', None)
     if isinstance(context, dict):
-        code = context.get("error_code")
+        code = context.get('error_code')
         if isinstance(code, str):
             return code
-    message = getattr(error, "message", None)
+    message = getattr(error, 'message', None)
     if not isinstance(message, str):
         return None
     match = ERROR_CODE.match(message)
@@ -111,9 +114,10 @@ def is_not_found(error: BaseException) -> bool:
     code = server_error_code(error)
     if code is None:
         return False
-    return code == NOT_FOUND_CODE or code.startswith(f"{NOT_FOUND_CODE}.")
+    return code == NOT_FOUND_CODE or code.startswith(f'{NOT_FOUND_CODE}.')
 
 
 def _is_denial(error: BaseException) -> bool:
-    return any(marker in f"{server_error_code(error)} {error}".upper()
-               for marker in DENIED)
+    return any(
+        marker in f'{server_error_code(error)} {error}'.upper() for marker in DENIED
+    )

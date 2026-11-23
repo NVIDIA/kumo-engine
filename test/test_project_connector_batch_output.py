@@ -20,14 +20,13 @@ from statedb.utils.errors import ConnectorDoesNotExistError
 
 
 @pytest.mark.asyncio
-async def test_warehouse_output_validation_dispatches_project_reference(
-) -> None:
+async def test_warehouse_output_validation_dispatches_project_reference() -> None:
     project_id = ProjectID.generate()
     connector_id = ConnectorID.generate()
-    reference = ConnectorExecutionRef(project_id=project_id,
-                                      connector_id=connector_id)
-    connector_service = SimpleNamespace(execution_ref_for_project=AsyncMock(
-        return_value=reference))
+    reference = ConnectorExecutionRef(project_id=project_id, connector_id=connector_id)
+    connector_service = SimpleNamespace(
+        execution_ref_for_project=AsyncMock(return_value=reference)
+    )
     logic = BatchPredictionJobLogic(
         ml_job_backend=None,
         data_backend_ctx=MagicMock(),
@@ -42,9 +41,9 @@ async def test_warehouse_output_validation_dispatches_project_reference(
     token = _current_user_ctx.set(principal)
     try:
         with patch(
-                'rest.driver.batch_prediction_job_logic.DataBackend.'
-                '_execute_single_activity',
-                new=AsyncMock(return_value=None),
+            'rest.driver.batch_prediction_job_logic.DataBackend.'
+            '_execute_single_activity',
+            new=AsyncMock(return_value=None),
         ) as execute_activity:
             result = await logic._validate_warehouse_output(
                 output,
@@ -68,8 +67,11 @@ async def test_warehouse_output_validation_dispatches_project_reference(
 async def test_warehouse_output_validation_rejects_hidden_connector() -> None:
     project_id = ProjectID.generate()
     connector_id = ConnectorID.generate()
-    connector_service = SimpleNamespace(execution_ref_for_project=AsyncMock(
-        side_effect=ConnectorDoesNotExistError(connector_id)))
+    connector_service = SimpleNamespace(
+        execution_ref_for_project=AsyncMock(
+            side_effect=ConnectorDoesNotExistError(connector_id)
+        )
+    )
     logic = BatchPredictionJobLogic(
         ml_job_backend=None,
         data_backend_ctx=MagicMock(),
@@ -82,9 +84,8 @@ async def test_warehouse_output_validation_rejects_hidden_connector() -> None:
     )
 
     with patch(
-            'rest.driver.batch_prediction_job_logic.DataBackend.'
-            '_execute_single_activity',
-            new=AsyncMock(),
+        'rest.driver.batch_prediction_job_logic.DataBackend._execute_single_activity',
+        new=AsyncMock(),
     ) as execute_activity:
         result = await logic._validate_warehouse_output(
             output,

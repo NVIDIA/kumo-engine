@@ -9,6 +9,7 @@ and exception wrapping. Does not exercise the surrounding activity
 body — that path would require mocking the whole pipeline. The
 helper is the testable unit.
 """
+
 from __future__ import annotations
 
 import json
@@ -32,10 +33,8 @@ from statedb.utils.errors import TrainingDataMaterializationError
 # the submodule, shadowing it for ``patch('...module.attr', ...)``
 # resolution. Import the module explicitly so the helper resolves
 # unambiguously to the submodule attribute.
-_mtt = import_module(
-    'rest.backends.ml_backend.activities.materialize_training_task')
-_maybe_materialize_ttng_task_dataset = (
-    _mtt._maybe_materialize_ttng_task_dataset)
+_mtt = import_module('rest.backends.ml_backend.activities.materialize_training_task')
+_maybe_materialize_ttng_task_dataset = _mtt._maybe_materialize_ttng_task_dataset
 
 # Lazy imports inside the helper resolve against their source modules
 # at call time, so those patches go at the source.
@@ -48,18 +47,19 @@ _P_COLLECT_ENCODERS = 'kumo.task.task.collect_encoders'
 # ---------------------------------------------------------------------------
 
 
-def _fkey(name: str, dst_table: str,
-          dst_table_name: str | None = None) -> SimpleNamespace:
+def _fkey(
+    name: str, dst_table: str, dst_table_name: str | None = None
+) -> SimpleNamespace:
     # Real ``kumo.graph.ForeignKey`` exposes ``dst_table`` (fully
     # qualified, e.g. ``<connector>.<table>``) and ``dst_table_name``
     # (bare). Most tests don't need to distinguish; default to using
     # the same value for both.
-    return SimpleNamespace(name=name, dst_table=dst_table,
-                           dst_table_name=dst_table_name or dst_table)
+    return SimpleNamespace(
+        name=name, dst_table=dst_table, dst_table_name=dst_table_name or dst_table
+    )
 
 
-def _table(name: str, fkeys=None,
-           table_name: str | None = None) -> SimpleNamespace:
+def _table(name: str, fkeys=None, table_name: str | None = None) -> SimpleNamespace:
     # Real ``kumo.graph.Table`` exposes two name-like fields: ``name``
     # (fully qualified, e.g. ``<connector>.<table>``) used as the wheel
     # namespace, and ``table_name`` (bare) used as the encoder/mapper
@@ -74,9 +74,14 @@ def _table(name: str, fkeys=None,
             SimpleNamespace(dtype='float', stype='numerical'),
         )
 
-    return SimpleNamespace(name=name, table_name=table_name or name,
-                           fkeys=list(fkeys or []), time_col_name=None,
-                           has_time_col=lambda: False, col=col)
+    return SimpleNamespace(
+        name=name,
+        table_name=table_name or name,
+        fkeys=list(fkeys or []),
+        time_col_name=None,
+        has_time_col=lambda: False,
+        col=col,
+    )
 
 
 def _task(
@@ -88,7 +93,8 @@ def _task(
 ) -> SimpleNamespace:
     return SimpleNamespace(
         task_type=task_type,
-        is_temporal=task_type in {
+        is_temporal=task_type
+        in {
             TaskType.TEMPORAL_LINK_PREDICTION,
             TaskType.FORECASTING,
         },
@@ -110,8 +116,7 @@ def _job_input(
     return SimpleNamespace(
         id=job_id,
         graph_data_compute_input=SimpleNamespace(graph_key=graph_key),
-        graph_version_info=SimpleNamespace(
-            graph_data_version=graph_data_version),
+        graph_version_info=SimpleNamespace(graph_data_version=graph_data_version),
     )
 
 
@@ -140,8 +145,9 @@ def _default_inputs():
     return task_obj, _job_input(), '/tmp/jobs/job-abc/tt.parquet', '/data/gk/v1'
 
 
-def _run_helper(task_obj, train_table_path, job_input_obj, dg_index_path,
-                encoders_dict):
+def _run_helper(
+    task_obj, train_table_path, job_input_obj, dg_index_path, encoders_dict
+):
     """All-gates-on harness. Returns the (handle, spec) tuple the
     helper passed to ``service.materialize_task_dataset``.
 
@@ -151,8 +157,7 @@ def _run_helper(task_obj, train_table_path, job_input_obj, dg_index_path,
     ``test_job_config_updated_with_bundle_dir``.
     """
     service = MagicMock()
-    bundle_dir = os.path.join(dg_index_path, 'task_datasets',
-                              str(job_input_obj.id))
+    bundle_dir = os.path.join(dg_index_path, 'task_datasets', str(job_input_obj.id))
     service.materialize_task_dataset.return_value = MaterializeResult(
         manifest_path=os.path.join(bundle_dir, 'manifest.json'),
         runtime_manifest_path=os.path.join(bundle_dir, 'runtime_manifest.json'),
@@ -163,12 +168,14 @@ def _run_helper(task_obj, train_table_path, job_input_obj, dg_index_path,
     # tt_id is now sourced from the durable bundle's tt_ingest_spec.json (not
     # path-parsed). For ``.../jobs/job-abc/...`` the spec records 'job-abc'; stub
     # the bundle read so these spec/handle tests don't need a real bundle on disk.
-    with patch(_P_GET_SERVICE, return_value=service), \
-         patch(_P_COLLECT_ENCODERS, return_value=_encoders(encoders_dict)), \
-         patch.object(_mtt, '_ttng_train_table_tt_id', return_value='job-abc'), \
-         patch.object(_mtt.fsutil, 'exists', return_value=True), \
-         patch.object(_mtt.JobConfig, 'load', return_value=fake_jc), \
-         patch.object(_mtt, 'save_json'):
+    with (
+        patch(_P_GET_SERVICE, return_value=service),
+        patch(_P_COLLECT_ENCODERS, return_value=_encoders(encoders_dict)),
+        patch.object(_mtt, '_ttng_train_table_tt_id', return_value='job-abc'),
+        patch.object(_mtt.fsutil, 'exists', return_value=True),
+        patch.object(_mtt.JobConfig, 'load', return_value=fake_jc),
+        patch.object(_mtt, 'save_json'),
+    ):
         _maybe_materialize_ttng_task_dataset(
             task=task_obj,
             pquery=MagicMock(),
@@ -214,12 +221,7 @@ def test_handle_carries_job_id_and_graph_identity() -> None:
         ttp,
         ji,
         dgp,
-        {
-            'USERS': {
-                'AGE': object()
-            },
-            'COMPANIES': {}
-        },
+        {'USERS': {'AGE': object()}, 'COMPANIES': {}},
     )
     assert isinstance(handle, DiskgraphHandle)
     # The display ``graph_key`` ('gk') is normalized to its GraphIDv2
@@ -227,6 +229,7 @@ def test_handle_carries_job_id_and_graph_identity() -> None:
     # snapshot dir that ``get_diskgraph_index_path_for_job`` (the ingest side) wrote to;
     # otherwise the ingest-binding validator rejects the (NA-keyed) manifest.
     from statedb.config._graph_key_norm import _graph_key_to_v2
+
     assert handle.graph_key == str(_graph_key_to_v2('gk'))
     assert handle.graph_key.startswith('NA-')
     assert handle.graph_data_version == 'v1'
@@ -243,12 +246,7 @@ def test_spec_artifact_root_is_snapshot_relative() -> None:
         ttp,
         ji,
         dgp,
-        {
-            'USERS': {
-                'AGE': object()
-            },
-            'COMPANIES': {}
-        },
+        {'USERS': {'AGE': object()}, 'COMPANIES': {}},
     )
     assert isinstance(spec, TaskDatasetMaterializeSpec)
     assert spec.artifact_root == os.path.join(dgp, 'task_datasets', 'job-abc')
@@ -267,14 +265,12 @@ def test_spec_tt_manifest_path_is_wheel_side_manifest() -> None:
         ttp,
         ji,
         dgp,
-        {
-            'USERS': {},
-            'COMPANIES': {}
-        },
+        {'USERS': {}, 'COMPANIES': {}},
     )
     # _default_inputs ttp = '/tmp/jobs/job-abc/tt.parquet' -> tt_id='job-abc'
-    assert spec.tt_manifest_path == os.path.join(dgp, 'train_tables', 'job-abc',
-                                                 'manifest.json')
+    assert spec.tt_manifest_path == os.path.join(
+        dgp, 'train_tables', 'job-abc', 'manifest.json'
+    )
 
 
 def test_spec_task_identity_for_v1_binary_classification() -> None:
@@ -284,10 +280,7 @@ def test_spec_task_identity_for_v1_binary_classification() -> None:
         ttp,
         ji,
         dgp,
-        {
-            'USERS': {},
-            'COMPANIES': {}
-        },
+        {'USERS': {}, 'COMPANIES': {}},
     )
     assert spec.task_family == 'node_prediction'
     assert spec.task_type == 'binary_classification'
@@ -315,10 +308,7 @@ def test_spec_task_identity_for_supported_node_subtypes(
         ttp,
         ji,
         dgp,
-        {
-            'USERS': {},
-            'COMPANIES': {}
-        },
+        {'USERS': {}, 'COMPANIES': {}},
     )
 
     assert spec.task_family == 'node_prediction'
@@ -336,10 +326,7 @@ def test_spec_uses_task_temporal_property_for_node_prediction() -> None:
         ttp,
         ji,
         dgp,
-        {
-            'USERS': {},
-            'COMPANIES': {}
-        },
+        {'USERS': {}, 'COMPANIES': {}},
     )
 
     assert spec.task_family == 'node_prediction'
@@ -355,10 +342,7 @@ def test_spec_entity_table_strips_connector_prefix() -> None:
         ttp,
         ji,
         dgp,
-        {
-            'USERS': {},
-            'COMPANIES': {}
-        },
+        {'USERS': {}, 'COMPANIES': {}},
     )
     assert spec.entity_table_name == 'USERS'
     assert spec.seed_node_type == 'USERS'
@@ -390,13 +374,9 @@ def test_spec_feature_schema_excludes_train_table_entry() -> None:
         ji,
         dgp,
         {
-            'USERS': {
-                'AGE': object()
-            },
+            'USERS': {'AGE': object()},
             'COMPANIES': {},
-            'TRAIN_TABLE': {
-                'TARGET': object()
-            },  # must NOT appear
+            'TRAIN_TABLE': {'TARGET': object()},  # must NOT appear
         },
     )
     assert set(spec.feature_schema['node_types']) == {'USERS', 'COMPANIES'}
@@ -413,17 +393,16 @@ def test_spec_feature_schema_featureless_node_gets_empty_columns() -> None:
         ttp,
         ji,
         dgp,
-        {'USERS': {
-            'AGE': object(),
-            'NAME': object()
-        }},
+        {'USERS': {'AGE': object(), 'NAME': object()}},
         # COMPANIES intentionally absent from encoders
     )
     nodes = spec.feature_schema['node_types']
     assert nodes['USERS']['feature_columns'] == ['AGE', 'NAME']
     assert nodes['USERS']['mapper_key'] == 'USERS'
-    assert [value['column_name']
-            for value in nodes['USERS']['column_specs']] == ['AGE', 'NAME']
+    assert [value['column_name'] for value in nodes['USERS']['column_specs']] == [
+        'AGE',
+        'NAME',
+    ]
     assert nodes['COMPANIES']['feature_columns'] == []
     assert nodes['COMPANIES']['mapper_key'] == 'COMPANIES'
 
@@ -437,15 +416,15 @@ def test_spec_feature_schema_applies_task_exclusions() -> None:
         ttp,
         ji,
         dgp,
-        {'USERS': {
-            'AGE': object(),
-            'NAME': object(),
-        }},
+        {
+            'USERS': {
+                'AGE': object(),
+                'NAME': object(),
+            }
+        },
     )
 
-    assert spec.feature_schema['node_types']['USERS']['feature_columns'] == [
-        'AGE'
-    ]
+    assert spec.feature_schema['node_types']['USERS']['feature_columns'] == ['AGE']
 
 
 def test_spec_feature_schema_excludes_same_table_target() -> None:
@@ -470,15 +449,15 @@ def test_spec_feature_schema_excludes_same_table_target() -> None:
         '/tmp/jobs/job-abc/tt.parquet',
         _job_input(),
         '/data/gk/v1',
-        {'ITEMS': {
-            'NAME': object(),
-            'PRICE': object(),
-        }},
+        {
+            'ITEMS': {
+                'NAME': object(),
+                'PRICE': object(),
+            }
+        },
     )
 
-    assert spec.feature_schema['node_types']['ITEMS']['feature_columns'] == [
-        'NAME'
-    ]
+    assert spec.feature_schema['node_types']['ITEMS']['feature_columns'] == ['NAME']
 
 
 def test_spec_graph_node_and_edge_types_from_task_graph() -> None:
@@ -488,15 +467,12 @@ def test_spec_graph_node_and_edge_types_from_task_graph() -> None:
         ttp,
         ji,
         dgp,
-        {
-            'USERS': {},
-            'COMPANIES': {}
-        },
+        {'USERS': {}, 'COMPANIES': {}},
     )
     assert spec.graph_node_types == ('USERS', 'COMPANIES')
     # Forward edges only — reverse edges are composed at sampling time
     # in the wheel and don't belong in this schema-level list.
-    assert spec.graph_edge_types == (('USERS', 'company', 'COMPANIES'), )
+    assert spec.graph_edge_types == (('USERS', 'company', 'COMPANIES'),)
 
 
 # ---------------------------------------------------------------------------
@@ -510,8 +486,10 @@ def test_unsupported_node_task_raises_wrapped() -> None:
         graph_tables=[_table('USERS', fkeys=[])],
         train_table_fkeys=[_fkey('entity', 'USERS')],
     )
-    with patch(_P_GET_SERVICE, return_value=MagicMock()), \
-         patch(_P_COLLECT_ENCODERS, return_value=_encoders({})):
+    with (
+        patch(_P_GET_SERVICE, return_value=MagicMock()),
+        patch(_P_COLLECT_ENCODERS, return_value=_encoders({})),
+    ):
         with pytest.raises(TrainingDataMaterializationError):
             _maybe_materialize_ttng_task_dataset(
                 task=task_obj,
@@ -528,8 +506,10 @@ def test_empty_train_table_fkeys_raises_wrapped() -> None:
         graph_tables=[_table('USERS', fkeys=[])],
         train_table_fkeys=[],  # empty
     )
-    with patch(_P_GET_SERVICE, return_value=MagicMock()), \
-         patch(_P_COLLECT_ENCODERS, return_value=_encoders({})):
+    with (
+        patch(_P_GET_SERVICE, return_value=MagicMock()),
+        patch(_P_COLLECT_ENCODERS, return_value=_encoders({})),
+    ):
         with pytest.raises(TrainingDataMaterializationError):
             _maybe_materialize_ttng_task_dataset(
                 task=task_obj,
@@ -545,8 +525,10 @@ def test_service_failure_wraps_as_training_data_materialization_error() -> None:
     task_obj, ji, ttp, dgp = _default_inputs()
     service = MagicMock()
     service.materialize_task_dataset.side_effect = RuntimeError('boom')
-    with patch(_P_GET_SERVICE, return_value=service), \
-         patch(_P_COLLECT_ENCODERS, return_value=_encoders({'USERS': {}})):
+    with (
+        patch(_P_GET_SERVICE, return_value=service),
+        patch(_P_COLLECT_ENCODERS, return_value=_encoders({'USERS': {}})),
+    ):
         with pytest.raises(TrainingDataMaterializationError) as excinfo:
             _maybe_materialize_ttng_task_dataset(
                 task=task_obj,
@@ -577,21 +559,19 @@ def test_job_config_updated_with_bundle_dir(tmp_path) -> None:
     service = MagicMock()
     service.materialize_task_dataset.return_value = MaterializeResult(
         manifest_path=os.path.join(expected_bundle, 'manifest.json'),
-        runtime_manifest_path=os.path.join(expected_bundle,
-                                           'runtime_manifest.json'),
+        runtime_manifest_path=os.path.join(expected_bundle, 'runtime_manifest.json'),
         bundle_dir=expected_bundle,
         storage_kind='diskgraph_table',
     )
     fake_jc = SimpleNamespace(diskgraph_task_dataset_bundle_dir=None)
-    with patch(_P_GET_SERVICE, return_value=service), \
-         patch(_P_COLLECT_ENCODERS,
-               return_value=_encoders({'USERS': {}})), \
-         patch.object(_mtt, '_ttng_train_table_tt_id',
-                      return_value='job-abc'), \
-         patch.object(_mtt.fsutil, 'exists', return_value=True), \
-         patch.object(_mtt.JobConfig, 'load',
-                      return_value=fake_jc) as p_load, \
-         patch.object(_mtt, 'save_json') as p_save:
+    with (
+        patch(_P_GET_SERVICE, return_value=service),
+        patch(_P_COLLECT_ENCODERS, return_value=_encoders({'USERS': {}})),
+        patch.object(_mtt, '_ttng_train_table_tt_id', return_value='job-abc'),
+        patch.object(_mtt.fsutil, 'exists', return_value=True),
+        patch.object(_mtt.JobConfig, 'load', return_value=fake_jc) as p_load,
+        patch.object(_mtt, 'save_json') as p_save,
+    ):
         _maybe_materialize_ttng_task_dataset(
             task=task_obj,
             pquery=MagicMock(),
@@ -623,10 +603,10 @@ def test_job_config_updated_with_bundle_dir(tmp_path) -> None:
 
 # Materialization already owns the selected immutable bundle, so it delegates
 # to the selected-stage self-heal instead of resolving a publication root.
-_P_ENSURE_STAGE_INGESTED = (
-    'kumo.data.generic.diskgraph_staging.ensure_stage_ingested')
-_P_PARSE_TT_COL_STATS = ('kumo.diskgraph.diskgraph_native_tt_artifacts.'
-                         'parse_train_table_col_stats_artifact')
+_P_ENSURE_STAGE_INGESTED = 'kumo.data.generic.diskgraph_staging.ensure_stage_ingested'
+_P_PARSE_TT_COL_STATS = (
+    'kumo.diskgraph.diskgraph_native_tt_artifacts.parse_train_table_col_stats_artifact'
+)
 
 
 def _categorical_train_table_task() -> SimpleNamespace:
@@ -634,11 +614,13 @@ def _categorical_train_table_task() -> SimpleNamespace:
         task_type=SimpleNamespace(is_link_pred=False),
         train_table=SimpleNamespace(
             cols=[
-                SimpleNamespace(name='ENTITY', dtype=Dtype.string,
-                                stype=Stype.categorical),
+                SimpleNamespace(
+                    name='ENTITY', dtype=Dtype.string, stype=Stype.categorical
+                ),
             ],
-            target_col=SimpleNamespace(name='TARGET', dtype=Dtype.stringlist,
-                                       stype=Stype.multicategorical),
+            target_col=SimpleNamespace(
+                name='TARGET', dtype=Dtype.stringlist, stype=Stype.multicategorical
+            ),
         ),
     )
 
@@ -660,7 +642,8 @@ def test_malformed_sidecar_is_non_retryable(tmp_path) -> None:
 
     with pytest.raises(TrainingDataMaterializationError) as excinfo:
         _mtt._ttng_validate_train_table_col_stats_sidecar(
-            _categorical_train_table_task(), str(sidecar))
+            _categorical_train_table_task(), str(sidecar)
+        )
 
     assert excinfo.value.non_retryable is True
 
@@ -668,43 +651,54 @@ def test_malformed_sidecar_is_non_retryable(tmp_path) -> None:
 def test_real_target_artifact_passes_without_entity_counts(tmp_path) -> None:
     sidecar = tmp_path / 'train_table_col_stats.json'
     sidecar.write_text(
-        json.dumps({
-            'version': 1,
-            'kind': 'tt_train_table_col_stats',
-            'stats_format': 'kumo_col_stats_v1',
-            'stats': {
-                'TARGET1__kumo.multicategorical__'
-                'MULTI_CATEGORY_COUNTS__False': {
-                    'value': []
+        json.dumps(
+            {
+                'version': 1,
+                'kind': 'tt_train_table_col_stats',
+                'stats_format': 'kumo_col_stats_v1',
+                'stats': {
+                    'TARGET1__kumo.multicategorical__MULTI_CATEGORY_COUNTS__False': {
+                        'value': []
+                    },
                 },
-            },
-        }))
+            }
+        )
+    )
 
     _mtt._ttng_validate_train_table_col_stats_sidecar(
-        _categorical_train_table_task(), str(sidecar))
+        _categorical_train_table_task(), str(sidecar)
+    )
 
 
 def test_incomplete_sidecar_fails_before_train_table_reingest() -> None:
     """A durable sidecar gap is terminal before the expensive self-heal."""
     published_sidecar = '/dg/train_tables/tt-id/train_table_col_stats.json'
     durable_sidecar = '/durable/version/train_table_col_stats.json'
-    payload = _col_stats_payload(
-        'ENTITY1__kumo.categorical__CATEGORY_COUNTS__False')
+    payload = _col_stats_payload('ENTITY1__kumo.categorical__CATEGORY_COUNTS__False')
 
-    with patch.object(
-            _mtt, '_ttng_train_table_col_stats_sidecar_path',
-            return_value=published_sidecar), \
-         patch.object(_mtt.fsutil, 'exists',
-                      side_effect=lambda path: path == durable_sidecar), \
-         patch('kumo.data.generic.diskgraph_train_table.'
-               'resolve_durable_ttng_bundle',
-               return_value='/durable/version'), \
-         patch(_P_PARSE_TT_COL_STATS, return_value=payload), \
-         patch.object(_mtt, '_ttng_ensure_train_table_extension') as ensure:
+    with (
+        patch.object(
+            _mtt,
+            '_ttng_train_table_col_stats_sidecar_path',
+            return_value=published_sidecar,
+        ),
+        patch.object(
+            _mtt.fsutil, 'exists', side_effect=lambda path: path == durable_sidecar
+        ),
+        patch(
+            'kumo.data.generic.diskgraph_train_table.resolve_durable_ttng_bundle',
+            return_value='/durable/version',
+        ),
+        patch(_P_PARSE_TT_COL_STATS, return_value=payload),
+        patch.object(_mtt, '_ttng_ensure_train_table_extension') as ensure,
+    ):
         with pytest.raises(TrainingDataMaterializationError) as excinfo:
             _mtt._ttng_prepare_train_table_col_stats(
                 _categorical_train_table_task(),
-                '/durable/version/tt.parquet', '/dg', 'tt-id')
+                '/durable/version/tt.parquet',
+                '/dg',
+                'tt-id',
+            )
 
     assert excinfo.value.non_retryable is True
     assert 'TARGET' in str(excinfo.value)
@@ -716,13 +710,15 @@ def test_sidecar_without_entity_counts_is_validated_before_reingest() -> None:
     published_sidecar = '/dg/train_tables/tt-id/train_table_col_stats.json'
     durable_sidecar = '/durable/version/train_table_col_stats.json'
     payload = _col_stats_payload(
-        'TARGET1__kumo.multicategorical__MULTI_CATEGORY_COUNTS__False', )
+        'TARGET1__kumo.multicategorical__MULTI_CATEGORY_COUNTS__False',
+    )
     events: list[str] = []
     extension_ready = False
 
     def _exists(path):
-        return path == durable_sidecar or (path == published_sidecar
-                                           and extension_ready)
+        return path == durable_sidecar or (
+            path == published_sidecar and extension_ready
+        )
 
     def _parse(_path):
         events.append('validate')
@@ -733,19 +729,26 @@ def test_sidecar_without_entity_counts_is_validated_before_reingest() -> None:
         events.append('ensure')
         extension_ready = True
 
-    with patch.object(
-            _mtt, '_ttng_train_table_col_stats_sidecar_path',
-            return_value=published_sidecar), \
-         patch.object(_mtt.fsutil, 'exists', side_effect=_exists), \
-         patch('kumo.data.generic.diskgraph_train_table.'
-               'resolve_durable_ttng_bundle',
-               return_value='/durable/version'), \
-         patch(_P_PARSE_TT_COL_STATS, side_effect=_parse), \
-         patch.object(_mtt, '_ttng_ensure_train_table_extension',
-                      side_effect=_ensure):
+    with (
+        patch.object(
+            _mtt,
+            '_ttng_train_table_col_stats_sidecar_path',
+            return_value=published_sidecar,
+        ),
+        patch.object(_mtt.fsutil, 'exists', side_effect=_exists),
+        patch(
+            'kumo.data.generic.diskgraph_train_table.resolve_durable_ttng_bundle',
+            return_value='/durable/version',
+        ),
+        patch(_P_PARSE_TT_COL_STATS, side_effect=_parse),
+        patch.object(_mtt, '_ttng_ensure_train_table_extension', side_effect=_ensure),
+    ):
         result = _mtt._ttng_prepare_train_table_col_stats(
-            _categorical_train_table_task(), '/durable/version/tt.parquet',
-            '/dg', 'tt-id')
+            _categorical_train_table_task(),
+            '/durable/version/tt.parquet',
+            '/dg',
+            'tt-id',
+        )
 
     assert result == published_sidecar
     assert events == ['validate', 'ensure', 'validate']
@@ -754,15 +757,19 @@ def test_sidecar_without_entity_counts_is_validated_before_reingest() -> None:
 def test_link_task_accepts_absent_col_stats_sidecar() -> None:
     published_sidecar = '/dg/train_tables/tt-id/train_table_col_stats.json'
 
-    with patch.object(
-            _mtt, '_ttng_train_table_col_stats_sidecar_path',
-            return_value=published_sidecar), \
-         patch.object(_mtt.fsutil, 'exists', return_value=False), \
-         patch.object(_mtt, '_ttng_validate_train_table_col_stats_sidecar'
-                      ) as validate, \
-         patch.object(_mtt, '_ttng_ensure_train_table_extension') as ensure:
+    with (
+        patch.object(
+            _mtt,
+            '_ttng_train_table_col_stats_sidecar_path',
+            return_value=published_sidecar,
+        ),
+        patch.object(_mtt.fsutil, 'exists', return_value=False),
+        patch.object(_mtt, '_ttng_validate_train_table_col_stats_sidecar') as validate,
+        patch.object(_mtt, '_ttng_ensure_train_table_extension') as ensure,
+    ):
         result = _mtt._ttng_prepare_train_table_col_stats(
-            _link_train_table_task(), '/bundle/tt.parquet', '/dg', 'tt-id')
+            _link_train_table_task(), '/bundle/tt.parquet', '/dg', 'tt-id'
+        )
 
     assert result is None
     ensure.assert_called_once_with('/bundle/tt.parquet', '/dg', 'tt-id')
@@ -773,15 +780,19 @@ def test_link_task_validates_historical_present_sidecar() -> None:
     published_sidecar = '/dg/train_tables/tt-id/train_table_col_stats.json'
     task = _link_train_table_task()
 
-    with patch.object(
-            _mtt, '_ttng_train_table_col_stats_sidecar_path',
-            return_value=published_sidecar), \
-         patch.object(_mtt.fsutil, 'exists', return_value=True), \
-         patch.object(_mtt, '_ttng_validate_train_table_col_stats_sidecar'
-                      ) as validate, \
-         patch.object(_mtt, '_ttng_ensure_train_table_extension') as ensure:
+    with (
+        patch.object(
+            _mtt,
+            '_ttng_train_table_col_stats_sidecar_path',
+            return_value=published_sidecar,
+        ),
+        patch.object(_mtt.fsutil, 'exists', return_value=True),
+        patch.object(_mtt, '_ttng_validate_train_table_col_stats_sidecar') as validate,
+        patch.object(_mtt, '_ttng_ensure_train_table_extension') as ensure,
+    ):
         result = _mtt._ttng_prepare_train_table_col_stats(
-            task, '/bundle/tt.parquet', '/dg', 'tt-id')
+            task, '/bundle/tt.parquet', '/dg', 'tt-id'
+        )
 
     assert result == published_sidecar
     ensure.assert_called_once_with('/bundle/tt.parquet', '/dg', 'tt-id')
@@ -793,21 +804,24 @@ def test_link_task_malformed_present_sidecar_fails_closed(tmp_path) -> None:
     sidecar = tmp_path / 'train_table_col_stats.json'
     sidecar.write_text('{"version": 2, "kind": "wrong"}')
 
-    with patch.object(
-            _mtt, '_ttng_train_table_col_stats_sidecar_path',
-            return_value=str(sidecar)), \
-         patch.object(_mtt, '_ttng_ensure_train_table_extension') as ensure:
+    with (
+        patch.object(
+            _mtt, '_ttng_train_table_col_stats_sidecar_path', return_value=str(sidecar)
+        ),
+        patch.object(_mtt, '_ttng_ensure_train_table_extension') as ensure,
+    ):
         with pytest.raises(TrainingDataMaterializationError) as excinfo:
-            _mtt._ttng_prepare_train_table_col_stats(_link_train_table_task(),
-                                                     '/bundle/tt.parquet',
-                                                     '/dg', 'tt-id')
+            _mtt._ttng_prepare_train_table_col_stats(
+                _link_train_table_task(), '/bundle/tt.parquet', '/dg', 'tt-id'
+            )
 
     assert excinfo.value.non_retryable is True
     ensure.assert_not_called()
 
 
-def _spy_ensure_stage_ingested(monkeypatch, sink: dict, *,
-                               raises: Exception | None = None):
+def _spy_ensure_stage_ingested(
+    monkeypatch, sink: dict, *, raises: Exception | None = None
+):
     """Patch the shared self-heal at its source. Records the kwargs
     ``_ttng_ensure_train_table_extension`` delegated with into
     ``sink['ensure_kwargs']`` (and increments ``sink['ensure_calls']``); if
@@ -821,14 +835,14 @@ def _spy_ensure_stage_ingested(monkeypatch, sink: dict, *,
         if raises is not None:
             raise raises
         # Real helper returns the published extension path.
-        return os.path.join(kwargs['index_path'], 'train_tables',
-                            kwargs['target_tt_id'])
+        return os.path.join(
+            kwargs['index_path'], 'train_tables', kwargs['target_tt_id']
+        )
 
     monkeypatch.setattr(_P_ENSURE_STAGE_INGESTED, _ensure)
 
 
-def test_ensure_extension_delegates_to_selected_bundle_self_heal(
-        monkeypatch) -> None:
+def test_ensure_extension_delegates_to_selected_bundle_self_heal(monkeypatch) -> None:
     """``_ttng_ensure_train_table_extension`` delegates unconditionally to the
     shared selected-bundle self-heal, which owns completeness validation and
     drop-and-heal, rather than a direct ``execute_tt_ingest`` call."""
@@ -855,12 +869,15 @@ def test_ensure_extension_raises_when_no_staging(monkeypatch) -> None:
     sink: dict = {}
     # Durable bundle missing/incomplete -> the shared self-heal raises.
     _spy_ensure_stage_ingested(
-        monkeypatch, sink,
-        raises=RuntimeError('durable train staging is missing or incomplete'))
+        monkeypatch,
+        sink,
+        raises=RuntimeError('durable train staging is missing or incomplete'),
+    )
     monkeypatch.setattr(_mtt.fsutil, 'exists', lambda _path: False)
     with pytest.raises(TrainingDataMaterializationError) as excinfo:
-        _mtt._ttng_ensure_train_table_extension('/tmp/jobs/job-abc/tt.parquet',
-                                                '/data/gk/v1', 'TT_ID')
+        _mtt._ttng_ensure_train_table_extension(
+            '/tmp/jobs/job-abc/tt.parquet', '/data/gk/v1', 'TT_ID'
+        )
     # Error is non-retryable, names the actionable recovery (persist the
     # complete staging bundle), and chains the underlying cause.
     assert excinfo.value.non_retryable is True
@@ -870,8 +887,7 @@ def test_ensure_extension_raises_when_no_staging(monkeypatch) -> None:
     assert sink['ensure_calls'] == 1
 
 
-def test_ensure_extension_reingest_uses_local_copy_not_durable_s3(
-        monkeypatch) -> None:
+def test_ensure_extension_reingest_uses_local_copy_not_durable_s3(monkeypatch) -> None:
     """Regression: the old code called execute_tt_ingest directly on the durable
     S3 staging dir, which DG's std::fs cannot read ("cannot read
     <bundle>/tt_ingest_spec.json: os error 2"). The fix routes through
@@ -883,13 +899,14 @@ def test_ensure_extension_reingest_uses_local_copy_not_durable_s3(
     # durable-S3 path), fail loudly.
     direct_calls: list = []
     monkeypatch.setitem(
-        __import__('sys').modules, 'diskgraph',
-        SimpleNamespace(execute_tt_ingest=lambda **kw: direct_calls.append(kw)))
+        __import__('sys').modules,
+        'diskgraph',
+        SimpleNamespace(execute_tt_ingest=lambda **kw: direct_calls.append(kw)),
+    )
     dg_index = '/data/gk/v1'
     ttp = '/tmp/jobs/job-abc/tt.parquet'
     tt_id = 'job-abc'
-    ext_manifest = os.path.join(dg_index, 'train_tables', tt_id,
-                                'manifest.json')
+    ext_manifest = os.path.join(dg_index, 'train_tables', tt_id, 'manifest.json')
     monkeypatch.setattr(_mtt.fsutil, 'exists', lambda p: p != ext_manifest)
     monkeypatch.setattr(_mtt.fsutil, 'rm', lambda p, **kw: None)
 
@@ -903,7 +920,8 @@ def test_ensure_extension_reingest_uses_local_copy_not_durable_s3(
 
 
 def test_materialize_reingests_extension_before_reading_manifest(
-        monkeypatch, tmp_path) -> None:
+    monkeypatch, tmp_path
+) -> None:
     """End-to-end through ``_maybe_materialize_ttng_task_dataset``: when the
     extension manifest is missing, the helper delegates to the shared
     selected-stage self-heal (so the downstream service read does not
@@ -931,13 +949,15 @@ def test_materialize_reingests_extension_before_reading_manifest(
         storage_kind='diskgraph_table',
     )
     fake_jc = SimpleNamespace(diskgraph_task_dataset_bundle_dir=None)
-    with patch(_P_GET_SERVICE, return_value=service), \
-         patch(_P_COLLECT_ENCODERS, return_value=_encoders({'USERS': {}})), \
-         patch.object(_mtt, '_ttng_train_table_tt_id', return_value=tt_id), \
-         patch.object(_mtt.fsutil, 'exists', _exists), \
-         patch.object(_mtt.fsutil, 'rm'), \
-         patch.object(_mtt.JobConfig, 'load', return_value=fake_jc), \
-         patch.object(_mtt, 'save_json'):
+    with (
+        patch(_P_GET_SERVICE, return_value=service),
+        patch(_P_COLLECT_ENCODERS, return_value=_encoders({'USERS': {}})),
+        patch.object(_mtt, '_ttng_train_table_tt_id', return_value=tt_id),
+        patch.object(_mtt.fsutil, 'exists', _exists),
+        patch.object(_mtt.fsutil, 'rm'),
+        patch.object(_mtt.JobConfig, 'load', return_value=fake_jc),
+        patch.object(_mtt, 'save_json'),
+    ):
         _maybe_materialize_ttng_task_dataset(
             task=task_obj,
             pquery=MagicMock(),

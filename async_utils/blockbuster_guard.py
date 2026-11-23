@@ -43,6 +43,7 @@ wrapt's ``@synchronized`` (the data-backend cache lock implicated in kumo#29025)
 uses an RLock, so this guard does not yet intercept that specific lock — the
 watchdog remains the backstop for it. RLock coverage is a tracked follow-up.
 """
+
 import hashlib
 import logging
 import sys
@@ -71,18 +72,22 @@ _MODE = EnvVar(
     'BLOCKBUSTER_MODE',
     str,
     default_value='',
-    description=("Blocking-call guard mode: 'off', 'warn', or 'raise'. Empty "
-                 '(default) derives from DEPLOY_STAGE: off in test, warn '
-                 'everywhere else. raise (the fail-fast hard gate) is opt-in.'),
+    description=(
+        "Blocking-call guard mode: 'off', 'warn', or 'raise'. Empty "
+        '(default) derives from DEPLOY_STAGE: off in test, warn '
+        'everywhere else. raise (the fail-fast hard gate) is opt-in.'
+    ),
 )
 _SUMMARY_WINDOW_SEC = EnvVar(
     'BLOCKBUSTER_SUMMARY_WINDOW_SEC',
     float,
     default_value=300.0,
-    description=('Warn-mode rollup window. The first occurrence of each distinct '
-                 'call stack is logged in full with a dedup_key; thereafter at '
-                 'most one rollup line per window per key reports how many more '
-                 'times it fired.'),
+    description=(
+        'Warn-mode rollup window. The first occurrence of each distinct '
+        'call stack is logged in full with a dedup_key; thereafter at '
+        'most one rollup line per window per key reports how many more '
+        'times it fired.'
+    ),
 )
 
 # Cap distinct tracked stacks so a pathological variety cannot grow memory
@@ -95,6 +100,7 @@ _ACTIVE_GUARD: Optional[BlockBuster] = None
 
 class _SiteStat:
     """Per-distinct-stack occurrence stats, keyed by stack fingerprint."""
+
     __slots__ = ('total', 'since_last_summary', 'last_summary_ts')
 
     def __init__(self, now: float) -> None:
@@ -128,14 +134,14 @@ def _resolve_mode() -> BlockBusterMode:
     return BlockBusterMode.WARN
 
 
-def _offending_stack(max_frames: int = 30
-                     ) -> Tuple[Tuple[Tuple[str, int], ...], str]:
+def _offending_stack(max_frames: int = 30) -> Tuple[Tuple[Tuple[str, int], ...], str]:
     """Full call stack at the blocking call, with the guard's own frames and
     blockbuster's wrapper frames trimmed (noise at the top). Returns a
     (signature, formatted-text) pair; the chain ends at the immediate caller of
     the blocking primitive and runs back up through kumo code."""
     frames = [
-        f for f in traceback.extract_stack()
+        f
+        for f in traceback.extract_stack()
         if f.filename != __file__ and '/blockbuster/' not in f.filename
     ]
     frames = frames[-max_frames:]
@@ -149,9 +155,9 @@ def _fingerprint(signature: Tuple[Tuple[str, int], ...]) -> str:
     return hashlib.blake2b(repr(signature).encode(), digest_size=5).hexdigest()
 
 
-def _record_occurrence(func_name: str,
-                       signature: Tuple[Tuple[str, int], ...],
-                       text: str) -> None:
+def _record_occurrence(
+    func_name: str, signature: Tuple[Tuple[str, int], ...], text: str
+) -> None:
     """Log the first occurrence of each distinct stack in full (with its
     dedup_key), then at most one rollup line per window per key — so a hot
     offender does not spam the log while still reporting its frequency."""
@@ -179,16 +185,27 @@ def _record_occurrence(func_name: str,
     if first:
         log.warning(
             'blocking call on event loop: %s (dedup_key=%s) — offload it to a '
-            'thread. Stack:\n%s', func_name, fp, text)
+            'thread. Stack:\n%s',
+            func_name,
+            fp,
+            text,
+        )
     elif rollup is not None:
         count_since, total = rollup
         log.warning(
             'blocking call on event loop: %s (dedup_key=%s) — %d more in the '
-            'last %.0fs (total %d)', func_name, fp, count_since, window, total)
+            'last %.0fs (total %d)',
+            func_name,
+            fp,
+            count_since,
+            window,
+            total,
+        )
 
 
-def _stack_allows(can_block_functions: List[Tuple[str, Iterable[str]]],
-                  max_depth: int = 80) -> bool:
+def _stack_allows(
+    can_block_functions: List[Tuple[str, Iterable[str]]], max_depth: int = 80
+) -> bool:
     """Mirror blockbuster's ``can_block_functions`` allowlist: a call is benign
     if any stack frame matches an allowed (filename-suffix, function) pair.
 
@@ -226,6 +243,7 @@ def _make_warn_predicate(
     Anything that *would* still have been flagged is logged with its full stack
     and allowed to proceed (warn never blocks).
     """
+
     def predicate(*args: object, **kwargs: object) -> bool:
         try:
             if orig_predicate(*args, **kwargs):
@@ -266,14 +284,17 @@ def activate_blockbuster_guard(
         if resolved_mode is BlockBusterMode.WARN:
             for fn in guard.functions.values():
                 fn.can_block_predicate = _make_warn_predicate(
-                    fn.full_name, fn.can_block_predicate,
-                    fn.can_block_functions)
+                    fn.full_name, fn.can_block_predicate, fn.can_block_functions
+                )
         # RAISE: leave blockbuster's native behaviour — it raises BlockingError
         # whose traceback is the same full chain.
         guard.activate()
         _ACTIVE_GUARD = guard
-        log.info('blockbuster guard active (mode=%s, %d primitives, catch-all)',
-                 resolved_mode.value, len(guard.functions))
+        log.info(
+            'blockbuster guard active (mode=%s, %d primitives, catch-all)',
+            resolved_mode.value,
+            len(guard.functions),
+        )
         return guard
 
 

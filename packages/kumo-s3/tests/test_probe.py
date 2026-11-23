@@ -36,6 +36,7 @@ class ProbedSession(FakeSession):
     ``GetCallerIdentity`` with :obj:`answer` -- an exception to raise, or the
     response to return.
     """
+
     def __init__(self, *, answer: Any = None, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self.clients: list = []
@@ -54,29 +55,35 @@ class ProbedSession(FakeSession):
 
 def _client_error(code: str) -> Exception:
     from botocore.exceptions import ClientError
-    return ClientError({'Error': {
-        'Code': code,
-        'Message': code
-    }}, 'GetCallerIdentity')
+
+    return ClientError({'Error': {'Code': code, 'Message': code}}, 'GetCallerIdentity')
 
 
 def _principal(config: S3IdentityConfig, name: str = 'aws') -> Principal:
     return Principal(
-        name=name, config=config, credentials=S3AccessKeyCredentials(
-            access_key_id=SecretStr('AKIA'),
-            secret_access_key=SecretStr('secret')))
+        name=name,
+        config=config,
+        credentials=S3AccessKeyCredentials(
+            access_key_id=SecretStr('AKIA'), secret_access_key=SecretStr('secret')
+        ),
+    )
 
 
 def _access_key(*, endpoint_url: str | None = None) -> S3IdentityConfig:
-    connection = (None if endpoint_url is None else S3ConnectionConfig(
-        endpoint_url=endpoint_url, region='us'))
-    return S3IdentityConfig(authentication=S3AccessKeyAuthentication(),
-                            connection=connection)
+    connection = (
+        None
+        if endpoint_url is None
+        else S3ConnectionConfig(endpoint_url=endpoint_url, region='us')
+    )
+    return S3IdentityConfig(
+        authentication=S3AccessKeyAuthentication(), connection=connection
+    )
 
 
 @pytest.fixture
 def session(monkeypatch):
     """Whatever the test hands back from the connect step."""
+
     def use(built: Any) -> Any:
         monkeypatch.setattr(backend, '_session_for', lambda principal: built)
         return built
@@ -120,6 +127,7 @@ def test_an_unrelated_client_error_is_not_dressed_up_as_a_reconnect(session):
     outage being reported as "your credentials expired".
     """
     from kumo_core.sources.errors import TransientSourceError
+
     session(ProbedSession(answer=_client_error('ServiceUnavailable')))
 
     with pytest.raises(TransientSourceError) as raised:
@@ -136,8 +144,11 @@ def test_a_session_that_resolves_nothing_is_refused_before_sts(session):
 
 
 def test_a_half_resolved_credential_is_refused_too(session):
-    partial = SimpleNamespace(get_frozen_credentials=lambda: SimpleNamespace(
-        access_key='key', secret_key='', token=None))
+    partial = SimpleNamespace(
+        get_frozen_credentials=lambda: SimpleNamespace(
+            access_key='key', secret_key='', token=None
+        )
+    )
     probed = session(ProbedSession(credentials=partial))
 
     with pytest.raises(ReconnectRequiredError):
@@ -166,7 +177,9 @@ def test_an_ambient_identity_is_authenticated_like_any_other(session):
         Principal(
             name='ambient',
             config=S3IdentityConfig(authentication=S3AmbientAuthentication()),
-            credentials=None))
+            credentials=None,
+        )
+    )
 
     assert probed.clients == ['sts']
 
@@ -176,6 +189,7 @@ def test_a_ready_filesystem_is_taken_as_already_connected(session, monkeypatch):
     to STS, and the filesystem may not address AWS at all.
     """
     from pyarrow.fs import S3FileSystem
+
     session(S3FileSystem(anonymous=True, region='us-east-1'))
 
     backend.probe(_principal(_access_key()))

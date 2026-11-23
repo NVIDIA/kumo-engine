@@ -18,8 +18,7 @@ from statedb.config.common import ConnectorID, IdentityID, ProjectID
 def _auth(*, admin: bool = True):
     def require_customer_admin() -> None:
         if not admin:
-            raise HTTPException(HTTPStatus.FORBIDDEN,
-                                'Administrator access required')
+            raise HTTPException(HTTPStatus.FORBIDDEN, 'Administrator access required')
 
     return SimpleNamespace(
         authenticate_request_header=lambda: None,
@@ -29,8 +28,7 @@ def _auth(*, admin: bool = True):
 
 def _app_with_service(service, *, admin: bool = True) -> FastAPI:
     driver = MagicMock(spec=ConnectorApiDriver)
-    driver._require_state_services.return_value = SimpleNamespace(
-        identities=service)
+    driver._require_state_services.return_value = SimpleNamespace(identities=service)
     app = FastAPI()
 
     @app.middleware('http')
@@ -77,7 +75,8 @@ def test_list_connectors_returns_blocking_connectors() -> None:
         ],
     )
     service = SimpleNamespace(
-        list_connectors_using_identity=AsyncMock(return_value=resp))
+        list_connectors_using_identity=AsyncMock(return_value=resp)
+    )
     app = _app_with_service(service)
 
     with TestClient(app) as client:

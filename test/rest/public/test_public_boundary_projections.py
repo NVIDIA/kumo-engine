@@ -73,9 +73,12 @@ def test_pquery_request_and_response_use_exact_public_fields() -> None:
 
     assert isinstance(projected, pquery_api.PQueryResource)
     assert type(projected.graph) is GraphDefinition
-    assert {field.name
-            for field in fields(projected)
-            } == {'query_string', 'graph', 'name', 'desc'}
+    assert {field.name for field in fields(projected)} == {
+        'query_string',
+        'graph',
+        'name',
+        'desc',
+    }
     payload = asdict(projected)
     assert 'internal graph name' not in repr(payload)
     assert 'internal yaml' not in repr(payload)
@@ -111,8 +114,8 @@ def test_pquery_create_and_validate_reject_internal_fields_with_422(
     payload = asdict(_public_pquery())
     payload[internal_field] = {}
     for path in [
-            '/v1/predictive_queries',
-            '/v1/predictive_queries/validate',
+        '/v1/predictive_queries',
+        '/v1/predictive_queries/validate',
     ]:
         response = client.post(
             path,
@@ -125,12 +128,12 @@ def test_pquery_create_and_validate_reject_internal_fields_with_422(
 
 
 def test_pquery_openapi_schema_is_exact_and_strict(
-    pquery_boundary_client, ) -> None:
+    pquery_boundary_client,
+) -> None:
     _, _, app = pquery_boundary_client
     schema = app.openapi()['components']['schemas']['PQueryResource']
     assert schema['additionalProperties'] is False
-    assert set(
-        schema['properties']) == {'query_string', 'graph', 'name', 'desc'}
+    assert set(schema['properties']) == {'query_string', 'graph', 'name', 'desc'}
 
 
 @pytest.mark.asyncio
@@ -146,14 +149,14 @@ async def test_pquery_validate_get_and_list_use_boundary_projection() -> None:
         advanced_options_yaml='must-not-leak',
         runtime_options={'list_distinct_target_is_array': True},
     )
-    router._driver.validate_predictive_query_v2.return_value = (
-        ValidationResponse())
+    router._driver.validate_predictive_query_v2.return_value = ValidationResponse()
     router._driver.get_predictive_query_v2.return_value = internal
     router._driver.list_predictive_queries_v2.return_value = [internal]
 
     await router.validate_pquery(public, str(_PROJECT_ID))
-    validation_request = (
-        router._driver.validate_predictive_query_v2.await_args.kwargs['args'])
+    validation_request = router._driver.validate_predictive_query_v2.await_args.kwargs[
+        'args'
+    ]
     assert validation_request.pquery_resource.runtime_options is None
     assert validation_request.pquery_resource.advanced_options_yaml is None
 
@@ -164,8 +167,7 @@ async def test_pquery_validate_get_and_list_use_boundary_projection() -> None:
     assert 'must-not-leak' not in repr((got, listed))
 
 
-def test_table_snapshot_projection_is_exact_and_drops_internal_metadata(
-) -> None:
+def test_table_snapshot_projection_is_exact_and_drops_internal_metadata() -> None:
     table_definition = InternalTableDefinition(
         cols=[],
         source_table=UnavailableSourceTable(table='events'),
@@ -188,15 +190,21 @@ def test_table_snapshot_projection_is_exact_and_drops_internal_metadata(
     assert type(public.table_definition) is ApiTableDefinition
     assert type(public.table_definition.source_table) is UnavailableSourceTable
     assert set(asdict(public)) == {
-        'id', 'table_definition', 'stats', 'column_stats', 'stages'
+        'id',
+        'table_definition',
+        'stats',
+        'column_stats',
+        'stages',
     }
     assert 'internal-name' not in repr(asdict(public))
 
 
 def test_removed_public_utility_routes_are_absent(
-    public_api_client: TestClient, ) -> None:
+    public_api_client: TestClient,
+) -> None:
     assert public_api_client.get('/utils/persist_dir').status_code == (
-        HTTPStatus.NOT_FOUND)
+        HTTPStatus.NOT_FOUND
+    )
     response = public_api_client.post(
         '/utils/refresh_connector_snapshot_data',
         json={

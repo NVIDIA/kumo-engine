@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Offline provider-state tests for recovery after losing every runner file."""
+
 import importlib
 import json
 import shutil
@@ -13,8 +14,10 @@ from urllib.parse import parse_qs, unquote, urlsplit
 import pytest
 import yaml
 
-DIRECTORY = Path(__file__).resolve(
-).parents[2] / 'packages/kumo-engine/test/databricks_notebook'
+DIRECTORY = (
+    Path(__file__).resolve().parents[2]
+    / 'packages/kumo-engine/test/databricks_notebook'
+)
 
 
 class Provider:
@@ -33,8 +36,9 @@ class Provider:
             self.directories.add(path)
             path = path.rsplit('/', 1)[0]
 
-    def api(self, path, method='GET', body=None, raw=None, binary=False,
-            max_bytes=None):
+    def api(
+        self, path, method='GET', body=None, raw=None, binary=False, max_bytes=None
+    ):
         self.calls.append((path, method, body))
         parsed = urlsplit(path)
         target = unquote(parsed.path)
@@ -49,8 +53,7 @@ class Provider:
                 if self.fail_once == remote:
                     self.fail_once = None
                     raise RuntimeError('temporary provider error')
-                assert not any(
-                    p.rsplit('/', 1)[0] == remote for p in self.files)
+                assert not any(p.rsplit('/', 1)[0] == remote for p in self.files)
                 self.directories.discard(remote)
                 return {}
             if remote not in self.directories:
@@ -61,7 +64,8 @@ class Provider:
                 if p.rsplit('/', 1)[0] == remote
             ]
             contents += [
-                dict(path=p, is_directory=False) for p in sorted(self.files)
+                dict(path=p, is_directory=False)
+                for p in sorted(self.files)
                 if p.rsplit('/', 1)[0] == remote
             ]
             query = parse_qs(parsed.query)
@@ -72,9 +76,8 @@ class Provider:
             contents = contents[:size]
             return dict(
                 contents=contents,
-                **({
-                    'next_page_token': contents[-1]['path']
-                } if more else {}))
+                **({'next_page_token': contents[-1]['path']} if more else {}),
+            )
         if target.startswith('/api/2.0/fs/files'):
             remote = target.removeprefix('/api/2.0/fs/files')
             if method == 'PUT':
@@ -106,8 +109,7 @@ class Provider:
             return self.runs[run_id]
         if target == '/api/2.2/jobs/runs/cancel':
             if not self.cancel_stuck:
-                self.runs[
-                    body['run_id']]['state']['life_cycle_state'] = 'TERMINATED'
+                self.runs[body['run_id']]['state']['life_cycle_state'] = 'TERMINATED'
             return {}
         if '/unity-catalog/models/' in target or '/mlflow/experiments/' in target:
             raise RuntimeError('Databricks API HTTP 404')
@@ -136,8 +138,9 @@ def setup(monkeypatch):
     retention = importlib.import_module('retention_ledger')
     cleanup = importlib.import_module('cleanup')
     client = importlib.import_module('client')
-    monkeypatch.setenv('KUMO_DATABRICKS_TEST_HOST',
-                       'https://dbc-example.cloud.databricks.com')
+    monkeypatch.setenv(
+        'KUMO_DATABRICKS_TEST_HOST', 'https://dbc-example.cloud.databricks.com'
+    )
     monkeypatch.setenv('KUMO_DATABRICKS_TEST_USER', 'test-principal')
     config = client.configuration()
     assert config['persistent_ledger'] is True
@@ -150,7 +153,8 @@ def leaked(setup, root, *, attempt='a' * 12, submitted=True):
     spec = dict(
         attempt=attempt,
         notebook_path=config['workspace_dir'] + '/kumo-test-graph-' + attempt,
-        output=config['volume'] + '/runs/' + attempt + '/outputs')
+        output=config['volume'] + '/runs/' + attempt + '/outputs',
+    )
     (root / 'scenario.json').write_text(json.dumps(spec))
     resources = cleanup.AttemptResources(cloud, config, spec, root).__enter__()
     prefix = spec['output'].removesuffix('/outputs')
@@ -163,11 +167,12 @@ def leaked(setup, root, *, attempt='a' * 12, submitted=True):
         resources.submitting()
         (root / 'submitted-run.json').write_text('{"run_id":17}')
         cloud.runs[17] = dict(
-            run_id=17, creator_user_name=config['expected_user'],
+            run_id=17,
+            creator_user_name=config['expected_user'],
             run_name='kumo-test-notebook-ui-' + attempt,
-            state=dict(life_cycle_state='TERMINATED'), tasks=[
-                dict(notebook_task=dict(notebook_path=spec['notebook_path']))
-            ])
+            state=dict(life_cycle_state='TERMINATED'),
+            tasks=[dict(notebook_task=dict(notebook_path=spec['notebook_path']))],
+        )
         resources.submitted()
     now = resources.ledger['started_ms'] + 25 * 3600000
     return resources, spec, now
@@ -179,8 +184,9 @@ def test_vm_loss_recovers_from_only_remote_signed_state(setup, tmp_path):
     path = resource.remote.path
     assert cloud.token.encode() not in cloud.files[path]
     shutil.rmtree(resource.root)
-    result = retention.sweep(cloud, config, tmp_path / 'new-vm', execute=True,
-                             now_ms=now)
+    result = retention.sweep(
+        cloud, config, tmp_path / 'new-vm', execute=True, now_ms=now
+    )
     assert result['cleaned'] == 1
     assert path not in cloud.files
     assert spec['notebook_path'] not in cloud.notebooks
@@ -188,7 +194,8 @@ def test_vm_loss_recovers_from_only_remote_signed_state(setup, tmp_path):
 
 
 def test_budget_exhaustion_preserves_signed_state_for_next_sweep(
-        setup, tmp_path, monkeypatch):
+    setup, tmp_path, monkeypatch
+):
     retention, _, config, cloud = setup
     resource, spec, now = leaked(setup, tmp_path / 'lost-vm')
     prefix = spec['output'].removesuffix('/outputs')
@@ -197,8 +204,9 @@ def test_budget_exhaustion_preserves_signed_state_for_next_sweep(
     cloud.files[child + '/a'] = b'first'
     cloud.files[child + '/b'] = b'second'
     monkeypatch.setattr(retention, 'MAX_FILES', 4)
-    result = retention.sweep(cloud, config, tmp_path / 'first-sweep',
-                             execute=True, now_ms=now)
+    result = retention.sweep(
+        cloud, config, tmp_path / 'first-sweep', execute=True, now_ms=now
+    )
     assert result['cleaned'] == 0
     assert result['preserved'] == {'unproven_or_failed_cleanup': 1}
     assert resource.remote.path in cloud.files
@@ -206,31 +214,34 @@ def test_budget_exhaustion_preserves_signed_state_for_next_sweep(
     assert child not in cloud.directories
     failed = tmp_path / 'first-sweep' / spec['attempt'] / 'cleanup.json'
     assert json.loads(failed.read_text())['failed_resources'] == ['storage']
-    result = retention.sweep(cloud, config, tmp_path / 'second-sweep',
-                             execute=True, now_ms=now)
+    result = retention.sweep(
+        cloud, config, tmp_path / 'second-sweep', execute=True, now_ms=now
+    )
     assert result['cleaned'] == 1
     assert resource.remote.path not in cloud.files
     assert not any('/runs/' in name for name in cloud.files)
 
 
-@pytest.mark.parametrize('fault', [
-    'tamper', 'unsigned', 'wrong_pat', 'foreign_user', 'foreign_scope', 'recent'
-])
-def test_unproven_or_recent_record_never_mutates_resources(
-        setup, tmp_path, fault):
+@pytest.mark.parametrize(
+    'fault',
+    ['tamper', 'unsigned', 'wrong_pat', 'foreign_user', 'foreign_scope', 'recent'],
+)
+def test_unproven_or_recent_record_never_mutates_resources(setup, tmp_path, fault):
     retention, _, config, cloud = setup
     resource, _, now = leaked(setup, tmp_path / 'lost')
     path = resource.remote.path
     if fault in ('tamper', 'foreign_scope'):
         value = json.loads(cloud.files[path])
-        value['payload']['config']['expected_user' if fault ==
-                                   'tamper' else 'volume'] = 'foreign'
+        value['payload']['config'][
+            'expected_user' if fault == 'tamper' else 'volume'
+        ] = 'foreign'
         if fault == 'foreign_scope':
             value['hmac_sha256'] = retention.signature(cloud, value['payload'])
         cloud.files[path] = json.dumps(value).encode()
     elif fault == 'unsigned':
         cloud.files[path] = json.dumps(
-            json.loads(cloud.files[path])['payload']).encode()
+            json.loads(cloud.files[path])['payload']
+        ).encode()
     elif fault == 'wrong_pat':
         cloud.token = 'rotated-test-pat'
     elif fault == 'foreign_user':
@@ -240,11 +251,11 @@ def test_unproven_or_recent_record_never_mutates_resources(
     cloud.calls.clear()
     if fault == 'foreign_user':
         with pytest.raises(ValueError, match='PAT identity'):
-            retention.sweep(cloud, config, tmp_path / 'sweep', execute=True,
-                            now_ms=now)
+            retention.sweep(cloud, config, tmp_path / 'sweep', execute=True, now_ms=now)
     else:
-        result = retention.sweep(cloud, config, tmp_path / 'sweep',
-                                 execute=True, now_ms=now)
+        result = retention.sweep(
+            cloud, config, tmp_path / 'sweep', execute=True, now_ms=now
+        )
         assert result['cleaned'] == 0
         assert sum(result['preserved'].values()) == 1
     assert all(method == 'GET' for _, method, _ in cloud.calls)
@@ -252,15 +263,17 @@ def test_unproven_or_recent_record_never_mutates_resources(
 
 
 @pytest.mark.parametrize(
-    'pending', ['submission_pending', 'import_pending', 'experiment_pending'])
+    'pending', ['submission_pending', 'import_pending', 'experiment_pending']
+)
 def test_unknown_creation_or_submission_is_preserved(setup, tmp_path, pending):
     retention, _, config, cloud = setup
     resource, _, now = leaked(setup, tmp_path / 'lost', submitted=False)
     resource.ledger[pending] = True
     resource.save()
     cloud.calls.clear()
-    result = retention.sweep(cloud, config, tmp_path / 'sweep', execute=True,
-                             now_ms=now)
+    result = retention.sweep(
+        cloud, config, tmp_path / 'sweep', execute=True, now_ms=now
+    )
     assert result['preserved'] == {'unknown_submission_or_creation': 1}
     assert all(method == 'GET' for _, method, _ in cloud.calls)
 
@@ -273,11 +286,10 @@ def test_only_exact_owned_active_job_can_be_cancelled(setup, tmp_path, foreign):
     if foreign:
         cloud.runs[17]['creator_user_name'] = 'foreign-user'
     cloud.calls.clear()
-    result = retention.sweep(cloud, config, tmp_path / 'sweep', execute=True,
-                             now_ms=now)
-    cancelled = [
-        p for p, method, _ in cloud.calls if p.endswith('/runs/cancel')
-    ]
+    result = retention.sweep(
+        cloud, config, tmp_path / 'sweep', execute=True, now_ms=now
+    )
+    cancelled = [p for p, method, _ in cloud.calls if p.endswith('/runs/cancel')]
     assert len(cancelled) == (0 if foreign else 1)
     assert result['cleaned'] == (0 if foreign else 1)
     assert (resource.remote.path in cloud.files) is foreign
@@ -290,12 +302,15 @@ def test_partial_cleanup_checkpoint_survives_another_vm_loss(setup, tmp_path):
     cloud.fail_once = spec['output'].removesuffix('/outputs') + '/wheel.whl'
     with pytest.raises(RuntimeError, match='cleanup failed'):
         resource.__exit__()
-    assert retention.read(
-        cloud, resource.remote.path)['ledger']['notebook_removed'] is True
+    assert (
+        retention.read(cloud, resource.remote.path)['ledger']['notebook_removed']
+        is True
+    )
     shutil.rmtree(resource.root)
     cloud.calls.clear()
-    result = retention.sweep(cloud, config, tmp_path / 'replacement',
-                             execute=True, now_ms=now)
+    result = retention.sweep(
+        cloud, config, tmp_path / 'replacement', execute=True, now_ms=now
+    )
     assert result['cleaned'] == 1
     assert not any(p.endswith('/workspace/delete') for p, _, _ in cloud.calls)
 
@@ -308,33 +323,36 @@ def test_plan_and_ttl_floor_cannot_delete_anything(setup, tmp_path):
     assert result['eligible'] == 1 and result['cleaned'] == 0
     assert all(method == 'GET' for _, method, _ in cloud.calls)
     with pytest.raises(ValueError, match='at least 24'):
-        retention.sweep(cloud, config, tmp_path / 'bad', execute=True,
-                        ttl_hours=23)
+        retention.sweep(cloud, config, tmp_path / 'bad', execute=True, ttl_hours=23)
 
 
 def test_shared_payload_cache_and_file_budget_are_preserved(
-        setup, tmp_path, monkeypatch):
+    setup, tmp_path, monkeypatch
+):
     retention, _, config, cloud = setup
     resource, _, now = leaked(setup, tmp_path / 'lost')
     cache = config['volume'] + '/payload-cache/hash/fixture.tar.gz'
     cloud.files[cache] = b'shared'
     monkeypatch.setattr(retention, 'MAX_FILES', 1)
-    result = retention.sweep(cloud, config, tmp_path / 'small-budget',
-                             execute=True, now_ms=now)
+    result = retention.sweep(
+        cloud, config, tmp_path / 'small-budget', execute=True, now_ms=now
+    )
     assert result['cleaned'] == 0
-    assert resource.remote.path in cloud.files and cloud.files[
-        cache] == b'shared'
+    assert resource.remote.path in cloud.files and cloud.files[cache] == b'shared'
 
 
 def test_actual_graph_entrypoint_persists_before_attempt_upload(
-        setup, tmp_path, monkeypatch):
+    setup, tmp_path, monkeypatch
+):
     retention, cleanup, config, cloud = setup
     runner = importlib.import_module('databricks_notebook.run')
     root = tmp_path / 'lost'
     root.mkdir()
     monkeypatch.setattr(
-        runner, 'read_candidate',
-        lambda _: dict(wheel_file='candidate.whl', wheel_sha256='a' * 64))
+        runner,
+        'read_candidate',
+        lambda _: dict(wheel_file='candidate.whl', wheel_sha256='a' * 64),
+    )
     monkeypatch.setattr(runner, 'committed_graph_sources', lambda: 'a' * 40)
     monkeypatch.setattr(runner, 'Client', lambda _: cloud)
     monkeypatch.setattr(runner, 'configuration', lambda _: config)
@@ -344,37 +362,47 @@ def test_actual_graph_entrypoint_persists_before_attempt_upload(
         if '/runs/' in volume:
             controls = [p for p in cloud.files if p.endswith('/resources.json')]
             assert len(controls) == 1
-            assert retention.read(cloud,
-                                  controls[0])['ledger']['admitted'] is True
+            assert retention.read(cloud, controls[0])['ledger']['admitted'] is True
             raise SystemExit('VM was lost during attempt upload')
         return dict(path=volume + '/' + name, sha256=expected), b''
 
     monkeypatch.setattr(runner, 'asset', upload)
     # A lost VM cannot execute Python context-manager cleanup.
-    monkeypatch.setattr(cleanup.AttemptResources, '__exit__',
-                        lambda *args: False)
+    monkeypatch.setattr(cleanup.AttemptResources, '__exit__', lambda *args: False)
     with pytest.raises(SystemExit, match='VM was lost'):
         runner.execute(
-            SimpleNamespace(candidate=None, cluster_id='0101-010101-test',
-                            fixture=None, wheel=tmp_path / 'candidate.whl'),
-            root)
+            SimpleNamespace(
+                candidate=None,
+                cluster_id='0101-010101-test',
+                fixture=None,
+                wheel=tmp_path / 'candidate.whl',
+            ),
+            root,
+        )
     assert any(p.endswith('/resources.json') for p in cloud.files)
 
 
 def test_manual_workflow_runs_one_sweep_before_notebooks():
     workflow = yaml.safe_load(
-        (DIRECTORY.parents[3] /
-         '.github/workflows/kumo-engine-databricks-notebook.yml').read_text())
+        (
+            DIRECTORY.parents[3]
+            / '.github/workflows/kumo-engine-databricks-notebook.yml'
+        ).read_text()
+    )
     found = []
     for job in workflow['jobs'].values():
         steps = job.get('steps', [])
         sweep = [
-            i for i, step in enumerate(steps)
+            i
+            for i, step in enumerate(steps)
             if 'retention_ledger.py' in step.get('run', '')
         ]
         if sweep:
-            execution = next(i for i, step in enumerate(steps)
-                             if '--execute --cluster-id' in step.get('run', ''))
+            execution = next(
+                i
+                for i, step in enumerate(steps)
+                if '--execute --cluster-id' in step.get('run', '')
+            )
             assert len(sweep) == 1 and sweep[0] < execution
             found.append(steps[sweep[0]].get('if'))
     assert found == [None, "inputs.mode == 'engine'"]
@@ -398,14 +426,14 @@ def test_duplicate_control_record_cannot_acquire_ownership(setup, tmp_path):
 
 
 def test_inventory_budget_and_repeated_pagination_fail_closed(
-        setup, tmp_path, monkeypatch):
+    setup, tmp_path, monkeypatch
+):
     retention, _, config, cloud = setup
     resource, _, now = leaked(setup, tmp_path / 'first')
     monkeypatch.setattr(retention, 'MAX_RECORDS', 0)
     cloud.calls.clear()
     with pytest.raises(ValueError, match='record budget'):
-        retention.sweep(cloud, config, tmp_path / 'limited', execute=True,
-                        now_ms=now)
+        retention.sweep(cloud, config, tmp_path / 'limited', execute=True, now_ms=now)
     assert all(method == 'GET' for _, method, _ in cloud.calls)
     monkeypatch.setattr(retention, 'MAX_RECORDS', 200)
     original = cloud.api
@@ -417,8 +445,7 @@ def test_inventory_budget_and_repeated_pagination_fail_closed(
 
     cloud.api = repeated
     with pytest.raises(ValueError, match='pagination is ambiguous'):
-        retention.sweep(cloud, config, tmp_path / 'repeated', execute=True,
-                        now_ms=now)
+        retention.sweep(cloud, config, tmp_path / 'repeated', execute=True, now_ms=now)
     assert resource.remote.path in cloud.files
 
 
@@ -427,16 +454,19 @@ def test_missing_job_history_preserves_all_resources(setup, tmp_path):
     resource, spec, now = leaked(setup, tmp_path / 'lost')
     cloud.runs.clear()
     cloud.calls.clear()
-    result = retention.sweep(cloud, config, tmp_path / 'recovery', execute=True,
-                             now_ms=now)
+    result = retention.sweep(
+        cloud, config, tmp_path / 'recovery', execute=True, now_ms=now
+    )
     assert result['cleaned'] == 0
     assert all(method == 'GET' for _, method, _ in cloud.calls)
-    assert resource.remote.path in cloud.files and spec[
-        'notebook_path'] in cloud.notebooks
+    assert (
+        resource.remote.path in cloud.files and spec['notebook_path'] in cloud.notebooks
+    )
 
 
 def test_control_record_network_read_is_bounded(setup, monkeypatch):
     import io
+
     retention, _, config, _ = setup
     client_module = importlib.import_module('client')
     monkeypatch.setenv('KUMO_DATABRICKS_TEST_PAT', 'test-token')
@@ -448,15 +478,19 @@ def test_control_record_network_read_is_bounded(setup, monkeypatch):
             reads.append(size)
             return super().read(size)
 
-    monkeypatch.setattr(client.opener, 'open',
-                        lambda *args, **kwargs: Response(b'x' * (retention.MAX_BYTES * 2)))
+    monkeypatch.setattr(
+        client.opener,
+        'open',
+        lambda *args, **kwargs: Response(b'x' * (retention.MAX_BYTES * 2)),
+    )
     with pytest.raises(ValueError, match='response exceeds byte limit'):
         retention.read(client, retention.file_path(config, 'a' * 12))
     assert reads == [retention.MAX_BYTES + 1]
 
 
 def test_empty_control_cleanup_is_retried_without_claiming_attempt_cleanup(
-        setup, tmp_path):
+    setup, tmp_path
+):
     retention, _, config, cloud = setup
     resources, spec, now = leaked(setup, tmp_path / 'initial')
     folder = resources.remote.path.rsplit('/', 1)[0]
@@ -467,14 +501,17 @@ def test_empty_control_cleanup_is_retried_without_claiming_attempt_cleanup(
     assert report['control_directory_cleanup'] == 'pending'
     assert folder in cloud.directories
     assert not cloud.files and spec['notebook_path'] not in cloud.notebooks
-    result = retention.sweep(cloud, config, tmp_path / 'later', execute=True, now_ms=now)
+    result = retention.sweep(
+        cloud, config, tmp_path / 'later', execute=True, now_ms=now
+    )
     assert result['empty_controls_removed'] == 1
     assert result['cleaned'] == 0
     assert folder not in cloud.directories
 
 
 def test_missing_record_does_not_authorize_nonempty_control_directory_deletion(
-        setup, tmp_path):
+    setup, tmp_path
+):
     retention, _, config, cloud = setup
     folder = config['volume'] + '/retention/' + 'a' * 12
     cloud.mkdir(folder)
@@ -485,17 +522,14 @@ def test_missing_record_does_not_authorize_nonempty_control_directory_deletion(
     assert not any(method == 'DELETE' for _, method, _ in cloud.calls)
 
 
-def test_large_inventory_makes_progress_after_every_runner_is_lost(
-        setup, tmp_path):
+def test_large_inventory_makes_progress_after_every_runner_is_lost(setup, tmp_path):
     retention, _, config, cloud = setup
     for index in range(205):
-        leaked(setup, tmp_path / str(index), attempt=f'{index:012x}',
-               submitted=False)
+        leaked(setup, tmp_path / str(index), attempt=f'{index:012x}', submitted=False)
     cleaned = 0
     for sweep_index in range(11):
         root = tmp_path / ('sweep-' + str(sweep_index))
-        result = retention.sweep(cloud, config, root, execute=True,
-                                 now_ms=10**15)
+        result = retention.sweep(cloud, config, root, execute=True, now_ms=10**15)
         assert 0 < result['cleaned'] <= retention.MAX_ATTEMPTS
         assert result['inventory_has_more'] is (sweep_index < 10)
         cleaned += result['cleaned']
@@ -509,35 +543,32 @@ def test_failed_old_attempts_cannot_starve_later_recovery(setup, tmp_path):
     for index in range(20):
         leaked(setup, tmp_path / str(index), attempt=f'{index:012x}')
     cloud.runs.clear()
-    good, spec, now = leaked(setup, tmp_path / 'good', attempt=f'{20:012x}',
-                             submitted=False)
-    first = retention.sweep(cloud, config, tmp_path / 'first', execute=True,
-                            now_ms=now)
+    good, spec, now = leaked(
+        setup, tmp_path / 'good', attempt=f'{20:012x}', submitted=False
+    )
+    first = retention.sweep(cloud, config, tmp_path / 'first', execute=True, now_ms=now)
     assert first['cleaned'] == 0
     assert first['preserved'] == {'unproven_or_failed_cleanup': 20}
     assert first['inventory_has_more'] is True
     shutil.rmtree(tmp_path / 'first')
-    second = retention.sweep(cloud, config, tmp_path / 'second', execute=True,
-                             now_ms=now)
+    second = retention.sweep(
+        cloud, config, tmp_path / 'second', execute=True, now_ms=now
+    )
     assert second['cleaned'] == 1
     assert good.remote.path not in cloud.files
     assert spec['notebook_path'] not in cloud.notebooks
     assert second['inventory_has_more'] is False
     # End-of-inventory wraps back to the preserved attempts on the next pass.
-    third = retention.sweep(cloud, config, tmp_path / 'third', execute=True,
-                            now_ms=now)
+    third = retention.sweep(cloud, config, tmp_path / 'third', execute=True, now_ms=now)
     assert third['preserved'] == {'unproven_or_failed_cleanup': 20}
 
 
 @pytest.mark.parametrize('fault', ['tamper', 'scope', 'oversize_page'])
-def test_invalid_inventory_progress_cannot_mutate_resources(
-        setup, tmp_path, fault):
+def test_invalid_inventory_progress_cannot_mutate_resources(setup, tmp_path, fault):
     retention, _, config, cloud = setup
     for index in range(21):
-        leaked(setup, tmp_path / str(index), attempt=f'{index:012x}',
-               submitted=False)
-    retention.sweep(cloud, config, tmp_path / 'first', execute=True,
-                    now_ms=10**15)
+        leaked(setup, tmp_path / str(index), attempt=f'{index:012x}', submitted=False)
+    retention.sweep(cloud, config, tmp_path / 'first', execute=True, now_ms=10**15)
     path = retention.cursor_path(config)
     value = json.loads(cloud.files[path])
     if fault == 'scope':
@@ -557,18 +588,15 @@ def test_invalid_inventory_progress_cannot_mutate_resources(
     cloud.files[path] = json.dumps(value).encode()
     cloud.calls.clear()
     with pytest.raises(ValueError):
-        retention.sweep(cloud, config, tmp_path / 'second', execute=True,
-                        now_ms=10**15)
+        retention.sweep(cloud, config, tmp_path / 'second', execute=True, now_ms=10**15)
     assert all(method == 'GET' for _, method, _ in cloud.calls)
 
 
 def test_plan_does_not_advance_durable_inventory_cursor(setup, tmp_path):
     retention, _, config, cloud = setup
     for index in range(21):
-        leaked(setup, tmp_path / str(index), attempt=f'{index:012x}',
-               submitted=False)
-    retention.sweep(cloud, config, tmp_path / 'first', execute=True,
-                    now_ms=10**15)
+        leaked(setup, tmp_path / str(index), attempt=f'{index:012x}', submitted=False)
+    retention.sweep(cloud, config, tmp_path / 'first', execute=True, now_ms=10**15)
     before = dict(cloud.files)
     cloud.calls.clear()
     result = retention.sweep(cloud, config, tmp_path / 'plan', now_ms=10**15)
@@ -577,12 +605,10 @@ def test_plan_does_not_advance_durable_inventory_cursor(setup, tmp_path):
     assert all(method == 'GET' for _, method, _ in cloud.calls)
 
 
-def test_short_inventory_page_keeps_page_size_across_continuation(
-        setup, tmp_path):
+def test_short_inventory_page_keeps_page_size_across_continuation(setup, tmp_path):
     retention, _, config, cloud = setup
     for index in range(3):
-        leaked(setup, tmp_path / str(index), attempt=f'{index:012x}',
-               submitted=False)
+        leaked(setup, tmp_path / str(index), attempt=f'{index:012x}', submitted=False)
     original = cloud.api
     sizes = []
 
@@ -592,15 +618,18 @@ def test_short_inventory_page_keeps_page_size_across_continuation(
             sizes.append(query['page_size'])
             if 'page_token' not in query:
                 path = config['volume'] + '/retention/' + f'{0:012x}' + '/'
-                return dict(contents=[dict(path=path, is_directory=True)],
-                            next_page_token=path)
+                return dict(
+                    contents=[dict(path=path, is_directory=True)], next_page_token=path
+                )
         return original(endpoint, method, body, **kwargs)
 
     cloud.api = short_page
-    first = retention.sweep(cloud, config, tmp_path / 'first', execute=True,
-                            now_ms=10**15)
+    first = retention.sweep(
+        cloud, config, tmp_path / 'first', execute=True, now_ms=10**15
+    )
     assert first['cleaned'] == 1 and first['inventory_has_more'] is True
-    second = retention.sweep(cloud, config, tmp_path / 'second', execute=True,
-                             now_ms=10**15)
+    second = retention.sweep(
+        cloud, config, tmp_path / 'second', execute=True, now_ms=10**15
+    )
     assert second['cleaned'] == 2 and second['inventory_has_more'] is False
     assert sizes == [[str(retention.MAX_ATTEMPTS)]] * 2

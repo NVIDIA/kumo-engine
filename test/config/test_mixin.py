@@ -55,10 +55,7 @@ def _increment(value):
 def test_config(config_as_dict):
     expected_cfg_dict = {
         'attr0': 1,
-        'attr1': {
-            'attr': 3,
-            '_target_': 'test.config.test_mixin.MyNestedClass'
-        },
+        'attr1': {'attr': 3, '_target_': 'test.config.test_mixin.MyNestedClass'},
         'attr2': {
             'attr': 5,
             '_target_': 'test.config.test_mixin.MyDataclass',
@@ -81,15 +78,12 @@ def test_config(config_as_dict):
 def test_bad_config(config_as_dict):
     bad_cfg_dict = {
         'attr0': 1,
-        'attr1': {
-            'attr': 3,
-            '_target_': 'test.config.test_mixin.MyNestedClass'
-        },
+        'attr1': {'attr': 3, '_target_': 'test.config.test_mixin.MyNestedClass'},
         'attr2': {
             'attr': 5,
             '_target_': 'test.config.test_mixin.MyDataclass',
         },
-        'bad_attr': 7
+        'bad_attr': 7,
     }
     with pytest.warns(UserWarning, match='bad_attr'):
         out = MyClass.from_config(bad_cfg_dict)
@@ -108,9 +102,7 @@ def test_bad_config(config_as_dict):
         bytearray(b'bytes'),
         {
             'raw': b'\x01\x02',
-            'nested': [bytearray(b'category'), {
-                'value': b'\xff'
-            }],
+            'nested': [bytearray(b'category'), {'value': b'\xff'}],
         },
     ],
 )
@@ -131,30 +123,31 @@ def test_function_config_uses_explicit_marshaled_code_marker():
 @pytest.mark.parametrize(
     ('config', 'error'),
     [
-        ({
-            '__kumo_config_type__': 'marshalled_function_v1'
-        }, ValueError),
-        ({
-            '__kumo_config_type__': 'unknown',
-            'code': b''
-        }, ValueError),
-        ({
-            '__kumo_config_type__': 'marshalled_function_v1',
-            'code': b'',
-            'extra': True,
-        }, ValueError),
-        ({
-            '__kumo_config_type__': 'marshalled_function_v1',
-            'code': 'bad'
-        }, TypeError),
-        ({
-            '__kumo_config_type__': 'marshalled_function_v1',
-            'code': b'not-bytecode',
-        }, ValueError),
-        ({
-            '__kumo_config_type__': 'marshalled_function_v1',
-            'code': marshal.dumps(123),
-        }, TypeError),
+        ({'__kumo_config_type__': 'marshalled_function_v1'}, ValueError),
+        ({'__kumo_config_type__': 'unknown', 'code': b''}, ValueError),
+        (
+            {
+                '__kumo_config_type__': 'marshalled_function_v1',
+                'code': b'',
+                'extra': True,
+            },
+            ValueError,
+        ),
+        ({'__kumo_config_type__': 'marshalled_function_v1', 'code': 'bad'}, TypeError),
+        (
+            {
+                '__kumo_config_type__': 'marshalled_function_v1',
+                'code': b'not-bytecode',
+            },
+            ValueError,
+        ),
+        (
+            {
+                '__kumo_config_type__': 'marshalled_function_v1',
+                'code': marshal.dumps(123),
+            },
+            TypeError,
+        ),
     ],
 )
 def test_malformed_marshaled_function_payload_is_rejected(config, error):
@@ -179,18 +172,15 @@ def test_binary_categorical_stats_config_round_trip():
 def test_construct_object_string_from_config():
     # config as a dataclass
     config = MyDataclass(attr=123)
-    assert (
-        construct_object_string_from_config(config) == 'MyDataclass(attr=123)')
+    assert construct_object_string_from_config(config) == 'MyDataclass(attr=123)'
 
     # config as a dict
     config = {'attr': 123, '_target_': 'test.config.test_mixin.MyDataclass'}
-    assert (
-        construct_object_string_from_config(config) == 'MyDataclass(attr=123)')
+    assert construct_object_string_from_config(config) == 'MyDataclass(attr=123)'
 
     # config as a ConfigMixin
     config = MyNestedClass(attr=123)
-    assert (construct_object_string_from_config(config) ==
-            'MyNestedClass(attr=123)')
+    assert construct_object_string_from_config(config) == 'MyNestedClass(attr=123)'
 
 
 @pytest.mark.parametrize(
@@ -210,6 +200,6 @@ def test_unknown_config_target_fails_explicitly(load_config):
     }
 
     with pytest.raises(
-            ValueError,
-            match=r'unsupported config target: missing\.module\.Owner'):
+        ValueError, match=r'unsupported config target: missing\.module\.Owner'
+    ):
         load_config(config)

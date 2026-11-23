@@ -27,8 +27,7 @@ def auto_setup_kumo_backend() -> bool:
 
 
 @pytest.fixture
-def _rest_install_dg_col_stats_fallback(
-):  # pyright: ignore[reportUnusedFunction]
+def _rest_install_dg_col_stats_fallback():  # pyright: ignore[reportUnusedFunction]
     yield
 
 
@@ -52,8 +51,7 @@ def temporal_workers_ready():
     yield True
 
 
-def _table_definition(
-        path: str = 'events.parquet') -> table_api.TableDefinition:
+def _table_definition(path: str = 'events.parquet') -> table_api.TableDefinition:
     return table_api.TableDefinition(
         cols=[
             table_api.Column(
@@ -87,8 +85,7 @@ def _table_id() -> TableIDv2:
 
 
 @pytest.mark.asyncio
-async def test_create_named_table_forwards_keyword_only_overwrite_args(
-) -> None:
+async def test_create_named_table_forwards_keyword_only_overwrite_args() -> None:
     router, driver = _router()
     request = _table_definition()
 

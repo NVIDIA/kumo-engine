@@ -28,44 +28,42 @@ class TensorboardRouter:
         self._auth = auth
 
         self.router = APIRouter(
-            prefix="/v0/tensorboard",
-            tags=["Tensorboard"],
+            prefix='/v0/tensorboard',
+            tags=['Tensorboard'],
             dependencies=[Depends(auth.authenticate_request_header)],
-            responses={HTTPStatus.NOT_FOUND: {
-                "description": "Not found"
-            }},
+            responses={HTTPStatus.NOT_FOUND: {'description': 'Not found'}},
         )
 
         self.router.add_api_route(
-            "/{job_id}/trials",
+            '/{job_id}/trials',
             self.list_trials,
             response_model=List[str],
             methods=['GET'],
         )
 
         self.router.add_api_route(
-            "/{job_id}/plugin/scalars/tags",
+            '/{job_id}/plugin/scalars/tags',
             self.list_scalars_tags,
             response_model=JobScalarTags,
             methods=['GET'],
         )
 
         self.router.add_api_route(
-            "/{job_id}/plugin/scalars/scalars",
+            '/{job_id}/plugin/scalars/scalars',
             self.get_scalars,
             response_model=ScalarsResponse,
             methods=['GET'],
         )
 
         self.router.add_api_route(
-            "/plugin/scalars/many_scalars",
+            '/plugin/scalars/many_scalars',
             self.get_many_scalars,
             response_model=Dict[str, ScalarsResponse],
             methods=['POST'],
         )
 
         self.router.add_api_route(
-            "/{job_id}/plugin/hparams",
+            '/{job_id}/plugin/hparams',
             self.get_hparams,
             response_model=str,
             methods=['GET'],
@@ -80,29 +78,27 @@ class TensorboardRouter:
         # )
 
     async def list_trials(
-        self, job_id: str,
-        ctx: RequestContext = Depends(get_ctx)) -> List[str]:
-        r"""Return a list of trials that contains a tensorboard.
-        """
+        self, job_id: str, ctx: RequestContext = Depends(get_ctx)
+    ) -> List[str]:
+        r"""Return a list of trials that contains a tensorboard."""
         job_id = TrainingJobID(job_id)
         training_job_path = get_job_dir(get_job_base_dir(), job_id)
         return await self._driver.list_trials(training_job_path)
 
     async def list_scalars_tags(
-            self,
-            job_id: str,
-            trial: Optional[str] = None,
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        job_id: str,
+        trial: Optional[str] = None,
+        ctx: RequestContext = Depends(get_ctx),
     ) -> JobScalarTags:
-        r"""Return a list of scalar tags for the trial.
-        """
+        r"""Return a list of scalar tags for the trial."""
         job_id = TrainingJobID(job_id)
         training_job_path = get_job_dir(get_job_base_dir(), job_id)
         return await self._driver.list_scalars_tags(training_job_path, trial)
 
     async def get_scalars(
-        self, job_id: str, trial: str, tag: str,
-        ctx: RequestContext = Depends(get_ctx)) -> ScalarsResponse:
+        self, job_id: str, trial: str, tag: str, ctx: RequestContext = Depends(get_ctx)
+    ) -> ScalarsResponse:
         r"""Return a list of scalars for the trail and tag."""
         job_id = TrainingJobID(job_id)
         training_job_path = get_job_dir(get_job_base_dir(), job_id)
@@ -122,7 +118,8 @@ class TensorboardRouter:
         )
 
     async def get_hparams(
-        self, job_id: str, ctx: RequestContext = Depends(get_ctx)) -> str:
+        self, job_id: str, ctx: RequestContext = Depends(get_ctx)
+    ) -> str:
         r"""Return the model config for the trail in the json string."""
         job_id = TrainingJobID(job_id)
         training_job_path = get_job_dir(get_job_base_dir(), job_id)

@@ -16,6 +16,6 @@ def test_get_confusion():
     tn = matrix.true_negatives
     fn = matrix.false_negatives
 
-    assert all([i + j + k + l == 4 for i, j, k, l in zip(tp, fp, tn, fn)])
+    assert all(sum(counts) == 4 for counts in zip(tp, fp, tn, fn))
     assert tp[0] == tp[1] == tn[1] == tp[2] == tn[2] == tn[3] == 2
     assert fp[0] == fn[3] == 2

@@ -14,6 +14,7 @@ so it is driven directly here. A local ``ParquetConnector`` exercises ambiguous
 value inference end to end, while connector metadata mocks isolate native-schema
 and explicit-hint short circuits.
 """
+
 import os
 from unittest import mock
 
@@ -46,43 +47,47 @@ def _parquet_connector(tmp_path, df: pd.DataFrame) -> ParquetConnector:
 
 
 def test_update_table_timestamp_units_unit_and_format(tmp_path):
-    df = pd.DataFrame({
-        'EPOCH_MS': pd.Series(
-            [1659304801388, 1659304901388, 1659305001388], dtype='int64'),
-        'ENCODED_DATE': pd.Series(
-            [20230408, 20240115, 20250301], dtype='int64'),
-        'STRING_DATE': pd.Series(
-            ['2023-04-08', '2024-01-15', '2025-03-01'], dtype='string'),
-    })
+    df = pd.DataFrame(
+        {
+            'EPOCH_MS': pd.Series(
+                [1659304801388, 1659304901388, 1659305001388], dtype='int64'
+            ),
+            'ENCODED_DATE': pd.Series([20230408, 20240115, 20250301], dtype='int64'),
+            'STRING_DATE': pd.Series(
+                ['2023-04-08', '2024-01-15', '2025-03-01'], dtype='string'
+            ),
+        }
+    )
     connector = _parquet_connector(tmp_path, df)
 
     table_def = TableDefinition(
         cols=[
-            Column(name='EPOCH_MS', stype=ApiStype.timestamp,
-                   dtype=ApiDtype.int64),
-            Column(name='ENCODED_DATE', stype=ApiStype.timestamp,
-                   dtype=ApiDtype.int64),
-            Column(name='STRING_DATE', stype=ApiStype.timestamp,
-                   dtype=ApiDtype.string),
+            Column(name='EPOCH_MS', stype=ApiStype.timestamp, dtype=ApiDtype.int64),
+            Column(name='ENCODED_DATE', stype=ApiStype.timestamp, dtype=ApiDtype.int64),
+            Column(name='STRING_DATE', stype=ApiStype.timestamp, dtype=ApiDtype.string),
         ],
         source_table=S3SourceTable(
             connector_id=f'connector_{"0" * 32}',
             source={'mode': 'relative', 'path': 'test_table'},
-            file_type=FileType.PARQUET),
+            file_type=FileType.PARQUET,
+        ),
         pkey=None,
         time_col=None,
     )
 
     with (
         mock.patch.object(
-            connector, 'read_table_sample',
-            wraps=connector.read_table_sample) as read_table_sample,
+            connector, 'read_table_sample', wraps=connector.read_table_sample
+        ) as read_table_sample,
         mock.patch(
             'rest.backends.data_backend.activities.data_backend_activities'
-            '.get_connector_from_spec', return_value=connector),
+            '.get_connector_from_spec',
+            return_value=connector,
+        ),
     ):
         updated = DataBackendActivities.update_table_timestamp_units(
-            table_def, mock.Mock(), None, None)
+            table_def, mock.Mock(), None, None
+        )
 
     by_name = {col.name: col for col in updated.cols}
     assert read_table_sample.call_count == 1
@@ -99,80 +104,92 @@ def test_update_table_timestamp_units_unit_and_format(tmp_path):
 
 def test_native_bigquery_temporal_metadata_avoids_sample():
     connector = mock.Mock()
-    connector.get_table_metadata.return_value = [TableMetadataConfig(
-        table_name='events',
-        source_name='events',
-        data_source='test',
-        cols=[
-            BaseColumnConfig(name='EVENT_DATE', dtype=ApiDtype.date),
-            BaseColumnConfig(name='EVENT_TIME', dtype=ApiDtype.time),
-        ],
-    )]
+    connector.get_table_metadata.return_value = [
+        TableMetadataConfig(
+            table_name='events',
+            source_name='events',
+            data_source='test',
+            cols=[
+                BaseColumnConfig(name='EVENT_DATE', dtype=ApiDtype.date),
+                BaseColumnConfig(name='EVENT_TIME', dtype=ApiDtype.time),
+            ],
+        )
+    ]
     table_def = TableDefinition(
         cols=[
-            Column(name='EVENT_DATE', stype=ApiStype.timestamp,
-                   dtype=ApiDtype.string),
-            Column(name='EVENT_TIME', stype=ApiStype.timestamp,
-                   dtype=ApiDtype.int64),
+            Column(name='EVENT_DATE', stype=ApiStype.timestamp, dtype=ApiDtype.string),
+            Column(name='EVENT_TIME', stype=ApiStype.timestamp, dtype=ApiDtype.int64),
         ],
         source_table=BigQuerySourceTable(
             bigquery_connector_id=f'connector_{"0" * 32}',
             table_name='events',
             project_id='test-project',
-            dataset_id='test_dataset'),
+            dataset_id='test_dataset',
+        ),
         pkey=None,
         time_col=None,
     )
 
     with mock.patch(
-            'rest.backends.data_backend.activities.data_backend_activities'
-            '.get_connector_from_spec', return_value=connector):
+        'rest.backends.data_backend.activities.data_backend_activities'
+        '.get_connector_from_spec',
+        return_value=connector,
+    ):
         updated = DataBackendActivities.update_table_timestamp_units(
-            table_def, mock.Mock(), None, None)
+            table_def, mock.Mock(), None, None
+        )
 
     connector.get_table_metadata.assert_called_once_with(
-        ['events'], skip_cache=True, skip_inferral=True)
+        ['events'], skip_cache=True, skip_inferral=True
+    )
     connector.read_table_sample.assert_not_called()
     assert updated == table_def
 
 
-@pytest.mark.parametrize('metadata_result', [RuntimeError('provider-secret'),
-                                             []])
+@pytest.mark.parametrize('metadata_result', [RuntimeError('provider-secret'), []])
 def test_physical_metadata_unavailable_falls_back_to_sample(
-        tmp_path, caplog, metadata_result):
+    tmp_path, caplog, metadata_result
+):
     connector = _parquet_connector(
         tmp_path,
-        pd.DataFrame({
-            'EPOCH_MS': pd.Series(
-                [1659304801388, 1659304901388, 1659305001388], dtype='int64'),
-        }),
+        pd.DataFrame(
+            {
+                'EPOCH_MS': pd.Series(
+                    [1659304801388, 1659304901388, 1659305001388], dtype='int64'
+                ),
+            }
+        ),
     )
     table_def = TableDefinition(
-        cols=[Column(name='EPOCH_MS', stype=ApiStype.timestamp,
-                     dtype=ApiDtype.int64)],
+        cols=[Column(name='EPOCH_MS', stype=ApiStype.timestamp, dtype=ApiDtype.int64)],
         source_table=S3SourceTable(
             connector_id=f'connector_{"0" * 32}',
             source={'mode': 'relative', 'path': 'test_table'},
-            file_type=FileType.PARQUET),
+            file_type=FileType.PARQUET,
+        ),
         pkey=None,
         time_col=None,
     )
     metadata_kwargs = (
         {'side_effect': metadata_result}
         if isinstance(metadata_result, Exception)
-        else {'return_value': metadata_result})
+        else {'return_value': metadata_result}
+    )
 
     with (
         mock.patch.object(connector, 'get_table_metadata', **metadata_kwargs),
         mock.patch.object(
-            connector, 'read_table_sample',
-            wraps=connector.read_table_sample) as read_table_sample,
+            connector, 'read_table_sample', wraps=connector.read_table_sample
+        ) as read_table_sample,
         mock.patch(
             'rest.backends.data_backend.activities.data_backend_activities'
-            '.get_connector_from_spec', return_value=connector),
+            '.get_connector_from_spec',
+            return_value=connector,
+        ),
     ):
         updated = DataBackendActivities.update_table_timestamp_units(
-            table_def, mock.Mock(), None, None)
+            table_def, mock.Mock(), None, None
+        )
 
     assert read_table_sample.call_count == 1
     assert updated.cols[0].timestamp_format == TimestampUnit('ms')
@@ -190,23 +207,28 @@ def test_native_custom_sql_temporal_metadata_avoids_sample():
         cols=[BaseColumnConfig(name='EVENT_TIME', dtype=ApiDtype.time)],
     )
     table_def = TableDefinition(
-        cols=[Column(name='EVENT_TIME', stype=ApiStype.timestamp,
-                     dtype=ApiDtype.string)],
+        cols=[
+            Column(name='EVENT_TIME', stype=ApiStype.timestamp, dtype=ApiDtype.string)
+        ],
         source_table=CustomSQLSourceTable(
             connector_id=f'connector_{"0" * 32}',
             connector_type='bigquery',
             sql=sql,
             table='events_query',
-            referenced_tables=['events']),
+            referenced_tables=['events'],
+        ),
         pkey=None,
         time_col=None,
     )
 
     with mock.patch(
-            'rest.backends.data_backend.activities.data_backend_activities'
-            '.get_connector_from_spec', return_value=connector):
+        'rest.backends.data_backend.activities.data_backend_activities'
+        '.get_connector_from_spec',
+        return_value=connector,
+    ):
         updated = DataBackendActivities.update_table_timestamp_units(
-            table_def, mock.Mock(), None, None)
+            table_def, mock.Mock(), None, None
+        )
 
     connector.get_query_metadata.assert_called_once_with(sql)
     connector.get_table_metadata.assert_not_called()
@@ -218,27 +240,37 @@ def test_explicit_temporal_hints_remain_unchanged():
     connector = mock.Mock()
     table_def = TableDefinition(
         cols=[
-            Column(name='EPOCH_MS', stype=ApiStype.timestamp,
-                   dtype=ApiDtype.int64,
-                   timestamp_format=TimestampUnit('ms')),
-            Column(name='STRING_DATE', stype=ApiStype.timestamp,
-                   dtype=ApiDtype.string,
-                   timestamp_format='%Y-%m-%d'),
+            Column(
+                name='EPOCH_MS',
+                stype=ApiStype.timestamp,
+                dtype=ApiDtype.int64,
+                timestamp_format=TimestampUnit('ms'),
+            ),
+            Column(
+                name='STRING_DATE',
+                stype=ApiStype.timestamp,
+                dtype=ApiDtype.string,
+                timestamp_format='%Y-%m-%d',
+            ),
         ],
         source_table=BigQuerySourceTable(
             bigquery_connector_id=f'connector_{"0" * 32}',
             table_name='events',
             project_id='test-project',
-            dataset_id='test_dataset'),
+            dataset_id='test_dataset',
+        ),
         pkey=None,
         time_col=None,
     )
 
     with mock.patch(
-            'rest.backends.data_backend.activities.data_backend_activities'
-            '.get_connector_from_spec', return_value=connector):
+        'rest.backends.data_backend.activities.data_backend_activities'
+        '.get_connector_from_spec',
+        return_value=connector,
+    ):
         updated = DataBackendActivities.update_table_timestamp_units(
-            table_def, mock.Mock(), None, None)
+            table_def, mock.Mock(), None, None
+        )
 
     connector.get_table_metadata.assert_not_called()
     connector.read_table_sample.assert_not_called()

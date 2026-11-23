@@ -18,19 +18,21 @@ from temporalio_commons.auto_rpc_config import AutoRpcClientConfig
 
 def test_get_controller_client_uses_autorpc():
     from unittest.mock import MagicMock, patch
+
     config = MagicMock()
     sentinel = object()
-    with patch('pool.client.create_client',
-               return_value=sentinel) as mock_create:
-        with patch('pool.client.AutoRpcClientConfig.parse_from_env',
-                   return_value=MagicMock()):
+    with patch('pool.client.create_client', return_value=sentinel) as mock_create:
+        with patch(
+            'pool.client.AutoRpcClientConfig.parse_from_env', return_value=MagicMock()
+        ):
             result = get_controller_client(config)
     assert result is sentinel
     assert mock_create.call_count == 1
 
 
-def _pool_controller_queues_for_prefix(monkeypatch: pytest.MonkeyPatch,
-                                       prefix: str) -> tuple[str, str]:
+def _pool_controller_queues_for_prefix(
+    monkeypatch: pytest.MonkeyPatch, prefix: str
+) -> tuple[str, str]:
     """Resolve the effective client/server queues without contacting Temporal."""
     config = DeployEnvConfig(
         deploy_mode=DeployStage.TEST,
@@ -42,8 +44,8 @@ def _pool_controller_queues_for_prefix(monkeypatch: pytest.MonkeyPatch,
     server_worker_env = server_config.to_worker_env(PoolController.__name__)
     try:
         client_queue = config.task_queue(
-            _task_queue_name(client_config.server_name_prefix,
-                             PoolController.__name__))
+            _task_queue_name(client_config.server_name_prefix, PoolController.__name__)
+        )
         return client_queue, server_worker_env.task_queue
     finally:
         server_worker_env.shutdown()
@@ -51,7 +53,8 @@ def _pool_controller_queues_for_prefix(monkeypatch: pytest.MonkeyPatch,
 
 def test_scoped_pool_controller_client_and_server_share_queue(monkeypatch):
     client_queue, server_queue = _pool_controller_queues_for_prefix(
-        monkeypatch, 'train-a')
+        monkeypatch, 'train-a'
+    )
 
     assert client_queue == 'train-a-PoolController-task-queue-test-instance-test'
     assert server_queue == client_queue
@@ -59,9 +62,11 @@ def test_scoped_pool_controller_client_and_server_share_queue(monkeypatch):
 
 def test_scoped_pool_controller_queues_are_distinct_per_child(monkeypatch):
     first_client, first_server = _pool_controller_queues_for_prefix(
-        monkeypatch, 'train-a')
+        monkeypatch, 'train-a'
+    )
     second_client, second_server = _pool_controller_queues_for_prefix(
-        monkeypatch, 'train-b')
+        monkeypatch, 'train-b'
+    )
 
     assert first_client == first_server
     assert second_client == second_server

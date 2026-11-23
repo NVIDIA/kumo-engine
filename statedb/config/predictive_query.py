@@ -28,6 +28,7 @@ class FilterOverrideArgs:
     """NOTE: The temporal_entity_filter_override field is deprecated.
     Please use the entity_filter_override field instead.
     """
+
     entity_filter_override: Optional[str] = None
     temporal_entity_filter_override: Optional[str] = None
     target_filter_override: Optional[str] = None
@@ -36,8 +37,7 @@ class FilterOverrideArgs:
     def to_yaml(self) -> str:
         arg_dict = {
             'entity_filter_override': self.entity_filter_override,
-            'temporal_entity_filter_override':
-            self.temporal_entity_filter_override,
+            'temporal_entity_filter_override': self.temporal_entity_filter_override,
             'target_filter_override': self.target_filter_override,
         }
         yaml_repr = dict_to_yaml(arg_dict)
@@ -68,7 +68,7 @@ def compute_pquery_fpid(
     query_str: str,
     graph_fpid: FPID,
 ) -> FPID:
-    hasher = md5((pquery_name or "").encode())
+    hasher = md5((pquery_name or '').encode())
     hasher.update(f'query={query_str}'.encode())
     hasher.update('dialect=PQLANG_V2'.encode())
     hasher.update(f'graph_fpid={graph_fpid}'.encode())

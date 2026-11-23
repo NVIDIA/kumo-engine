@@ -10,6 +10,7 @@ class FormatterMetadata:
     """Serves as the Metadata base class for kumo's YAML Formatter.
     These fields help specify the name of the key and whether or not this
     field is required in the YAML file for it to be valid"""
+
     name: str
     required: bool
 
@@ -18,5 +19,6 @@ class FormatterMetadata:
 class FieldRequirement:
     """Whether a property of a field (has aggregation, has condition)
     is allowed and required"""
+
     required: bool
     allowed: bool

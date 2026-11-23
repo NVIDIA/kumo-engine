@@ -27,19 +27,23 @@ def test_list_scalars():
 
     driver = TensorboardApiDriver()
     job_scalars_tags = driver._list_scalars_tags(home_dir, '1')
-    assert job_scalars_tags.trial_tags["1"] == [
-        'train_loss', 'train_map@1', 'val_map@1'
+    assert job_scalars_tags.trial_tags['1'] == [
+        'train_loss',
+        'train_map@1',
+        'val_map@1',
     ]
 
     job_scalars_tags2 = driver._list_scalars_tags(home_dir)
     assert len(job_scalars_tags2.trial_tags) == 2
-    assert job_scalars_tags2.trial_tags["0"] == [
-        'train_loss', 'train_map@1', 'val_map@1'
+    assert job_scalars_tags2.trial_tags['0'] == [
+        'train_loss',
+        'train_map@1',
+        'val_map@1',
     ]
 
     job_scalars_tags3 = driver._list_scalars_tags(home_dir, 'not_exist')
     assert len(job_scalars_tags3.trial_tags) == 1
-    assert job_scalars_tags3.trial_tags["not_exist"] == []
+    assert job_scalars_tags3.trial_tags['not_exist'] == []
 
 
 def test_get_scalars():
@@ -74,8 +78,9 @@ def test_get_hparams(tmp_path):
         encoding='utf-8',
     )
     driver = TensorboardApiDriver()
-    assert driver._get_hparams(
-        str(tmp_path)) == ('\'{"learning_rate": 0.01, "num_layers": 3}\'\n')
+    assert driver._get_hparams(str(tmp_path)) == (
+        '\'{"learning_rate": 0.01, "num_layers": 3}\'\n'
+    )
 
 
 def test_get_many_scalars():
@@ -86,8 +91,8 @@ def test_get_many_scalars():
 
     result = driver._get_many_scalars(
         home_dir,
-        trial="0",
-        tags=["train_loss", "train_map@1", "random_tag"],
+        trial='0',
+        tags=['train_loss', 'train_map@1', 'random_tag'],
     )
     # Check train_loss
     train_loss = driver._get_scalars(home_dir, '0', 'train_loss')
@@ -106,4 +111,4 @@ def test_get_many_scalars():
     assert len(train_map1.scalars) == 3
 
     # Check non-existent tag
-    assert result["random_tag"].scalars == []
+    assert result['random_tag'].scalars == []

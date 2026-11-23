@@ -36,10 +36,10 @@ _CSV = layout.CSV
 
 def _check_suffix_error(table_name: str) -> str:
     if table_name.endswith(_PARQUET):
-        return f" Or remove the suffix {_PARQUET}"
+        return f' Or remove the suffix {_PARQUET}'
     elif table_name.endswith(_CSV):
-        return f" Or remove the suffix {_CSV}"
-    return ""
+        return f' Or remove the suffix {_CSV}'
+    return ''
 
 
 class CompositeFileConnector(FileConnector):
@@ -58,6 +58,7 @@ class CompositeFileConnector(FileConnector):
         name (str): The name of the connector
         root_dir (str): Root directory where a set of files are stored.
     """
+
     def __init__(
         self,
         name: str,
@@ -68,16 +69,14 @@ class CompositeFileConnector(FileConnector):
         self._dataset_files_by_path: dict[str, list[tuple[str, str]]] = {}
 
         self.connectors = {
-            _CSV:
-            CSVConnector(
-                name=f"{name}",
+            _CSV: CSVConnector(
+                name=f'{name}',
                 root_dir=root_dir,
                 suffix='csv',
                 **kwargs,
             ),
-            _PARQUET:
-            ParquetConnector(
-                name=f"{name}",
+            _PARQUET: ParquetConnector(
+                name=f'{name}',
                 root_dir=root_dir,
                 suffix='parquet',
                 **kwargs,
@@ -89,7 +88,7 @@ class CompositeFileConnector(FileConnector):
         self._dataset_files_by_path.clear()
 
     def _get_connector_type(self) -> str:
-        return "csv_or_parquet"
+        return 'csv_or_parquet'
 
     def require_explicit_credentials(self) -> None:
         """Require the same explicit credential scope in every delegate."""
@@ -112,7 +111,8 @@ class CompositeFileConnector(FileConnector):
         # container or directory from a valid empty one before listing it.
         if fsutil.is_adls(self.root_dir) and not fsutil.exists(self.root_dir):
             raise ConnectorError(
-                'The configured ADLS container or directory is unavailable')
+                'The configured ADLS container or directory is unavailable'
+            )
         fsutil.listdir(path=self.root_dir, max_items=1)
 
     @blocking_method(DATA_BACKEND_THREAD_POOL)
@@ -130,21 +130,23 @@ class CompositeFileConnector(FileConnector):
         except (OverflowError, PermanentSourceError) as error:
             raise ConnectorError(message=str(error)) from None
 
-        logger.info(f"Connector: {self.name}, root_dir: {self.root_dir}, "
-                    f"table_names: {table_names}")
+        logger.info(
+            f'Connector: {self.name}, root_dir: {self.root_dir}, '
+            f'table_names: {table_names}'
+        )
         if not len(table_names):
             raise NotImplementedError(
                 f"'{self.__class__.__name__}' does not support the dataset"
-                f" format. A table may be stored as a single file in the"
-                f" the root_dir -or- as multiple files in a sub-directory"
-                f" under root_dir.")
+                f' format. A table may be stored as a single file in the'
+                f' the root_dir -or- as multiple files in a sub-directory'
+                f' under root_dir.'
+            )
 
         return table_names
 
     # Reading raw table data ##################################################
 
-    def _get_path(self, table_name: str,
-                  data_version: str | None = None) -> str:
+    def _get_path(self, table_name: str, data_version: str | None = None) -> str:
         del data_version
         path, _ = self._resolve_table(table_name)
         return path.rstrip('/')
@@ -160,18 +162,20 @@ class CompositeFileConnector(FileConnector):
 
     def _get_path_type(self, path: str, table_name: str = '') -> str:
         if fsutil.isdir(path):
-            files = [(relative, physical)
-                     for relative, physical in _scan_dataset_files(
-                         path, (_PARQUET, _CSV))
-                     if not layout.is_hidden(relative)]
+            files = [
+                (relative, physical)
+                for relative, physical in _scan_dataset_files(path, (_PARQUET, _CSV))
+                if not layout.is_hidden(relative)
+            ]
             self._dataset_files_by_path[path.rstrip('/')] = files
             try:
-                file_type = layout.classify(path,
-                                            [relative for relative, _ in files],
-                                            table_name)
+                file_type = layout.classify(
+                    path, [relative for relative, _ in files], table_name
+                )
             except PermanentSourceError as error:
-                raise ValidationException(title="Bad Path",
-                                          message=str(error)) from None
+                raise ValidationException(
+                    title='Bad Path', message=str(error)
+                ) from None
             if file_type is not None:
                 return file_type
         else:
@@ -180,9 +184,9 @@ class CompositeFileConnector(FileConnector):
                 return file_type
 
         raise ValidationException(
-            title="Bad Path",
-            message=(f"No files directly under {path} have a .csv or "
-                     ".parquet suffix."))
+            title='Bad Path',
+            message=(f'No files directly under {path} have a .csv or .parquet suffix.'),
+        )
 
     def _supports_nested_dataset(self, path: str) -> bool:
         return self._get_path_type(path) == _PARQUET
@@ -193,8 +197,9 @@ class CompositeFileConnector(FileConnector):
 
     def _listed_unreadable_table_file(self, table_name: str) -> Optional[str]:
         try:
-            root_entries = fsutil.listdir(path=self.root_dir,
-                                          max_items=MAX_SUPPORTED_FILES)
+            root_entries = fsutil.listdir(
+                path=self.root_dir, max_items=MAX_SUPPORTED_FILES
+            )
         except Exception:
             return None
 
@@ -209,15 +214,18 @@ class CompositeFileConnector(FileConnector):
         """Return the physical path and file format."""
         data_path = self._table_path(table_name)
         if fsutil.isdir(data_path):
-            return (f'{data_path.rstrip("/")}/',
-                    self._get_path_type(data_path, table_name))
+            return (
+                f'{data_path.rstrip("/")}/',
+                self._get_path_type(data_path, table_name),
+            )
         if fsutil.exists(data_path):
             file_type = self._supported_file_type(data_path)
             if file_type is not None:
                 return data_path, file_type
             raise ConnectorError(
-                message=f"Table {table_name} does not have a supported "
-                f"file type (.csv or .parquet).")
+                message=f'Table {table_name} does not have a supported '
+                f'file type (.csv or .parquet).'
+            )
 
         for file_type in (_PARQUET, _CSV):
             path = f'{data_path}.{file_type}'
@@ -227,17 +235,19 @@ class CompositeFileConnector(FileConnector):
         unreadable_table_file = self._listed_unreadable_table_file(table_name)
         if unreadable_table_file:
             raise ConnectorError(
-                message=f"Table {table_name} was found at "
-                f"{unreadable_table_file}, but Kumo cannot read it. "
-                "Verify that the object grants read access to this "
-                "environment. For S3, the object must allow s3:GetObject "
-                "through configured AWS credentials or public-read access.")
+                message=f'Table {table_name} was found at '
+                f'{unreadable_table_file}, but Kumo cannot read it. '
+                'Verify that the object grants read access to this '
+                'environment. For S3, the object must allow s3:GetObject '
+                'through configured AWS credentials or public-read access.'
+            )
 
         self._validate_missing_path_region(table_name, data_path)
         raise FileNotFoundError(
-            f"Table {table_name} does not exist in path {data_path}. Please "
-            f"ensure that your file exists or that the connector directory"
-            " path is set up correctly." + _check_suffix_error(table_name))
+            f'Table {table_name} does not exist in path {data_path}. Please '
+            f'ensure that your file exists or that the connector directory'
+            ' path is set up correctly.' + _check_suffix_error(table_name)
+        )
 
     @blocking_method()
     def get_path_and_type(self, table_name: str) -> Tuple[str, str]:
@@ -252,8 +262,7 @@ class CompositeFileConnector(FileConnector):
         """
         return self._resolve_table(table_name)
 
-    def _validate_missing_path_region(self, table_name: str,
-                                      data_path: str) -> None:
+    def _validate_missing_path_region(self, table_name: str, data_path: str) -> None:
         if not fsutil.is_s3(data_path):
             return
         try:
@@ -265,7 +274,8 @@ class CompositeFileConnector(FileConnector):
             raise ConnectorError(
                 f"Kumo encountered an issue while reading the table '{table_name}'."
                 f"The table '{table_name}' is in region {bucket_region}, "
-                f"while your current deployment is in region '{AWS_REGION}'.")
+                f"while your current deployment is in region '{AWS_REGION}'."
+            )
 
     # CSV & Parquet ##########################################################
 
@@ -282,17 +292,20 @@ class CompositeFileConnector(FileConnector):
         **kwargs,
     ) -> pd.DataFrame:
         return self.connectors[self._get_path_type(path)]._load(
-            path, pkey, cols, num_rows, offset, frac, sample, **kwargs)
+            path, pkey, cols, num_rows, offset, frac, sample, **kwargs
+        )
 
     @blocking_method(DATA_BACKEND_THREAD_POOL)
-    def _get_table_num_rows(self, table_name: str,
-                            data_version: str | None = None) -> int:
+    def _get_table_num_rows(
+        self, table_name: str, data_version: str | None = None
+    ) -> int:
         _, typ = self._resolve_table(table_name)
         return self.connectors[typ]._get_table_num_rows(table_name)
 
     @blocking_method(DATA_BACKEND_THREAD_POOL)
-    def _get_table_source_size(self, table_name: str,
-                               data_version: str | None = None) -> int:
+    def _get_table_source_size(
+        self, table_name: str, data_version: str | None = None
+    ) -> int:
         _, typ = self._resolve_table(table_name)
         return self.connectors[typ]._get_table_source_size(table_name)
 
@@ -304,7 +317,8 @@ class CompositeFileConnector(FileConnector):
     ) -> TableMetadataConfig:
         _, typ = self._resolve_table(table_name)
         return self.connectors[typ]._get_table_cols_metadata(
-            table_name, skip_cache, skip_inferral)
+            table_name, skip_cache, skip_inferral
+        )
 
     @blocking_method(DATA_BACKEND_THREAD_POOL)
     def _write(self, path: str, df: pd.DataFrame):
@@ -317,7 +331,8 @@ class CompositeFileConnector(FileConnector):
         cols: Optional[List[BaseColumnConfig]] = None,
     ) -> Iterator[pd.DataFrame]:
         return self.connectors[self._get_path_type(path)]._create_iterator(
-            path, pkey, cols)
+            path, pkey, cols
+        )
 
     @blocking_method(DATA_BACKEND_THREAD_POOL)
     @with_filesystem_credentials
@@ -331,19 +346,19 @@ class CompositeFileConnector(FileConnector):
         col_types: Optional[Dict[str, Any]] = None,
     ) -> pd.DataFrame:
         return self.connectors[self._get_path_type(path)]._load_file(
-            path, cols, frac, num_rows, sample, col_types)
+            path, cols, frac, num_rows, sample, col_types
+        )
 
     def _source_format(self, path: str):
         return self._get_path_type(path)
 
     def _csv_read_options(self, path: str):
-        return self.connectors[self._get_path_type(path)]._csv_read_options(
-            path)
+        return self.connectors[self._get_path_type(path)]._csv_read_options(path)
 
 
 # Explicit dataclass definition ###############################################
 
-CompositeFileConnectorConfig = to_dataclass(CompositeFileConnector,
-                                            base_cls=ConnectorConfig)
-register(CompositeFileConnector, CompositeFileConnectorConfig,
-         group='connector')
+CompositeFileConnectorConfig = to_dataclass(
+    CompositeFileConnector, base_cls=ConnectorConfig
+)
+register(CompositeFileConnector, CompositeFileConnectorConfig, group='connector')

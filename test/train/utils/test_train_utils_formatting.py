@@ -15,10 +15,10 @@ from torch import tensor
 
 
 def test_format_prediction_regression():
-    df = pd.DataFrame({"USER_ID": ['1', '2', '3']})
+    df = pd.DataFrame({'USER_ID': ['1', '2', '3']})
     pred = tensor([0.3, 0.56, 0.14])
     prob = None
-    encoder = NumericalTargetEncoder(offset=0., scale=1.)
+    encoder = NumericalTargetEncoder(offset=0.0, scale=1.0)
     formatted_df = format_prediction(
         df=df,
         target_col_name='TARGET',
@@ -27,30 +27,35 @@ def test_format_prediction_regression():
         pred=pred,
         prob=prob,
     )
-    expected_df = pd.DataFrame({
-        "USER_ID": ['1', '2', '3'],
-        "TARGET_PRED": pred.numpy(),
-    }).reset_index(drop=True)
-    pd.testing.assert_frame_equal(formatted_df.reset_index(drop=True),
-                                  expected_df)
+    expected_df = pd.DataFrame(
+        {
+            'USER_ID': ['1', '2', '3'],
+            'TARGET_PRED': pred.numpy(),
+        }
+    ).reset_index(drop=True)
+    pd.testing.assert_frame_equal(formatted_df.reset_index(drop=True), expected_df)
 
 
 def _assert_format_prediction_forecasting_quantiles(out_timestamps):
-    df = pd.DataFrame({
-        "USER_ID": ['1', '2'],
-        "TIMESTAMP": pd.Timestamp("2022-04-11"),
-    })
+    df = pd.DataFrame(
+        {
+            'USER_ID': ['1', '2'],
+            'TIMESTAMP': pd.Timestamp('2022-04-11'),
+        }
+    )
     pred = tensor([[10.0, 11.0], [20.0, 21.0]])
-    quantiles = tensor([
-        [[9.0], [10.0]],
-        [[19.0], [20.0]],
-    ])
+    quantiles = tensor(
+        [
+            [[9.0], [10.0]],
+            [[19.0], [20.0]],
+        ]
+    )
     timestamps = pd.to_datetime(['2022-04-12', '2022-04-13'] * 2)
 
     formatted_df = format_prediction(
         df=df,
         target_col_name='TARGET',
-        target_encoder=NumericalTargetEncoder(offset=0., scale=1.),
+        target_encoder=NumericalTargetEncoder(offset=0.0, scale=1.0),
         task_type=TaskType.FORECASTING,
         pred=pred,
         prob=None,
@@ -60,27 +65,29 @@ def _assert_format_prediction_forecasting_quantiles(out_timestamps):
         out_timestamps=out_timestamps,
     ).reset_index(drop=True)
 
-    expected_df = pd.DataFrame({
-        "USER_ID": ['1', '1', '2', '2'],
-        "TIMESTAMP": timestamps,
-        "TARGET_PRED": [10.0, 11.0, 20.0, 21.0],
-        "q_0.5": [9.0, 10.0, 19.0, 20.0],
-        "ANCHOR_TIMESTAMP": pd.Timestamp('2022-04-11'),
-    })
+    expected_df = pd.DataFrame(
+        {
+            'USER_ID': ['1', '1', '2', '2'],
+            'TIMESTAMP': timestamps,
+            'TARGET_PRED': [10.0, 11.0, 20.0, 21.0],
+            'q_0.5': [9.0, 10.0, 19.0, 20.0],
+            'ANCHOR_TIMESTAMP': pd.Timestamp('2022-04-11'),
+        }
+    )
 
     pd.testing.assert_frame_equal(formatted_df, expected_df, check_dtype=False)
 
 
 def test_format_prediction_forecasting_quantiles_detaches_timestamps():
     timestamps = pd.to_datetime(['2022-04-12', '2022-04-13'] * 2)
-    out_timestamps = torch.tensor(timestamps.astype('int64'),
-                                  dtype=torch.float64, requires_grad=True)
+    out_timestamps = torch.tensor(
+        timestamps.astype('int64'), dtype=torch.float64, requires_grad=True
+    )
 
     _assert_format_prediction_forecasting_quantiles(out_timestamps)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(),
-                    reason='CUDA is not available')
+@pytest.mark.skipif(not torch.cuda.is_available(), reason='CUDA is not available')
 def test_format_prediction_forecasting_quantiles_moves_timestamps_to_cpu():
     timestamps = pd.to_datetime(['2022-04-12', '2022-04-13'] * 2)
     out_timestamps = tensor(timestamps.astype('int64'), device='cuda')
@@ -93,19 +100,24 @@ def test_forecast_rejects_anchor_time_column_collision():
     original = df.copy()
     with pytest.raises(ValueError, match='Rename the time column'):
         format_prediction(
-            df=df, target_col_name='TARGET',
-            target_encoder=NumericalTargetEncoder(offset=0., scale=1.),
-            task_type=TaskType.FORECASTING, pred=tensor([[10.0, 11.0]]),
-            time_col_name='ANCHOR_TIMESTAMP')
+            df=df,
+            target_col_name='TARGET',
+            target_encoder=NumericalTargetEncoder(offset=0.0, scale=1.0),
+            task_type=TaskType.FORECASTING,
+            pred=tensor([[10.0, 11.0]]),
+            time_col_name='ANCHOR_TIMESTAMP',
+        )
     pd.testing.assert_frame_equal(df, original)
 
 
 def test_format_prediction_binary_classification():
     # Binary classification has pred tensor(bool dtype), prob tensor of shape
     # N*2 and an Index target encoder with 2 categories
-    df = pd.DataFrame({
-        "USER_ID": ['1', '2', '3'],
-    })
+    df = pd.DataFrame(
+        {
+            'USER_ID': ['1', '2', '3'],
+        }
+    )
     pred = tensor([False, True, False])
     prob = tensor([[0.9, 0.1], [0.2, 0.8], [0.7, 0.3]])
     encoder_cfg = Index()
@@ -122,28 +134,28 @@ def test_format_prediction_binary_classification():
         pred=pred,
         prob=prob,
     ).reset_index(drop=True)
-    expected_df = pd.DataFrame({
-        "USER_ID": ['1', '2', '3'],
-        "TARGET_PRED": pred.numpy(),
-        "False_PROB": prob[:, 0].numpy(),
-        "True_PROB": prob[:, 1].numpy(),
-    }).reset_index(drop=True)
-    expected_df["TARGET_PRED"] = expected_df["TARGET_PRED"].astype(
-        pd.BooleanDtype())
+    expected_df = pd.DataFrame(
+        {
+            'USER_ID': ['1', '2', '3'],
+            'TARGET_PRED': pred.numpy(),
+            'False_PROB': prob[:, 0].numpy(),
+            'True_PROB': prob[:, 1].numpy(),
+        }
+    ).reset_index(drop=True)
+    expected_df['TARGET_PRED'] = expected_df['TARGET_PRED'].astype(pd.BooleanDtype())
     pd.testing.assert_frame_equal(formatted_df, expected_df)
 
 
 def test_format_prediction_multilabel():
     # Test with string dtype for entities
-    df = pd.DataFrame({
-        "USER_ID": ['1', '2'],
-        "TIMESTAMP": ["2022-04-11", "2022-04-11"]
-    })
+    df = pd.DataFrame(
+        {'USER_ID': ['1', '2'], 'TIMESTAMP': ['2022-04-11', '2022-04-11']}
+    )
     # Assume there are 3 categories in the dataset: {0, 1, 2} - string type
     encoder_config = MultiCategorical()
     encoder_config._stats = {
-        ColStatType.MULTI_CATEGORIES_SEPARATOR: ",",
-        ColStatType.MULTI_CATEGORY_COUNTS: [["0", 1], ["1", 1], ["2", 1]],
+        ColStatType.MULTI_CATEGORIES_SEPARATOR: ',',
+        ColStatType.MULTI_CATEGORY_COUNTS: [['0', 1], ['1', 1], ['2', 1]],
     }
     encoder = TargetEncoder.from_encoder(
         TaskType.MULTILABEL_CLASSIFICATION,
@@ -163,28 +175,29 @@ def test_format_prediction_multilabel():
     )
     # In the long format and there are 3 total classes, we get 3
     # entries per entity = 6 rows.
-    expected_df = pd.DataFrame({
-        "USER_ID": ['1', '1', '1', '2', '2', '2'],
-        "TIMESTAMP": ["2022-04-11"] * 6,
-        "PREDICTED": [0, 1, 1, 1, 0, 0],
-        "CLASS": ["0", "1", "2", "0", "1", "2"],
-        "SCORE":
-        np.array([0.1, 0.9, 0.6, 0.9, 0.1, 0.0], dtype=np.float32),
-    }).reset_index(drop=True)
+    expected_df = pd.DataFrame(
+        {
+            'USER_ID': ['1', '1', '1', '2', '2', '2'],
+            'TIMESTAMP': ['2022-04-11'] * 6,
+            'PREDICTED': [0, 1, 1, 1, 0, 0],
+            'CLASS': ['0', '1', '2', '0', '1', '2'],
+            'SCORE': np.array([0.1, 0.9, 0.6, 0.9, 0.1, 0.0], dtype=np.float32),
+        }
+    ).reset_index(drop=True)
     pd.testing.assert_frame_equal(df.reset_index(drop=True), expected_df)
 
 
 def test_format_prediction_multilabel_array():
     # Test with string dtype for entities
-    df = pd.DataFrame({
-        "USER_ID": ["1", "2"],
-        "TIMESTAMP": ["2022-04-11", "2022-04-11"]
-    })
+    df = pd.DataFrame(
+        {'USER_ID': ['1', '2'], 'TIMESTAMP': ['2022-04-11', '2022-04-11']}
+    )
     encoder = MultiCategorical(
         _stats={
-            ColStatType.MULTI_CATEGORY_COUNTS: [["0", 1], ["1", 1], ["2", 1]],
+            ColStatType.MULTI_CATEGORY_COUNTS: [['0', 1], ['1', 1], ['2', 1]],
             ColStatType.MULTI_CATEGORIES_SEPARATOR: None,
-        })
+        }
+    )
     encoder = TargetEncoder.from_encoder(
         TaskType.MULTILABEL_CLASSIFICATION,
         encoder,
@@ -199,7 +212,7 @@ def test_format_prediction_multilabel_array():
     prob = tensor([[0.1, 0.9, 0.6], [0.9, 0.1, 0.0]])
     df = format_prediction(
         df=df,
-        target_col_name="TARGET",
+        target_col_name='TARGET',
         target_encoder=encoder,
         task_type=TaskType.MULTILABEL_CLASSIFICATION,
         pred=pred,
@@ -208,23 +221,21 @@ def test_format_prediction_multilabel_array():
     )
     # In the long format and there are 3 total classes, we get 3
     # entries per entity = 6 rows.
-    expected_df = pd.DataFrame({
-        "USER_ID": ["1", "1", "1", "2", "2", "2"],
-        "TIMESTAMP": ["2022-04-11"] * 6,
-        "PREDICTED": [0, 1, 1, 1, 0, 0],
-        "CLASS": ["0", "1", "2", "0", "1", "2"],
-        "SCORE":
-        np.array([0.1, 0.9, 0.6, 0.9, 0.1, 0.0], dtype=np.float32),
-    }).reset_index(drop=True)
+    expected_df = pd.DataFrame(
+        {
+            'USER_ID': ['1', '1', '1', '2', '2', '2'],
+            'TIMESTAMP': ['2022-04-11'] * 6,
+            'PREDICTED': [0, 1, 1, 1, 0, 0],
+            'CLASS': ['0', '1', '2', '0', '1', '2'],
+            'SCORE': np.array([0.1, 0.9, 0.6, 0.9, 0.1, 0.0], dtype=np.float32),
+        }
+    ).reset_index(drop=True)
     pd.testing.assert_frame_equal(df.reset_index(drop=True), expected_df)
 
 
 def test_format_prediction_multi_class_top_k():
     # Test with integer dtype for entities
-    df = pd.DataFrame({
-        "USER_ID": [1, 2],
-        "TIMESTAMP": ["2022-04-11", "2022-04-11"]
-    })
+    df = pd.DataFrame({'USER_ID': [1, 2], 'TIMESTAMP': ['2022-04-11', '2022-04-11']})
     encoder_cfg = Index()
     # Assume that there are 3 classes in the dataset: {0, 1, 2}
     encoder_cfg._stats = {ColStatType.CATEGORY_COUNTS: [[0, 1], [1, 1], [2, 1]]}
@@ -244,22 +255,22 @@ def test_format_prediction_multi_class_top_k():
         prob=prob,
         top_k=2,
     ).reset_index(drop=True)
-    expected_df = pd.DataFrame({
-        "USER_ID": [1, 1, 2, 2],
-        "TIMESTAMP": ["2022-04-11", "2022-04-11"] * 2,
-        "PREDICTED": [1, 0, 1, 0],
-        "CLASS": [1, 0, 0, 1],
-        "SCORE":
-        np.array([0.9, 0.1, 0.8, 0.2], dtype=np.float32),
-    }).reset_index(drop=True)
+    expected_df = pd.DataFrame(
+        {
+            'USER_ID': [1, 1, 2, 2],
+            'TIMESTAMP': ['2022-04-11', '2022-04-11'] * 2,
+            'PREDICTED': [1, 0, 1, 0],
+            'CLASS': [1, 0, 0, 1],
+            'SCORE': np.array([0.9, 0.1, 0.8, 0.2], dtype=np.float32),
+        }
+    ).reset_index(drop=True)
     pd.testing.assert_frame_equal(df, expected_df)
 
 
 def test_format_embeddings_array():
-    meta_df = pd.DataFrame({
-        "USER_ID": [1, 2],
-        "TIMESTAMP": ["2022-04-11", "2022-04-11"]
-    })
+    meta_df = pd.DataFrame(
+        {'USER_ID': [1, 2], 'TIMESTAMP': ['2022-04-11', '2022-04-11']}
+    )
 
     emb = np.array([[0.35686827, 0.8628754], [0.2126852, 0.8948473]])
 

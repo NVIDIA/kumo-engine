@@ -40,14 +40,18 @@ def _config() -> S3StorageConfig:
     )
 
 
-def test_deployment_connection_resolves_named_secret_and_redacts_repr(
-        monkeypatch):
-    get_secret = Mock(return_value={
-        'aws_access_key_id': 'long-lived-access',
-        'aws_secret_access_key': 'long-lived-secret',
-    })
-    monkeypatch.setattr(s3_connection, 'deploy_env', lambda: SimpleNamespace(
-        storage=SimpleNamespace(s3=_config())))
+def test_deployment_connection_resolves_named_secret_and_redacts_repr(monkeypatch):
+    get_secret = Mock(
+        return_value={
+            'aws_access_key_id': 'long-lived-access',
+            'aws_secret_access_key': 'long-lived-secret',
+        }
+    )
+    monkeypatch.setattr(
+        s3_connection,
+        'deploy_env',
+        lambda: SimpleNamespace(storage=SimpleNamespace(s3=_config())),
+    )
     monkeypatch.setattr(s3_connection, 'get_secrets', get_secret)
 
     connection = s3_connection.deployment_s3_connection()
@@ -74,19 +78,25 @@ def test_deployment_connection_resolves_named_secret_and_redacts_repr(
     'secret,missing',
     [
         ({}, 'aws_access_key_id'),
-        ({'aws_access_key_id': 'SENTINEL_ACCESS_VALUE'},
-         'aws_secret_access_key'),
-        ({
-            'aws_access_key_id': 'SENTINEL_ACCESS_VALUE',
-            'aws_secret_access_key': 'SENTINEL_SECRET_VALUE',
-            'aws_session_token': '',
-        }, 'aws_session_token'),
+        ({'aws_access_key_id': 'SENTINEL_ACCESS_VALUE'}, 'aws_secret_access_key'),
+        (
+            {
+                'aws_access_key_id': 'SENTINEL_ACCESS_VALUE',
+                'aws_secret_access_key': 'SENTINEL_SECRET_VALUE',
+                'aws_session_token': '',
+            },
+            'aws_session_token',
+        ),
     ],
 )
 def test_deployment_connection_fails_closed_on_partial_secret(
-        monkeypatch, secret, missing):
-    monkeypatch.setattr(s3_connection, 'deploy_env', lambda: SimpleNamespace(
-        storage=SimpleNamespace(s3=_config())))
+    monkeypatch, secret, missing
+):
+    monkeypatch.setattr(
+        s3_connection,
+        'deploy_env',
+        lambda: SimpleNamespace(storage=SimpleNamespace(s3=_config())),
+    )
     monkeypatch.setattr(s3_connection, 'get_secrets', lambda _name: secret)
 
     with pytest.raises(RuntimeError, match=missing) as error:
@@ -140,8 +150,7 @@ def test_connection_builds_native_subprocess_environment(monkeypatch):
         ca_bundle_path='/etc/kumo/minio-ca/ca.crt',
         send_bucket_owner_full_control=False,
     )
-    monkeypatch.setattr(s3_connection, 'deployment_s3_connection',
-                        lambda: connection)
+    monkeypatch.setattr(s3_connection, 'deployment_s3_connection', lambda: connection)
 
     assert s3_connection.s3_subprocess_environment() == {
         'AWS_ACCESS_KEY_ID': 'access',
@@ -164,8 +173,7 @@ def test_connection_builds_native_subprocess_environment(monkeypatch):
 
 def test_custom_endpoint_omits_aws_owner_acl(monkeypatch):
     connection = Mock(send_bucket_owner_full_control=False)
-    monkeypatch.setattr(s3_connection, 'active_s3_connection',
-                        lambda: connection)
+    monkeypatch.setattr(s3_connection, 'active_s3_connection', lambda: connection)
     assert s3_connection.bucket_owner_write_args() == {}
 
     connection.send_bucket_owner_full_control = True
@@ -176,15 +184,17 @@ def test_custom_endpoint_omits_aws_owner_acl(monkeypatch):
 
 def test_request_credential_scope_isolates_deployment_connection(monkeypatch):
     deployment = Mock()
-    monkeypatch.setattr(s3_connection, 'deployment_s3_connection',
-                        lambda: deployment)
+    monkeypatch.setattr(s3_connection, 'deployment_s3_connection', lambda: deployment)
 
     assert s3_connection.active_s3_connection() is deployment
-    with credential_scope({
+    with credential_scope(
+        {
             'provider': 's3',
             'access_key': 'connector-access',
             'secret_key': 'connector-secret',
-    }, require_explicit=True):
+        },
+        require_explicit=True,
+    ):
         assert s3_connection.active_s3_connection() is None
     assert s3_connection.active_s3_connection() is deployment
 
@@ -231,11 +241,9 @@ def test_connection_filesystem_retries_503s():
     )
     try:
         with credential_scope(
-            {
-                'provider': 's3',
-                'region': 'us-east-1',
-                's3_connection': connection
-            }, require_explicit=True):
+            {'provider': 's3', 'region': 'us-east-1', 's3_connection': connection},
+            require_explicit=True,
+        ):
             filesystem = pyarrow_filesystem('s3://bucket/part-0.parquet')
         assert filesystem.get_file_info('bucket/part-0.parquet').size == 8
     finally:

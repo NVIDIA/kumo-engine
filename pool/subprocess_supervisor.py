@@ -8,6 +8,7 @@ The worker starts this module as a new session leader. The supervisor waits for
 an ownership acknowledgement before starting the real command, adopts orphaned
 grandchildren, and does not exit until every adopted child has been reaped.
 """
+
 import argparse
 import ctypes
 import dataclasses
@@ -28,6 +29,7 @@ _termination_signal: int | None = None
 @dataclasses.dataclass(frozen=True)
 class _SessionMember:
     """One process plus every task state visible in its thread group."""
+
     pid: int
     leader_state: str
     task_states: tuple[tuple[int, str], ...] | None
@@ -38,8 +40,10 @@ class _SessionMember:
         if self.task_states is None:
             return self.task_group_exited is not True
         if not self.task_states:
-            return (self.leader_state not in ('X', 'Z')
-                    or self.task_group_exited is not True)
+            return (
+                self.leader_state not in ('X', 'Z')
+                or self.task_group_exited is not True
+            )
         return any(state not in ('X', 'Z') for _, state in self.task_states)
 
 
@@ -63,11 +67,10 @@ def _task_states(pid: int) -> tuple[tuple[int, str], ...] | None:
                 if not entry.name.isdigit():
                     continue
                 try:
-                    stat = Path(
-                        f'/proc/{pid}/task/{entry.name}/stat').read_bytes()
+                    stat = Path(f'/proc/{pid}/task/{entry.name}/stat').read_bytes()
                 except (FileNotFoundError, PermissionError, ProcessLookupError):
                     continue
-                fields = stat[stat.rfind(b')') + 2:].split()
+                fields = stat[stat.rfind(b')') + 2 :].split()
                 if fields:
                     states.append((int(entry.name), fields[0].decode()))
     except (FileNotFoundError, PermissionError, ProcessLookupError):
@@ -89,13 +92,14 @@ def _session_members() -> list[_SessionMember]:
                 stat = Path(f'/proc/{pid}/stat').read_bytes()
             except (FileNotFoundError, PermissionError, ProcessLookupError):
                 continue
-            fields = stat[stat.rfind(b')') + 2:].split()
+            fields = stat[stat.rfind(b')') + 2 :].split()
             if len(fields) >= 4 and int(fields[3]) == session_id:
                 leader_state = fields[0].decode()
                 task_states = _task_states(pid)
                 task_group_exited = None
-                if (task_states is None
-                        or (not task_states and leader_state in ('X', 'Z'))):
+                if task_states is None or (
+                    not task_states and leader_state in ('X', 'Z')
+                ):
                     try:
                         task_group_exited = pidfd_process_exited(pid)
                     except ProcessLookupError:
@@ -108,7 +112,8 @@ def _session_members() -> list[_SessionMember]:
                         leader_state,
                         task_states,
                         task_group_exited,
-                    ))
+                    )
+                )
     return members
 
 
@@ -129,8 +134,7 @@ def _signal_members(sig: int) -> None:
             os.close(pidfd)
 
 
-def _reap_nonblocking(main_pid: int,
-                      main_status: int | None) -> int | None:
+def _reap_nonblocking(main_pid: int, main_status: int | None) -> int | None:
     while True:
         try:
             pid, status = os.waitpid(-1, os.WNOHANG)
@@ -142,8 +146,9 @@ def _reap_nonblocking(main_pid: int,
             main_status = status
 
 
-def _wait_for_members(main_pid: int, main_status: int | None, sig: int,
-                      timeout: float) -> tuple[int | None, bool]:
+def _wait_for_members(
+    main_pid: int, main_status: int | None, sig: int, timeout: float
+) -> tuple[int | None, bool]:
     deadline = time.monotonic() + timeout
     while True:
         main_status = _reap_nonblocking(main_pid, main_status)
@@ -218,10 +223,12 @@ def main() -> int:
     # A normally exiting CLI may have left native descendants behind. Reclaim
     # and reap them before exposing its exit code to the activity parent.
     main_status, quiescent = _wait_for_members(
-        child.pid, main_status, signal.SIGTERM, args.term_grace)
+        child.pid, main_status, signal.SIGTERM, args.term_grace
+    )
     if not quiescent:
         main_status, quiescent = _wait_for_members(
-            child.pid, main_status, signal.SIGKILL, args.kill_grace)
+            child.pid, main_status, signal.SIGKILL, args.kill_grace
+        )
     if not quiescent:
         return 124
 

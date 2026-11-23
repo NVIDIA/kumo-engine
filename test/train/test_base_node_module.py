@@ -18,9 +18,12 @@ from kumoapi.train import TrainingStage
 from pytorch_lightning.trainer.states import TrainerFn
 
 
-@pytest.mark.parametrize('task_type', [
-    TaskType.BINARY_CLASSIFICATION,
-])
+@pytest.mark.parametrize(
+    'task_type',
+    [
+        TaskType.BINARY_CLASSIFICATION,
+    ],
+)
 def test_binary_logits_to_predictions(task_type):
     loss = loss_resolver(task_type)
     logits = torch.tensor([[-1.0], [0.0], [1.0]])
@@ -72,8 +75,7 @@ def test_logits_to_predictions_passthrough(task_type):
     assert loss.to_probability(inputs) is None
 
 
-def test_calibration_uses_registered_filesystem_for_adls_checkpoint(
-        monkeypatch):
+def test_calibration_uses_registered_filesystem_for_adls_checkpoint(monkeypatch):
     monkeypatch.setattr(BaseNodeLightningModule, '__abstractmethods__', set())
     module = BaseNodeLightningModule(TaskType.BINARY_CLASSIFICATION)
     calibrator = torch.nn.Identity()
@@ -82,8 +84,10 @@ def test_calibration_uses_registered_filesystem_for_adls_checkpoint(
     calibrator.fit = Mock()
     calibrator.reliability_diagram = Mock()
     module.calibrator = calibrator
-    checkpoint_path = ('fsutil://abfss://data@account.dfs.core.windows.net/'
-                       'jobs/version_0/checkpoints/best.ckpt')
+    checkpoint_path = (
+        'fsutil://abfss://data@account.dfs.core.windows.net/'
+        'jobs/version_0/checkpoints/best.ckpt'
+    )
     module._trainer = SimpleNamespace(
         ckpt_path=checkpoint_path,
         state=SimpleNamespace(fn=None),
@@ -94,33 +98,30 @@ def test_calibration_uses_registered_filesystem_for_adls_checkpoint(
 
     def open_file(path, mode):
         assert path == checkpoint_path
-        return nullcontext(
-            BytesIO(source.getvalue()) if mode == 'rb' else target)
+        return nullcontext(BytesIO(source.getvalue()) if mode == 'rb' else target)
 
     outputs = {
         'logits': torch.tensor([[-1.0], [1.0]]),
         'target': torch.tensor([[0.0], [1.0]]),
     }
     with (
-            patch.object(BaseLightningModule, 'evaluation_epoch_end',
-                         return_value=outputs),
-            patch.object(fsutil, 'open_file', side_effect=open_file) as
-            open_mock,
-            patch.object(fsutil, 'makedirs') as makedirs_mock,
+        patch.object(BaseLightningModule, 'evaluation_epoch_end', return_value=outputs),
+        patch.object(fsutil, 'open_file', side_effect=open_file) as open_mock,
+        patch.object(fsutil, 'makedirs') as makedirs_mock,
     ):
         module.evaluation_epoch_end(TrainingStage.TEST, [])
 
     assert [call.args[1] for call in open_mock.call_args_list] == ['rb', 'wb']
     target.seek(0)
-    assert torch.load(target,
-                      weights_only=False)['optimizer_states'] == ['preserved']
+    assert torch.load(target, weights_only=False)['optimizer_states'] == ['preserved']
     makedirs_mock.assert_called_once_with(
         'abfss://data@account.dfs.core.windows.net/jobs/version_0/calibration',
         exist_ok=True,
     )
     assert calibrator.reliability_diagram.call_args.args[-1] == (
         'abfss://data@account.dfs.core.windows.net/jobs/version_0/'
-        'calibration/reliability_diagram_test.png')
+        'calibration/reliability_diagram_test.png'
+    )
 
 
 class _StubExplainer:
@@ -136,13 +137,17 @@ class _StubExplainer:
         pass
 
 
-@pytest.mark.parametrize('fn, explainers, kept', [
-    (TrainerFn.FITTING, [], 0),
-    (TrainerFn.FITTING, [_StubExplainer()], 1),
-    (TrainerFn.VALIDATING, [], 1),
-])
+@pytest.mark.parametrize(
+    'fn, explainers, kept',
+    [
+        (TrainerFn.FITTING, [], 0),
+        (TrainerFn.FITTING, [_StubExplainer()], 1),
+        (TrainerFn.VALIDATING, [], 1),
+    ],
+)
 def test_validation_keeps_step_outputs_unless_fitting_unexplained(
-        monkeypatch, fn, explainers, kept):
+    monkeypatch, fn, explainers, kept
+):
     monkeypatch.setattr(BaseNodeLightningModule, '__abstractmethods__', set())
     module = BaseNodeLightningModule(TaskType.BINARY_CLASSIFICATION)
     module._trainer = SimpleNamespace(
@@ -153,10 +158,12 @@ def test_validation_keeps_step_outputs_unless_fitting_unexplained(
     )
     module.explainers = explainers
     module.is_explaining = Mock(return_value=False)
-    module.evaluation_step = Mock(return_value={
-        'logits': torch.tensor([[1.0]]),
-        'target': torch.tensor([[1.0]]),
-    })
+    module.evaluation_step = Mock(
+        return_value={
+            'logits': torch.tensor([[1.0]]),
+            'target': torch.tensor([[1.0]]),
+        }
+    )
 
     module.validation_step(SimpleNamespace(), 0)
     assert len(module._validation_step_outputs) == kept
@@ -167,25 +174,42 @@ def test_validation_keeps_step_outputs_unless_fitting_unexplained(
     assert ('pred' in module.outputs) == bool(kept)
 
 
-@pytest.mark.parametrize('name, fn', [
-    ('validation', TrainerFn.VALIDATING),
-    ('test', TrainerFn.TESTING),
-])
-def test_evaluation_retry_discards_outputs_from_failed_attempt(
-        monkeypatch, name, fn):
+@pytest.mark.parametrize(
+    'name, fn',
+    [
+        ('validation', TrainerFn.VALIDATING),
+        ('test', TrainerFn.TESTING),
+    ],
+)
+def test_evaluation_retry_discards_outputs_from_failed_attempt(monkeypatch, name, fn):
     monkeypatch.setattr(BaseNodeLightningModule, '__abstractmethods__', set())
     module = BaseNodeLightningModule(TaskType.BINARY_CLASSIFICATION)
     module.metric_store.init_metrics([], module)
     module._trainer = SimpleNamespace(
-        ckpt_path=None, sanity_checking=False, num_val_batches=[2],
-        num_test_batches=[2], state=SimpleNamespace(fn=fn))
-    first = dict(pkey=torch.tensor([10]), logits=torch.tensor([[-1.0]]),
-                 target=torch.tensor([[0.0]]))
-    second = dict(pkey=torch.tensor([11]), logits=torch.tensor([[1.0]]),
-                  target=torch.tensor([[1.0]]))
-    module.evaluation_step = Mock(side_effect=[
-        first, torch.cuda.OutOfMemoryError('simulated'), first, second,
-    ])
+        ckpt_path=None,
+        sanity_checking=False,
+        num_val_batches=[2],
+        num_test_batches=[2],
+        state=SimpleNamespace(fn=fn),
+    )
+    first = dict(
+        pkey=torch.tensor([10]),
+        logits=torch.tensor([[-1.0]]),
+        target=torch.tensor([[0.0]]),
+    )
+    second = dict(
+        pkey=torch.tensor([11]),
+        logits=torch.tensor([[1.0]]),
+        target=torch.tensor([[1.0]]),
+    )
+    module.evaluation_step = Mock(
+        side_effect=[
+            first,
+            torch.cuda.OutOfMemoryError('simulated'),
+            first,
+            second,
+        ]
+    )
     start = getattr(module, f'on_{name}_start')
     step = getattr(module, f'{name}_step')
     end = getattr(module, f'on_{name}_epoch_end')

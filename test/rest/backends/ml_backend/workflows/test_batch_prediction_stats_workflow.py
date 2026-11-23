@@ -9,10 +9,10 @@ import pytest
 from kumo_core.types import PredictionArtifactType, TaskType
 
 from rest.backends.ml_backend.validation import ValidationResponse
-from rest.backends.ml_backend.workflows import \
-    batch_prediction_stats_workflow as module
-from rest.backends.ml_backend.workflows import \
-    batch_prediction_workflow as parent_module
+from rest.backends.ml_backend.workflows import batch_prediction_stats_workflow as module
+from rest.backends.ml_backend.workflows import (
+    batch_prediction_workflow as parent_module,
+)
 from rest.config.prediction_output import LocalPredictionOutput
 from statedb.config.common import JobStatus
 
@@ -20,10 +20,12 @@ from statedb.config.common import JobStatus
 def _job_input(*artifact_types: PredictionArtifactType) -> SimpleNamespace:
     return SimpleNamespace(
         id='bp-job-preserved-02',
-        config=SimpleNamespace(outputs=[
-            SimpleNamespace(artifact_type=artifact_type)
-            for artifact_type in artifact_types
-        ]),
+        config=SimpleNamespace(
+            outputs=[
+                SimpleNamespace(artifact_type=artifact_type)
+                for artifact_type in artifact_types
+            ]
+        ),
         transformation=None,
     )
 
@@ -36,16 +38,19 @@ async def test_embeddings_only_never_opens_prediction_stats(monkeypatch):
         lambda *_args: pytest.fail('must not construct prediction backend'),
     )
     execute_activity = AsyncMock(
-        side_effect=AssertionError('must not request prediction stats'))
+        side_effect=AssertionError('must not request prediction stats')
+    )
     monkeypatch.setattr(module.workflow, 'execute_activity', execute_activity)
     job_input = SimpleNamespace(
         id='bp-job-87205d3553204ac7ab1c2ba10bbfb48c',
-        config=SimpleNamespace(outputs=[
-            LocalPredictionOutput(
-                artifact_type=PredictionArtifactType.EMBEDDINGS,
-                extra_fields=[],
-            ),
-        ]),
+        config=SimpleNamespace(
+            outputs=[
+                LocalPredictionOutput(
+                    artifact_type=PredictionArtifactType.EMBEDDINGS,
+                    extra_fields=[],
+                ),
+            ]
+        ),
         transformation=None,
     )
 
@@ -98,22 +103,24 @@ async def test_no_output_fails_before_backend_construction(monkeypatch):
 @pytest.mark.parametrize(
     ('artifact_types', 'expect_stats_child'),
     [
-        ((PredictionArtifactType.EMBEDDINGS, ), False),
-        ((PredictionArtifactType.PREDICTIONS, ), True),
-        ((PredictionArtifactType.PREDICTIONS,
-          PredictionArtifactType.EMBEDDINGS), True),
+        ((PredictionArtifactType.EMBEDDINGS,), False),
+        ((PredictionArtifactType.PREDICTIONS,), True),
+        ((PredictionArtifactType.PREDICTIONS, PredictionArtifactType.EMBEDDINGS), True),
     ],
 )
 async def test_parent_dispatches_stats_only_for_requested_predictions(
-        monkeypatch, artifact_types, expect_stats_child):
+    monkeypatch, artifact_types, expect_stats_child
+):
     outputs = [
         LocalPredictionOutput(artifact_type=artifact_type, extra_fields=[])
         for artifact_type in artifact_types
     ]
     job_input = SimpleNamespace(
-        id=('bp-job-87205d3553204ac7ab1c2ba10bbfb48c'
-            if artifact_types == (PredictionArtifactType.EMBEDDINGS, ) else
-            'bp-job-parent-output-contract'),
+        id=(
+            'bp-job-87205d3553204ac7ab1c2ba10bbfb48c'
+            if artifact_types == (PredictionArtifactType.EMBEDDINGS,)
+            else 'bp-job-parent-output-contract'
+        ),
         training_job_id='trainingjob-parent-output-contract',
         generate_pred_table_job_id=None,
         graph_version_info=SimpleNamespace(graph_data_version='version'),
@@ -153,20 +160,26 @@ async def test_parent_dispatches_stats_only_for_requested_predictions(
         'deploy_env',
         lambda: SimpleNamespace(is_diskgraph=False),
     )
-    monkeypatch.setattr(parent_module, 'DataBackendContext',
-                        lambda *_args: SimpleNamespace())
+    monkeypatch.setattr(
+        parent_module, 'DataBackendContext', lambda *_args: SimpleNamespace()
+    )
     monkeypatch.setattr(parent_module, 'init_job_generic', no_op)
     monkeypatch.setattr(parent_module, 'enqueue_job', no_op)
     monkeypatch.setattr(parent_module, 'save_validation_response', no_op)
     monkeypatch.setattr(parent_module, 'get_job_base_dir', lambda: '/tmp')
     monkeypatch.setattr(parent_module, 'get_job_dir', lambda *_args: '/tmp/job')
-    monkeypatch.setattr(parent_module, 'update_graph_config_from_graph_input',
-                        lambda graph, _graph_input: graph)
+    monkeypatch.setattr(
+        parent_module,
+        'update_graph_config_from_graph_input',
+        lambda graph, _graph_input: graph,
+    )
     monkeypatch.setattr(parent_module.workflow, 'execute_activity', no_op)
-    monkeypatch.setattr(parent_module.workflow, 'execute_child_workflow',
-                        execute_child_workflow)
-    monkeypatch.setattr(parent_module.workflow, 'start_child_workflow',
-                        start_child_workflow)
+    monkeypatch.setattr(
+        parent_module.workflow, 'execute_child_workflow', execute_child_workflow
+    )
+    monkeypatch.setattr(
+        parent_module.workflow, 'start_child_workflow', start_child_workflow
+    )
 
     parent = parent_module.BatchPredictionParentWorkflow()
     parent._save_output = AsyncMock()  # type: ignore[method-assign]
@@ -174,13 +187,15 @@ async def test_parent_dispatches_stats_only_for_requested_predictions(
         return_value=SimpleNamespace(
             pred_table_path='/tmp/pred-table',
             validation=ok,
-        ))
+        )
+    )
 
     result = await parent._run(job_input, SimpleNamespace())
 
     assert result.ok
     stats_children = [
-        (child, kwargs) for child, kwargs in detached_children
+        (child, kwargs)
+        for child, kwargs in detached_children
         if child is parent_module.BatchPredictionStatsWorkflow.run
     ]
     assert bool(stats_children) is expect_stats_child
@@ -188,6 +203,8 @@ async def test_parent_dispatches_stats_only_for_requested_predictions(
         assert len(stats_children) == 1
         _, kwargs = stats_children[0]
         assert kwargs['cancellation_type'] == (
-            parent_module.ChildWorkflowCancellationType.ABANDON)
+            parent_module.ChildWorkflowCancellationType.ABANDON
+        )
         assert kwargs['parent_close_policy'] == (
-            parent_module.ParentClosePolicy.ABANDON)
+            parent_module.ParentClosePolicy.ABANDON
+        )

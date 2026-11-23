@@ -34,8 +34,8 @@ from statedb.config.common import (
 from statedb.config.timestamp import get_current_timestamps
 from statedb.rest.connector_authorization import CONNECTOR_GRAPH_ACTIONS
 
-_PROJECT_ID = ProjectID("project_" + "1" * 32)
-_CONNECTOR_ID = ConnectorID("connector_" + "1" * 32)
+_PROJECT_ID = ProjectID('project_' + '1' * 32)
+_CONNECTOR_ID = ConnectorID('connector_' + '1' * 32)
 
 
 @pytest.fixture(autouse=True)
@@ -59,16 +59,13 @@ class _ConfigurableDriver:
 def _table_definition() -> TableDefinition:
     return TableDefinition(
         source_table=S3SourceTable(
-            source={
-                'mode': 'relative',
-                'path': "customers"
-            },
+            source={'mode': 'relative', 'path': 'customers'},
             connector_id=_CONNECTOR_ID,
             file_type=FileType.CSV,  # type: ignore[arg-type]
             data_source_type=DataSourceType.S3,
         ),
-        cols=[Column(name="customer_id", stype=Stype.ID, dtype=Dtype.int64)],
-        pkey="customer_id",
+        cols=[Column(name='customer_id', stype=Stype.ID, dtype=Dtype.int64)],
+        pkey='customer_id',
     )
 
 
@@ -91,8 +88,10 @@ def _rest_api_driver_with_children(
 
 def _artifact_state_services():
     return SimpleNamespace(
-        projects=SimpleNamespace(get_project=AsyncMock(
-            return_value=SimpleNamespace(id=_PROJECT_ID))), )
+        projects=SimpleNamespace(
+            get_project=AsyncMock(return_value=SimpleNamespace(id=_PROJECT_ID))
+        ),
+    )
 
 
 def _job():
@@ -126,202 +125,203 @@ def test_rest_api_driver_configures_state_services_for_child_drivers():
 
 
 @pytest.mark.asyncio
-async def test_get_bp_available_xai_entities_uses_state_services_without_legacy_storage(
-):
-    expected_response = StrategyMappings(mappings={"top": ["entity-1"]})
-    batch_prediction_job_id = BatchPredictionJobID("bp-job")
+async def test_get_bp_available_xai_entities_uses_state_services_without_legacy_storage():
+    expected_response = StrategyMappings(mappings={'top': ['entity-1']})
+    batch_prediction_job_id = BatchPredictionJobID('bp-job')
     state_services = _artifact_state_services()
     driver = _rest_api_driver_with_children()
     driver._ml_job_backend = SimpleNamespace(
         get_batch_prediction_job=AsyncMock(return_value=_job()),
-        get_job_home_dir=AsyncMock(return_value="/tmp/bp_job"),
+        get_job_home_dir=AsyncMock(return_value='/tmp/bp_job'),
     )
     driver._configure_state_services(state_services)
     captured = {}
 
     async def get_available_xai_entities(self, home_mgr):
-        captured["state_services"] = self._state_services
-        captured["home_dir"] = home_mgr.home_dir
+        captured['state_services'] = self._state_services
+        captured['home_dir'] = home_mgr.home_dir
         return expected_response
 
     with patch.object(
-            BatchPredictionJobLogic,
-            "get_available_xai_entities",
-            get_available_xai_entities,
+        BatchPredictionJobLogic,
+        'get_available_xai_entities',
+        get_available_xai_entities,
     ):
         result = await driver.get_bp_available_xai_entities(
-            MagicMock(), batch_prediction_job_id)
+            MagicMock(), batch_prediction_job_id
+        )
 
     assert result is expected_response
     assert captured == {
-        "state_services": state_services,
-        "home_dir": "/tmp/bp_job",
+        'state_services': state_services,
+        'home_dir': '/tmp/bp_job',
     }
     driver._ml_job_backend.get_job_home_dir.assert_awaited_once_with(
-        batch_prediction_job_id)
+        batch_prediction_job_id
+    )
 
 
 @pytest.mark.asyncio
-async def test_get_available_xai_entities_uses_state_services_without_legacy_storage(
-):
-    expected_response = StrategyMappings(mappings={"top": ["entity-1"]})
-    training_job_id = TrainingJobID("training-job")
+async def test_get_available_xai_entities_uses_state_services_without_legacy_storage():
+    expected_response = StrategyMappings(mappings={'top': ['entity-1']})
+    training_job_id = TrainingJobID('training-job')
     state_services = _artifact_state_services()
     driver = _rest_api_driver_with_children()
     driver._ml_job_backend = SimpleNamespace(
         get_training_job=AsyncMock(return_value=_job()),
-        get_job_home_dir=AsyncMock(return_value="/tmp/training_job"),
+        get_job_home_dir=AsyncMock(return_value='/tmp/training_job'),
     )
     driver._configure_state_services(state_services)
     captured = {}
 
     async def get_available_xai_entities(self, home_mgr, stage):
-        captured["state_services"] = self._state_services
-        captured["home_dir"] = home_mgr.home_dir
-        captured["stage"] = stage
+        captured['state_services'] = self._state_services
+        captured['home_dir'] = home_mgr.home_dir
+        captured['stage'] = stage
         return expected_response
 
     with patch.object(
-            PQueryLogic,
-            "get_available_xai_entities",
-            get_available_xai_entities,
+        PQueryLogic,
+        'get_available_xai_entities',
+        get_available_xai_entities,
     ):
         result = await driver.get_available_xai_entities(
-            MagicMock(), None, training_job_id)
+            MagicMock(), None, training_job_id
+        )
 
     assert result is expected_response
     assert captured == {
-        "state_services": state_services,
-        "home_dir": "/tmp/training_job",
-        "stage": TrainingStage.TEST,
+        'state_services': state_services,
+        'home_dir': '/tmp/training_job',
+        'stage': TrainingStage.TEST,
     }
-    driver._ml_job_backend.get_job_home_dir.assert_awaited_once_with(
-        training_job_id)
+    driver._ml_job_backend.get_job_home_dir.assert_awaited_once_with(training_job_id)
 
 
 @pytest.mark.asyncio
 async def test_get_entity_output_uses_state_services_without_legacy_storage():
     expected_response = object()
-    training_job_id = TrainingJobID("training-job")
+    training_job_id = TrainingJobID('training-job')
     state_services = _artifact_state_services()
     driver = _rest_api_driver_with_children()
     driver._ml_job_backend = SimpleNamespace(
         get_training_job=AsyncMock(return_value=_job()),
-        get_job_home_dir=AsyncMock(return_value="/tmp/training_job"),
+        get_job_home_dir=AsyncMock(return_value='/tmp/training_job'),
     )
     driver._configure_state_services(state_services)
     captured = {}
 
     async def get_entity_output(self, home_mgr, entity_id, stage):
-        captured["state_services"] = self._state_services
-        captured["home_dir"] = home_mgr.home_dir
-        captured["entity_id"] = entity_id
-        captured["stage"] = stage
+        captured['state_services'] = self._state_services
+        captured['home_dir'] = home_mgr.home_dir
+        captured['entity_id'] = entity_id
+        captured['stage'] = stage
         return expected_response
 
-    with patch.object(PQueryLogic, "get_entity_output", get_entity_output):
+    with patch.object(PQueryLogic, 'get_entity_output', get_entity_output):
         result = await driver.get_entity_output(
             MagicMock(),
             None,
-            "customer-1",
+            'customer-1',
             job_id=training_job_id,
         )
 
     assert result is expected_response
     assert captured == {
-        "state_services": state_services,
-        "home_dir": "/tmp/training_job",
-        "entity_id": "customer-1",
-        "stage": TrainingStage.TEST,
+        'state_services': state_services,
+        'home_dir': '/tmp/training_job',
+        'entity_id': 'customer-1',
+        'stage': TrainingStage.TEST,
     }
-    driver._ml_job_backend.get_job_home_dir.assert_awaited_once_with(
-        training_job_id)
+    driver._ml_job_backend.get_job_home_dir.assert_awaited_once_with(training_job_id)
 
 
 @pytest.mark.asyncio
-async def test_get_regression_histogram_uses_state_services_without_legacy_storage(
-):
+async def test_get_regression_histogram_uses_state_services_without_legacy_storage():
     expected_response = object()
-    training_job_id = TrainingJobID("training-job")
+    training_job_id = TrainingJobID('training-job')
     state_services = _artifact_state_services()
     driver = _rest_api_driver_with_children()
     driver._configure_state_services(state_services)
     driver._ml_job_backend = SimpleNamespace(
         get_training_job=AsyncMock(return_value=_job()),
-        get_job_home_dir=AsyncMock(return_value="/tmp/training_job"),
+        get_job_home_dir=AsyncMock(return_value='/tmp/training_job'),
     )
     captured = {}
 
     async def get_regression_histogram(self, home_mgr):
-        captured["state_services"] = self._state_services
-        captured["home_dir"] = home_mgr.home_dir
+        captured['state_services'] = self._state_services
+        captured['home_dir'] = home_mgr.home_dir
         return expected_response
 
     with patch.object(
-            PQueryLogic,
-            "get_regression_histogram",
-            get_regression_histogram,
+        PQueryLogic,
+        'get_regression_histogram',
+        get_regression_histogram,
     ):
-        result = await driver.get_regression_histogram(MagicMock(), None,
-                                                       training_job_id)
+        result = await driver.get_regression_histogram(
+            MagicMock(), None, training_job_id
+        )
 
     assert result is expected_response
     assert captured == {
-        "state_services": state_services,
-        "home_dir": "/tmp/training_job",
+        'state_services': state_services,
+        'home_dir': '/tmp/training_job',
     }
 
 
 @pytest.mark.asyncio
-async def test_dump_as_fixtures_v2_lists_all_pqueries_from_state_services_without_legacy_storage(
-):
+async def test_dump_as_fixtures_v2_lists_all_pqueries_from_state_services_without_legacy_storage():
     project_id = _PROJECT_ID
     principal = MagicMock()
     table_definition = _table_definition()
-    graph_fpid = FPID("1" * 32)
-    table_name = TableName("customers")
+    graph_fpid = FPID('1' * 32)
+    table_name = TableName('customers')
     graph_entry = GraphDBEntryV2(
         id=graph_fpid,
         project_id=project_id,
         table_name_to_dbid={table_name: table_definition.fpid},
         col_groups=[],
         timestamps=get_current_timestamps(),
-        alias="customers_graph",
+        alias='customers_graph',
     )
     pquery_defs = [
         PQueryDefinition(
             timestamps=get_current_timestamps(),
-            pquery_name="pq_one",
-            query_str=(
-                "PREDICT COUNT(customers.*) FOR EACH customers.customer_id"),
+            pquery_name='pq_one',
+            query_str=('PREDICT COUNT(customers.*) FOR EACH customers.customer_id'),
             graph_fpid=graph_fpid,
             list_distinct_target_is_array=True,
         ),
         PQueryDefinition(
             timestamps=get_current_timestamps(),
-            pquery_name="pq_two",
-            query_str=(
-                "PREDICT COUNT(customers.*) FOR EACH customers.customer_id"),
+            pquery_name='pq_two',
+            query_str=('PREDICT COUNT(customers.*) FOR EACH customers.customer_id'),
             graph_fpid=graph_fpid,
-            lp_bp_layout="source-target",
+            lp_bp_layout='source-target',
         ),
     ]
     pquery_service = SimpleNamespace(
         list_definitions=AsyncMock(return_value=pquery_defs),
-        get_definition_by_id=AsyncMock(side_effect=AssertionError(
-            "explicit pquery lookup should not run")),
+        get_definition_by_id=AsyncMock(
+            side_effect=AssertionError('explicit pquery lookup should not run')
+        ),
     )
     graph_service = SimpleNamespace(
         get_graph_entry=AsyncMock(return_value=graph_entry),
         get_graph_entry_by_alias=AsyncMock(return_value=None),
     )
-    table_service = SimpleNamespace(get_table_entries=AsyncMock(
-        return_value={
-            table_definition.fpid: SimpleNamespace(config=table_definition),
-        }))
+    table_service = SimpleNamespace(
+        get_table_entries=AsyncMock(
+            return_value={
+                table_definition.fpid: SimpleNamespace(config=table_definition),
+            }
+        )
+    )
     connector_service = SimpleNamespace(
         connector_ids_for_graph=MagicMock(
-            return_value={table_definition.get_connector_id()}),
+            return_value={table_definition.get_connector_id()}
+        ),
         execution_ref_for_project=AsyncMock(),
     )
     state_services = SimpleNamespace(
@@ -342,8 +342,7 @@ async def test_dump_as_fixtures_v2_lists_all_pqueries_from_state_services_withou
 
     pquery_service.list_definitions.assert_awaited_once_with()
     pquery_service.get_definition_by_id.assert_not_awaited()
-    graph_service.get_graph_entry.assert_awaited_once_with(
-        project_id, graph_fpid)
+    graph_service.get_graph_entry.assert_awaited_once_with(project_id, graph_fpid)
     table_service.get_table_entries.assert_awaited()
     connector_service.execution_ref_for_project.assert_awaited_once_with(
         principal,
@@ -355,56 +354,63 @@ async def test_dump_as_fixtures_v2_lists_all_pqueries_from_state_services_withou
     assert len(fixture.graphs) == 1
     assert fixture.graphs[0].tables == {table_name: table_definition}
     assert [query.pquery_name for query in fixture.queries] == [
-        "pq_one",
-        "pq_two",
+        'pq_one',
+        'pq_two',
     ]
     assert fixture.queries[0].list_distinct_target_is_array is True
-    assert fixture.queries[1].lp_bp_layout == "source-target"
+    assert fixture.queries[1].lp_bp_layout == 'source-target'
 
 
 @pytest.mark.asyncio
-async def test_dump_as_fixtures_v2_explicit_ids_bulk_loads_pqueries_from_state_services(
-):
+async def test_dump_as_fixtures_v2_explicit_ids_bulk_loads_pqueries_from_state_services():
     project_id = _PROJECT_ID
     principal = MagicMock()
     table_definition = _table_definition()
-    graph_fpid = FPID("1" * 32)
-    table_name = TableName("customers")
+    graph_fpid = FPID('1' * 32)
+    table_name = TableName('customers')
     graph_entry = GraphDBEntryV2(
         id=graph_fpid,
         project_id=project_id,
         table_name_to_dbid={table_name: table_definition.fpid},
         col_groups=[],
         timestamps=get_current_timestamps(),
-        alias="customers_graph",
+        alias='customers_graph',
     )
     pquery_def = PQueryDefinition(
         timestamps=get_current_timestamps(),
-        pquery_name="pq_one",
-        query_str="PREDICT COUNT(customers.*) FOR EACH customers.customer_id",
+        pquery_name='pq_one',
+        query_str='PREDICT COUNT(customers.*) FOR EACH customers.customer_id',
         graph_fpid=graph_fpid,
     )
-    pquery_id = PredictiveQueryID("pq_one")
+    pquery_id = PredictiveQueryID('pq_one')
     pquery_service = SimpleNamespace(
         list_definitions=AsyncMock(
-            side_effect=AssertionError("list definitions should not run")),
+            side_effect=AssertionError('list definitions should not run')
+        ),
         get_definition_by_id=AsyncMock(
-            side_effect=AssertionError("scalar pquery lookup used")),
-        get_definitions_by_ids=AsyncMock(return_value={
-            pquery_id: pquery_def,
-        }),
+            side_effect=AssertionError('scalar pquery lookup used')
+        ),
+        get_definitions_by_ids=AsyncMock(
+            return_value={
+                pquery_id: pquery_def,
+            }
+        ),
     )
     graph_service = SimpleNamespace(
         get_graph_entry=AsyncMock(return_value=graph_entry),
         get_graph_entry_by_alias=AsyncMock(return_value=None),
     )
-    table_service = SimpleNamespace(get_table_entries=AsyncMock(
-        return_value={
-            table_definition.fpid: SimpleNamespace(config=table_definition),
-        }))
+    table_service = SimpleNamespace(
+        get_table_entries=AsyncMock(
+            return_value={
+                table_definition.fpid: SimpleNamespace(config=table_definition),
+            }
+        )
+    )
     connector_service = SimpleNamespace(
         connector_ids_for_graph=MagicMock(
-            return_value={table_definition.get_connector_id()}),
+            return_value={table_definition.get_connector_id()}
+        ),
         execution_ref_for_project=AsyncMock(),
     )
     state_services = SimpleNamespace(
@@ -431,18 +437,19 @@ async def test_dump_as_fixtures_v2_explicit_ids_bulk_loads_pqueries_from_state_s
         table_definition.get_connector_id(),
         CONNECTOR_GRAPH_ACTIONS,
     )
-    assert [query.pquery_name for query in fixture.queries] == ["pq_one"]
+    assert [query.pquery_name for query in fixture.queries] == ['pq_one']
 
 
 @pytest.mark.asyncio
-async def test_dump_as_fixtures_v2_explicit_ids_errors_when_bulk_lookup_misses(
-):
-    pquery_id = PredictiveQueryID("pq_one")
+async def test_dump_as_fixtures_v2_explicit_ids_errors_when_bulk_lookup_misses():
+    pquery_id = PredictiveQueryID('pq_one')
     pquery_service = SimpleNamespace(
         list_definitions=AsyncMock(
-            side_effect=AssertionError("list definitions should not run")),
+            side_effect=AssertionError('list definitions should not run')
+        ),
         get_definition_by_id=AsyncMock(
-            side_effect=AssertionError("scalar pquery lookup used")),
+            side_effect=AssertionError('scalar pquery lookup used')
+        ),
         get_definitions_by_ids=AsyncMock(return_value={}),
     )
     driver = _rest_api_driver_with_children()
@@ -450,10 +457,12 @@ async def test_dump_as_fixtures_v2_explicit_ids_errors_when_bulk_lookup_misses(
         SimpleNamespace(
             pqueries=pquery_service,
             projects=SimpleNamespace(get_project=AsyncMock()),
-        ))
+        )
+    )
 
-    with pytest.raises(ValueError,
-                       match=f"Predictive query id {pquery_id} is not found"):
+    with pytest.raises(
+        ValueError, match=f'Predictive query id {pquery_id} is not found'
+    ):
         await driver.dump_as_fixtures_v2(
             [pquery_id],
             _PROJECT_ID,

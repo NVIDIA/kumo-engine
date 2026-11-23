@@ -56,23 +56,24 @@ def _output(output_type, **kwargs):
 
 
 _OUTPUT_CASES = {
-    'Snowflake':
-    dict(table_name='PUBLIC.PREDICTIONS', staging_table_name='INTERNAL.STAGING',
-         write_mode=api.WriteMode.APPEND),
-    'S3':
-    dict(file_path='predictions/', file_type=FileType.CSV),
-    'GCS':
-    dict(file_path='gs://bucket/predictions/', file_type=FileType.CSV),
-    'ADLS':
-    dict(
+    'Snowflake': dict(
+        table_name='PUBLIC.PREDICTIONS',
+        staging_table_name='INTERNAL.STAGING',
+        write_mode=api.WriteMode.APPEND,
+    ),
+    'S3': dict(file_path='predictions/', file_type=FileType.CSV),
+    'GCS': dict(file_path='gs://bucket/predictions/', file_type=FileType.CSV),
+    'ADLS': dict(
         file_path='abfss://container@account.dfs.core.windows.net/predictions/',
-        file_type=FileType.CSV),
-    'Databricks':
-    dict(table_name='catalog.schema.predictions'),
-    'BigQuery':
-    dict(storage_type=api.PredictionStorageType.BIGQUERY,
-         table_name='dataset.predictions', staging_table_name='dataset.staging',
-         write_mode=api.WriteMode.APPEND),
+        file_type=FileType.CSV,
+    ),
+    'Databricks': dict(table_name='catalog.schema.predictions'),
+    'BigQuery': dict(
+        storage_type=api.PredictionStorageType.BIGQUERY,
+        table_name='dataset.predictions',
+        staging_table_name='dataset.staging',
+        write_mode=api.WriteMode.APPEND,
+    ),
 }
 
 
@@ -80,10 +81,9 @@ def _canonical_public_output_payload(output, public_type) -> dict:
     """Validate the internal payload through the exact public output type."""
     internal = to_json_dict(output)
     public_fields = {field.name for field in dataclasses.fields(public_type)}
-    projected = TypeAdapter(public_type).validate_python({
-        name: value
-        for name, value in internal.items() if name in public_fields
-    })
+    projected = TypeAdapter(public_type).validate_python(
+        {name: value for name, value in internal.items() if name in public_fields}
+    )
     return to_json_dict(projected)
 
 
@@ -98,47 +98,48 @@ def test_public_prediction_route_uses_exact_api_request_contract() -> None:
     app = FastAPI()
     app.include_router(router.router)
 
-    request_schema = app.openapi()['paths']['/prediction_jobs']['post'][
-        'requestBody']['content']['application/json']['schema']
-    assert request_schema == {
-        '$ref': '#/components/schemas/BatchPredictionRequest'
-    }
-    properties = app.openapi(
-    )['components']['schemas']['BatchPredictionRequest']['properties']
+    request_schema = app.openapi()['paths']['/prediction_jobs']['post']['requestBody'][
+        'content'
+    ]['application/json']['schema']
+    assert request_schema == {'$ref': '#/components/schemas/BatchPredictionRequest'}
+    properties = app.openapi()['components']['schemas']['BatchPredictionRequest'][
+        'properties'
+    ]
     assert set(properties) == {
-        field.name
-        for field in dataclasses.fields(api.BatchPredictionRequest)
+        field.name for field in dataclasses.fields(api.BatchPredictionRequest)
     }
     assert 'batch_prediction_workflow_id' not in properties
 
     with pytest.raises(ValidationError, match='batch_prediction_workflow_id'):
-        TypeAdapter(api.BatchPredictionRequest).validate_python({
-            'job_tags': {},
-            'model_training_job_id':
-            'training-job',
-            'predict_options': {},
-            'batch_prediction_workflow_id':
-            'internal-workflow-id',
-        })
+        TypeAdapter(api.BatchPredictionRequest).validate_python(
+            {
+                'job_tags': {},
+                'model_training_job_id': 'training-job',
+                'predict_options': {},
+                'batch_prediction_workflow_id': 'internal-workflow-id',
+            }
+        )
 
 
 @pytest.mark.asyncio
 async def test_prediction_download_route_returns_internal_partitions() -> None:
     response = api.GetPredictionsDfUrlResponse(
-        prediction_partitions=['/customer-facing/part-0.parquet'])
+        prediction_partitions=['/customer-facing/part-0.parquet']
+    )
     router = PredictionRouterV1.__new__(PredictionRouterV1)
-    router._driver = SimpleNamespace(get_presigned_prediction_urls=AsyncMock(
-        return_value=response))
+    router._driver = SimpleNamespace(
+        get_presigned_prediction_urls=AsyncMock(return_value=response)
+    )
 
     assert await router.get_prediction_df_urls(_JOB_ID) == response
 
 
 @pytest.mark.asyncio
-async def test_prediction_download_route_returns_not_found_when_absent(
-) -> None:
+async def test_prediction_download_route_returns_not_found_when_absent() -> None:
     router = PredictionRouterV1.__new__(PredictionRouterV1)
-    router._driver = SimpleNamespace(get_presigned_prediction_urls=AsyncMock(
-        return_value=None))
+    router._driver = SimpleNamespace(
+        get_presigned_prediction_urls=AsyncMock(return_value=None)
+    )
 
     with pytest.raises(HTTPException) as exc_info:
         await router.get_prediction_df_urls(_JOB_ID)
@@ -196,10 +197,10 @@ def test_prediction_resource_projects_only_public_prediction_options() -> None:
         num_classes_to_return=7,
         prediction_time=datetime(2026, 1, 1, tzinfo=timezone.utc),
         filter_override_args=FilterOverrideArgs(
-            entity_filter_override='customers.active = true'),
+            entity_filter_override='customers.active = true'
+        ),
         num_parallel_workers_limit=3,
-        generate_pred_table_job_id=GeneratePredictionTableJobID.as_child_of(
-            _JOB_ID),
+        generate_pred_table_job_id=GeneratePredictionTableJobID.as_child_of(_JOB_ID),
         graph_id=None,
         explanations=True,
     )
@@ -207,8 +208,7 @@ def test_prediction_resource_projects_only_public_prediction_options() -> None:
     payload = to_json_dict(resource)
 
     assert resource.config.predict_options.num_workers == 3
-    assert resource.config.prediction_time == datetime(2026, 1, 1,
-                                                       tzinfo=timezone.utc)
+    assert resource.config.prediction_time == datetime(2026, 1, 1, tzinfo=timezone.utc)
     assert resource.config.explanations is True
     assert resource.config.pred_table_job_id is None
     assert payload['config']['predict_options'] == {
@@ -230,8 +230,7 @@ def test_prediction_resource_exposes_message_without_internal_stack() -> None:
         predictive_query_id=PredictiveQueryID('pquery'),
         training_job_id=TrainingJobID('training-job'),
         task_type=TaskType.REGRESSION,
-        generate_pred_table_job_id=GeneratePredictionTableJobID.as_child_of(
-            _JOB_ID),
+        generate_pred_table_job_id=GeneratePredictionTableJobID.as_child_of(_JOB_ID),
         graph_id=None,
     )
     job = _job(config)
@@ -239,8 +238,9 @@ def test_prediction_resource_exposes_message_without_internal_stack() -> None:
         status=JobStatus.FAILED,
         log=JobEventLogEntry.failed(),
         failure_info=JobFailureInfo(
-            message=('Batch prediction failed. '
-                     'Custom prediction table is missing ENTITY1.'),
+            message=(
+                'Batch prediction failed. Custom prediction table is missing ENTITY1.'
+            ),
             stacktrace='/private/backend/path.py:123 internal traceback',
         ),
     )
@@ -251,13 +251,13 @@ def test_prediction_resource_exposes_message_without_internal_stack() -> None:
     assert validation is not None
     assert validation.errors[0].title == 'Batch prediction failed'
     assert validation.errors[0].message == (
-        'Custom prediction table is missing ENTITY1.')
+        'Custom prediction table is missing ENTITY1.'
+    )
     assert '/private/backend/path.py' not in repr(resource)
 
 
 def test_prediction_resource_preserves_explicit_prediction_table_job() -> None:
-    pred_table_job_id = GeneratePredictionTableJobID(
-        'explicit-prediction-table')
+    pred_table_job_id = GeneratePredictionTableJobID('explicit-prediction-table')
     config = BatchPredictionJobConfig(
         predictive_query_id=PredictiveQueryID('pquery'),
         training_job_id=TrainingJobID('training-job'),
@@ -276,15 +276,15 @@ def test_prediction_resource_preserves_explicit_prediction_table_job() -> None:
     assert payload['config']['pred_table_job_id'] == pred_table_job_id
 
 
-def test_prediction_resource_rejects_prediction_time_with_explicit_table_job(
-) -> None:
+def test_prediction_resource_rejects_prediction_time_with_explicit_table_job() -> None:
     config = BatchPredictionJobConfig(
         predictive_query_id=PredictiveQueryID('pquery'),
         training_job_id=TrainingJobID('training-job'),
         task_type=TaskType.REGRESSION,
         prediction_time=datetime(2026, 1, 1, tzinfo=timezone.utc),
         generate_pred_table_job_id=GeneratePredictionTableJobID(
-            'explicit-prediction-table'),
+            'explicit-prediction-table'
+        ),
         graph_id=None,
     )
 
@@ -319,7 +319,8 @@ def test_prediction_resource_projects_persisted_outputs(
 
 def test_prediction_resource_projects_local_output() -> None:
     output = prediction_output.LocalPredictionOutput(
-        artifact_type=api.PredictionArtifactType.EMBEDDINGS, )
+        artifact_type=api.PredictionArtifactType.EMBEDDINGS,
+    )
     config = BatchPredictionJobConfig(
         predictive_query_id=PredictiveQueryID('pquery'),
         training_job_id=TrainingJobID('training-job'),
@@ -332,4 +333,5 @@ def test_prediction_resource_projects_local_output() -> None:
 
     assert type(resource.config.outputs[0]) is api.LocalPredictionOutput
     assert resource.config.outputs[0].artifact_type == (
-        api.PredictionArtifactType.EMBEDDINGS)
+        api.PredictionArtifactType.EMBEDDINGS
+    )

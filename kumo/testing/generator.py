@@ -12,6 +12,7 @@ In order to set the random seed for generator.py, one can simply execute
 torch_geometric.seed.seed_everything(seed: int) which sets the requisite
 seeds for the random generators used in this class.
 """
+
 import os.path as osp
 import random
 import string
@@ -38,8 +39,7 @@ from kumo.home import get_home_dir
 
 
 def _bool_generator(n: int) -> pd.Series:
-    return pd.Series(
-        np.random.uniform(size=n) > 0.5, dtype=dtype_to_pandas(Dtype.bool))
+    return pd.Series(np.random.uniform(size=n) > 0.5, dtype=dtype_to_pandas(Dtype.bool))
 
 
 def _int_generator(
@@ -56,7 +56,9 @@ def _int_generator(
             high=high or dtype_info.max,
             size=n,
             dtype=np_dtype,
-        ), dtype=dtype_to_pandas(dtype))
+        ),
+        dtype=dtype_to_pandas(dtype),
+    )
 
 
 def _float_generator(n: int, dtype: Dtype) -> pd.Series:
@@ -64,14 +66,19 @@ def _float_generator(n: int, dtype: Dtype) -> pd.Series:
 
 
 def _datetime_generator(n: int, dtype: Dtype = Dtype.date) -> pd.Series:
-    return pd.Series(np.random.randint(1, int(time.time()), size=n)).apply(
-        lambda x: datetime.fromtimestamp(x).strftime('%Y-%m-%d')).astype(
-            dtype_to_pandas(dtype))
+    return (
+        pd.Series(np.random.randint(1, int(time.time()), size=n))
+        .apply(lambda x: datetime.fromtimestamp(x).strftime('%Y-%m-%d'))
+        .astype(dtype_to_pandas(dtype))
+    )
 
 
 def _timedelta_generator(n: int) -> pd.Series:
-    return pd.Series((_datetime_generator(n) - _datetime_generator(n)).astype(
-        dtype_to_numpy(Dtype.timedelta)))
+    return pd.Series(
+        (_datetime_generator(n) - _datetime_generator(n)).astype(
+            dtype_to_numpy(Dtype.timedelta)
+        )
+    )
 
 
 def _string_generator(n: int, size: int | None = 8):
@@ -88,9 +95,9 @@ def _category_generator(n: int, dtype: Dtype, distinct: int) -> pd.Series:
         if distinct == n:
             return val_set
         assert distinct < n
-        return pd.concat([val_set,
-                          val_set.sample(n - distinct,
-                                         replace=True)]).reset_index(drop=True)
+        return pd.concat(
+            [val_set, val_set.sample(n - distinct, replace=True)]
+        ).reset_index(drop=True)
 
 
 def _stringlist_generator(
@@ -113,8 +120,9 @@ def _multilabel_generator(
     max_labels: int,
     delimiter: str,
 ) -> pd.Series:
-    assert max_labels > 1, ("max_labels must be greater than 1 as it is a "
-                            "multilabel column")
+    assert max_labels > 1, (
+        'max_labels must be greater than 1 as it is a multilabel column'
+    )
     if allow_array_targets():
         data = _stringlist_generator(n, distinct=distinct)
         # Always have at least one empty list for testing:
@@ -123,11 +131,12 @@ def _multilabel_generator(
 
     val_list = list(_string_generator(distinct))
     random_multilabel = lambda: delimiter.join(
-        random.sample(val_list, k=random.randint(1, max_labels)))
+        random.sample(val_list, k=random.randint(1, max_labels))
+    )
     data = np.array([random_multilabel() for _ in range(n)])
 
     # Always have at least one empty string row for testing:
-    data[0] = ""
+    data[0] = ''
 
     # Always have each label appear at least once:
     assert n >= 2
@@ -149,7 +158,7 @@ DTYPE_TO_GENERATOR = {
     Dtype.string: _string_generator,
     Dtype.date: partial(_datetime_generator, dtype=Dtype.date),
     Dtype.time: partial(_datetime_generator, dtype=Dtype.time),
-    Dtype.timedelta: _timedelta_generator
+    Dtype.timedelta: _timedelta_generator,
 }
 
 # Implementations #############################################################
@@ -175,11 +184,12 @@ class ColumnSpec(CastMixin):
     TODO: a distribution parameter that specifies the distribution of generated
     values.
     """
+
     dtype: Dtype
     na_frac: float | None = 0
     distinct_vals: int | None = 0
     max_labels: int | None = 1
-    delimiter: str | None = "|"
+    delimiter: str | None = '|'
 
     # pylint: disable=no-self-argument
     @field_validator('na_frac')
@@ -196,8 +206,7 @@ class ColumnSpec(CastMixin):
     def multilabel_validator(cls, v, info: ValidationInfo):
         distinct_vals = info.data.get('distinct_vals')
         if distinct_vals and distinct_vals < v:
-            raise ValueError(
-                "'max_labels' must be lower or equal to 'distinct_vals'")
+            raise ValueError("'max_labels' must be lower or equal to 'distinct_vals'")
         return v
 
 
@@ -219,6 +228,7 @@ class EdgeSpec(CastMixin):
                 value; for example, density = 2 indicates both FKs have a value
                 repeated twice, resulting in four edges (instead of 2).
     """
+
     density: float
 
     # pylint: disable=no-self-argument
@@ -240,6 +250,7 @@ class TableSpec(CastMixin):
         col_specs (List[ColumnSpec]): a list of the speficiations of each
             column.
     """
+
     num_rows: int
     col_specs: list[ColumnSpec]
 
@@ -251,22 +262,26 @@ class TableSpec(CastMixin):
         for idx, col_spec in enumerate(self.col_specs):
             if col_spec.distinct_vals:
                 if col_spec.max_labels > 1:
-                    col_data = _multilabel_generator(self.num_rows,
-                                                     col_spec.distinct_vals,
-                                                     col_spec.max_labels,
-                                                     col_spec.delimiter)
+                    col_data = _multilabel_generator(
+                        self.num_rows,
+                        col_spec.distinct_vals,
+                        col_spec.max_labels,
+                        col_spec.delimiter,
+                    )
                 else:
-                    col_data = _category_generator(self.num_rows,
-                                                   col_spec.dtype,
-                                                   col_spec.distinct_vals)
+                    col_data = _category_generator(
+                        self.num_rows, col_spec.dtype, col_spec.distinct_vals
+                    )
             else:
                 col_data = DTYPE_TO_GENERATOR[col_spec.dtype](self.num_rows)
 
             # Handle na_frac (not None or 0)
             if col_spec.na_frac:
                 na_indices = np.random.choice(
-                    col_data.size, replace=False,
-                    size=int(col_data.size * col_spec.na_frac))
+                    col_data.size,
+                    replace=False,
+                    size=int(col_data.size * col_spec.na_frac),
+                )
                 col_data[na_indices] = pd.NA
 
             data[str(idx)] = col_data
@@ -275,9 +290,9 @@ class TableSpec(CastMixin):
         out_neighbors = []
         in_neighbors = []
         for src_index, src_name in enumerate(edge[:-1]):
-            for dst_name in edge[src_index + 1:]:
-                is_src = (table_id == src_name)
-                is_dst = (table_id == dst_name)
+            for dst_name in edge[src_index + 1 :]:
+                is_src = table_id == src_name
+                is_dst = table_id == dst_name
                 if is_src:
                     out_neighbors.append(dst_name)
                 if is_dst:
@@ -286,16 +301,16 @@ class TableSpec(CastMixin):
 
     def fill_fkey_data(self, fkey_data, edge_density, wrap):
         for val, i in enumerate(range(0, self.num_rows, int(edge_density))):
-            fkey_data[i:i + int(edge_density)] = val % wrap
+            fkey_data[i : i + int(edge_density)] = val % wrap
 
     def generate_foreign_keys(self, data, table_id, graph_spec):
         for idx, (edge, spec) in enumerate(graph_spec.edge_specs.items()):
             if table_id not in edge:
                 continue
 
-            edge_min_rows = min([
-                graph_spec.table_specs[table_id].num_rows for table_id in edge
-            ])
+            edge_min_rows = min(
+                [graph_spec.table_specs[table_id].num_rows for table_id in edge]
+            )
             edge_density = spec.density
 
             # wrap to be used in determining column data if density > 1
@@ -303,8 +318,7 @@ class TableSpec(CastMixin):
 
             # determine which pairs of tables defined by the edge contain
             # this table
-            out_neighbors, in_neighbors = self.generate_neighbor_lists(
-                edge, table_id)
+            out_neighbors, in_neighbors = self.generate_neighbor_lists(edge, table_id)
 
             # from creates fk, to uses pk if possible
             for dst_name in out_neighbors:
@@ -315,8 +329,9 @@ class TableSpec(CastMixin):
                 # minimum number of rows between the source and
                 # destination tables
                 if edge_density < 1:
-                    dst_rows = min(graph_spec.table_specs[dst_name].num_rows,
-                                   self.num_rows)
+                    dst_rows = min(
+                        graph_spec.table_specs[dst_name].num_rows, self.num_rows
+                    )
                     end_index = int(edge_density * dst_rows)
                     fkey_data[:end_index] = np.arange(end_index)
                     fkey_data[end_index:] = np.nan
@@ -345,7 +360,7 @@ class TableSpec(CastMixin):
                     # requires a source column aside from the final
                     # table in the specification
                     if len(edge) > 2:
-                        key_col_name = (key_col_name + f'__src_to__{dst_name}')
+                        key_col_name = key_col_name + f'__src_to__{dst_name}'
 
                     data[key_col_name] = fkey_data
 
@@ -387,7 +402,7 @@ class TableSpec(CastMixin):
         # convert to int to match pkeys
         for col in df.columns:
             if df.dtypes[col] == np.float64 or 'fkey' in col:
-                df[col] = df[col].astype("Int64")
+                df[col] = df[col].astype('Int64')
         return df
 
 
@@ -402,17 +417,16 @@ class GraphSpec:
             corresponding relationship between the tables. n-tuples for n > 2
             specify hyperedges which are interpretted as n-cliques.
     """
+
     table_specs: dict[TableIdType, TableSpec]
     edge_specs: dict[tuple[TableIdType, TableIdType], EdgeSpec]
 
     def __init__(self, table_specs, edge_specs):
         self.table_specs = {
-            _safe_id(k): TableSpec.cast(v)
-            for k, v in table_specs.items()
+            _safe_id(k): TableSpec.cast(v) for k, v in table_specs.items()
         }
         self.edge_specs = {
-            tuple(map(_safe_id, k)): EdgeSpec.cast(v)
-            for k, v in edge_specs.items()
+            tuple(map(_safe_id, k)): EdgeSpec.cast(v) for k, v in edge_specs.items()
         }
 
     @property
@@ -447,8 +461,7 @@ class GraphSpec:
                     (was {edge_density} for edge {edge}).""")
 
             for src_index, src_name in enumerate(edge[:-1]):
-                for dst_name in edge[src_index + 1:]:
-
+                for dst_name in edge[src_index + 1 :]:
                     # Default src/dest keys for normal edge
                     src_key = f'fkey_{idx}'
                     dst_key = None
@@ -459,8 +472,12 @@ class GraphSpec:
                     if len(edge) > 2:
                         src_key = src_key + f'__src_to__{dst_name}'
                         dst_key = dst_key + '_dst'
-                    graph.link(src_table=str(src_name), src_key=src_key,
-                               dst_table=str(dst_name), dst_key=dst_key)
+                    graph.link(
+                        src_table=str(src_name),
+                        src_key=src_key,
+                        dst_table=str(dst_name),
+                        dst_key=dst_key,
+                    )
 
         # Use information from specification to set column types in the graph
         for table_id, table_spec in self.table_specs.items():
@@ -475,7 +492,7 @@ def _safe_id(id: TableIdType) -> str:
     # Table IDs may not begin with numbers, so prefix numerical IDs with a
     # string prefix
     if isinstance(id, int):
-        return "t" + str(id)
+        return 't' + str(id)
     return id
 
 
@@ -495,8 +512,7 @@ class PDSeriesGenerator(ABC):
 
 
 class CategoricalData(PDSeriesGenerator):
-    def __init__(self, vocab_size: int, width: int,
-                 probs: list[int] | None = None):
+    def __init__(self, vocab_size: int, width: int, probs: list[int] | None = None):
         self.width = width
         self.vocab_size = vocab_size
         assert self.width > 0 and self.vocab_size > 0
@@ -504,8 +520,7 @@ class CategoricalData(PDSeriesGenerator):
         self.probs = probs
 
     def generate_series(self, num_rows) -> pd.Series:
-        return pd.Series(
-            random.choices(self.vocab, weights=self.probs, k=num_rows))
+        return pd.Series(random.choices(self.vocab, weights=self.probs, k=num_rows))
 
     def _generate_vocab(self) -> list[str]:
         characters = string.ascii_letters

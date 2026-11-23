@@ -12,6 +12,7 @@ Without ``seed_col_stats`` this test would raise a
 ``Requested col stats missing`` error because there is no lazy compute
 path for DG-served col stats.
 """
+
 import os.path as osp
 import pathlib
 
@@ -31,11 +32,13 @@ def test_seed_col_stats_unblocks_compute_col_stats(
     # 1. Build a minimal one-table parquet graph. The autouse fixture in
     #    test/conftest.py has already wired up the DG-backed cache, so
     #    we can build the Graph and Connector freely.
-    df = pd.DataFrame({
-        'STORE_ID': np.arange(10),
-        'BRAND': ['PATAGONIA', 'KUMO'] * 5,
-        'AMOUNT': np.linspace(1.0, 10.0, 10),
-    })
+    df = pd.DataFrame(
+        {
+            'STORE_ID': np.arange(10),
+            'BRAND': ['PATAGONIA', 'KUMO'] * 5,
+            'AMOUNT': np.linspace(1.0, 10.0, 10),
+        }
+    )
     root = tmp_path.resolve().as_posix()
     parquet_path = osp.join(root, 'STORES.parquet')
     df.to_parquet(parquet_path)

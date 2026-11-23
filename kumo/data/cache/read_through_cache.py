@@ -44,10 +44,9 @@ class ReadThroughCache(Generic[K, V]):
             the cache will be used. Allowed values are 0 and -1.
             (default: -1).
     """
-    def __init__(self, cache_dir: str, name: str,
-                 capacity: int = MAX_CACHE_SIZE):
-        self._cache = TTLCache(maxsize=capacity,
-                               ttl=CACHE_TTL) if capacity > 0 else {}
+
+    def __init__(self, cache_dir: str, name: str, capacity: int = MAX_CACHE_SIZE):
+        self._cache = TTLCache(maxsize=capacity, ttl=CACHE_TTL) if capacity > 0 else {}
         self._cache_dir = cache_dir
         self.name = name
         self._capacity = capacity
@@ -69,7 +68,7 @@ class ReadThroughCache(Generic[K, V]):
         the capacity is not 0."""
         if self._capacity != 0:
             self._cache[key] = value
-            logger.info(f"ReadThroughCache size {len(self._cache)}")
+            logger.info(f'ReadThroughCache size {len(self._cache)}')
 
     @synchronized
     def get(self, key: K, cls: Type[V]) -> V | None:
@@ -120,10 +119,10 @@ class ReadThroughStatsCache(ReadThroughCache):
     When put stats, we call `config` function to convert to StatsConfig.
     When get stats, we call `from_config` function to convert to Stats.
     """
+
     @synchronized
     def put(self, key: K, value: Dict[str, Stats]):
-        r"""Put a dictionary of stats and overwrite the cache.
-        """
+        r"""Put a dictionary of stats and overwrite the cache."""
         value = {k: v.config() for k, v in value.items()}
         self.maybe_set_cache_value(key, value)
         self.save(key, value)
@@ -138,8 +137,7 @@ class ReadThroughStatsCache(ReadThroughCache):
 
     @synchronized
     def update(self, key: K, value: Dict[str, Stats]):
-        r"""Update a dictionary of stats. Other stats remain unchanged.
-        """
+        r"""Update a dictionary of stats. Other stats remain unchanged."""
         # For special case that value support update function.
         value = {k: v.config() for k, v in value.items()}
         self.maybe_update_cache_value(key, value)
@@ -151,25 +149,27 @@ class ReadThroughStatsCache(ReadThroughCache):
         self.save(key, value)
 
     @synchronized
-    def get_stats(self, key: K,
-                  stats_list: List[str] | None = None) -> Dict[str, Stats]:
-        r"""Returns a stats dictionary for the key.
-        """
+    def get_stats(
+        self, key: K, stats_list: List[str] | None = None
+    ) -> Dict[str, Stats]:
+        r"""Returns a stats dictionary for the key."""
         stats_dict = self.get(key, Dict[str, StatsConfig])
         if stats_dict is None:
             return {}
 
         if stats_list is None:
             return {
-                key: Stats.from_config(stats_dict[key])
-                for key in stats_dict.keys()
+                key: Stats.from_config(stats_dict[key]) for key in stats_dict.keys()
             }
         else:
             if not all(key in stats_dict for key in stats_list):
                 stats_not_present = list(
-                    filter(lambda key: key not in stats_dict, stats_list))
-                logger.warning(f'Values for stats {stats_not_present} are not '
-                               f'present in backend cache.')
+                    filter(lambda key: key not in stats_dict, stats_list)
+                )
+                logger.warning(
+                    f'Values for stats {stats_not_present} are not '
+                    f'present in backend cache.'
+                )
             return {
                 key: Stats.from_config(stats_dict[key])
                 for key in stats_dict.keys() & stats_list

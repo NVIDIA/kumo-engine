@@ -43,16 +43,18 @@ def _coerce_snapshot_datetime(value: Any) -> Any:
         return value
     try:
         return datetime.fromisoformat(
-            value[:-1] + "+00:00" if value.endswith("Z") else value)
+            value[:-1] + '+00:00' if value.endswith('Z') else value
+        )
     except ValueError:
         return value
 
 
-def _snapshot_stat_from_payload(payload: Any, stat_type: ColStatType,
-                                stype: Stype) -> Stats:
-    if isinstance(payload, dict) and "value" in payload and "approx" in payload:
+def _snapshot_stat_from_payload(
+    payload: Any, stat_type: ColStatType, stype: Stype
+) -> Stats:
+    if isinstance(payload, dict) and 'value' in payload and 'approx' in payload:
         stat = Stats.from_config(payload)
-    elif hasattr(payload, "value") and hasattr(payload, "approx"):
+    elif hasattr(payload, 'value') and hasattr(payload, 'approx'):
         stat = Stats.from_config(payload)
     else:
         stat = Stats(payload, approx=False)
@@ -74,16 +76,14 @@ class SnapshotResource:
         self._ml_job_backend = ml_job_backend
 
         self.router = APIRouter(
-            prefix="/v0/snapshots",
-            tags=["Snapshots"],
+            prefix='/v0/snapshots',
+            tags=['Snapshots'],
             dependencies=[Depends(auth.authenticate_request_header)],
-            responses={HTTPStatus.NOT_FOUND: {
-                "description": "Not found"
-            }},
+            responses={HTTPStatus.NOT_FOUND: {'description': 'Not found'}},
         )
 
         self.router.add_api_route(
-            "/graph",
+            '/graph',
             self.get_graph_snapshot,
             response_model=GraphSnapshotResponse,
             methods=['POST'],
@@ -92,7 +92,7 @@ class SnapshotResource:
         )
 
         self.router.add_api_route(
-            "/graph/{id}/edge_stats",
+            '/graph/{id}/edge_stats',
             self.get_edge_stats,
             response_model=EdgeHealthStats,
             methods=['GET'],
@@ -101,18 +101,17 @@ class SnapshotResource:
         )
 
         self.router.add_api_route(
-            "/graph/{id}/stats",
+            '/graph/{id}/stats',
             self.get_graph_snapshot_stats,
             response_model=GraphSnapshotStatsResponse,
             methods=['GET'],
             summary='Get statistics (rows and size) for a graph snapshot',
-            response_description=(
-                'Statistics including total rows and size in bytes'),
+            response_description=('Statistics including total rows and size in bytes'),
             responses=nullable_response(),
         )
 
         self.router.add_api_route(
-            "/table/{id}",
+            '/table/{id}',
             self.get_table_snapshot,
             response_model=TableSnapshotResponse,
             methods=['GET'],
@@ -121,7 +120,7 @@ class SnapshotResource:
         )
 
         self.router.add_api_route(
-            "/table/{id}/col_stats",
+            '/table/{id}/col_stats',
             self.get_col_stats,
             response_model=ColStatsResponse,
             methods=['GET'],
@@ -130,17 +129,19 @@ class SnapshotResource:
         )
 
     async def get_graph_snapshot(
-            self,
-            request: GraphSnapshotRequest,
-            project_id: str,
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        request: GraphSnapshotRequest,
+        project_id: str,
+        ctx: RequestContext = Depends(get_ctx),
     ) -> GraphSnapshotResponse:
         project_id = ProjectID(require_project_id(project_id))
         with wrap_validation_exceptions(GraphSnapshotDoesNotExistError):
-            await self._driver.require_project_access(project_id,
-                                                      ctx.user_authorization)
+            await self._driver.require_project_access(
+                project_id, ctx.user_authorization
+            )
             snapshot_resource = await self._driver.get_graph_snapshot(
-                request, project_id)
+                request, project_id
+            )
             return snapshot_resource
 
     async def get_graph_snapshot_stats(
@@ -151,56 +152,60 @@ class SnapshotResource:
     ) -> Optional[GraphSnapshotStatsResponse]:
         project_id = ProjectID(require_project_id(project_id))
         with wrap_validation_exceptions(GraphSnapshotDoesNotExistError):
-            await self._driver.require_project_access(project_id,
-                                                      ctx.user_authorization)
+            await self._driver.require_project_access(
+                project_id, ctx.user_authorization
+            )
             return await self._driver._get_graph_snapshot_stats(id, project_id)
 
     async def get_edge_stats(
-            self,
-            id: GraphSnapshotID,
-            project_id: str,
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        id: GraphSnapshotID,
+        project_id: str,
+        ctx: RequestContext = Depends(get_ctx),
     ) -> EdgeHealthStats:
         project_id = ProjectID(require_project_id(project_id))
         with wrap_validation_exceptions(GraphSnapshotDoesNotExistError):
-            await self._driver.require_project_access(project_id,
-                                                      ctx.user_authorization)
+            await self._driver.require_project_access(
+                project_id, ctx.user_authorization
+            )
             return await self._driver.get_ui_edge_health(id, project_id)
 
     async def get_table_snapshot(
-            self,
-            id: TableSnapshotID,
-            project_id: str,
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        id: TableSnapshotID,
+        project_id: str,
+        ctx: RequestContext = Depends(get_ctx),
     ) -> TableSnapshotResponse:
         project_id = ProjectID(require_project_id(project_id))
         with wrap_validation_exceptions(TableSnapshotDoesNotExistError):
-            await self._driver.require_project_access(project_id,
-                                                      ctx.user_authorization)
+            await self._driver.require_project_access(
+                project_id, ctx.user_authorization
+            )
             snapshot = await self._driver.get_table_snapshot(id, project_id)
             table_definition = snapshot.table_definition
             if table_definition is None:
                 table_definition = await self._driver.get_table_definition(
-                    id, project_id)
+                    id, project_id
+                )
 
             return TableSnapshotResponse(snapshot, table_definition)
 
     async def get_col_stats(
-            self,
-            id: TableSnapshotID,
-            project_id: str,
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        id: TableSnapshotID,
+        project_id: str,
+        ctx: RequestContext = Depends(get_ctx),
     ) -> ColStatsResponse:
         with wrap_validation_exceptions(TableSnapshotDoesNotExistError):
             table = await self.get_table_snapshot(id, project_id, ctx)
             raw_col_stats = table.snapshot.column_stats
 
-            def get_col_stats(
-                    col: table_interfaces.Column) -> ColumnStats | None:
+            def get_col_stats(col: table_interfaces.Column) -> ColumnStats | None:
                 if raw_col_stats is None:
                     return None
                 matching_stats = [
-                    stats for stats in raw_col_stats or []
+                    stats
+                    for stats in raw_col_stats or []
                     if stats.column_name == col.name
                 ]
                 if len(matching_stats) > 0:
@@ -209,7 +214,8 @@ class SnapshotResource:
                     for key, value in matching_stats[0].stats.items():
                         stat_type = ColStatType(key)
                         stats_dict[stat_type] = _snapshot_stat_from_payload(
-                            value, stat_type, stype)
+                            value, stat_type, stype
+                        )
                     try:
                         colstats = ColumnStats.from_stats_dict(
                             stype=stype,
@@ -241,7 +247,8 @@ class SnapshotResource:
                         stype=col.stype,
                         sample_rows=[],
                         statistics=statistics,
-                    ))
+                    )
+                )
 
             return ColStatsResponse(
                 statistics_available=available,

@@ -96,8 +96,7 @@ class MLBackendSettings:
     # py3.14 stdlib dataclasses reject mutable instance defaults; use
     # field(default_factory=...).
     ml_job_settings: MLJobSettings = field(default_factory=MLJobSettings)
-    job_queue_settings: MLJobQueueSettings = field(
-        default_factory=MLJobQueueSettings)
+    job_queue_settings: MLJobQueueSettings = field(default_factory=MLJobQueueSettings)
 
     # TODO: possibly remove this if we always need prediction stats.
     prediction_col_stats: bool = True
@@ -133,17 +132,22 @@ class MLBackendSettings:
             slack_url=slack_url,
             ml_job_settings=MLJobSettings(
                 pred_max_num_entities_per_partition=EnvVar(
-                    'ML_PRED_MAX_NUM_ENTITIES_PER_PARTITION', int,
-                    default_value=10 * _ONE_MILLION).parse_value(),
+                    'ML_PRED_MAX_NUM_ENTITIES_PER_PARTITION',
+                    int,
+                    default_value=10 * _ONE_MILLION,
+                ).parse_value(),
                 pred_max_num_rows_per_partition=EnvVar(
-                    'ML_PRED_MAX_NUM_ROWS_PER_PARTITION', int,
-                    default_value=300 * _ONE_MILLION).parse_value(),
+                    'ML_PRED_MAX_NUM_ROWS_PER_PARTITION',
+                    int,
+                    default_value=300 * _ONE_MILLION,
+                ).parse_value(),
                 max_total_table_size=data_limits.max_graph_total_size_bytes,
                 max_total_graph_edges=data_limits.max_graph_total_edges,
             ),
             job_queue_settings=MLJobQueueSettings.parse_from_env(),
-            prediction_col_stats=EnvVar('PRED_COL_STATS', bool,
-                                        default_value=True).parse_value(),
+            prediction_col_stats=EnvVar(
+                'PRED_COL_STATS', bool, default_value=True
+            ).parse_value(),
         )
         if is_prod:
             return settings
@@ -152,8 +156,9 @@ class MLBackendSettings:
         # splits this into FAST_DEV (cuda) vs CPU_TEST, but both dicts are
         # currently identical, so we apply the single override whenever
         # FAST_TRAIN is set or we're in TEST mode (no torch.cuda probe needed).
-        if (EnvVar('FAST_TRAIN', bool, default_value=False).parse_value()
-                or deploy_mode == DeployStage.TEST):
-            settings.ml_job_settings.train_cfg_overrides = (
-                _DEV_TRAINING_CFG_OVERRIDE)
+        if (
+            EnvVar('FAST_TRAIN', bool, default_value=False).parse_value()
+            or deploy_mode == DeployStage.TEST
+        ):
+            settings.ml_job_settings.train_cfg_overrides = _DEV_TRAINING_CFG_OVERRIDE
         return settings

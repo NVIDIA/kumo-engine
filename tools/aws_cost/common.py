@@ -16,16 +16,14 @@ class Ec2EmrPricing:
 
         self.region = region
 
-        index_response = requests.get(AWS_COST_ENDPOINT +
-                                      '/offers/v1.0/aws/index.json')
+        index_response = requests.get(AWS_COST_ENDPOINT + '/offers/v1.0/aws/index.json')
         self._pricing_index = index_response.json()
 
         self._compute_emr_price()
         self._compute_ec2_price()
 
     def _get_product_pricing(self, product_name: str) -> Dict:
-        base_url = self._pricing_index['offers'][product_name][
-            'currentRegionIndexUrl']
+        base_url = self._pricing_index['offers'][product_name]['currentRegionIndexUrl']
         regions_response = requests.get(AWS_COST_ENDPOINT + base_url)
 
         region_result = regions_response.json()['regions'][self.region]
@@ -40,8 +38,7 @@ class Ec2EmrPricing:
         for sku, sku_val in emr_pricing['products'].items():
             is_emr = sku_val['attributes'].get('softwareType') == 'EMR'
             if is_emr:
-                sku_to_instance_type[sku] = \
-                    sku_val['attributes']['instanceType']
+                sku_to_instance_type[sku] = sku_val['attributes']['instanceType']
 
         self.emr_prices = {}
         for sku in sku_to_instance_type.keys():
@@ -52,8 +49,7 @@ class Ec2EmrPricing:
             _, sku_info_value = sku_info.popitem()
             price_dimensions = sku_info_value['priceDimensions']
             if len(price_dimensions) > 1:
-                raise ValueError('More than one price dimension: '
-                                 f'{price_dimensions}')
+                raise ValueError(f'More than one price dimension: {price_dimensions}')
             _, price_dimensions_value = price_dimensions.popitem()
             price = float(price_dimensions_value['pricePerUnit']['USD'])
             self.emr_prices[instance_type] = price
@@ -65,11 +61,12 @@ class Ec2EmrPricing:
         for sku in ec2_pricing['products']:
             try:
                 attr = ec2_pricing['products'][sku]['attributes']
-                if attr['tenancy'] == 'Shared' \
-                        and attr['operatingSystem'] == 'Linux'\
-                        and attr['operation'] == 'RunInstances' \
-                        and attr['capacitystatus'] == 'Used':
-
+                if (
+                    attr['tenancy'] == 'Shared'
+                    and attr['operatingSystem'] == 'Linux'
+                    and attr['operation'] == 'RunInstances'
+                    and attr['capacitystatus'] == 'Used'
+                ):
                     ec2_sku_to_instance_type[sku] = attr['instanceType']
 
             except KeyError:
@@ -84,13 +81,11 @@ class Ec2EmrPricing:
             _, sku_info_value = sku_info.popitem()
             price_dimensions = sku_info_value['priceDimensions']
             if len(price_dimensions) > 1:
-                raise ValueError('More than one price dimension: '
-                                 f'{price_dimensions}')
+                raise ValueError(f'More than one price dimension: {price_dimensions}')
             _, price_dimensions_value = price_dimensions.popitem()
             price = float(price_dimensions_value['pricePerUnit']['USD'])
             if instance_type in self.ec2_prices:
-                raise ValueError(
-                    f'Instance price for {instance_type} already added')
+                raise ValueError(f'Instance price for {instance_type} already added')
 
             self.ec2_prices[instance_type] = price
 

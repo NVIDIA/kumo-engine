@@ -23,9 +23,16 @@ from kumo_core.instrumentation import NoOpTrainingInstrumentation
 
 logger = logging.getLogger(__name__)
 
-EventName = Literal['fit_started', 'trial_started', 'epoch_ended',
-                    'trial_ended', 'fit_ended', 'snapshot_started',
-                    'table_staged', 'snapshot_ended']
+EventName = Literal[
+    'fit_started',
+    'trial_started',
+    'epoch_ended',
+    'trial_ended',
+    'fit_ended',
+    'snapshot_started',
+    'table_staged',
+    'snapshot_ended',
+]
 
 
 @dataclass(frozen=True)
@@ -43,11 +50,22 @@ class Event:
         return asdict(self)
 
     def __str__(self) -> str:
-        fields = {'trial': self.trial, 'epoch': self.epoch, **self.metrics,
-                  **self.params}
-        return ' '.join([self.name, *(f'{key}={value}'
-                                      for key, value in fields.items()
-                                      if value is not None)])
+        fields = {
+            'trial': self.trial,
+            'epoch': self.epoch,
+            **self.metrics,
+            **self.params,
+        }
+        return ' '.join(
+            [
+                self.name,
+                *(
+                    f'{key}={value}'
+                    for key, value in fields.items()
+                    if value is not None
+                ),
+            ]
+        )
 
 
 def query_sha256(query: str) -> str:
@@ -70,20 +88,33 @@ class EventEmitter(NoOpTrainingInstrumentation):
     def __init__(self, callbacks: Sequence[Callable[[Event], None]]) -> None:
         self._callbacks = list(callbacks)
 
-    def emit(self, name: EventName, *, trial: Optional[int] = None,
-             epoch: Optional[int] = None,
-             metrics: Optional[Mapping[str, float]] = None,
-             params: Optional[Mapping[str, Any]] = None) -> None:
-        event = Event(name=name, time=time.time(), trial=trial, epoch=epoch,
-                      metrics=_finite_floats(metrics or {}),
-                      params=dict(params or {}))
+    def emit(
+        self,
+        name: EventName,
+        *,
+        trial: Optional[int] = None,
+        epoch: Optional[int] = None,
+        metrics: Optional[Mapping[str, float]] = None,
+        params: Optional[Mapping[str, Any]] = None,
+    ) -> None:
+        event = Event(
+            name=name,
+            time=time.time(),
+            trial=trial,
+            epoch=epoch,
+            metrics=_finite_floats(metrics or {}),
+            params=dict(params or {}),
+        )
         for callback in list(self._callbacks):
             try:
                 callback(event)
             except Exception:
                 logger.warning(
                     'Progress callback %r failed; it is disabled for the '
-                    'rest of this call', callback, exc_info=True)
+                    'rest of this call',
+                    callback,
+                    exc_info=True,
+                )
                 self._callbacks.remove(callback)
 
     def event(self, name: str, **fields: Any) -> None:

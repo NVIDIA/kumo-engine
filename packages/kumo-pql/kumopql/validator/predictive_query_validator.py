@@ -19,6 +19,7 @@ from kumoapi.pquery.AST import (
 )
 from kumoapi.task import TaskType
 from kumoapi.typing import AggregationType, ProblemType
+
 from kumopql.validator.join_validator import JoinValidator
 from kumopql.validator.problem_type_validator import ProblemTypeValidator
 from kumopql.validator.time_range_validator import TimeRangeValidator
@@ -43,6 +44,7 @@ class PredictiveQueryValidator:
         allow_timestamp_arrays: If :obj:`False`, block LIST_DISTINCT on time
             columns. Used for SPCS where timestamps are not handled well.
     """
+
     def __init__(
         self,
         graph: GraphDefinition,
@@ -87,27 +89,24 @@ class PredictiveQueryValidator:
         )
         self.type_validator.infer_dtypes(parsed_query)
         self.type_validator.infer_stypes(parsed_query)
-        response = merge(response,
-                         self.type_validator.validate_dtypes(parsed_query))
+        response = merge(response, self.type_validator.validate_dtypes(parsed_query))
         if not response.ok:
             return None, response
-        response = merge(response,
-                         self.type_validator.validate_stypes(parsed_query))
+        response = merge(response, self.type_validator.validate_stypes(parsed_query))
         if not response.ok:
             return None, response
 
         # validate problem type
         self.problem_type_validator = ProblemTypeValidator()
-        response = merge(response,
-                         self.problem_type_validator.validate(parsed_query))
+        response = merge(response, self.problem_type_validator.validate(parsed_query))
         if not response.ok:
             return None, response
 
         # validate time ranges
         self.time_range_validator = TimeRangeValidator(self.graph)
         response = merge(
-            response,
-            self.time_range_validator.validate_time_ranges(parsed_query))
+            response, self.time_range_validator.validate_time_ranges(parsed_query)
+        )
         if not response.ok:
             return None, response
 
@@ -119,8 +118,8 @@ class PredictiveQueryValidator:
         # infer and validate joins
         self.join_validator = JoinValidator(self.graph)
         response = merge(
-            response,
-            self.join_validator.infer_and_validate_joins(parsed_query))
+            response, self.join_validator.infer_and_validate_joins(parsed_query)
+        )
         if not response.ok:
             return None, response
 
@@ -145,7 +144,8 @@ class PredictiveQueryValidator:
         ), response
 
     def validate_columns(
-            self, parsed_query: ParsedPredictiveQuery) -> ValidationResponse:
+        self, parsed_query: ParsedPredictiveQuery
+    ) -> ValidationResponse:
         r"""Validates that all tables and columns that appear in the query are
         part of the graph.
 
@@ -159,8 +159,10 @@ class PredictiveQueryValidator:
         unknown_tables = []
         unknown_columns = []
 
-        for (fully_qualified_name,
-             location) in parsed_query.all_query_columns_with_locations:
+        for (
+            fully_qualified_name,
+            location,
+        ) in parsed_query.all_query_columns_with_locations:
             assert len(fully_qualified_name.split('.')) == 2
             column = col_name(fully_qualified_name)
             table = table_name(fully_qualified_name)
@@ -170,7 +172,7 @@ class PredictiveQueryValidator:
                 continue
 
             if column != '*' and column not in [
-                    c.name for c in self.graph.tables[table].cols
+                c.name for c in self.graph.tables[table].cols
             ]:
                 unknown_columns.append((table, column, location))
 
@@ -180,19 +182,23 @@ class PredictiveQueryValidator:
                     ValidationError(
                         title='Unknown table name',
                         message=f"{location.message_start}: Table '{table}' "
-                        f"does not exist in the "
-                        f"graph. Please be mindful of case sensitivity and "
-                        f"ensure that the name is spelled correctly."))
+                        f'does not exist in the '
+                        f'graph. Please be mindful of case sensitivity and '
+                        f'ensure that the name is spelled correctly.',
+                    )
+                )
 
         if len(unknown_columns) > 0:
             for table, column, location in unknown_columns:
                 response.errors.append(
                     ValidationError(
                         title='Unknown column name',
-                        message=f"{location.message_start}: Column "
+                        message=f'{location.message_start}: Column '
                         f"'{column}' does not exist in table '{table}'. "
-                        f"Please be mindful of case sensitivity and ensure "
-                        f"that the name is spelled correctly."))
+                        f'Please be mindful of case sensitivity and ensure '
+                        f'that the name is spelled correctly.',
+                    )
+                )
 
         # Only do this check if no errors were encountered to avoid crashes
         # due to unknown columns
@@ -203,15 +209,18 @@ class PredictiveQueryValidator:
             response.errors.append(
                 ValidationError(
                     title='Invalid entity',
-                    message=f"{location.message_start}: Entity "
+                    message=f'{location.message_start}: Entity '
                     f"'{parsed_query.entity_column}' "
                     f"is not a primary key. The column used in 'FOR EACH'"
-                    f" has to be a primary key."))
+                    f' has to be a primary key.',
+                )
+            )
 
         return response
 
     def validate_wildcard(
-            self, parsed_query: ParsedPredictiveQuery) -> ValidationResponse:
+        self, parsed_query: ParsedPredictiveQuery
+    ) -> ValidationResponse:
         r"""Validates that all wildcard columns that appear in the query are
         correctly nested in a `COUNT` aggregation.
 
@@ -222,13 +231,12 @@ class PredictiveQueryValidator:
                 ValidationResponse: Errors and warnings encountered.
         """
         response = ValidationResponse()
-        response = merge(response,
-                         self._validate_wildcard_col(parsed_query.entity_ast))
-        response = merge(response,
-                         self._validate_wildcard_col(parsed_query.target_ast))
+        response = merge(response, self._validate_wildcard_col(parsed_query.entity_ast))
+        response = merge(response, self._validate_wildcard_col(parsed_query.target_ast))
         if parsed_query.whatif_ast is not None:
             response = merge(
-                response, self._validate_wildcard_col(parsed_query.whatif_ast))
+                response, self._validate_wildcard_col(parsed_query.whatif_ast)
+            )
         return response
 
     def _validate_wildcard_col(
@@ -238,28 +246,37 @@ class PredictiveQueryValidator:
     ) -> ValidationResponse:
         response = ValidationResponse()
         for child in ast_node.children:
-            child_is_count_target = (isinstance(ast_node, Aggregation)
-                                     and ast_node.aggr == AggregationType.COUNT
-                                     and child is ast_node.target) or (
-                                         isinstance(ast_node, Filter)
-                                         and count_target
-                                         and child is ast_node.target)
+            child_is_count_target = (
+                isinstance(ast_node, Aggregation)
+                and ast_node.aggr == AggregationType.COUNT
+                and child is ast_node.target
+            ) or (
+                isinstance(ast_node, Filter)
+                and count_target
+                and child is ast_node.target
+            )
             response = merge(
-                response,
-                self._validate_wildcard_col(child, child_is_count_target))
-        if (isinstance(ast_node, Column) and col_name(ast_node.fqn) == '*'
-                and not count_target):
+                response, self._validate_wildcard_col(child, child_is_count_target)
+            )
+        if (
+            isinstance(ast_node, Column)
+            and col_name(ast_node.fqn) == '*'
+            and not count_target
+        ):
             response.errors.append(
                 ValidationError(
                     title='Invalid wildcard column',
                     message=f'{ast_node.get_location().message_start}: '
                     f'Wildcard column {ast_node.fqn} appeared in an '
                     f'invalid position. It can only be used in a `COUNT` '
-                    f'aggregation.'))
+                    f'aggregation.',
+                )
+            )
         return response
 
     def validate_target_filters(
-            self, parsed_query: ParsedPredictiveQuery) -> ValidationResponse:
+        self, parsed_query: ParsedPredictiveQuery
+    ) -> ValidationResponse:
         r"""Validations of filters within the target AST. At the moment,
         this just checks if the filters should be moved to the entity table.
 
@@ -275,11 +292,12 @@ class PredictiveQueryValidator:
         entity_filters = []
         for filter in filters:
             all_tables = set(
-                table_name(col) for col in filter.condition.all_query_columns)
+                table_name(col) for col in filter.condition.all_query_columns
+            )
             if all_tables == {entity_table}:
                 entity_filters.append(repr(filter.condition))
         if len(entity_filters) > 0:
-            and_combined = " AND ".join(list(set(entity_filters)))
+            and_combined = ' AND '.join(list(set(entity_filters)))
             msg_location = parsed_query.target_ast.get_location()
             response.warnings.append(
                 ValidationWarning(
@@ -293,7 +311,9 @@ class PredictiveQueryValidator:
                     f'"FOR EACH {parsed_query.entity_column} WHERE '
                     f'{and_combined}". Leaving it in the target '
                     f'definition may result in unnecessary slowdowns '
-                    f'or even incorrect labels.'))
+                    f'or even incorrect labels.',
+                )
+            )
         return response
 
     def _find_filters(self, node: ASTNode) -> list[Filter]:
@@ -305,7 +325,8 @@ class PredictiveQueryValidator:
         return filters
 
     def validate_list_distinct(
-            self, parsed_query: ParsedPredictiveQuery) -> ValidationResponse:
+        self, parsed_query: ParsedPredictiveQuery
+    ) -> ValidationResponse:
         r"""Validates checks related to link prediction and multilabel
         classification/ranking specifically. This contains any validations that
         should only be performed for the root list_distinct specifically
@@ -332,35 +353,43 @@ class PredictiveQueryValidator:
         if col_name(target_fqn) == '*':
             return response
 
-        if (target_ast.aggr == AggregationType.LIST_DISTINCT
-                and parsed_query.problem_type == ProblemType.CLASSIFY
-                and target_ast.aggr_time_range is None):
+        if (
+            target_ast.aggr == AggregationType.LIST_DISTINCT
+            and parsed_query.problem_type == ProblemType.CLASSIFY
+            and target_ast.aggr_time_range is None
+        ):
             # There is some overlap between this check and
             # TimeRangeValidator._validate_aggr where
             # most invalid static aggregations should already be caught
             response.errors.append(
                 ValidationError(
-                    title='Unsupported syntax', message=(
+                    title='Unsupported syntax',
+                    message=(
                         f'{target_ast.get_location().message_start}: '
                         'The combination of LIST_DISTINCT and CLASSIFY is not '
                         'supported right now when there is no time range '
-                        'in LIST_DISTINCT.')))
+                        'in LIST_DISTINCT.'
+                    ),
+                )
+            )
 
-        if (self.graph.tables[table_name(target_fqn)].pkey
-                == col_name(target_fqn)
-                and target_ast.aggr == AggregationType.LIST_DISTINCT):
+        if (
+            self.graph.tables[table_name(target_fqn)].pkey == col_name(target_fqn)
+            and target_ast.aggr == AggregationType.LIST_DISTINCT
+        ):
             response.errors.append(
                 ValidationError(
                     title='Aggregation not supported on primary key columns',
                     message=f'{target_ast.get_location().message_start}: '
                     f'LIST_DISTINCT target aggregations are not supported on'
-                    f'primary key columns like {target_fqn}.'))
+                    f'primary key columns like {target_fqn}.',
+                )
+            )
             return response
         all_keys = []
         for col_group in self.graph.col_groups:
             all_keys.extend(list(col_group.columns))
-        if (ColumnKey(table_name(target_fqn), col_name(target_fqn))
-                not in all_keys):
+        if ColumnKey(table_name(target_fqn), col_name(target_fqn)) not in all_keys:
             return response
         if target_ast.aggr in [AggregationType.FIRST, AggregationType.LAST]:
             response.errors.append(
@@ -369,7 +398,9 @@ class PredictiveQueryValidator:
                     message=f'{target_ast.get_location().message_start}: '
                     f'LAST and FIRST aggregations are not supported on'
                     f'foreign key columns like {target_fqn} yet. '
-                    f'Currently, only LIST_DISTINCT is supported.'))
+                    f'Currently, only LIST_DISTINCT is supported.',
+                )
+            )
         # All aggregations are nested in a join
         assert isinstance(parsed_query.target_ast, Join)
         if target_ast.aggr != AggregationType.LIST_DISTINCT:
@@ -386,28 +417,29 @@ class PredictiveQueryValidator:
                 # col_group must contain a different fkey from target table
                 if target_col_key in col_group.columns:
                     continue
-                if target_table not in [
-                        c.table_name for c in col_group.columns
-                ]:
+                if target_table not in [c.table_name for c in col_group.columns]:
                     continue
                 for col in col_group.columns:
                     if self.graph.tables[col.table_name].pkey != col.col_name:
                         continue
-                    valid_entities.append(
-                        f"FOR EACH {col.table_name}.{col.col_name}")
+                    valid_entities.append(f'FOR EACH {col.table_name}.{col.col_name}')
             # Show the error message to the user
             error_msg = (
                 f'{target_ast.get_location().message_start}: '
                 f'Target {target_fqn} creates a loop by pointing to the '
                 f'entity table. A foreign key used in the target expression '
                 f'must not point to the entity table to define a valid '
-                f'predictive problem.')
+                f'predictive problem.'
+            )
             if len(valid_entities) > 0:
                 entity_string = ' '.join(valid_entities)
-                error_msg += (f' To fix this, you can change the entity '
-                              f'to one of the following: {entity_string}.')
+                error_msg += (
+                    f' To fix this, you can change the entity '
+                    f'to one of the following: {entity_string}.'
+                )
             response.errors.append(
-                ValidationError(title='Nothing to predict', message=error_msg))
+                ValidationError(title='Nothing to predict', message=error_msg)
+            )
 
         if parsed_query.problem_type == ProblemType.CLASSIFY:
             return response
@@ -423,7 +455,9 @@ class PredictiveQueryValidator:
                             f'Entity table {entity_table} appears '
                             f'inside of the target filter {filter_condition}. '
                             f'References to the entity table are only '
-                            f'supported in the entity definition.'))
+                            f'supported in the entity definition.',
+                        )
+                    )
                     break
 
         # Validate target table timestamp for static link pred
@@ -432,20 +466,22 @@ class PredictiveQueryValidator:
         if parsed_query.target_ast.date_offset_range is None:
             if self.graph.tables[target_table].time_col is not None:
                 time_col_name = self.graph.tables[target_table].time_col
-                location_msg = (
-                    parsed_query.target_ast.get_location().message_start)
+                location_msg = parsed_query.target_ast.get_location().message_start
                 response.errors.append(
                     ValidationError(
-                        title="Time range required for LIST_DISTINCT with "
-                        "time column", message=(
-                            f"{location_msg}: "
-                            f"When using LIST_DISTINCT on a table with a time "
-                            f"column ({time_col_name}), you must specify a "
-                            f"time range. For example, use LIST_DISTINCT("
-                            f"{target_col_name}, 0, 30, days) instead of "
-                            f"LIST_DISTINCT({target_col_name}). "
-                            f"Alternatively, you can remove {time_col_name} "
-                            f"from {target_table} if time is not relevant.")))
+                        title='Time range required for LIST_DISTINCT with time column',
+                        message=(
+                            f'{location_msg}: '
+                            f'When using LIST_DISTINCT on a table with a time '
+                            f'column ({time_col_name}), you must specify a '
+                            f'time range. For example, use LIST_DISTINCT('
+                            f'{target_col_name}, 0, 30, days) instead of '
+                            f'LIST_DISTINCT({target_col_name}). '
+                            f'Alternatively, you can remove {time_col_name} '
+                            f'from {target_table} if time is not relevant.'
+                        ),
+                    )
+                )
 
             # Validate timestamps in non-target tables for static link pred
             fully_qualified_time_col_names = []
@@ -453,28 +489,28 @@ class PredictiveQueryValidator:
                 if t_name != target_table and table.time_col is not None:
                     time_col_name = table.time_col
                     assert time_col_name is not None
-                    fully_qualified_time_col_names.append(
-                        f"{t_name}.{time_col_name}")
+                    fully_qualified_time_col_names.append(f'{t_name}.{time_col_name}')
             if len(fully_qualified_time_col_names) > 0:
-                fully_qualified_time_cols_str = ' '.join(
-                    fully_qualified_time_col_names)
-                location_msg = (
-                    parsed_query.target_ast.get_location().message_start)
+                fully_qualified_time_cols_str = ' '.join(fully_qualified_time_col_names)
+                location_msg = parsed_query.target_ast.get_location().message_start
                 response.errors.append(
                     ValidationError(
-                        title="Unexpected time columns in tables.", message=(
-                            f"{location_msg}: "
-                            f"Cannot perform LIST_DISTINCT query without "
-                            f"temporal aggregation when the following time "
-                            f"columns {fully_qualified_time_cols_str} are "
-                            f"observed in graph. Since LIST_DISTINCT and the "
-                            f"columns do not contain any time information, "
-                            f"this is likely to result in an incorrect data "
-                            f"split and information leakage. To fix this, "
-                            f"you can add the time interval in LIST_DISTINCT "
-                            f"command or drop the columns "
-                            f"{fully_qualified_time_cols_str} from the graph."
-                        )))
+                        title='Unexpected time columns in tables.',
+                        message=(
+                            f'{location_msg}: '
+                            f'Cannot perform LIST_DISTINCT query without '
+                            f'temporal aggregation when the following time '
+                            f'columns {fully_qualified_time_cols_str} are '
+                            f'observed in graph. Since LIST_DISTINCT and the '
+                            f'columns do not contain any time information, '
+                            f'this is likely to result in an incorrect data '
+                            f'split and information leakage. To fix this, '
+                            f'you can add the time interval in LIST_DISTINCT '
+                            f'command or drop the columns '
+                            f'{fully_qualified_time_cols_str} from the graph.'
+                        ),
+                    )
+                )
         return response
 
     def target_not_entity_pkey(
@@ -506,9 +542,11 @@ class PredictiveQueryValidator:
             response.errors.append(
                 ValidationError(
                     title='Predicting entity primary key column',
-                    message=f"{ast_col.get_location().message_start}: "
-                    f"Predicting the entity primary key column "
-                    f"is not allowed."))
+                    message=f'{ast_col.get_location().message_start}: '
+                    f'Predicting the entity primary key column '
+                    f'is not allowed.',
+                )
+            )
         return response
 
     def _target_not_entity_pkey(
@@ -532,8 +570,7 @@ class PredictiveQueryValidator:
             ast_cols.append(ast_node)
         elif isinstance(ast_node, Condition):
             # Only check target, condition may contain entity pkey
-            ast_cols.extend(
-                self._target_not_entity_pkey(ast_node.target, entity_name))
+            ast_cols.extend(self._target_not_entity_pkey(ast_node.target, entity_name))
         elif isinstance(ast_node, Filter | Aggregation):
             # * Aggregation will be blocked by other validation errors
             # such as "Aggregation xxx is not intended to operate on foreign "
@@ -544,8 +581,7 @@ class PredictiveQueryValidator:
         else:
             # Handle other AST types such as LogicalOperation, Join, etc.
             for child in ast_node.children:
-                ast_cols.extend(self._target_not_entity_pkey(
-                    child, entity_name))
+                ast_cols.extend(self._target_not_entity_pkey(child, entity_name))
         return ast_cols
 
     def validate_bp_filter_overrides(
@@ -583,6 +619,8 @@ class PredictiveQueryValidator:
                             f'Table {table_name(col)} appears '
                             f'in the target filter edit {filter_condition}. '
                             f'During batch prediction, only conditions that '
-                            f'refer to {rhs_entity_table} table can be added.'))
+                            f'refer to {rhs_entity_table} table can be added.',
+                        )
+                    )
                     break
         return response

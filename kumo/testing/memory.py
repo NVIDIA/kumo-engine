@@ -14,7 +14,7 @@ from typing import Any
 
 import psutil
 
-if sys.platform.startswith("linux"):
+if sys.platform.startswith('linux'):
     libgcc_s = ctypes.CDLL('libgcc_s.so.1')
 else:
     libgcc_s = None
@@ -42,10 +42,12 @@ def withMemory(
             writing and reading from a shared multiprocess queue, which can
             impose overhead for large objects (default: True).
     """
+
     def _with_memory(function: Callable) -> Callable:
         if libgcc_s is None:
-            raise OSError(f"Memory testing only supported on Linux "
-                          f"(got '{sys.platform}')")
+            raise OSError(
+                f"Memory testing only supported on Linux (got '{sys.platform}')"
+            )
 
         @wraps(function)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
@@ -53,10 +55,9 @@ def withMemory(
             result = None
             if not queue:  # pylint: disable=no-else-return
                 queue = mp.SimpleQueue()
-                proc = mp.Process(target=wrapper, args=args, kwargs={
-                    '__queue': queue,
-                    **kwargs
-                })
+                proc = mp.Process(
+                    target=wrapper, args=args, kwargs={'__queue': queue, **kwargs}
+                )
                 proc.start()
                 try:
                     result = queue.get()
@@ -69,10 +70,9 @@ def withMemory(
                 return result
             else:
                 try:
-                    assert limit, "limit cannot be None."
+                    assert limit, 'limit cannot be None.'
 
-                    baseline_vms = psutil.Process(
-                        os.getpid()).memory_full_info().vms
+                    baseline_vms = psutil.Process(os.getpid()).memory_full_info().vms
 
                     limit_ = limit
                     if limit_ != resource.RLIM_INFINITY:

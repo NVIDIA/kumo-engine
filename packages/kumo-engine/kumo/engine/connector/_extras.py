@@ -21,5 +21,6 @@ def import_provider(module: str, extra: str) -> ModuleType:
         return importlib.import_module(module)
     except ModuleNotFoundError as e:
         raise ImportError(
-            f"{module!r} needs {e.name!r}, which is not installed. Install "
-            f"it with: pip install 'kumo-engine[{extra}]'") from e
+            f'{module!r} needs {e.name!r}, which is not installed. Install '
+            f"it with: pip install 'kumo-engine[{extra}]'"
+        ) from e

@@ -9,8 +9,10 @@ from pathlib import Path
 
 import pytest
 
-SOURCE = Path(__file__).resolve(
-).parents[2] / 'packages/kumo-engine/test/platform_candidate.py'
+SOURCE = (
+    Path(__file__).resolve().parents[2]
+    / 'packages/kumo-engine/test/platform_candidate.py'
+)
 spec = importlib.util.spec_from_file_location('platform_candidate', SOURCE)
 admission = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(admission)
@@ -18,8 +20,7 @@ spec.loader.exec_module(admission)
 
 def test_candidate_rejects_product_changes_but_allows_harness_edits(tmp_path):
     def git(*args):
-        return subprocess.check_output(['git', *args], cwd=tmp_path,
-                                       text=True).strip()
+        return subprocess.check_output(['git', *args], cwd=tmp_path, text=True).strip()
 
     git('init', '-q')
     git('config', 'user.email', 'test@example.invalid')
@@ -51,40 +52,57 @@ def test_partial_component_provenance_is_rejected(tmp_path):
     with pytest.raises(ValueError, match='lacks committed build provenance'):
         admission.verify(
             tmp_path,
-            dict(build=dict(engine_source_commit='a' *
-                            40, provider_source_commit='a' *
-                            40, native_payload='historical base')))
+            dict(
+                build=dict(
+                    engine_source_commit='a' * 40,
+                    provider_source_commit='a' * 40,
+                    native_payload='historical base',
+                )
+            ),
+        )
 
 
 def test_artifact_outputs_bind_build_and_safe_filename():
     filename = 'kumo_engine-1.0.0+abc-cp311-abi3-manylinux_2_34_x86_64.whl'
-    candidate = dict(build=dict(source_commit='a' * 40, github_run=123),
-                     candidate=dict(wheel_file=filename))
+    candidate = dict(
+        build=dict(source_commit='a' * 40, github_run=123),
+        candidate=dict(wheel_file=filename),
+    )
     outputs = admission.artifact_outputs(candidate)
-    assert outputs == dict(run_id='123',
-                           artifact_name='engine-pr-wheel-' + 'a' * 40,
-                           wheel_file=candidate['candidate']['wheel_file'])
+    assert outputs == dict(
+        run_id='123',
+        artifact_name='engine-pr-wheel-' + 'a' * 40,
+        wheel_file=candidate['candidate']['wheel_file'],
+    )
     for invalid in (True, 0, -1, '123\nrun_id=456'):
         candidate['build']['github_run'] = invalid
         with pytest.raises(ValueError):
             admission.artifact_outputs(candidate)
     candidate['build']['github_run'] = 123
-    for invalid in ('../candidate.whl', 'kumo_engine-a.whl\nrun_id=456',
-                    '$(command).whl', None):
+    for invalid in (
+        '../candidate.whl',
+        'kumo_engine-a.whl\nrun_id=456',
+        '$(command).whl',
+        None,
+    ):
         candidate['candidate']['wheel_file'] = invalid
         with pytest.raises(ValueError):
             admission.artifact_outputs(candidate)
 
 
-@pytest.mark.parametrize('path', [
-    'LICENSE', 'THIRD-PARTY.txt', '3rdparty/notices/inventory.json',
-    'agent-skills/skills/engine/SKILL.md',
-    'agent-skills/scripts/package_skill.py'
-])
+@pytest.mark.parametrize(
+    'path',
+    [
+        'LICENSE',
+        'THIRD-PARTY.txt',
+        '3rdparty/notices/inventory.json',
+        'agent-skills/skills/engine/SKILL.md',
+        'agent-skills/scripts/package_skill.py',
+    ],
+)
 def test_candidate_rejects_changed_wheel_bundle_inputs(tmp_path, path):
     def git(*args):
-        return subprocess.check_output(['git', *args], cwd=tmp_path,
-                                       text=True).strip()
+        return subprocess.check_output(['git', *args], cwd=tmp_path, text=True).strip()
 
     git('init', '-q')
     git('config', 'user.email', 'test@example.invalid')
@@ -104,12 +122,17 @@ def test_candidate_rejects_changed_wheel_bundle_inputs(tmp_path, path):
 
 @pytest.fixture
 def wheel(tmp_path, monkeypatch):
-    monkeypatch.setattr(admission.subprocess, 'check_output',
-                        lambda *a, **kw: 'a' * 40 + '\n')
-    path = tmp_path / 'kumo_engine-1.0.0.dev0+aaaaaaa-cp311-abi3-manylinux_2_34_x86_64.whl'
+    monkeypatch.setattr(
+        admission.subprocess, 'check_output', lambda *a, **kw: 'a' * 40 + '\n'
+    )
+    path = (
+        tmp_path / 'kumo_engine-1.0.0.dev0+aaaaaaa-cp311-abi3-manylinux_2_34_x86_64.whl'
+    )
     with zipfile.ZipFile(path, 'w') as archive:
-        archive.writestr('kumo_engine-1.0.0.dev0+aaaaaaa.dist-info/METADATA',
-                         'Name: kumo-engine\nVersion: 1.0.0.dev0+aaaaaaa\n')
+        archive.writestr(
+            'kumo_engine-1.0.0.dev0+aaaaaaa.dist-info/METADATA',
+            'Name: kumo-engine\nVersion: 1.0.0.dev0+aaaaaaa\n',
+        )
     return path
 
 
@@ -124,8 +147,7 @@ def test_current_wheel_produces_runtime_manifest(wheel, tmp_path):
 
 
 @pytest.mark.parametrize('change', ['source', 'metadata', 'symlink', 'run'])
-def test_reject_substituted_wheel_before_writing_manifest(
-        wheel, tmp_path, change):
+def test_reject_substituted_wheel_before_writing_manifest(wheel, tmp_path, change):
     source, run = 'a' * 40, 123
     if change == 'source':
         source = 'b' * 40
@@ -133,7 +155,8 @@ def test_reject_substituted_wheel_before_writing_manifest(
         with zipfile.ZipFile(wheel, 'w') as archive:
             archive.writestr(
                 'x.dist-info/METADATA',
-                'Name: kumo-engine\nVersion: 1.0.0.dev0+bbbbbbb\n')
+                'Name: kumo-engine\nVersion: 1.0.0.dev0+bbbbbbb\n',
+            )
     elif change == 'symlink':
         target = wheel.with_suffix('.target')
         wheel.rename(target)
@@ -148,8 +171,7 @@ def test_reject_substituted_wheel_before_writing_manifest(
 
 def test_candidate_rejects_executable_mode_only_changes(tmp_path):
     def git(*args):
-        return subprocess.check_output(['git', *args], cwd=tmp_path,
-                                       text=True).strip()
+        return subprocess.check_output(['git', *args], cwd=tmp_path, text=True).strip()
 
     git('init', '-q')
     git('config', 'user.email', 'test@example.invalid')

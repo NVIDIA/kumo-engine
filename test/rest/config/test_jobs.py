@@ -49,10 +49,10 @@ def test_s3_output_ftype_inference():
     output = from_json(text, S3PredictionOutput)
     assert output.validated_file_type == FileType.CSV
     assert output.is_partitioned is False
-    assert output.directory_name == "s3://bucket/"
+    assert output.directory_name == 's3://bucket/'
     output = output.require_partitioned()
     assert output.is_partitioned is False
-    assert output.file_path == "s3://bucket/path.parquet"
+    assert output.file_path == 's3://bucket/path.parquet'
 
     # Should default to parquet if no extension is provided
     text = """
@@ -78,7 +78,7 @@ def test_s3_output_ftype_inference():
     output = from_json(text, S3PredictionOutput)
     assert output.validated_file_type == FileType.CSV
     assert output.is_partitioned is True
-    assert output.directory_name == "s3://bucket/path.csv/"
+    assert output.directory_name == 's3://bucket/path.csv/'
 
 
 @pytest.mark.parametrize('path', ['output.CSV', 'output.PARQUET/'])
@@ -87,23 +87,26 @@ def test_file_type_inference_is_case_insensitive(path):
     assert FileType.parse_extension(path) == expected
 
 
-@pytest.mark.parametrize('output', [
-    S3PredictionOutput(
-        artifact_type=PredictionArtifactType.PREDICTIONS,
-        connector_id=_CONNECTOR_ID,
-        file_path='s3://bucket/output.CSV',
-    ),
-    GCSPredictionOutput(
-        artifact_type=PredictionArtifactType.PREDICTIONS,
-        connector_id=_CONNECTOR_ID,
-        file_path='gs://bucket/output.PARQUET',
-    ),
-    ADLSPredictionOutput(
-        artifact_type=PredictionArtifactType.PREDICTIONS,
-        connector_id=_CONNECTOR_ID,
-        file_path=('abfss://data@account.dfs.core.windows.net/output.CSV'),
-    ),
-])
+@pytest.mark.parametrize(
+    'output',
+    [
+        S3PredictionOutput(
+            artifact_type=PredictionArtifactType.PREDICTIONS,
+            connector_id=_CONNECTOR_ID,
+            file_path='s3://bucket/output.CSV',
+        ),
+        GCSPredictionOutput(
+            artifact_type=PredictionArtifactType.PREDICTIONS,
+            connector_id=_CONNECTOR_ID,
+            file_path='gs://bucket/output.PARQUET',
+        ),
+        ADLSPredictionOutput(
+            artifact_type=PredictionArtifactType.PREDICTIONS,
+            connector_id=_CONNECTOR_ID,
+            file_path=('abfss://data@account.dfs.core.windows.net/output.CSV'),
+        ),
+    ],
+)
 def test_explicit_uppercase_file_output_is_not_rewritten_as_directory(output):
     assert output.require_partitioned() is output
 
@@ -116,14 +119,14 @@ def test_bp_request_outputs():
         storage_type=PredictionStorageType.S3,
         artifact_type=PredictionArtifactType.PREDICTIONS,
         connector_id=_CONNECTOR_ID,
-        file_path="s3://random1/output",
+        file_path='s3://random1/output',
         extra_fields=[MetadataField.ANCHOR_TIMESTAMP],
     )
     o2 = S3PredictionOutput(
         storage_type=PredictionStorageType.S3,
         artifact_type=PredictionArtifactType.PREDICTIONS,
         connector_id=_CONNECTOR_ID,
-        file_path="s3://random1/output",
+        file_path='s3://random1/output',
     )
     with pytest.raises(ValidationError):
         BatchPredictionRequest(
@@ -136,7 +139,7 @@ def test_bp_request_outputs():
         storage_type=PredictionStorageType.S3,
         artifact_type=PredictionArtifactType.EMBEDDINGS,
         connector_id=_CONNECTOR_ID,
-        file_path="s3://random1/output",
+        file_path='s3://random1/output',
     )
     BatchPredictionRequest(
         predict_options=predict_options,
@@ -148,7 +151,7 @@ def test_bp_request_outputs():
         storage_type=PredictionStorageType.S3,
         artifact_type=PredictionArtifactType.PREDICTIONS,
         connector_id=_CONNECTOR_ID,
-        file_path="s3://random1/output",
+        file_path='s3://random1/output',
         extra_fields=[MetadataField.ANCHOR_TIMESTAMP],
     )
     BatchPredictionRequest(

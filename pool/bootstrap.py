@@ -7,6 +7,7 @@
 tracing in the same way before any other code touches deploy_env().
 Centralized here so future entrypoints (e.g. singlehost) don't drift.
 """
+
 import logging as stdlib_logging
 from typing import Dict, Mapping, Optional
 
@@ -49,8 +50,7 @@ def init_logging_and_tracing(
         overrides.update(_DEV_HEARTBEAT_LOG_OVERRIDES)
     if extra_log_overrides:
         overrides.update(extra_log_overrides)
-    mode = (logging.LoggingMode.PRODUCTION
-            if is_prod else logging.LoggingMode.DEBUG)
+    mode = logging.LoggingMode.PRODUCTION if is_prod else logging.LoggingMode.DEBUG
     logging.initialize_logging(
         mode=mode,
         log_to_file=False,

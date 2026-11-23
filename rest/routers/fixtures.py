@@ -57,12 +57,10 @@ class FixturesResource:
         self._table_router_v2 = table_router_v2
         self._graph_router_v2 = graph_router_v2
         self.router = APIRouter(
-            prefix="/v0/fixtures",
-            tags=["Fixtures"],
+            prefix='/v0/fixtures',
+            tags=['Fixtures'],
             dependencies=[Depends(auth.authenticate_request_header)],
-            responses={HTTPStatus.NOT_FOUND: {
-                "description": "Not found"
-            }},
+            responses={HTTPStatus.NOT_FOUND: {'description': 'Not found'}},
         )
 
         self.router.add_api_route(
@@ -73,9 +71,12 @@ class FixturesResource:
             methods=['POST'],
         )
 
-        self.router.add_api_route('/load_json', self.load_json_file,
-                                  response_model=EmptyResponse,
-                                  methods=['POST'])
+        self.router.add_api_route(
+            '/load_json',
+            self.load_json_file,
+            response_model=EmptyResponse,
+            methods=['POST'],
+        )
 
     async def save_json(self, args: SavePQueryArgs, request: Request) -> str:
         r"""Save predictive-query metadata as a credential-free fixture.
@@ -104,45 +105,48 @@ class FixturesResource:
             get_user_authorization_from_request(request),
         )
         if not db_dump.queries:
-            raise HTTPException(HTTPStatus.UNPROCESSABLE_ENTITY,
-                                detail='No pquery available to save.')
+            raise HTTPException(
+                HTTPStatus.UNPROCESSABLE_ENTITY, detail='No pquery available to save.'
+            )
         check_and_raise_error_for_multiple_resources(db_dump)
         if args.fixture_name:
             file_name = f'{args.fixture_name}.json'
         else:
-            query_names = '_'.join(
-                sorted([q.pquery_name for q in db_dump.queries]))
+            query_names = '_'.join(sorted([q.pquery_name for q in db_dump.queries]))
             file_name = f'{db_dump.queries[0].graph_fpid}-{query_names}.json'
-        output_dir = (args.output_dir
-                      or self._driver._settings.fixture_export_path)
+        output_dir = args.output_dir or self._driver._settings.fixture_export_path
 
         file_path = os.path.join(output_dir, file_name)
         return await save_json_to_file_path.coroutine(db_dump, file_path)
 
-    async def load_json_file(self, request_args: LoadJsonArgs,
-                             request: Request) -> EmptyResponse:
+    async def load_json_file(
+        self, request_args: LoadJsonArgs, request: Request
+    ) -> EmptyResponse:
         @blocking_func()
         def _load_fixture(path: str) -> FixtureDefinition:
-            return from_json_dict(json.loads(fsutil.read_binary(path)),
-                                  FixtureDefinition)
+            return from_json_dict(
+                json.loads(fsutil.read_binary(path)), FixtureDefinition
+            )
 
         fixture = await _load_fixture.coroutine(request_args.file_path)
         principal = get_user_authorization_from_request(request)
         connector_service = self._driver._require_state_services().connectors
         connector_ids = set()
         for graph in fixture.graphs:
-            connector_ids.update(
-                connector_service.connector_ids_for_graph(graph))
+            connector_ids.update(connector_service.connector_ids_for_graph(graph))
         for connector_id in connector_ids:
             await connector_service.execution_ref_for_project(
-                principal, request_args.project_id, connector_id,
-                CONNECTOR_GRAPH_ACTIONS)
+                principal,
+                request_args.project_id,
+                connector_id,
+                CONNECTOR_GRAPH_ACTIONS,
+            )
 
-        pquery_resources = await fixture_to_pquery_resources_v2.coroutine(
-            fixture)
+        pquery_resources = await fixture_to_pquery_resources_v2.coroutine(fixture)
         for pquery_resource in pquery_resources:
             await self._driver.pquery_driver.create_predictive_query_v2(
-                pquery_resource, project_id=request_args.project_id)
+                pquery_resource, project_id=request_args.project_id
+            )
 
         return EmptyResponse()
 
@@ -154,16 +158,19 @@ def save_json_to_file_path(db_dump, file_path: str) -> str:
 
 
 def check_and_raise_error_for_multiple_resources(db_dump: FixtureDefinition):
-    entity_name = ""
+    entity_name = ''
     if len(db_dump.graphs) > 1:
-        entity_name = "Graph"
+        entity_name = 'Graph'
     elif len(db_dump.queries) > 1:
-        entity_name = "Query"
+        entity_name = 'Query'
     if entity_name:
         raise HTTPException(
             HTTPStatus.UNPROCESSABLE_ENTITY,
-            detail=(f'Cannot create fixture for Predictive Query containing '
-                    f'more than one {entity_name}'))
+            detail=(
+                f'Cannot create fixture for Predictive Query containing '
+                f'more than one {entity_name}'
+            ),
+        )
 
 
 def validate_name(fixture_name: str):
@@ -171,16 +178,23 @@ def validate_name(fixture_name: str):
         validate_id(fixture_name)
         validate_max_length(fixture_name, 64)
     except Exception as e:
-        if ("Identifier may only contain alphanumeric characters "
-                "and underscores" in str(e)):
+        if 'Identifier may only contain alphanumeric characters and underscores' in str(
+            e
+        ):
             raise HTTPException(
                 HTTPStatus.UNPROCESSABLE_ENTITY,
-                detail=(f'Fixture name should only contain '
-                        f'alphanumeric characters and '
-                        f'underscores and must begin with '
-                        f'a letter. Got: "{fixture_name}"'))
-        if ("Identifier must be fewer than" in str(e)):
+                detail=(
+                    f'Fixture name should only contain '
+                    f'alphanumeric characters and '
+                    f'underscores and must begin with '
+                    f'a letter. Got: "{fixture_name}"'
+                ),
+            )
+        if 'Identifier must be fewer than' in str(e):
             raise HTTPException(
                 HTTPStatus.UNPROCESSABLE_ENTITY,
-                detail=(f"Fixture name must be fewer than 64 "
-                        f"characters long. Got: {fixture_name}"))
+                detail=(
+                    f'Fixture name must be fewer than 64 '
+                    f'characters long. Got: {fixture_name}'
+                ),
+            )

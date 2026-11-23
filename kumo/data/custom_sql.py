@@ -8,6 +8,7 @@ platform and the SDK's ``LocalBackend`` derive the same synthetic name -- and
 so the same graph id -- from the same SQL. What remains here is the analysis
 only the platform performs.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -75,9 +76,9 @@ def normalized_sql_identifier(name: str, connector_type: ConnectorType) -> str:
         return name
     if table is None:
         return name
-    return ".".join(
-        part.name
-        for part in normalize_identifiers(table, dialect=dialect).parts)
+    return '.'.join(
+        part.name for part in normalize_identifiers(table, dialect=dialect).parts
+    )
 
 
 def source_table_for_col(
@@ -94,8 +95,9 @@ def source_table_for_col(
     dialect = sqlglot_dialect(connector_type)
     try:
         expression = sqlglot.parse_one(sql, dialect=dialect)
-        qualified = qualify(expression, dialect=dialect, schema=None,
-                            validate_qualify_columns=False)
+        qualified = qualify(
+            expression, dialect=dialect, schema=None, validate_qualify_columns=False
+        )
     except SqlglotError:
         return None
     root = build_scope(qualified)
@@ -104,20 +106,22 @@ def source_table_for_col(
     target = normalized_sql_identifier(col_name, connector_type)
     traced: Optional[Tuple[str, str]] = None
     for projection in qualified.expressions:
-        output_name = normalized_sql_identifier(projection.alias_or_name,
-                                                connector_type)
+        output_name = normalized_sql_identifier(
+            projection.alias_or_name, connector_type
+        )
         if output_name != target:
             continue
         if traced is not None:
             return None  # Output name produced by more than one projection.
-        column = (projection.unalias()
-                  if isinstance(projection, exp.Alias) else projection)
+        column = (
+            projection.unalias() if isinstance(projection, exp.Alias) else projection
+        )
         if not isinstance(column, exp.Column):
             return None  # Computed/aliased expression, or ``*``.
         source = root.sources.get(column.table)
         if not isinstance(source, exp.Table):
             return None  # CTE/subquery/derived source, or unresolved.
-        table_name = ".".join(part.name for part in source.parts)
+        table_name = '.'.join(part.name for part in source.parts)
         traced = (table_name, column.name)
     return traced
 
@@ -134,14 +138,14 @@ def custom_sql_stats_version(
     """
     hasher = hashlib.md5()
     hasher.update(normalize_sql(sql, connector_type).encode())
-    hasher.update(b":cols:")
+    hasher.update(b':cols:')
     for name in sorted(cols):
         # Use the enum ``value`` rather than ``str``. There is now a single
         # ``Dtype`` (kumoapi's), but tokens hashed here outlive the process
         # that wrote them, and ``value`` is the half of the enum that is wire
         # contract; ``str`` is presentation and has changed before.
         raw = cols[name]
-        dtype = str(getattr(raw, "value", raw))
-        hasher.update(f"{len(name)}:{name}:{len(dtype)}:{dtype}".encode())
+        dtype = str(getattr(raw, 'value', raw))
+        hasher.update(f'{len(name)}:{name}:{len(dtype)}:{dtype}'.encode())
     # Namespaced so the token can never collide with a real content data_version.
-    return f"sqldef_{hasher.hexdigest()}"
+    return f'sqldef_{hasher.hexdigest()}'

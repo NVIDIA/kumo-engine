@@ -35,7 +35,9 @@ from rest.constants import (
 
 # isort: off
 from rest.backends.ml_backend.activities.common import (
-    update_graph_config_from_graph_input, )
+    update_graph_config_from_graph_input,
+)
+
 # isort: on
 from rest.backends.ml_backend.data_util import get_job_base_dir, get_job_dir
 from rest.backends.ml_backend.settings import MLJobSettings
@@ -104,8 +106,7 @@ class BaseTrainingWorkflow(JobWorkflowCancellationMixin):
         self.job_input = job_input
         self.ml_job_settings = ml_job_settings
         try:
-            return await self.run_until_canceled(
-                self._run(job_input, ml_job_settings))
+            return await self.run_until_canceled(self._run(job_input, ml_job_settings))
         except BaseException as ex:
             # Record the real error before re-raising: if _run raises before its
             # child workflow terminalizes, finalize_job would otherwise overwrite
@@ -113,7 +114,8 @@ class BaseTrainingWorkflow(JobWorkflowCancellationMixin):
             # Cancellation and continue-as-new are control-flow signals with
             # their own handling, not failures -- re-raise untouched.
             if is_cancelled_exception(ex) or isinstance(
-                    ex, workflow.ContinueAsNewError):
+                ex, workflow.ContinueAsNewError
+            ):
                 raise
             # catch_and_log so a terminalize failure never swallows the original.
             with catch_and_log():
@@ -126,18 +128,26 @@ class BaseTrainingWorkflow(JobWorkflowCancellationMixin):
                 # text stays in the worker log here and in the workflow
                 # failure re-raised below, so no diagnostic info is lost.
                 raw_message = root_cause_message(ex)
-                log.error('Training job %s failed; internal root cause: %s',
-                          job_input.id, raw_message)
+                log.error(
+                    'Training job %s failed; internal root cause: %s',
+                    job_input.id,
+                    raw_message,
+                )
                 validation_response = ValidationResponse()
                 validation_response.errors.append(
                     ValidationError(
-                        title="Training failed",
-                        message=maybe_get_public_message(ex) or (
-                            "An internal error occurred while running the "
-                            "training job. Please retry the job. If the "
-                            "problem continues, contact Kumo support.")))
-                await self._exit_cleanup(validation_response, job_input.id,
-                                         home_dir, exception=ex)
+                        title='Training failed',
+                        message=maybe_get_public_message(ex)
+                        or (
+                            'An internal error occurred while running the '
+                            'training job. Please retry the job. If the '
+                            'problem continues, contact Kumo support.'
+                        ),
+                    )
+                )
+                await self._exit_cleanup(
+                    validation_response, job_input.id, home_dir, exception=ex
+                )
             raise
         finally:
             # Finalize unconditionally so a pre-enqueue failure can't leave the
@@ -151,7 +161,7 @@ class BaseTrainingWorkflow(JobWorkflowCancellationMixin):
         job_input: TrainingJobInput,
         ml_job_settings: MLJobSettings,
     ) -> ValidationResponse:
-        raise NotImplementedError("Subclasses must implement this method")
+        raise NotImplementedError('Subclasses must implement this method')
 
     async def _save_output(self, job_output: TrainingJobOutput):
         # Mark job status as QUEUED
@@ -162,7 +172,9 @@ class BaseTrainingWorkflow(JobWorkflowCancellationMixin):
         )
         self.check_cancelled()
 
-    async def _initialize_train_job(self, ) -> str:
+    async def _initialize_train_job(
+        self,
+    ) -> str:
         """Initialize training job: create DB entry, queue job, and return home_dir."""
         # Init: create job entry in SQL DB, and persist job inputs
         await init_job_generic(self.job_input, self.ml_job_settings)
@@ -192,7 +204,8 @@ class BaseTrainingWorkflow(JobWorkflowCancellationMixin):
                 args=[graph_compute_input, self.job_input.id],
                 task_queue=DATA_BACKEND_TASK_QUEUE,
                 schedule_to_close_timeout=timedelta(
-                    hours=DATA_BACKEND_IO_TIMEOUT_HOURS),
+                    hours=DATA_BACKEND_IO_TIMEOUT_HOURS
+                ),
             )
             self.check_cancelled()
             # Save {job_id: graph data version} mapping explicitly into
@@ -215,8 +228,9 @@ class BaseTrainingWorkflow(JobWorkflowCancellationMixin):
 
         # Launch GraphRefreshWorkflow on this graph data version.
         log.info(
-            f"BaseTrainingWorkflow._refresh_graph: Starting "
-            f"GraphRefreshWorkflow as CHILD with job_id={self.job_input.id}")
+            f'BaseTrainingWorkflow._refresh_graph: Starting '
+            f'GraphRefreshWorkflow as CHILD with job_id={self.job_input.id}'
+        )
         result, graph_input = await workflow.execute_child_workflow(
             GraphRefreshWorkflow.run,
             args=[
@@ -225,8 +239,7 @@ class BaseTrainingWorkflow(JobWorkflowCancellationMixin):
                 graph_version_info,
                 self.job_input.id,
             ],
-            execution_timeout=timedelta(
-                hours=DATA_BACKEND_REFRESH_TIMEOUT_HOURS),
+            execution_timeout=timedelta(hours=DATA_BACKEND_REFRESH_TIMEOUT_HOURS),
             task_queue=DATA_BACKEND_TASK_QUEUE,
             cancellation_type=ChildWorkflowCancellationType.TRY_CANCEL,
             parent_close_policy=ParentClosePolicy.REQUEST_CANCEL,
@@ -234,18 +247,21 @@ class BaseTrainingWorkflow(JobWorkflowCancellationMixin):
         self.check_cancelled()
         validation_response.merge(result.validation)
         if not validation_response.ok:
-            await save_validation_response(validation_response, home_dir,
-                                           self.job_input.id)
+            await save_validation_response(
+                validation_response, home_dir, self.job_input.id
+            )
 
             job_output = TrainingJobOutput.failed(
                 validation=validation_response,
-                workflow_end_state=WorkflowExecutionStatus.COMPLETED)
+                workflow_end_state=WorkflowExecutionStatus.COMPLETED,
+            )
             await self._save_output(job_output)
             return None
 
         # Update timestamp unit for graph config in job input
         updated_graph_config = update_graph_config_from_graph_input(
-            self.job_input.spec.predictive_query.graph, graph_input)
+            self.job_input.spec.predictive_query.graph, graph_input
+        )
         self.job_input.spec.predictive_query.graph = updated_graph_config
         return graph_input
 
@@ -257,7 +273,8 @@ class BaseTrainingWorkflow(JobWorkflowCancellationMixin):
     ) -> Optional[GenerateTrainTableResult]:
         """Generate or wait for train table workflow result."""
         gen_train_table_job_id = GenerateTrainTableJobID(
-            self.job_input.generate_train_table_job_id)
+            self.job_input.generate_train_table_job_id
+        )
         custom_train_table_spec = self.job_input.spec.custom_train_table
 
         # If generate-train-table is executed in a decoupled workflow,
@@ -267,8 +284,9 @@ class BaseTrainingWorkflow(JobWorkflowCancellationMixin):
             await self._save_output(
                 TrainingJobOutput(
                     status=JobStatus.RUNNING,
-                    log=JobEventLogEntry.waiting_training_table(
-                        gen_train_table_job_id)))
+                    log=JobEventLogEntry.waiting_training_table(gen_train_table_job_id),
+                )
+            )
             # TODO(siyang): We'll not be able to fetch workflow result
             # beyound 30d retention period. This might be good enough
             # since we ususally don't want to train on a very old train
@@ -281,8 +299,10 @@ class BaseTrainingWorkflow(JobWorkflowCancellationMixin):
                     task_queue=DATA_BACKEND_TASK_QUEUE,
                     retry_policy=CHILD_WF_WAITING_RETRY_POLICY,
                     schedule_to_close_timeout=timedelta(
-                        hours=DATA_BACKEND_MATERIALIZE_TIMEOUT_HOURS),
-                ))
+                        hours=DATA_BACKEND_MATERIALIZE_TIMEOUT_HOURS
+                    ),
+                )
+            )
             if train_table_result.validation.ok:
                 # Train table stats were saved under the id of
                 # generate-train-table job, we need to copy it over to the
@@ -292,7 +312,7 @@ class BaseTrainingWorkflow(JobWorkflowCancellationMixin):
                     copy_train_table_stats,
                     args=[
                         self.job_input.generate_train_table_job_id,
-                        self.job_input.id
+                        self.job_input.id,
                     ],
                     schedule_to_close_timeout=timedelta(minutes=30),
                 )
@@ -300,14 +320,15 @@ class BaseTrainingWorkflow(JobWorkflowCancellationMixin):
             if custom_train_table_spec is not None:
                 assert train_table_result.validation.ok
                 home_dir_mgr = HomeDirManager(home_dir)
-                custom_train_table_path =\
-                    home_dir_mgr.custom_train_table_path
+                custom_train_table_path = home_dir_mgr.custom_train_table_path
                 custom_tt_wf_id = CustomTrainTableWorkflow.generate_wf_id(
-                    self.job_input.id)
+                    self.job_input.id
+                )
                 log.info(
-                    f"BaseTrainingWorkflow._maybe_generate_train_table: "
-                    f"Starting CustomTrainTableWorkflow as CHILD with "
-                    f"wf_id={custom_tt_wf_id}")
+                    f'BaseTrainingWorkflow._maybe_generate_train_table: '
+                    f'Starting CustomTrainTableWorkflow as CHILD with '
+                    f'wf_id={custom_tt_wf_id}'
+                )
                 custom_tt_result = await workflow.execute_child_workflow(
                     CustomTrainTableWorkflow.run,
                     args=[
@@ -326,35 +347,37 @@ class BaseTrainingWorkflow(JobWorkflowCancellationMixin):
                 if not validation_response.ok:
                     return None
                 self.check_cancelled()
-                train_table_result.train_table_path = (
-                    custom_tt_result.train_table_path)
+                train_table_result.train_table_path = custom_tt_result.train_table_path
                 train_table_result.train_table_materialization_path = (
-                    custom_tt_result.train_table_materialization_path)
+                    custom_tt_result.train_table_materialization_path
+                )
 
         else:
             # Update the job status to 'generating training table'
             await self._save_output(
                 TrainingJobOutput(
                     status=JobStatus.RUNNING,
-                    log=JobEventLogEntry.generating_training_table()))
+                    log=JobEventLogEntry.generating_training_table(),
+                )
+            )
             # parent's Databricks cluster.
             log.info(
-                f"BaseTrainingWorkflow._maybe_generate_train_table: Starting "
-                f"GenerateTrainingTableWorkflow as CHILD with "
-                f"wf_id={gen_train_table_job_id.wf_id}")
-            train_table_result = (
-                await workflow.execute_child_workflow(
-                    GenerateTrainingTableWorkflow.run,
-                    args=[
-                        self.job_input,
-                        self.ml_job_settings,
-                        False,  # run gen-train-table as child
-                        home_dir,
-                    ],
-                    id=gen_train_table_job_id.wf_id,
-                    cancellation_type=ChildWorkflowCancellationType.TRY_CANCEL,
-                    parent_close_policy=ParentClosePolicy.TERMINATE,
-                ))
+                f'BaseTrainingWorkflow._maybe_generate_train_table: Starting '
+                f'GenerateTrainingTableWorkflow as CHILD with '
+                f'wf_id={gen_train_table_job_id.wf_id}'
+            )
+            train_table_result = await workflow.execute_child_workflow(
+                GenerateTrainingTableWorkflow.run,
+                args=[
+                    self.job_input,
+                    self.ml_job_settings,
+                    False,  # run gen-train-table as child
+                    home_dir,
+                ],
+                id=gen_train_table_job_id.wf_id,
+                cancellation_type=ChildWorkflowCancellationType.TRY_CANCEL,
+                parent_close_policy=ParentClosePolicy.TERMINATE,
+            )
 
         validation_response.merge(train_table_result.validation)
         if not validation_response.ok:
@@ -369,7 +392,7 @@ class BaseTrainingWorkflow(JobWorkflowCancellationMixin):
         home_dir: str,
         exception: Optional[BaseException] = None,
     ) -> ValidationResponse:
-        r""" Terminalize the failed training job at the point of failure, then
+        r"""Terminalize the failed training job at the point of failure, then
         save the validation response and return it.
 
         This mirrors the batch-prediction parent workflow's validation-failure
@@ -386,8 +409,10 @@ class BaseTrainingWorkflow(JobWorkflowCancellationMixin):
         """
         await save_validation_response(validation_response, home_dir, job_id)
         job_output = TrainingJobOutput.failed(
-            exception=exception, validation=validation_response,
-            workflow_end_state=WorkflowExecutionStatus.COMPLETED)
+            exception=exception,
+            validation=validation_response,
+            workflow_end_state=WorkflowExecutionStatus.COMPLETED,
+        )
         await self._save_output(job_output)
         return validation_response
 
@@ -397,7 +422,7 @@ class BaseTrainingWorkflow(JobWorkflowCancellationMixin):
         training_job_id: TrainingJobID,
         custom_train_table: Optional[CustomTrainingTable] = None,
     ) -> ValidationResponse:
-        r""" If `custom_train_table` is provided validates that
+        r"""If `custom_train_table` is provided validates that
         1. the train table workflow is a decoupled workflow.
         2. decoupled splits are not enabled.
         """
@@ -406,16 +431,18 @@ class BaseTrainingWorkflow(JobWorkflowCancellationMixin):
             if train_table_job_id.is_child_of(training_job_id):
                 validation_response.errors.append(
                     ValidationError(
-                        title="Custom training table not supported",
-                        message="Custom training table is not supported when "
-                        " the generate-train-table job is a coupled workflow.",
-                    ), )
+                        title='Custom training table not supported',
+                        message='Custom training table is not supported when '
+                        ' the generate-train-table job is a coupled workflow.',
+                    ),
+                )
             if _USE_DECOUPLED_SPLITS:
                 validation_response.errors.append(
                     ValidationError(
-                        title="Custom train table not supported"
-                        " with decoupled splits",
-                        message="Custom training table is not supported when "
-                        " `USE_DECOUPLED_SPLITS` env variable is enabled. "
-                        "Contact Kumo for support."))
+                        title='Custom train table not supported with decoupled splits',
+                        message='Custom training table is not supported when '
+                        ' `USE_DECOUPLED_SPLITS` env variable is enabled. '
+                        'Contact Kumo for support.',
+                    )
+                )
         return validation_response

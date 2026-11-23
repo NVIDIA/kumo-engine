@@ -31,9 +31,9 @@ from kumo.engine.connector.identity import SnowflakeIdentity
 #: services/additional-considerations-services-jobs#label-spcs-env-variables).
 #: Not defined in `kumo_snowflake.spcs`: that module builds an *identity*
 #: (account/host/token only), and has no notion of a query target.
-_SPCS_WAREHOUSE_ENV = "SNOWFLAKE_WAREHOUSE"
-_SPCS_DATABASE_ENV = "SNOWFLAKE_DATABASE"
-_SPCS_SCHEMA_ENV = "SNOWFLAKE_SCHEMA"
+_SPCS_WAREHOUSE_ENV = 'SNOWFLAKE_WAREHOUSE'
+_SPCS_DATABASE_ENV = 'SNOWFLAKE_DATABASE'
+_SPCS_SCHEMA_ENV = 'SNOWFLAKE_SCHEMA'
 
 
 class SnowflakeConnector(Connector):
@@ -50,6 +50,7 @@ class SnowflakeConnector(Connector):
             `kumo_snowflake`'s own ambient-session resolution.
         role: Optional Snowflake role to activate for this target.
     """
+
     def __init__(
         self,
         *,
@@ -86,7 +87,8 @@ class SnowflakeConnector(Connector):
         # subclasses for every provider whether or not that extra is
         # installed.
         SnowflakeSourceBackend = import_provider(
-            "kumo_snowflake.backend", "snowflake").SnowflakeSourceBackend
+            'kumo_snowflake.backend', 'snowflake'
+        ).SnowflakeSourceBackend
         return SnowflakeSourceBackend(identity=self.identity)
 
     @cached_property
@@ -96,8 +98,9 @@ class SnowflakeConnector(Connector):
         writes/publishes through -- backs `Trainer.fit(..., export_config=...)`
         and `Trainer.load_from_connector(...)`.
         """
-        SnowflakeSinkBackend = import_provider("kumo_snowflake.sink",
-                                               "snowflake").SnowflakeSinkBackend
+        SnowflakeSinkBackend = import_provider(
+            'kumo_snowflake.sink', 'snowflake'
+        ).SnowflakeSinkBackend
         return SnowflakeSinkBackend(identity=self.identity)
 
     def session(self) -> Any:
@@ -113,8 +116,9 @@ class SnowflakeConnector(Connector):
             table=table_name,
         )
 
-    def _monitored_files(self, destination: str, files: List[str],
-                         directory: Path) -> List[str]:
+    def _monitored_files(
+        self, destination: str, files: List[str], directory: Path
+    ) -> List[str]:
         from kumo.engine.connector import is_file_destination
 
         if is_file_destination(self, destination):
@@ -122,8 +126,10 @@ class SnowflakeConnector(Connector):
         return _for_model_monitor(files, directory)
 
     def __repr__(self) -> str:
-        return (f"{self.__class__.__name__}(database={self.database!r}, "
-                f"schema_name={self.schema_name!r})")
+        return (
+            f'{self.__class__.__name__}(database={self.database!r}, '
+            f'schema_name={self.schema_name!r})'
+        )
 
     @classmethod
     def from_connection_toml(
@@ -162,29 +168,39 @@ class SnowflakeConnector(Connector):
         # Snowflake's provider package owns its driver's configuration API;
         # this facade only turns the selected entry into Kumo objects.
         connection_toml_entry = import_provider(
-            "kumo_snowflake.config", "snowflake").connection_toml_entry
+            'kumo_snowflake.config', 'snowflake'
+        ).connection_toml_entry
 
         entry = connection_toml_entry(connection_name)
         warehouse = warehouse or entry.get('warehouse')
         database = database or entry.get('database')
         schema_name = schema_name or entry.get('schema')
-        missing = sorted(field for field, value in (
-            ('warehouse', warehouse),
-            ('database', database),
-            ('schema_name', schema_name),
-        ) if not value)
+        missing = sorted(
+            field
+            for field, value in (
+                ('warehouse', warehouse),
+                ('database', database),
+                ('schema_name', schema_name),
+            )
+            if not value
+        )
         if missing:
             raise ValueError(
-                f"connection {connection_name or 'default'!r} names no "
-                f"{', '.join(missing)}, and none was passed. A connector "
-                f"addresses one exact target, so it cannot be left to the "
-                f"session's own default.")
+                f'connection {connection_name or "default"!r} names no '
+                f'{", ".join(missing)}, and none was passed. A connector '
+                f'addresses one exact target, so it cannot be left to the '
+                f"session's own default."
+            )
 
         identity = _connections_toml_identity(entry)
         assert warehouse and database and schema_name
-        return cls(warehouse=warehouse, database=database,
-                   schema_name=schema_name, identity=identity, role=role
-                   or entry.get('role'))
+        return cls(
+            warehouse=warehouse,
+            database=database,
+            schema_name=schema_name,
+            identity=identity,
+            role=role or entry.get('role'),
+        )
 
     @classmethod
     def from_spcs_env(
@@ -229,45 +245,58 @@ class SnowflakeConnector(Connector):
         # `snowflake` extra is optional, and reusing kumo_snowflake's own
         # env-var names keeps this in lockstep with the identity-creation
         # path it mirrors.
-        spcs = import_provider("kumo_snowflake.spcs", "snowflake")
+        spcs = import_provider('kumo_snowflake.spcs', 'snowflake')
         ACCOUNT_ENV, HOST_ENV = spcs.ACCOUNT_ENV, spcs.HOST_ENV
         SPCS_TOKEN_PATH = spcs.SPCS_TOKEN_PATH
 
         if not os.path.exists(SPCS_TOKEN_PATH):
             raise ValueError(
-                f"no snowflake token at {SPCS_TOKEN_PATH}, so this is not a "
-                f"snowpark container services environment. This connector "
-                f"reads a token the container runtime mounts, and there is "
-                f"none to read; use `from_connection_toml` or pass an "
-                f"`identity=` directly instead")
+                f'no snowflake token at {SPCS_TOKEN_PATH}, so this is not a '
+                f'snowpark container services environment. This connector '
+                f'reads a token the container runtime mounts, and there is '
+                f'none to read; use `from_connection_toml` or pass an '
+                f'`identity=` directly instead'
+            )
         account = os.environ.get(ACCOUNT_ENV)
         if not account:
             raise ValueError(
-                f"the snowflake token at {SPCS_TOKEN_PATH} is mounted but "
-                f"{ACCOUNT_ENV} is unset, so there is no account to "
-                f"authenticate against. A container runtime sets both; one "
-                f"without the other is an environment this cannot describe")
+                f'the snowflake token at {SPCS_TOKEN_PATH} is mounted but '
+                f'{ACCOUNT_ENV} is unset, so there is no account to '
+                f'authenticate against. A container runtime sets both; one '
+                f'without the other is an environment this cannot describe'
+            )
         host = os.environ.get(HOST_ENV) or None
 
         warehouse = warehouse or os.environ.get(_SPCS_WAREHOUSE_ENV)
         database = database or os.environ.get(_SPCS_DATABASE_ENV)
         schema_name = schema_name or os.environ.get(_SPCS_SCHEMA_ENV)
-        missing = sorted(field for field, value in (
-            ('warehouse', warehouse),
-            ('database', database),
-            ('schema_name', schema_name),
-        ) if not value)
+        missing = sorted(
+            field
+            for field, value in (
+                ('warehouse', warehouse),
+                ('database', database),
+                ('schema_name', schema_name),
+            )
+            if not value
+        )
         if missing:
             raise ValueError(
-                f"the SPCS environment names no {', '.join(missing)}, and "
-                f"none was passed. A connector addresses one exact target, "
-                f"so it cannot be left to the session's own default.")
+                f'the SPCS environment names no {", ".join(missing)}, and '
+                f'none was passed. A connector addresses one exact target, '
+                f"so it cannot be left to the session's own default."
+            )
 
-        identity = SnowflakeIdentity(account=account, host=host,
-                                     token_path=SPCS_TOKEN_PATH)
+        identity = SnowflakeIdentity(
+            account=account, host=host, token_path=SPCS_TOKEN_PATH
+        )
         assert warehouse and database and schema_name
-        return cls(warehouse=warehouse, database=database,
-                   schema_name=schema_name, identity=identity, role=role)
+        return cls(
+            warehouse=warehouse,
+            database=database,
+            schema_name=schema_name,
+            identity=identity,
+            role=role,
+        )
 
 
 def _connections_toml_identity(entry: Dict[str, str]) -> SnowflakeIdentity:
@@ -291,10 +320,11 @@ def _connections_toml_identity(entry: Dict[str, str]) -> SnowflakeIdentity:
             password=entry['password'],
         )
     raise ValueError(
-        "that connection names neither a password nor a private key file. "
-        "A SnowflakeIdentity holds its credentials directly, so one of the "
-        "two has to be readable from the entry; an externalbrowser or SSO "
-        "connection cannot be turned into one.")
+        'that connection names neither a password nor a private key file. '
+        'A SnowflakeIdentity holds its credentials directly, so one of the '
+        'two has to be readable from the entry; an externalbrowser or SSO '
+        'connection cannot be turned into one.'
+    )
 
 
 def _for_model_monitor(files: List[str], directory: Path) -> List[str]:
@@ -315,7 +345,6 @@ def _for_model_monitor(files: List[str], directory: Path) -> List[str]:
         target = str(directory / Path(path).name)
         with parquet.ParquetWriter(target, schema) as writer:
             for batch in source.iter_batches():
-                writer.write_table(
-                    pa.Table.from_batches([batch]).cast(schema))
+                writer.write_table(pa.Table.from_batches([batch]).cast(schema))
         typed.append(target)
     return typed

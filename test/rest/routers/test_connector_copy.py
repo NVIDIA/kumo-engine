@@ -25,8 +25,9 @@ SOURCE_PROJECT = str(ProjectID.generate())
 TARGET_PROJECT = str(ProjectID.generate())
 
 
-def _connector(project_id: str, name: str = 'events',
-               description: str = 'raw events') -> api.ConnectorResponse:
+def _connector(
+    project_id: str, name: str = 'events', description: str = 'raw events'
+) -> api.ConnectorResponse:
     now = datetime.now(timezone.utc)
     return api.ConnectorResponse(
         id=str(ConnectorID.generate()),
@@ -35,8 +36,11 @@ def _connector(project_id: str, name: str = 'events',
         name=name,
         description=description,
         timestamps=api.ResourceTimestamps(created_at=now, updated_at=now),
-        config=api.S3ConnectorResourceConfig(target=api.S3RootedConnectorTarget(
-            bucket='kumo-events', prefix='events', region='us-west-2')),
+        config=api.S3ConnectorResourceConfig(
+            target=api.S3RootedConnectorTarget(
+                bucket='kumo-events', prefix='events', region='us-west-2'
+            )
+        ),
     )
 
 
@@ -48,7 +52,9 @@ def _driver_with_source(source: api.ConnectorResponse):
         ),
         create_project_connector=AsyncMock(
             side_effect=lambda project_id, args, principal: _connector(
-                project_id, args.name, args.description)),
+                project_id, args.name, args.description
+            )
+        ),
     )
     return driver
 
@@ -60,11 +66,16 @@ async def test_copy_reuses_source_config_identity_and_metadata() -> None:
     principal = MagicMock()
 
     copied = await ConnectorApiDriver.copy_project_connector(
-        driver, ProjectID(SOURCE_PROJECT), ConnectorID(source.id),
-        api.CopyConnectorArgs(target_project_id=TARGET_PROJECT), principal)
+        driver,
+        ProjectID(SOURCE_PROJECT),
+        ConnectorID(source.id),
+        api.CopyConnectorArgs(target_project_id=TARGET_PROJECT),
+        principal,
+    )
 
     driver._connector_service.get_for_project.assert_awaited_once_with(
-        SOURCE_PROJECT, source.id, principal)
+        SOURCE_PROJECT, source.id, principal
+    )
     target, create_args, _ = driver.create_project_connector.await_args.args
     assert target == TARGET_PROJECT
     assert create_args == api.CreateConnectorArgs(
@@ -82,10 +93,14 @@ async def test_copy_applies_name_and_description_overrides() -> None:
     driver = _driver_with_source(source)
 
     await ConnectorApiDriver.copy_project_connector(
-        driver, ProjectID(SOURCE_PROJECT), ConnectorID(source.id),
-        api.CopyConnectorArgs(target_project_id=TARGET_PROJECT,
-                              name='events_copy', description=''),
-        MagicMock())
+        driver,
+        ProjectID(SOURCE_PROJECT),
+        ConnectorID(source.id),
+        api.CopyConnectorArgs(
+            target_project_id=TARGET_PROJECT, name='events_copy', description=''
+        ),
+        MagicMock(),
+    )
 
     create_args = driver.create_project_connector.await_args.args[1]
     assert create_args.name == 'events_copy'
@@ -99,9 +114,12 @@ async def test_copy_into_the_source_project_is_rejected_before_lookup() -> None:
 
     with pytest.raises(ValueError, match='must differ'):
         await ConnectorApiDriver.copy_project_connector(
-            driver, ProjectID(SOURCE_PROJECT), ConnectorID(source.id),
+            driver,
+            ProjectID(SOURCE_PROJECT),
+            ConnectorID(source.id),
             api.CopyConnectorArgs(target_project_id=SOURCE_PROJECT),
-            MagicMock())
+            MagicMock(),
+        )
 
     driver._connector_service.get_for_project.assert_not_awaited()
     driver.create_project_connector.assert_not_awaited()
@@ -117,9 +135,12 @@ async def test_copy_rejects_a_name_already_used_in_the_target() -> None:
 
     with pytest.raises(ConnectorNameConflictError, match='already exists'):
         await ConnectorApiDriver.copy_project_connector(
-            driver, ProjectID(SOURCE_PROJECT), ConnectorID(source.id),
+            driver,
+            ProjectID(SOURCE_PROJECT),
+            ConnectorID(source.id),
             api.CopyConnectorArgs(target_project_id=TARGET_PROJECT),
-            MagicMock())
+            MagicMock(),
+        )
 
     driver._connector_service.list_for_project.assert_awaited_once()
     driver.create_project_connector.assert_not_awaited()
@@ -127,9 +148,11 @@ async def test_copy_rejects_a_name_already_used_in_the_target() -> None:
 
 def _client(copy_result) -> tuple[TestClient, MagicMock]:
     driver = MagicMock(spec=ConnectorApiDriver)
-    driver.copy_project_connector = AsyncMock(side_effect=copy_result) \
-        if isinstance(copy_result, Exception) else AsyncMock(
-            return_value=copy_result)
+    driver.copy_project_connector = (
+        AsyncMock(side_effect=copy_result)
+        if isinstance(copy_result, Exception)
+        else AsyncMock(return_value=copy_result)
+    )
     app = FastAPI()
 
     @app.middleware('http')
@@ -143,8 +166,7 @@ def _client(copy_result) -> tuple[TestClient, MagicMock]:
 
 
 def _copy_url(connector_id: str) -> str:
-    return (f'/v0/projects/{SOURCE_PROJECT}/connectors/'
-            f'{connector_id}/copy')
+    return f'/v0/projects/{SOURCE_PROJECT}/connectors/{connector_id}/copy'
 
 
 def test_copy_route_returns_created_connector() -> None:
@@ -153,34 +175,47 @@ def test_copy_route_returns_created_connector() -> None:
     connector_id = str(ConnectorID.generate())
 
     with client:
-        response = client.post(_copy_url(connector_id), json={
-            'target_project_id': TARGET_PROJECT,
-            'name': 'events',
-        })
+        response = client.post(
+            _copy_url(connector_id),
+            json={
+                'target_project_id': TARGET_PROJECT,
+                'name': 'events',
+            },
+        )
 
     assert response.status_code == HTTPStatus.OK
     assert response.json()['project_id'] == TARGET_PROJECT
     args = driver.copy_project_connector.await_args.args
     assert args[0] == SOURCE_PROJECT
     assert args[1] == connector_id
-    assert args[2] == api.CopyConnectorArgs(target_project_id=TARGET_PROJECT,
-                                            name='events')
+    assert args[2] == api.CopyConnectorArgs(
+        target_project_id=TARGET_PROJECT, name='events'
+    )
 
 
-@pytest.mark.parametrize('error, status', [
-    (ConnectorDoesNotExistError('missing'), HTTPStatus.NOT_FOUND),
-    (IdentityForbiddenError('Identity is not mapped to the project group'),
-     HTTPStatus.FORBIDDEN),
-    (ConnectorNameConflictError('events'), HTTPStatus.CONFLICT),
-    (ValueError('Target project must differ from the source project'),
-     HTTPStatus.BAD_REQUEST),
-])
+@pytest.mark.parametrize(
+    'error, status',
+    [
+        (ConnectorDoesNotExistError('missing'), HTTPStatus.NOT_FOUND),
+        (
+            IdentityForbiddenError('Identity is not mapped to the project group'),
+            HTTPStatus.FORBIDDEN,
+        ),
+        (ConnectorNameConflictError('events'), HTTPStatus.CONFLICT),
+        (
+            ValueError('Target project must differ from the source project'),
+            HTTPStatus.BAD_REQUEST,
+        ),
+    ],
+)
 def test_copy_route_maps_errors(error: Exception, status: HTTPStatus) -> None:
     client, _ = _client(error)
 
     with client:
-        response = client.post(_copy_url(str(ConnectorID.generate())),
-                               json={'target_project_id': TARGET_PROJECT})
+        response = client.post(
+            _copy_url(str(ConnectorID.generate())),
+            json={'target_project_id': TARGET_PROJECT},
+        )
 
     assert response.status_code == status
 
@@ -190,10 +225,12 @@ def test_copy_route_rejects_unknown_fields() -> None:
 
     with client:
         response = client.post(
-            _copy_url(str(ConnectorID.generate())), json={
+            _copy_url(str(ConnectorID.generate())),
+            json={
                 'target_project_id': TARGET_PROJECT,
                 'config': {},
-            })
+            },
+        )
 
     assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
     driver.copy_project_connector.assert_not_called()

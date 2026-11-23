@@ -48,7 +48,7 @@ class MyConnector(Connector):
         return True
 
     def _get_connector_type(self) -> str:
-        return "my_connector"
+        return 'my_connector'
 
     def _close(self, context):
         global num_close_calls
@@ -79,25 +79,25 @@ class MyConnector(Connector):
         if table_names is None:
             table_names = self.list_tables()
         return [
-            TableMetadataConfig(table_name=table_name, source_name=table_name,
-                                data_source=self.name)
+            TableMetadataConfig(
+                table_name=table_name, source_name=table_name, data_source=self.name
+            )
             for table_name in table_names
         ]
 
     def _get_table_stats(self, table_config, stats, data_version=None):
         pass
 
-    def _get_table_source_size(self, table_name: str,
-                               data_version: str | None = None):
+    def _get_table_source_size(self, table_name: str, data_version: str | None = None):
         pass
 
-    def _get_table_num_rows(self, table_name: str,
-                            data_version: str | None = None):
+    def _get_table_num_rows(self, table_name: str, data_version: str | None = None):
         pass
 
 
 @pytest.mark.parametrize(
-    'error_type', [SourceTableNotFoundError, SourceTableUnavailableError])
+    'error_type', [SourceTableNotFoundError, SourceTableUnavailableError]
+)
 def test_source_table_error_roundtrip(error_type):
     original = error_type('missing_table', 'warehouse')
 
@@ -113,14 +113,15 @@ def test_source_table_error_roundtrip(error_type):
 
 
 @pytest.mark.parametrize(
-    'error_type', [SourceTableNotFoundError, SourceTableUnavailableError])
+    'error_type', [SourceTableNotFoundError, SourceTableUnavailableError]
+)
 @pytest.mark.parametrize(
     ('skip_cache', 'skip_inferral'),
     [(True, False), (False, True)],
 )
-def test_ignore_errors_handles_metadata_fetch_failures(monkeypatch, error_type,
-                                                       skip_cache,
-                                                       skip_inferral):
+def test_ignore_errors_handles_metadata_fetch_failures(
+    monkeypatch, error_type, skip_cache, skip_inferral
+):
     connector = MyConnector(name='my_connector')
 
     def fail_metadata(*args, **kwargs):
@@ -128,12 +129,15 @@ def test_ignore_errors_handles_metadata_fetch_failures(monkeypatch, error_type,
 
     monkeypatch.setattr(connector, '_get_table_metadata', fail_metadata)
 
-    assert connector.get_table_metadata(
-        ['missing_table'],
-        skip_cache=skip_cache,
-        skip_inferral=skip_inferral,
-        ignore_errors=True,
-    ) == []
+    assert (
+        connector.get_table_metadata(
+            ['missing_table'],
+            skip_cache=skip_cache,
+            skip_inferral=skip_inferral,
+            ignore_errors=True,
+        )
+        == []
+    )
 
 
 def test_ignore_errors_does_not_hide_unrelated_metadata_failure(monkeypatch):
@@ -154,21 +158,26 @@ def test_ignore_errors_does_not_hide_unrelated_metadata_failure(monkeypatch):
 
 def test_default_metadata_fetch_only_ignores_expected_table_errors(monkeypatch):
     connector = MyConnector(name='my_connector')
-    errors = iter([
-        SourceTableNotFoundError('missing_table', connector.name),
-        RuntimeError('metadata service failed'),
-    ])
+    errors = iter(
+        [
+            SourceTableNotFoundError('missing_table', connector.name),
+            RuntimeError('metadata service failed'),
+        ]
+    )
 
     def fail_metadata(*args, **kwargs):
         raise next(errors)
 
     monkeypatch.setattr(connector, '_get_table_cols_metadata', fail_metadata)
 
-    assert Connector._get_table_metadata(
-        connector,
-        ['missing_table'],
-        ignore_errors=True,
-    ) == []
+    assert (
+        Connector._get_table_metadata(
+            connector,
+            ['missing_table'],
+            ignore_errors=True,
+        )
+        == []
+    )
     with pytest.raises(RuntimeError, match='metadata service failed'):
         Connector._get_table_metadata(
             connector,
@@ -212,13 +221,15 @@ def test_connector_mock():
 
 
 def test_cast_df_to_dtypes_temporal_cast_is_best_effort():
-    input_df = pd.DataFrame({
-        'string_date': [
-            '2000-09-01 00:00:00',
-            pd.NA,
-            'not-a-date',
-        ],
-    })
+    input_df = pd.DataFrame(
+        {
+            'string_date': [
+                '2000-09-01 00:00:00',
+                pd.NA,
+                'not-a-date',
+            ],
+        }
+    )
 
     got_df = cast_df_to_dtypes(
         input_df,
@@ -228,13 +239,15 @@ def test_cast_df_to_dtypes_temporal_cast_is_best_effort():
         error_threshold=0.0,
     )
 
-    expect_df = pd.DataFrame({
-        'string_date': [
-            datetime.datetime(2000, 9, 1),
-            pd.NaT,
-            pd.NaT,
-        ],
-    })
+    expect_df = pd.DataFrame(
+        {
+            'string_date': [
+                datetime.datetime(2000, 9, 1),
+                pd.NaT,
+                pd.NaT,
+            ],
+        }
+    )
     assert_frame_equal(got_df, expect_df)
 
 
@@ -256,12 +269,14 @@ class _RaceConnector(MyConnector):
     r"""Like MyConnector but ``_open`` returns a weakref-able object so
     ``weakref.finalize(context, ...)`` is actually invoked.
     """
+
     def _open(self, credentials):
         return _WeakrefableSession()
 
 
 class _RetryConnector(MyConnector):
     """Stateful connector for open-validation and cleanup fault injection."""
+
     def __init__(self, *, validation_errors=None, close_errors=None):
         super().__init__(name='retry_test')
         self.open_calls = 0
@@ -396,7 +411,8 @@ def test_connector_open_close_concurrent_no_attribute_error():
     t_close.join(timeout=30)
 
     assert not t_open.is_alive() and not t_close.is_alive(), (
-        'open/close threads deadlocked')
+        'open/close threads deadlocked'
+    )
     assert not errors, f'Concurrent open/close raised: {errors}'
 
 
@@ -426,6 +442,7 @@ def test_connector_del_on_partially_initialized_object_does_not_raise():
     fires at GC and calls ``close()``, which must not raise — pre-PR
     ``close()`` short-circuited on ``is_connected``; we preserve that.
     """
+
     class _BrokenInit(MyConnector):
         def __init__(self, name: str):
             # Deliberately skip super().__init__ so `_open_lock` is
@@ -451,9 +468,13 @@ def test_sql_connector_is_picklable():
     over a multiprocessing queue — e.g. during prediction-table
     generation (see kumo-ai/kumo#28760).
     """
-    connector = SnowflakeConnector('snowflake', account='example-account',
-                                   warehouse='WH_XS', database='KUMO',
-                                   schema_name='FINANCIAL')
+    connector = SnowflakeConnector(
+        'snowflake',
+        account='example-account',
+        warehouse='WH_XS',
+        database='KUMO',
+        schema_name='FINANCIAL',
+    )
     revived = pickle.loads(pickle.dumps(connector))
     # Revived instance has a fresh, usable RLock — i.e. ``__setstate__``
     # actually re-created it via ``super().__setstate__``.

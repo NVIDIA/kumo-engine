@@ -20,7 +20,7 @@ from databricks.sdk.core import StreamingResponse
 from .common import gen_data
 
 BUFFER_SIZE = 16 * 1024
-prefix = "/Volumes/ucv_test/stress_test/5"
+prefix = '/Volumes/ucv_test/stress_test/5'
 
 # N.B. initially None, lazily initialized by each process
 _client: Optional[WorkspaceClient] = None
@@ -44,8 +44,9 @@ def create_file(n_bytes: int) -> None:
     client().files.upload(path, io.BytesIO(data))
     ret = client().files.get_metadata(path)
     if ret.content_length != n_bytes:
-        message = (f"upload fault {n_bytes} on {os.getpid()}, "
-                   f"observed {ret.content_length}")
+        message = (
+            f'upload fault {n_bytes} on {os.getpid()}, observed {ret.content_length}'
+        )
         print(message)
 
 
@@ -53,31 +54,29 @@ def validate_existing(n_bytes: int):
     path = osp.join(prefix, str(n_bytes))
     ret = client().files.get_metadata(path)
     if ret.content_length != n_bytes:
-        print(f"cleaning fault {n_bytes}, observed {ret.content_length}")
+        print(f'cleaning fault {n_bytes}, observed {ret.content_length}')
         client().files.delete(path)
 
 
 def get_existing(pool: Pool, min_size: int, max_size: int) -> list[int]:
     def ls(path) -> list[str]:
         return [
-            entry.path or ""
-            for entry in client().files.list_directory_contents(path)
+            entry.path or '' for entry in client().files.list_directory_contents(path)
         ]
 
     existing = [int(osp.basename(p)) for p in ls(prefix)]
-    print("found", len(existing), "existing files, validating")
+    print('found', len(existing), 'existing files, validating')
     pool.map(validate_existing, existing)
     existing = [int(osp.basename(p)) for p in ls(prefix)]
-    print("found", len(existing), "valid files")
+    print('found', len(existing), 'valid files')
     return [x for x in existing if min_size <= x <= max_size]
 
 
-def generate_files(pool: Pool, n_files: int, min_size: int,
-                   max_size: int) -> list[int]:
-    print(f"file sizes [{min_size}, {max_size}]")
+def generate_files(pool: Pool, n_files: int, min_size: int, max_size: int) -> list[int]:
+    print(f'file sizes [{min_size}, {max_size}]')
     assert max_size < 1024 * 1024 * 1024
 
-    print("finding existing files")
+    print('finding existing files')
     valid_existing = get_existing(pool, min_size, max_size)
 
     if len(valid_existing) == n_files:
@@ -95,11 +94,11 @@ def generate_files(pool: Pool, n_files: int, min_size: int,
                 new_sizes.add(val)
         return list(new_sizes)
 
-    print("generating", n_files - len(valid_existing), "new sizes")
+    print('generating', n_files - len(valid_existing), 'new sizes')
     new_sizes = make_new_sizes(valid_existing, n_files)
-    print("generating new files")
+    print('generating new files')
     pool.map(create_file, new_sizes)
-    print("done generating new files")
+    print('done generating new files')
 
     return valid_existing + new_sizes
 
@@ -108,10 +107,12 @@ def test_download(path: str, n_bytes: int, with_gen_data: bool):
     with tempfile.NamedTemporaryFile() as tf:
         res = client().files.download(path)
         if res.contents is None:
-            raise FileNotFoundError(f"no contents: {path}")
+            raise FileNotFoundError(f'no contents: {path}')
         if res.content_length != n_bytes:
-            print(f"storage fault {n_bytes} on {os.getpid()} "
-                  f"observed {res.content_length}")
+            print(
+                f'storage fault {n_bytes} on {os.getpid()} '
+                f'observed {res.content_length}'
+            )
             return
 
         assert isinstance(res.contents, StreamingResponse)
@@ -123,11 +124,10 @@ def test_download(path: str, n_bytes: int, with_gen_data: bool):
         with open(tf.name, 'rb') as f:
             actual = f.read()
         if len(actual) != n_bytes:
-            print(f"download fault {n_bytes} on {os.getpid()}, "
-                  f"observed {len(actual)}")
+            print(f'download fault {n_bytes} on {os.getpid()}, observed {len(actual)}')
             return
         if with_gen_data and actual != gen_data(n_bytes):
-            print(f"download corruption {n_bytes} on {os.getpid()}")
+            print(f'download corruption {n_bytes} on {os.getpid()}')
             return
 
 
@@ -154,10 +154,11 @@ def test_download_tuple(f: tuple[str, int]):
 def main():
     t1 = time.time()
     pool = Pool(processes=mp.cpu_count())  # 32 in kumo testing
-    sizes = generate_files(pool, n_files=1000, min_size=1024,
-                           max_size=1024 * 1024)  # 1kb to 1mb
+    sizes = generate_files(
+        pool, n_files=1000, min_size=1024, max_size=1024 * 1024
+    )  # 1kb to 1mb
     t2 = time.time()
-    print("generating files took", t2 - t1)
+    print('generating files took', t2 - t1)
 
     # files = find_files_recursive(
     #     "/Volumes/kumo-catalog/hm/caching/test_files/")
@@ -165,7 +166,7 @@ def main():
 
     n_iterations = 0
     for i in range(n_iterations):
-        print("iteration", i + 1, "/", n_iterations)
+        print('iteration', i + 1, '/', n_iterations)
         pool.map(test_download_by_size, sizes)
 
         # pool.map(test_download_tuple, files)
@@ -173,5 +174,5 @@ def main():
     pool.terminate()
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

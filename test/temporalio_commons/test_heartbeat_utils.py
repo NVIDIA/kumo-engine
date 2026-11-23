@@ -42,8 +42,8 @@ def sync_activity(input: TestInput) -> str:
     except CancelledError:
         elapsed = now_utc() - start_ts
         print(f'sync_activity is canceled after {elapsed} sec!')
-        return "canceled"
-    return "succeeded"
+        return 'canceled'
+    return 'succeeded'
 
 
 @workflow.defn
@@ -61,8 +61,7 @@ class TestHeartbeatWorkflow:
             schedule_to_close_timeout=timedelta(hours=1),
             heartbeat_timeout=input.heartbeat_timeout,
             retry_policy=NO_RETRY_POLICY,
-            cancellation_type=ActivityCancellationType.
-            WAIT_CANCELLATION_COMPLETED,
+            cancellation_type=ActivityCancellationType.WAIT_CANCELLATION_COMPLETED,
         )
 
         if input.cancel_activity_after is None:
@@ -70,21 +69,20 @@ class TestHeartbeatWorkflow:
 
         activity_result, _ = await asyncio.gather(
             self.activity_task,
-            self.cancel_activity(input.cancel_activity_after.total_seconds()))
+            self.cancel_activity(input.cancel_activity_after.total_seconds()),
+        )
         return activity_result
 
 
 # Setup worker and test client.
 @pytest_asyncio.fixture
-async def client(
-        temporal_config: DeployEnvConfig) -> AsyncGenerator[Client, None]:
-    worker_options = WorkerOptions(task_queue=_TEST_TASK_QUEUE,
-                                   max_worker_processes=1)
-    worker_env = WorkerEnv('test-heartbeat-worker', worker_options,
-                           temporal_config)
+async def client(temporal_config: DeployEnvConfig) -> AsyncGenerator[Client, None]:
+    worker_options = WorkerOptions(task_queue=_TEST_TASK_QUEUE, max_worker_processes=1)
+    worker_env = WorkerEnv('test-heartbeat-worker', worker_options, temporal_config)
 
-    worker = await worker_env.build_worker(activities=[sync_activity],
-                                           workflows=[TestHeartbeatWorkflow])
+    worker = await worker_env.build_worker(
+        activities=[sync_activity], workflows=[TestHeartbeatWorkflow]
+    )
     async with worker:
         client = await worker_env.client()
         # We execute a dummy workflow/activity to make sure child process gets
@@ -93,9 +91,11 @@ async def client(
         # heartbeat timeout, leading to unexpected workflow/activity failure.
         await client.execute_workflow(
             TestHeartbeatWorkflow.run,
-            TestInput(activity_duration=timedelta(seconds=0.0),
-                      cancel_activity_after=None,
-                      heartbeat_timeout=timedelta(seconds=30)),
+            TestInput(
+                activity_duration=timedelta(seconds=0.0),
+                cancel_activity_after=None,
+                heartbeat_timeout=timedelta(seconds=30),
+            ),
             id='test_heartbeat_wf_init',
             task_queue=_TEST_TASK_QUEUE,
             execution_timeout=timedelta(hours=1),
@@ -112,8 +112,10 @@ async def test_activity_cancellation(client: Client):
     # in process pool)
     wf_result = await client.execute_workflow(
         TestHeartbeatWorkflow.run,
-        TestInput(activity_duration=timedelta(seconds=60),
-                  cancel_activity_after=timedelta(seconds=0.1)),
+        TestInput(
+            activity_duration=timedelta(seconds=60),
+            cancel_activity_after=timedelta(seconds=0.1),
+        ),
         id='test_heartbeat_wf_id1',
         task_queue=_TEST_TASK_QUEUE,
         execution_timeout=timedelta(hours=1),
@@ -123,8 +125,10 @@ async def test_activity_cancellation(client: Client):
     # Test case 2: cancel activity while it's running in process pool.
     wf_result = await client.execute_workflow(
         TestHeartbeatWorkflow.run,
-        TestInput(activity_duration=timedelta(seconds=60),
-                  cancel_activity_after=timedelta(seconds=5.0)),
+        TestInput(
+            activity_duration=timedelta(seconds=60),
+            cancel_activity_after=timedelta(seconds=5.0),
+        ),
         id='test_heartbeat_wf_id2',
         task_queue=_TEST_TASK_QUEUE,
         execution_timeout=timedelta(hours=1),
@@ -142,25 +146,30 @@ async def test_activity_cancellation(client: Client):
 async def test_cancellation_multiple_workflows(client: Client):
     wf_handles: List[WorkflowHandle] = []
     for i in range(0, 3):
-        wf_handles.append(await client.start_workflow(
-            TestHeartbeatWorkflow.run,
-            TestInput(
-                # Pretend this is a long running activity that takes 10min
-                activity_duration=timedelta(minutes=10),
-                cancel_activity_after=None,
-                heartbeat_timeout=timedelta(seconds=30.0)),
-            id=f'test_heartbeat_wf_to_cancel-{i}',
-            task_queue=_TEST_TASK_QUEUE,
-            execution_timeout=timedelta(hours=1),
-        ))
+        wf_handles.append(
+            await client.start_workflow(
+                TestHeartbeatWorkflow.run,
+                TestInput(
+                    # Pretend this is a long running activity that takes 10min
+                    activity_duration=timedelta(minutes=10),
+                    cancel_activity_after=None,
+                    heartbeat_timeout=timedelta(seconds=30.0),
+                ),
+                id=f'test_heartbeat_wf_to_cancel-{i}',
+                task_queue=_TEST_TASK_QUEUE,
+                execution_timeout=timedelta(hours=1),
+            )
+        )
     await asyncio.sleep(1.0)
     for wf_handle in wf_handles:
         await wf_handle.cancel()
     wf_result = await client.execute_workflow(
         TestHeartbeatWorkflow.run,
-        TestInput(activity_duration=timedelta(seconds=2.0),
-                  cancel_activity_after=None,
-                  heartbeat_timeout=timedelta(seconds=30.0)),
+        TestInput(
+            activity_duration=timedelta(seconds=2.0),
+            cancel_activity_after=None,
+            heartbeat_timeout=timedelta(seconds=30.0),
+        ),
         id='test_heartbeat_wf_success',
         task_queue=_TEST_TASK_QUEUE,
         execution_timeout=timedelta(hours=1),

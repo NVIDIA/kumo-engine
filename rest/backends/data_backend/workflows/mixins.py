@@ -84,44 +84,52 @@ class TableChildWorkflowMixin:
                     # Send out historical status updates to the new watcher.
                     # py3.14 forbids passing bare coroutines to asyncio.wait;
                     # wrap each in a task.
-                    await asyncio.wait([
-                        asyncio.ensure_future(signal_workflow_if_running(
-                            wf_id,
-                            run_id,
-                            RECEIVE_REFRESH_STATUS_UPDATE_SIGNAL,
-                            args=[self._wf_id, status_update],
-                        )) for status_update in self._status_updates
-                    ])
+                    await asyncio.wait(
+                        [
+                            asyncio.ensure_future(
+                                signal_workflow_if_running(
+                                    wf_id,
+                                    run_id,
+                                    RECEIVE_REFRESH_STATUS_UPDATE_SIGNAL,
+                                    args=[self._wf_id, status_update],
+                                )
+                            )
+                            for status_update in self._status_updates
+                        ]
+                    )
             else:
-                log.warning('%s is already watching %s', watcher_id,
-                            self._wf_id)
+                log.warning('%s is already watching %s', watcher_id, self._wf_id)
 
     async def notify_watcher(self, status_update: TableDataTaskResult):
         async with self._watcher_lock:
-            log.info('Notify parents about %s: %s', status_update,
-                     self._watcher_wfs)
+            log.info('Notify parents about %s: %s', status_update, self._watcher_wfs)
             self._status_updates.append(status_update)
             if self._watcher_wfs:
                 # py3.14 forbids passing bare coroutines to asyncio.wait;
                 # wrap each in a task.
-                await asyncio.wait([
-                    asyncio.ensure_future(signal_workflow_if_running(
-                        watcher.wf_id,
-                        watcher.run_id,
-                        signal_name=RECEIVE_REFRESH_STATUS_UPDATE_SIGNAL,
-                        args=[self._wf_id, status_update],
-                    )) for watcher in self._watcher_wfs
-                ])
+                await asyncio.wait(
+                    [
+                        asyncio.ensure_future(
+                            signal_workflow_if_running(
+                                watcher.wf_id,
+                                watcher.run_id,
+                                signal_name=RECEIVE_REFRESH_STATUS_UPDATE_SIGNAL,
+                                args=[self._wf_id, status_update],
+                            )
+                        )
+                        for watcher in self._watcher_wfs
+                    ]
+                )
 
 
 class TableParentWorkflowMixin:
     def __init__(self) -> None:
         super(TableParentWorkflowMixin, self).__init__()
         self._child_wf_ids: Dict[TableID, WorkflowID] = {}
-        self._child_status_updates: Dict[
-            WorkflowID, List[TableDataTaskResult]] = defaultdict(list)
-        self._child_wf_tasks: Dict[TableID,
-                                   asyncio.Task[TableDataTaskResult]] = {}
+        self._child_status_updates: Dict[WorkflowID, List[TableDataTaskResult]] = (
+            defaultdict(list)
+        )
+        self._child_wf_tasks: Dict[TableID, asyncio.Task[TableDataTaskResult]] = {}
 
     async def _custom_process_status_update(
         self,
@@ -134,11 +142,11 @@ class TableParentWorkflowMixin:
         """
 
     @workflow.signal(name=RECEIVE_REFRESH_STATUS_UPDATE_SIGNAL)
-    async def receive_refresh_status_update(self, child_wf_id: WorkflowID,
-                                            status_update: TableDataTaskResult):
+    async def receive_refresh_status_update(
+        self, child_wf_id: WorkflowID, status_update: TableDataTaskResult
+    ):
         child_wf_id = _child_status_key(child_wf_id)
-        log.info('Parent wf received update for %s: %s', child_wf_id,
-                 status_update)
+        log.info('Parent wf received update for %s: %s', child_wf_id, status_update)
         self._child_status_updates[child_wf_id].append(status_update)
         await self._custom_process_status_update(child_wf_id, status_update)
 
@@ -151,11 +159,8 @@ class TableParentWorkflowMixin:
         child_wf_id: WorkflowID,
         args: Sequence[Any] = [],
         execution_timeout=timedelta(hours=DATA_BACKEND_REFRESH_TIMEOUT_HOURS),
-        cancellation_type:
-        ChildWorkflowCancellationType = ChildWorkflowCancellationType.
-        TRY_CANCEL,
-        parent_close_policy: ParentClosePolicy = ParentClosePolicy.
-        REQUEST_CANCEL,
+        cancellation_type: ChildWorkflowCancellationType = ChildWorkflowCancellationType.TRY_CANCEL,
+        parent_close_policy: ParentClosePolicy = ParentClosePolicy.REQUEST_CANCEL,
     ) -> asyncio.Task[TableDataTaskResult]:
         """
         Start a child table or view refresh workflow if it's not running,
@@ -170,7 +175,8 @@ class TableParentWorkflowMixin:
             parent_close_policy = ParentClosePolicy.REQUEST_CANCEL
 
         assert child_id not in self._child_wf_ids, (
-            f'start_child_refresh called twice for {child_id}')
+            f'start_child_refresh called twice for {child_id}'
+        )
         self._child_wf_ids[child_id] = _child_status_key(child_wf_id)
 
         child_wf_task = await start_child_data_wf(
@@ -192,22 +198,29 @@ class TableParentWorkflowMixin:
         return child_wf_task
 
     async def wait_completion_at_stage(
-            self, stage: TableRefreshStage) -> ValidationResponse:
-        log.info(f"Waiting for the following table refresh workflows to "
-                 f"complete {stage}:\n{self._child_wf_ids.values()}")
-        table_results: List[TableDataTaskResult] = await asyncio.gather(*[
-            self._wait_for_single_table_refresh_stage(table_id, stage)
-            for table_id in self._child_wf_ids
-        ])
+        self, stage: TableRefreshStage
+    ) -> ValidationResponse:
+        log.info(
+            f'Waiting for the following table refresh workflows to '
+            f'complete {stage}:\n{self._child_wf_ids.values()}'
+        )
+        table_results: List[TableDataTaskResult] = await asyncio.gather(
+            *[
+                self._wait_for_single_table_refresh_stage(table_id, stage)
+                for table_id in self._child_wf_ids
+            ]
+        )
 
         validation = ValidationResponse()
         critical_errors = []
         for _, task_result in zip(self._child_wf_ids.keys(), table_results):
             validation.merge(task_result.validation)
             if not task_result.ok:
-                error_message = (task_result.error
-                                 or task_result.validation.error_message()
-                                 or 'Unknown Error.')
+                error_message = (
+                    task_result.error
+                    or task_result.validation.error_message()
+                    or 'Unknown Error.'
+                )
                 critical_errors.append(error_message)
 
         if critical_errors:
@@ -216,21 +229,23 @@ class TableParentWorkflowMixin:
             if len(critical_errors) == 1:
                 message = critical_errors[0]
             else:
-                items = '\n'.join('  - ' + e.replace('\n', '\n    ')
-                                  for e in critical_errors)
-                message = (f"Kumo encountered errors in {len(critical_errors)} "
-                           f"tables:\n{items}\n"
-                           f"Please check your data sources and try again, "
-                           f"or reach out to Kumo support for assistance.")
+                items = '\n'.join(
+                    '  - ' + e.replace('\n', '\n    ') for e in critical_errors
+                )
+                message = (
+                    f'Kumo encountered errors in {len(critical_errors)} '
+                    f'tables:\n{items}\n'
+                    f'Please check your data sources and try again, '
+                    f'or reach out to Kumo support for assistance.'
+                )
             raise DataRefreshError(message=message)
 
-        log.info('All child refresh workflows have completed %s: %s', stage,
-                 validation)
+        log.info('All child refresh workflows have completed %s: %s', stage, validation)
         return validation
 
     async def _wait_for_single_table_refresh_stage(
-            self, child_id: TableID,
-            stage: TableRefreshStage) -> TableDataTaskResult:
+        self, child_id: TableID, stage: TableRefreshStage
+    ) -> TableDataTaskResult:
         assert child_id in self._child_wf_tasks
 
         # Check if the we have received status update from child about the
@@ -239,24 +254,19 @@ class TableParentWorkflowMixin:
             child_wf_id = self._child_wf_ids[child_id]
             status_updates = self._child_status_updates[child_wf_id]
             for status_update in status_updates:
-                if (status_update.stage == stage
-                        and status_update.status.completed):
+                if status_update.stage == stage and status_update.status.completed:
                     return status_update
             return None
 
         # DIAGNOSTIC INSTRUMENTATION (PR #28405 hang investigation).
         child_wf_id = self._child_wf_ids[child_id]
         log.info(
-            "WAIT_BEGIN child_id=%s wf_id=%s stage=%s task_done=%s "
-            "known_stages=%s",
+            'WAIT_BEGIN child_id=%s wf_id=%s stage=%s task_done=%s known_stages=%s',
             child_id,
             child_wf_id,
             stage,
             self._child_wf_tasks[child_id].done(),
-            [
-                s.stage.value
-                for s in self._child_status_updates.get(child_wf_id, [])
-            ],
+            [s.stage.value for s in self._child_status_updates.get(child_wf_id, [])],
         )
 
         # Wait for either completion of the specific stage, or completion of
@@ -264,16 +274,18 @@ class TableParentWorkflowMixin:
         # py3.14 forbids passing bare coroutines to asyncio.wait; wrap the
         # wait_condition coroutine in a task (the child task element is
         # already a Task).
-        await asyncio.wait([
-            self._child_wf_tasks[child_id],
-            asyncio.ensure_future(
-                workflow.wait_condition(
-                    lambda: _table_stage_result() is not None)),
-        ], return_when=asyncio.FIRST_COMPLETED)
+        await asyncio.wait(
+            [
+                self._child_wf_tasks[child_id],
+                asyncio.ensure_future(
+                    workflow.wait_condition(lambda: _table_stage_result() is not None)
+                ),
+            ],
+            return_when=asyncio.FIRST_COMPLETED,
+        )
 
         log.info(
-            "WAIT_END child_id=%s wf_id=%s stage=%s task_done=%s "
-            "stage_result_known=%s",
+            'WAIT_END child_id=%s wf_id=%s stage=%s task_done=%s stage_result_known=%s',
             child_id,
             child_wf_id,
             stage,
@@ -286,12 +298,10 @@ class TableParentWorkflowMixin:
 
 def _child_status_key(wf_id: str) -> str:
     """The child's id as started (bounded), without the deploy suffix."""
-    id_suffix = workflow.memo_value(ID_SUFFIX_MEMO_FIELD,
-                                    type_hint=bytes).decode()
-    max_length = workflow.memo_value(ID_MAX_LENGTH_MEMO_FIELD, None,
-                                     type_hint=bytes)
+    id_suffix = workflow.memo_value(ID_SUFFIX_MEMO_FIELD, type_hint=bytes).decode()
+    max_length = workflow.memo_value(ID_MAX_LENGTH_MEMO_FIELD, None, type_hint=bytes)
     if wf_id.endswith(id_suffix):
-        wf_id = wf_id[:-len(id_suffix)]
+        wf_id = wf_id[: -len(id_suffix)]
     if max_length is None:
         return wf_id
     return bounded_workflow_id(wf_id, id_suffix, int(max_length.decode()))

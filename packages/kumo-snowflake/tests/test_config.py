@@ -18,8 +18,7 @@ def test_connection_toml_entry_uses_snowflake_config_manager(monkeypatch):
         },
         read_config=lambda: None,
     )
-    monkeypatch.setattr(
-        'snowflake.connector.config_manager.CONFIG_MANAGER', manager)
+    monkeypatch.setattr('snowflake.connector.config_manager.CONFIG_MANAGER', manager)
 
     assert connection_toml_entry() == {
         'account': 'xy12345',
@@ -37,11 +36,10 @@ def test_connection_toml_entry_reports_available_names(monkeypatch):
         },
         read_config=lambda: None,
     )
-    monkeypatch.setattr(
-        'snowflake.connector.config_manager.CONFIG_MANAGER', manager)
+    monkeypatch.setattr('snowflake.connector.config_manager.CONFIG_MANAGER', manager)
 
     with pytest.raises(
-            ValueError,
-            match=("has no connection 'missing'. It defines: "
-                   "'development', 'production'")):
+        ValueError,
+        match=("has no connection 'missing'. It defines: 'development', 'production'"),
+    ):
         connection_toml_entry('missing')

@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 from typing import Any, Optional, Union
 
-import kumo_s3
 from kumo_core.sources.errors import ReconnectRequiredError
 from kumo_core.sources.object_store_access import ObjectStoreAccess
 from kumo_core.sources.object_store_backend import ObjectStoreSourceBackend
@@ -13,7 +12,6 @@ from kumo_core.sources.object_store_sessions import (
 )
 from kumo_core.sources.principals import IdentityRef, Principal
 from kumo_core.sources.types import ReadMode
-from kumo_s3.session import anonymous_filesystem, arrow_connection_options
 from kumoapi.data_source import (
     DataSourceType,
     S3AccessKeyAuthentication,
@@ -34,6 +32,9 @@ from kumoapi.s3 import (
 from kumoapi.source_table import S3RelativeSource, S3SourceTable, S3URISource
 from pyarrow.fs import S3FileSystem
 from pydantic import SecretStr
+
+import kumo_s3
+from kumo_s3.session import anonymous_filesystem, arrow_connection_options
 
 #: What an S3 identity resolves to: a ready filesystem, or a
 #: ``boto3.session.Session`` whose resolved credentials are read off it.
@@ -70,44 +71,52 @@ class S3Sessions(ObjectStoreSessions):
     )
 
     def _resolved_session(
-            self, connector: Any, bucket: str
+        self, connector: Any, bucket: str
     ) -> tuple[S3Session, bool, Optional[S3ConnectionConfig]]:
         principal = self._principal(connector)
         with kumo_s3.translated(f'Signing for {bucket}', table=bucket):
-            session = (_session_for(principal)
-                       if principal is not None else kumo_s3.ambient_session())
-        connection = (principal.config.connection if principal is not None
-                      and isinstance(principal.config, S3IdentityConfig) else
-                      None)
-        return session, principal is None or _is_ambient(
-            principal.config), connection
+            session = (
+                _session_for(principal)
+                if principal is not None
+                else kumo_s3.ambient_session()
+            )
+        connection = (
+            principal.config.connection
+            if principal is not None and isinstance(principal.config, S3IdentityConfig)
+            else None
+        )
+        return session, principal is None or _is_ambient(principal.config), connection
 
-    def _source_access(self, connector: Any, bucket: str,
-                       region: Optional[str]) -> ObjectStoreAccess:
-        session, allow_anonymous, connection = self._resolved_session(
-            connector, bucket)
+    def _source_access(
+        self, connector: Any, bucket: str, region: Optional[str]
+    ) -> ObjectStoreAccess:
+        session, allow_anonymous, connection = self._resolved_session(connector, bucket)
         if isinstance(session, S3FileSystem):
             return ObjectStoreAccess(session)
         _require_credentials(session)
         with kumo_s3.translated(f'Signing for {bucket}', table=bucket):
             return kumo_s3.source_access(
-                bucket, session=session,
-                default_region=(connection.region or region)
-                if connection else region, allow_anonymous=allow_anonymous,
+                bucket,
+                session=session,
+                default_region=(connection.region or region) if connection else region,
+                allow_anonymous=allow_anonymous,
                 endpoint_url=connection.endpoint_url if connection else None,
-                options=arrow_connection_options(connection.endpoint_url,
-                                                 connection.addressing_style)
-                if connection else None)
+                options=arrow_connection_options(
+                    connection.endpoint_url, connection.addressing_style
+                )
+                if connection
+                else None,
+            )
 
-    def _filesystem(self, connector: Any, bucket: str,
-                    region: Optional[str]) -> S3FileSystem:
+    def _filesystem(
+        self, connector: Any, bucket: str, region: Optional[str]
+    ) -> S3FileSystem:
         r"""A ready filesystem is taken as it is: it may address a service
         that is not AWS at all, and probing its bucket name against AWS would
         answer for somebody else's bucket.
         """
 
-        session, allow_anonymous, connection = self._resolved_session(
-            connector, bucket)
+        session, allow_anonymous, connection = self._resolved_session(connector, bucket)
         if isinstance(session, S3FileSystem):
             return session
         with kumo_s3.translated(f'Signing for {bucket}', table=bucket):
@@ -115,13 +124,16 @@ class S3Sessions(ObjectStoreSessions):
             # Resolve through the package so applications/tests replacing its
             # filesystem factory affect both source and sink sessions.
             resolved = kumo_s3.filesystem(
-                bucket, session=session,
-                default_region=(connection.region or region)
-                if connection else region,
+                bucket,
+                session=session,
+                default_region=(connection.region or region) if connection else region,
                 endpoint_url=connection.endpoint_url if connection else None,
-                options=arrow_connection_options(connection.endpoint_url,
-                                                 connection.addressing_style)
-                if connection else None)
+                options=arrow_connection_options(
+                    connection.endpoint_url, connection.addressing_style
+                )
+                if connection
+                else None,
+            )
         if resolved is not None:
             return resolved
         if not allow_anonymous:
@@ -130,21 +142,26 @@ class S3Sessions(ObjectStoreSessions):
             # sign as whatever ambient role this host carries, and a read that
             # succeeded would have read as the wrong principal.
             raise ReconnectRequiredError(
-                f"The selected identity resolved no usable AWS "
-                f"credentials, so {bucket} cannot be signed for. Re-create it "
+                f'The selected identity resolved no usable AWS '
+                f'credentials, so {bucket} cannot be signed for. Re-create it '
                 f"with current credentials, or leave the connector's identity "
-                f"unset to sign with the ambient chain.", table=bucket)
+                f'unset to sign with the ambient chain.',
+                table=bucket,
+            )
         # No credential resolved: pyarrow's own chain, which is what serves a
         # public bucket, and what the platform falls back to for one. An
         # ambient identity reaches here too -- it is the unset case named out
         # loud, and resolves the same way.
         if connection is not None:
             return anonymous_filesystem(
-                bucket, region=connection.region or region
-                or session.region_name,
-                options=arrow_connection_options(connection.endpoint_url,
-                                                 connection.addressing_style))
+                bucket,
+                region=connection.region or region or session.region_name,
+                options=arrow_connection_options(
+                    connection.endpoint_url, connection.addressing_style
+                ),
+            )
         from pyarrow.fs import FileSystem
+
         filesystem, _ = FileSystem.from_uri(f's3://{bucket}')
         return filesystem
 
@@ -193,8 +210,10 @@ class S3SourceBackend(S3Sessions, ObjectStoreSourceBackend):
         self.mode = mode
 
     def __repr__(self) -> str:
-        return (f'{type(self).__name__}(identity={self._identity!r}, '
-                f'storage_namespace={self.storage_namespace!r})')
+        return (
+            f'{type(self).__name__}(identity={self._identity!r}, '
+            f'storage_namespace={self.storage_namespace!r})'
+        )
 
 
 def _session_for(principal: Principal) -> S3Session:
@@ -209,29 +228,35 @@ def _session_for(principal: Principal) -> S3Session:
     config = principal.config
     if not isinstance(config, S3IdentityConfig):
         raise ValueError(
-            f"Identity {principal.name!r} is a {config.type.value} "
-            f"identity, so it cannot sign for S3.")
+            f'Identity {principal.name!r} is a {config.type.value} '
+            f'identity, so it cannot sign for S3.'
+        )
     authentication = config.authentication
     credentials = principal.credentials
 
     if isinstance(authentication, S3AccessKeyAuthentication):
         if not isinstance(credentials, S3AccessKeyCredentials):
             raise ValueError(
-                f"Identity {principal.name!r} authenticates with an access "
-                f"key but holds {type(credentials).__name__} credentials.")
+                f'Identity {principal.name!r} authenticates with an access '
+                f'key but holds {type(credentials).__name__} credentials.'
+            )
         import boto3
+
         return boto3.Session(
             aws_access_key_id=credentials.access_key_id.get_secret_value(),
-            aws_secret_access_key=(
-                credentials.secret_access_key.get_secret_value()),
+            aws_secret_access_key=(credentials.secret_access_key.get_secret_value()),
             aws_session_token=_optional(credentials.session_token),
             region_name=config.connection.region if config.connection else None,
         )
 
     if isinstance(authentication, S3AssumeRoleAuthentication):
         import boto3
-        external_id = (_optional(credentials.external_id) if isinstance(
-            credentials, S3AssumeRoleCredentials) else None)
+
+        external_id = (
+            _optional(credentials.external_id)
+            if isinstance(credentials, S3AssumeRoleCredentials)
+            else None
+        )
         arguments = {
             'RoleArn': authentication.role_arn,
             'RoleSessionName': 'kumo-local-backend',
@@ -249,6 +274,7 @@ def _session_for(principal: Principal) -> S3Session:
 
     if config.connection is not None and config.connection.region is not None:
         import boto3
+
         return boto3.Session(region_name=config.connection.region)
     return kumo_s3.ambient_session()
 
@@ -262,7 +288,8 @@ def _is_ambient(config: Any) -> bool:
     to exactly what an unset identity does.
     """
     return isinstance(config, S3IdentityConfig) and isinstance(
-        config.authentication, S3AmbientAuthentication)
+        config.authentication, S3AmbientAuthentication
+    )
 
 
 def _require_credentials(session: S3Session) -> None:
@@ -271,8 +298,9 @@ def _require_credentials(session: S3Session) -> None:
         raise TypeError(
             f"An S3 session must be a 'pyarrow.fs.S3FileSystem' or a "
             f"'boto3.session.Session'; got {type(session).__name__!r}. "
-            f"Leaving the identity unset is also supported: the reader then "
-            f"signs with the ambient AWS credential chain.")
+            f'Leaving the identity unset is also supported: the reader then '
+            f'signs with the ambient AWS credential chain.'
+        )
 
 
 #: STS's answers that mean the material itself is unusable, rather than STS
@@ -280,14 +308,16 @@ def _require_credentials(session: S3Session) -> None:
 #: nothing about. These are the ones a caller fixes by reconnecting, so they
 #: are reported as :class:`~kumo_core.sources.errors.ReconnectRequiredError`
 #: and everything else is left to :func:`kumo_s3.translated`.
-_LAPSED_STS_CODES = frozenset({
-    'AuthFailure',
-    'ExpiredToken',
-    'InvalidAccessKeyId',
-    'InvalidClientTokenId',
-    'SignatureDoesNotMatch',
-    'UnrecognizedClientException',
-})
+_LAPSED_STS_CODES = frozenset(
+    {
+        'AuthFailure',
+        'ExpiredToken',
+        'InvalidAccessKeyId',
+        'InvalidClientTokenId',
+        'SignatureDoesNotMatch',
+        'UnrecognizedClientException',
+    }
+)
 
 
 def _authenticate(principal: Principal, session: S3Session) -> None:
@@ -310,14 +340,14 @@ def _authenticate(principal: Principal, session: S3Session) -> None:
     from botocore.exceptions import ClientError
 
     credentials = session.get_credentials()
-    frozen = None if credentials is None else \
-        credentials.get_frozen_credentials()
+    frozen = None if credentials is None else credentials.get_frozen_credentials()
     if frozen is None or not frozen.access_key or not frozen.secret_key:
         raise ReconnectRequiredError(
-            f"Identity {principal.name!r} resolved no usable AWS "
-            f"credentials. Re-create it with material the AWS credential "
-            f"chain can resolve, or leave the identity unset to sign with "
-            f"the ambient chain.")
+            f'Identity {principal.name!r} resolved no usable AWS '
+            f'credentials. Re-create it with material the AWS credential '
+            f'chain can resolve, or leave the identity unset to sign with '
+            f'the ambient chain.'
+        )
 
     connection = getattr(principal.config, 'connection', None)
     if connection is not None and connection.endpoint_url:
@@ -329,8 +359,9 @@ def _authenticate(principal: Principal, session: S3Session) -> None:
         code = error.response.get('Error', {}).get('Code', '')
         if code in _LAPSED_STS_CODES:
             raise ReconnectRequiredError(
-                f"Identity {principal.name!r} did not authenticate with AWS "
-                f"({code}). Re-create it with current credentials.") from None
+                f'Identity {principal.name!r} did not authenticate with AWS '
+                f'({code}). Re-create it with current credentials.'
+            ) from None
         raise
 
 

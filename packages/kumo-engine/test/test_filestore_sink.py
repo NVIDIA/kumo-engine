@@ -29,7 +29,7 @@ class _Bytes:
         self.data = data
 
     def read_at(self, offset, length):
-        return self.data[offset:offset + length]
+        return self.data[offset : offset + length]
 
     def close(self):
         pass
@@ -95,24 +95,23 @@ def test_sinks_with_a_filesystem_hold_files(tmp_path, connector):
     assert is_file_destination(connector, '@stage/p')
     assert not is_file_destination(connector, 'DB.SCHEMA.T')
     assert file_store(connector, 'DB.SCHEMA.T') is None
-    assert not is_file_destination(SimpleNamespace(sink_backend=object()),
-                                   'x')
+    assert not is_file_destination(SimpleNamespace(sink_backend=object()), 'x')
 
 
 def test_output_configs_take_a_sinks_file_paths(connector):
     assert TrainingTableOutputConfig(connector, '@stage/tt').table_name == (
-        '@stage/tt/')
+        '@stage/tt/'
+    )
     assert TrainingTableOutputConfig(connector, 'TT').table_name == 'TT'
-    PredictionOutputConfig(connector,
-                           output_paths={'predictions': '@stage/p/'})
+    PredictionOutputConfig(connector, output_paths={'predictions': '@stage/p/'})
     with pytest.raises(ValueError, match='output_paths requires'):
         PredictionOutputConfig(connector, output_paths={'predictions': 'T'})
-    PredictionOutputConfig(connector, PredictionArtifactType.PREDICTIONS,
-                           'PREDS')
+    PredictionOutputConfig(connector, PredictionArtifactType.PREDICTIONS, 'PREDS')
     tables = SimpleNamespace(sink_backend=object())
     with pytest.raises(NotImplementedError, match='requires'):
-        PredictionOutputConfig(tables, PredictionArtifactType.PREDICTIONS,
-                               'DB.S.T').writer()
+        PredictionOutputConfig(
+            tables, PredictionArtifactType.PREDICTIONS, 'DB.S.T'
+        ).writer()
 
 
 def test_bundles_upload_provenance_last(tmp_path, connector):
@@ -120,41 +119,39 @@ def test_bundles_upload_provenance_last(tmp_path, connector):
     bundle.mkdir()
     for name in ('_provenance.json', 'z.bin'):
         (bundle / name).write_text('{}')
-    connector.sink_backend.publish_model(
-        connector, str(bundle), path='@stage/models/m')
+    connector.sink_backend.publish_model(connector, str(bundle), path='@stage/models/m')
     assert list(connector.sink_backend.store.objects) == [
-        '@stage/models/m/z.bin', '@stage/models/m/_provenance.json'
+        '@stage/models/m/z.bin',
+        '@stage/models/m/_provenance.json',
     ]
     restored = tmp_path / 'restored'
-    connector.sink_backend.fetch_model(
-        connector, str(restored), path='@stage/models/m')
+    connector.sink_backend.fetch_model(connector, str(restored), path='@stage/models/m')
     for name in ('_provenance.json', 'z.bin'):
         assert (restored / name).read_bytes() == (bundle / name).read_bytes()
 
 
-def test_a_trainer_publishes_and_loads_through_a_filesystem_only_sink(
-        fitted):
+def test_a_trainer_publishes_and_loads_through_a_filesystem_only_sink(fitted):
     trainer, *_ = fitted
-    connector = SimpleNamespace(source_type='SNOWFLAKE',
-                                sink_backend=StageSink())
+    connector = SimpleNamespace(source_type='SNOWFLAKE', sink_backend=StageSink())
     published = trainer.result.export(
-        kumo.ModelOutputConfig(connector, path='@stage/models/m'))
+        kumo.ModelOutputConfig(connector, path='@stage/models/m')
+    )
     assert published.uri == '@stage/models/m'
-    loaded = kumo.Trainer.load_from_connector(connector,
-                                              path='@stage/models/m')
+    loaded = kumo.Trainer.load_from_connector(connector, path='@stage/models/m')
     assert loaded.result.id == trainer.result.id
 
 
 def test_predictions_export_through_a_filesystem_only_sink(fitted, connector):
     trainer, table, snapshot = fitted
     output = PredictionOutputConfig(
-        connector, output_paths={'predictions': '@stage/preds/'})
+        connector, output_paths={'predictions': '@stage/preds/'}
+    )
     result = trainer.predict(table, snapshot=snapshot, output_config=output)
     store = connector.sink_backend.store
     assert any(name.startswith('@stage/preds/') for name in store.objects)
     result.export(
-        PredictionOutputConfig(connector,
-                               output_paths={'predictions': '@stage/again/'}))
+        PredictionOutputConfig(connector, output_paths={'predictions': '@stage/again/'})
+    )
     assert any(name.startswith('@stage/again/') for name in store.objects)
 
 
@@ -162,20 +159,25 @@ def test_parquet_writes_stay_plain_up_to_one_part(connector):
     sink = connector.sink_backend
     frame = pd.DataFrame({'x': range(10)})
     sink.write_table(connector, '@stage/small.parquet', frame)
-    sink.write_table(connector, '@stage/big.parquet',
-                     pd.DataFrame({'x': [os.urandom(50).hex() for _ in range(100)]}))
+    sink.write_table(
+        connector,
+        '@stage/big.parquet',
+        pd.DataFrame({'x': [os.urandom(50).hex() for _ in range(100)]}),
+    )
     store = sink.store
     assert '@stage/small.parquet' in store.objects
     assert any(
-        name.startswith('@stage/big.parquet.chunks/')
-        and name.endswith('/_SUCCESS') for name in store.objects)
+        name.startswith('@stage/big.parquet.chunks/') and name.endswith('/_SUCCESS')
+        for name in store.objects
+    )
     assert pd.read_parquet(
-        '@stage/big.parquet',
-        filesystem=PyFileSystem(store)).shape == (100, 1)
+        '@stage/big.parquet', filesystem=PyFileSystem(store)
+    ).shape == (100, 1)
 
 
 def test_publishing_an_identical_bundle_again_reuses_the_copy(
-        tmp_path, connector, monkeypatch, caplog):
+    tmp_path, connector, monkeypatch, caplog
+):
     import kumo_core.object_store_sink as sink
 
     bundle = tmp_path / 'bundle'
@@ -185,22 +187,21 @@ def test_publishing_an_identical_bundle_again_reuses_the_copy(
     files = connector.sink_backend
     files.publish_model(connector, str(bundle), path='@stage/models/m')
     upload = sink.upload_bundle
-    monkeypatch.setattr(sink, 'upload_bundle',
-                        lambda *a: pytest.fail('uploaded again'))
+    monkeypatch.setattr(sink, 'upload_bundle', lambda *a: pytest.fail('uploaded again'))
     with caplog.at_level('INFO', logger=sink.__name__):
         files.publish_model(connector, str(bundle), path='@stage/models/m')
     assert 'reused it' in caplog.text
 
     (bundle / '_provenance.json').write_text('{"id": 2}')
     uploads = []
-    monkeypatch.setattr(sink, 'upload_bundle',
-                        lambda *a: uploads.append(a) or upload(*a))
+    monkeypatch.setattr(
+        sink, 'upload_bundle', lambda *a: uploads.append(a) or upload(*a)
+    )
     files.publish_model(connector, str(bundle), path='@stage/models/m')
     assert len(uploads) == 1
 
 
-def test_an_occupied_directory_is_refused_by_its_full_location(
-        tmp_path, connector):
+def test_an_occupied_directory_is_refused_by_its_full_location(tmp_path, connector):
     sink = connector.sink_backend
     part = tmp_path / 'part-0.parquet'
     pd.DataFrame({'x': range(3)}).to_parquet(part)
@@ -208,53 +209,52 @@ def test_an_occupied_directory_is_refused_by_its_full_location(
     sink.write_files(connector, '@stage/out/', [str(part)])
     # Default/append retain ownership checks; explicit overwrite may replace data.
     for mode in (None, WriteMode.APPEND):
-        with pytest.raises(ArtifactDestinationConflict,
-                           match="'@stage/out/' already"):
+        with pytest.raises(ArtifactDestinationConflict, match="'@stage/out/' already"):
             sink.preflight_write_files(connector, '@stage/out/', mode)
     sink.preflight_write_files(connector, '@stage/out/', WriteMode.OVERWRITE)
 
 
 def test_a_file_only_sink_refuses_a_table(connector, tmp_path):
     with pytest.raises(NotImplementedError, match='outside its files'):
-        connector.sink_backend.publish_model(connector, str(tmp_path),
-                                             path='DB.SCHEMA.T')
+        connector.sink_backend.publish_model(
+            connector, str(tmp_path), path='DB.SCHEMA.T'
+        )
 
 
 def test_a_file_store_export_keeps_its_sidecars(tmp_path, connector):
     part = tmp_path / 'part-0.parquet'
     pd.DataFrame({'x': range(3)}).to_parquet(part)
     connector.sink_backend.write_files(
-        connector, '@stage/tt/', [str(part)],
-        sidecars={'_provenance.json': b'{}'})
-    assert connector.sink_backend.store.objects[
-        '@stage/tt/_provenance.json'] == b'{}'
+        connector, '@stage/tt/', [str(part)], sidecars={'_provenance.json': b'{}'}
+    )
+    assert connector.sink_backend.store.objects['@stage/tt/_provenance.json'] == b'{}'
 
 
-@pytest.mark.parametrize('kind,root', [
-    (kumo.S3Connector, 's3://bucket/root'),
-    (kumo.GCSConnector, 'gs://bucket/root'),
-    (kumo.ADLSConnector,
-     'abfss://artifacts@companylake.dfs.core.windows.net/root'),
-])
+@pytest.mark.parametrize(
+    'kind,root',
+    [
+        (kumo.S3Connector, 's3://bucket/root'),
+        (kumo.GCSConnector, 'gs://bucket/root'),
+        (kumo.ADLSConnector, 'abfss://artifacts@companylake.dfs.core.windows.net/root'),
+    ],
+)
 @pytest.mark.parametrize('full_uri', [False, True])
 def test_object_store_model_directories_roundtrip_without_cloud_clients(
-        monkeypatch, tmp_path, kind, root, full_uri):
+    monkeypatch, tmp_path, kind, root, full_uri
+):
     from pyarrow.fs import LocalFileSystem, SubTreeFileSystem
 
     storage = tmp_path / 'storage'
     storage.mkdir()
     filesystem = SubTreeFileSystem(str(storage), LocalFileSystem())
     connector = kind(root_dir=root)
-    monkeypatch.setattr(connector.sink_backend, '_filesystem',
-                        lambda *args: filesystem)
+    monkeypatch.setattr(connector.sink_backend, '_filesystem', lambda *args: filesystem)
     bundle = tmp_path / 'bundle'
     (bundle / 'nested').mkdir(parents=True)
     (bundle / 'nested' / 'weights.bin').write_bytes(b'weights')
     path = f'{root}/models/m' if full_uri else 'models/m'
-    published = connector.sink_backend.publish_model(
-        connector, str(bundle), path=path)
+    published = connector.sink_backend.publish_model(connector, str(bundle), path=path)
     assert published.uri == f'{root}/models/m'
     restored = tmp_path / 'restored'
-    connector.sink_backend.fetch_model(
-        connector, str(restored), path=published.uri)
+    connector.sink_backend.fetch_model(connector, str(restored), path=published.uri)
     assert (restored / 'nested' / 'weights.bin').read_bytes() == b'weights'

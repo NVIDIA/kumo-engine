@@ -50,13 +50,13 @@ def sanitize(b: bytes) -> str:
         if byte in printable:
             result.append(chr(byte))
         else:
-            result.append(" ")
+            result.append(' ')
     return ''.join(result)
 
 
 def run():
     user_input = clipboard_get()
-    print("Found the following text on the system clipboard")
+    print('Found the following text on the system clipboard')
     print(user_input)
     # Decode only works when user input is a list. When copy from the workflow
     # input and output, it is a dictionary.
@@ -66,9 +66,11 @@ def run():
     try:
         args = json.loads(user_input)
     except Exception:
-        print("Could not decode json from the clipboard. Please "
-              "copy the temporal JSON input into the system "
-              "clipboard before running this script from your laptop.")
+        print(
+            'Could not decode json from the clipboard. Please '
+            'copy the temporal JSON input into the system '
+            'clipboard before running this script from your laptop.'
+        )
         exit(1)
 
     for i, arg in enumerate(args):
@@ -76,13 +78,13 @@ def run():
             d = arg
         else:
             try:
-                d = sanitize(zstd.loads(base64.b64decode(arg["data"])))
+                d = sanitize(zstd.loads(base64.b64decode(arg['data'])))
             except Exception:
                 try:
-                    d = sanitize(base64.b64decode(arg["data"]))
+                    d = sanitize(base64.b64decode(arg['data']))
                 except Exception:
-                    d = arg["data"]
-        print(f"*************** Argument {i}: {d}")
+                    d = arg['data']
+        print(f'*************** Argument {i}: {d}')
 
 
 if __name__ == '__main__':

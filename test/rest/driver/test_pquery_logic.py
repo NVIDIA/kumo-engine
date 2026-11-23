@@ -46,11 +46,12 @@ from statedb.config.job_tag import TAG_KEY_PQUERY_ID, JobTagValue
 from statedb.config.timestamp import get_current_timestamps
 from statedb.rest import connector_authorization as connector_auth
 
-_PQUERY_RESOURCE_PATH = (Path(__file__).resolve().parents[1] / "test_data" /
-                         "pquery_resource.json")
+_PQUERY_RESOURCE_PATH = (
+    Path(__file__).resolve().parents[1] / 'test_data' / 'pquery_resource.json'
+)
 
-_TEST_PROJECT_ID = ProjectID("project_" + "1" * 32)
-_TEST_CONNECTOR_ID = ConnectorID("connector_" + "1" * 32)
+_TEST_PROJECT_ID = ProjectID('project_' + '1' * 32)
+_TEST_CONNECTOR_ID = ConnectorID('connector_' + '1' * 32)
 
 
 def _validated_snapshot(graph) -> ValidatedPredictiveQuerySnapshot:
@@ -65,15 +66,14 @@ def _validated_snapshot(graph) -> ValidatedPredictiveQuerySnapshot:
 
 
 @pytest.mark.asyncio
-async def test_default_model_plan_delegates_all_target_paths_to_core(
-        monkeypatch):
+async def test_default_model_plan_delegates_all_target_paths_to_core(monkeypatch):
     target_paths = [
-        [("orders", "user_id", "users")],
-        [("orders", "product_id", "products")],
+        [('orders', 'user_id', 'users')],
+        [('orders', 'product_id', 'products')],
     ]
     pquery = SimpleNamespace(
         graph=SimpleNamespace(config=object),
-        entity_table_names=["users", "products"],
+        entity_table_names=['users', 'products'],
         target_to_entity_paths=target_paths,
         get_default_split_async=AsyncMock(return_value=object()),
         is_forecasting=False,
@@ -91,7 +91,8 @@ async def test_default_model_plan_delegates_all_target_paths_to_core(
         project_id=_TEST_PROJECT_ID,
     )
     logic.parse_predictive_query_v2 = AsyncMock(
-        return_value=(parsed, ValidationResponse()))
+        return_value=(parsed, ValidationResponse())
+    )
     captured = {}
 
     def fake_from_default(cls, **kwargs):
@@ -99,13 +100,17 @@ async def test_default_model_plan_delegates_all_target_paths_to_core(
         captured.update(kwargs)
         return pquery_logic.ModelPlan()
 
-    monkeypatch.setattr(pquery_logic.ModelPlan, "from_default",
-                        classmethod(fake_from_default))
-    monkeypatch.setattr(pquery_logic, "construct_object_string_from_config",
-                        lambda _split: "RandomSplit([0.8, 0.2])")
+    monkeypatch.setattr(
+        pquery_logic.ModelPlan, 'from_default', classmethod(fake_from_default)
+    )
+    monkeypatch.setattr(
+        pquery_logic,
+        'construct_object_string_from_config',
+        lambda _split: 'RandomSplit([0.8, 0.2])',
+    )
     request = pquery_logic.DefaultModelPlanRequest(
-        query_string="query",
-        graph_id="",
+        query_string='query',
+        graph_id='',
         graph_def=GraphDefinition(tables={}, col_groups=[]),
         run_mode=pquery_logic.RunMode.FAST.value,
     )
@@ -115,7 +120,7 @@ async def test_default_model_plan_delegates_all_target_paths_to_core(
         PredictiveQuerySettings(),
     )
 
-    assert captured["target_to_entity_paths"] is target_paths
+    assert captured['target_to_entity_paths'] is target_paths
 
 
 @pytest.fixture(autouse=True)
@@ -129,10 +134,10 @@ def setup_rest_test_session() -> None:
 
 
 def test_real_connector_ids_from_graph_definition_returns_project_connectors():
-    pquery = json.loads(_PQUERY_RESOURCE_PATH.read_text(encoding="utf-8"))
-    for table in pquery["graph"]["tables"].values():
-        table["source_table"]["connector_id"] = str(_TEST_CONNECTOR_ID)
-    graph_def = GraphDefinition(**pquery["graph"])
+    pquery = json.loads(_PQUERY_RESOURCE_PATH.read_text(encoding='utf-8'))
+    for table in pquery['graph']['tables'].values():
+        table['source_table']['connector_id'] = str(_TEST_CONNECTOR_ID)
+    graph_def = GraphDefinition(**pquery['graph'])
 
     assert PQueryLogic._real_connector_ids_from_graph_definition(graph_def) == {
         _TEST_CONNECTOR_ID
@@ -141,10 +146,12 @@ def test_real_connector_ids_from_graph_definition_returns_project_connectors():
 
 @pytest.mark.asyncio
 async def test_predictive_query_args_are_validated_before_reconstruction(
-    monkeypatch, ):
+    monkeypatch,
+):
     reference = ConnectorExecutionRef(_TEST_CONNECTOR_ID, _TEST_PROJECT_ID)
     connector_service = SimpleNamespace(
-        execution_ref_for_project=AsyncMock(return_value=reference), )
+        execution_ref_for_project=AsyncMock(return_value=reference),
+    )
     logic = PQueryLogic(
         data_backend_ctx=MagicMock(),
         state_services=SimpleNamespace(connectors=connector_service),
@@ -154,24 +161,27 @@ async def test_predictive_query_args_are_validated_before_reconstruction(
     build_pquery = AsyncMock(return_value=expected)
     monkeypatch.setattr(
         pquery_logic,
-        "_build_request_predictive_query",
+        '_build_request_predictive_query',
         SimpleNamespace(coroutine=build_pquery),
     )
     request_table = SimpleNamespace(
-        name="connector_table",
+        name='connector_table',
         data_source=str(_TEST_CONNECTOR_ID),
         data_version=None,
     )
     validated_table = SimpleNamespace(
-        name="connector_table",
+        name='connector_table',
         data_source=str(_TEST_CONNECTOR_ID),
-        data_version="data-version",
+        data_version='data-version',
     )
-    execute_activity = AsyncMock(return_value=_validated_snapshot(
-        SimpleNamespace(data_source_dict={}, tables=[validated_table])))
+    execute_activity = AsyncMock(
+        return_value=_validated_snapshot(
+            SimpleNamespace(data_source_dict={}, tables=[validated_table])
+        )
+    )
     monkeypatch.setattr(
         pquery_logic.DataBackend,
-        "_execute_single_activity",
+        '_execute_single_activity',
         execute_activity,
     )
     request_graph_config = SimpleNamespace(
@@ -180,15 +190,14 @@ async def test_predictive_query_args_are_validated_before_reconstruction(
     )
     monkeypatch.setattr(
         pquery_logic,
-        "credential_free_graph_config_for_activity",
+        'credential_free_graph_config_for_activity',
         MagicMock(return_value=request_graph_config),
     )
-    bind_graph = MagicMock(return_value="workflow-safe-graph")
-    monkeypatch.setattr(pquery_logic, "bind_graph_config_to_execution_refs",
-                        bind_graph)
+    bind_graph = MagicMock(return_value='workflow-safe-graph')
+    monkeypatch.setattr(pquery_logic, 'bind_graph_config_to_execution_refs', bind_graph)
     monkeypatch.setattr(
         logic,
-        "_real_connector_ids_from_graph_definition",
+        '_real_connector_ids_from_graph_definition',
         MagicMock(return_value={_TEST_CONNECTOR_ID}),
     )
     request_graph = MagicMock()
@@ -202,7 +211,8 @@ async def test_predictive_query_args_are_validated_before_reconstruction(
     )
 
     assert snapshot.config.graph.data_source_dict == (
-        request_graph_config.data_source_dict)
+        request_graph_config.data_source_dict
+    )
     connector_service.execution_ref_for_project.assert_awaited_once_with(
         None,
         _TEST_PROJECT_ID,
@@ -218,20 +228,19 @@ async def test_predictive_query_args_are_validated_before_reconstruction(
         pquery_logic.validate_predictive_query_activity,
         [
             args,
-            "workflow-safe-graph",
+            'workflow-safe-graph',
             settings,
-            {
-                _TEST_CONNECTOR_ID: reference
-            },
+            {_TEST_CONNECTOR_ID: reference},
             False,
         ],
-        f"validate-pquery:{_TEST_PROJECT_ID}",
+        f'validate-pquery:{_TEST_PROJECT_ID}',
     )
 
     connector = MagicMock()
     graph = MagicMock(data_source_dict={str(_TEST_CONNECTOR_ID): connector})
-    monkeypatch.setattr(pquery_logic.Graph, "from_config",
-                        MagicMock(return_value=graph))
+    monkeypatch.setattr(
+        pquery_logic.Graph, 'from_config', MagicMock(return_value=graph)
+    )
     result = await logic._create_pq_object_from_args_and_config(
         snapshot.config,
         settings,
@@ -242,7 +251,7 @@ async def test_predictive_query_args_are_validated_before_reconstruction(
     connector.require_explicit_credentials.assert_called_once_with()
     request_config = build_pquery.await_args.args[0]
     assert request_config is not snapshot.config
-    assert request_config.graph.tables[0].data_version == "data-version"
+    assert request_config.graph.tables[0].data_version == 'data-version'
     build_pquery.assert_awaited_once_with(
         request_config,
         graph=graph,
@@ -257,7 +266,8 @@ async def test_predictive_query_args_are_validated_before_reconstruction(
     ids=['warehouse-sf', 'warehouse-bq'],
 )
 def test_predictive_query_activity_returns_credential_free_snapshot(
-        monkeypatch, connector_family):
+    monkeypatch, connector_family
+):
     reference = ConnectorExecutionRef(_TEST_CONNECTOR_ID, _TEST_PROJECT_ID)
     workflow_graph = SimpleNamespace(data_source_dict={}, tables=[])
     graph = MagicMock()
@@ -295,14 +305,11 @@ def test_predictive_query_activity_returns_credential_free_snapshot(
         graph.identity_credential = secret
         yield graph
 
-    monkeypatch.setattr(pquery_logic, 'authorized_graph_for_activity',
-                        authorized_graph)
+    monkeypatch.setattr(pquery_logic, 'authorized_graph_for_activity', authorized_graph)
     from_config = MagicMock(return_value=pquery)
-    monkeypatch.setattr(pquery_logic.PredictiveQueryV2, 'from_config',
-                        from_config)
+    monkeypatch.setattr(pquery_logic.PredictiveQueryV2, 'from_config', from_config)
     make_config = MagicMock(return_value=canonical_config)
-    monkeypatch.setattr(pquery_logic, 'make_predictive_config_with_graph',
-                        make_config)
+    monkeypatch.setattr(pquery_logic, 'make_predictive_config_with_graph', make_config)
     args = SimpleNamespace(
         name='warehouse-query',
         query_string='PREDICT events.label FOR EACH events.entity_id',
@@ -325,29 +332,25 @@ def test_predictive_query_activity_returns_credential_free_snapshot(
     assert result.config.graph.tables[0].data_version == 'version-1'
     assert result.validation_response is validation_response
     assert secret not in repr(result)
-    graph.validate.assert_called_once_with(raise_on_error=True,
-                                           ignore_encoders=True)
+    graph.validate.assert_called_once_with(raise_on_error=True, ignore_encoders=True)
     make_config.assert_called_once()
     from_config.assert_called_once()
 
 
-def test_predictive_query_activity_safely_translates_model_plan_validation(
-        monkeypatch):
+def test_predictive_query_activity_safely_translates_model_plan_validation(monkeypatch):
     graph = MagicMock()
 
     @contextmanager
     def authorized_graph(_graph_config, _references):
         yield graph
 
-    monkeypatch.setattr(pquery_logic, 'authorized_graph_for_activity',
-                        authorized_graph)
+    monkeypatch.setattr(pquery_logic, 'authorized_graph_for_activity', authorized_graph)
     secret = 'api_key=do-not-reflect-this-plan-value'
     args = PQueryValidationArgs(
         name='unsafe-model-plan',
         query_string='PREDICT events.label FOR EACH events.entity_id',
         graph=GraphDefinition(tables={}, col_groups=[]),
-        model_plan=('training_table_generation:\n'
-                    f'  split: InvalidSplit({secret})\n'),
+        model_plan=(f'training_table_generation:\n  split: InvalidSplit({secret})\n'),
     )
 
     with pytest.raises(ValidationException) as caught:
@@ -360,8 +363,8 @@ def test_predictive_query_activity_safely_translates_model_plan_validation(
 
     assert caught.value.http_code == 422
     assert str(caught.value) == (
-        'Invalid model plan: Check its field names, values, and expression '
-        'syntax.')
+        'Invalid model plan: Check its field names, values, and expression syntax.'
+    )
     assert secret not in str(caught.value)
     assert caught.value.__cause__ is None
     assert caught.value.__context__ is None
@@ -372,8 +375,9 @@ def test_request_pquery_reconstruction_never_runs_graph_validation(monkeypatch):
     graph.validate.side_effect = AssertionError('request-side provider I/O')
     expected = object()
     reconstruct = MagicMock(return_value=expected)
-    monkeypatch.setattr(pquery_logic.PredictiveQueryV2,
-                        '_from_validated_config', reconstruct)
+    monkeypatch.setattr(
+        pquery_logic.PredictiveQueryV2, '_from_validated_config', reconstruct
+    )
     config = object()
     settings = PredictiveQuerySettings()
 
@@ -386,7 +390,7 @@ def test_request_pquery_reconstruction_never_runs_graph_validation(monkeypatch):
 
     assert result is expected
     reconstruct.assert_called_once()
-    assert reconstruct.call_args.args == (config, )
+    assert reconstruct.call_args.args == (config,)
     assert reconstruct.call_args.kwargs['graph'] is graph
     assert reconstruct.call_args.kwargs['pquery_settings'] is not None
     graph.validate.assert_not_called()
@@ -414,11 +418,13 @@ async def test_require_successful_training_job_resolves_v2_tagged_job():
     # A successful training job exists, linked to the pquery via job tags.
     training_job_id = TrainingJobID('trainingjob-done')
     pquery_service = SimpleNamespace(
-        get_definition_by_id=AsyncMock(return_value=pq_def), )
+        get_definition_by_id=AsyncMock(return_value=pq_def),
+    )
     ml_job_service = SimpleNamespace(
         list_job_tags=AsyncMock(return_value={training_job_id: object()}),
         list_training_job_rows=AsyncMock(
-            return_value=[SimpleNamespace(id=training_job_id)]),
+            return_value=[SimpleNamespace(id=training_job_id)]
+        ),
     )
     state_services = SimpleNamespace(
         pqueries=pquery_service,
@@ -436,14 +442,16 @@ async def test_require_successful_training_job_resolves_v2_tagged_job():
         project_id=_TEST_PROJECT_ID,
     )
     job, home_mgr = await logic._require_successful_training_job(
-        MagicMock(), PredictiveQueryID('mypquery'), ml_backend)
+        MagicMock(), PredictiveQueryID('mypquery'), ml_backend
+    )
 
     assert job is done_job
     assert home_mgr.home_dir == '/tmp/jobhome'
     # The job resolved must be the one tagged to the pquery.
     assert ml_backend.get_training_job.await_args.args[1] == training_job_id
     pquery_service.get_definition_by_id.assert_awaited_once_with(
-        PredictiveQueryID('mypquery'))
+        PredictiveQueryID('mypquery')
+    )
     ml_job_service.list_job_tags.assert_awaited_once_with(
         JobType.TRAINING_JOB,
         {str(TAG_KEY_PQUERY_ID): str(JobTagValue.of_pquery_id(pq_def.fpid))},
@@ -452,12 +460,13 @@ async def test_require_successful_training_job_resolves_v2_tagged_job():
 
 @pytest.mark.asyncio
 async def test_training_job_ids_for_pquery_uses_ml_job_service_tags():
-    fpid = FPID("a" * 32)
-    training_job_id = TrainingJobID("trainingjob-done")
+    fpid = FPID('a' * 32)
+    training_job_id = TrainingJobID('trainingjob-done')
     ml_job_service = SimpleNamespace(
         list_job_tags=AsyncMock(return_value={training_job_id: object()}),
         list_training_job_rows=AsyncMock(
-            return_value=[SimpleNamespace(id=training_job_id)]),
+            return_value=[SimpleNamespace(id=training_job_id)]
+        ),
     )
     state_services = SimpleNamespace(ml_jobs=ml_job_service)
     logic = PQueryLogic(
@@ -474,33 +483,35 @@ async def test_training_job_ids_for_pquery_uses_ml_job_service_tags():
     ml_job_service.list_training_job_rows.assert_awaited_once_with(
         job_ids={training_job_id},
         project_ids={_TEST_PROJECT_ID},
-        sort_created_at="asc",
+        sort_created_at='asc',
     )
 
 
 @pytest.mark.asyncio
 async def test_delete_predictive_query_with_state_services_deletes_definition():
-    graph_fpid = FPID("a" * 32)
+    graph_fpid = FPID('a' * 32)
     pq_def = PQueryDefinition(
         timestamps=get_current_timestamps(),
-        pquery_name="saved_query",
-        query_str="PREDICT COUNT(t.*) FOR EACH t.user_id",
+        pquery_name='saved_query',
+        query_str='PREDICT COUNT(t.*) FOR EACH t.user_id',
         graph_fpid=graph_fpid,
         task_type=TaskType.REGRESSION,
         query_type=QueryType.TEMPORAL,
     )
-    training_job_id = TrainingJobID("trainingjob-running")
+    training_job_id = TrainingJobID('trainingjob-running')
     pquery_service = SimpleNamespace(
         get_definition_by_id=AsyncMock(return_value=pq_def),
         delete_alias=AsyncMock(),
         delete_definition=AsyncMock(return_value=True),
     )
     graph_service = SimpleNamespace(
-        decrement_or_delete_graph_definition=AsyncMock(return_value=True), )
+        decrement_or_delete_graph_definition=AsyncMock(return_value=True),
+    )
     ml_job_service = SimpleNamespace(
         list_job_tags=AsyncMock(return_value={training_job_id: object()}),
         list_training_job_rows=AsyncMock(
-            return_value=[SimpleNamespace(id=training_job_id)]),
+            return_value=[SimpleNamespace(id=training_job_id)]
+        ),
     )
     state_services = SimpleNamespace(
         pqueries=pquery_service,
@@ -508,8 +519,11 @@ async def test_delete_predictive_query_with_state_services_deletes_definition():
         ml_jobs=ml_job_service,
     )
     ml_backend = MagicMock()
-    ml_backend.get_training_job = AsyncMock(return_value=SimpleNamespace(
-        execution=SimpleNamespace(status=JobStatus.RUNNING), ))
+    ml_backend.get_training_job = AsyncMock(
+        return_value=SimpleNamespace(
+            execution=SimpleNamespace(status=JobStatus.RUNNING),
+        )
+    )
     ml_backend.cancel_training_job = AsyncMock(return_value=True)
 
     logic = PQueryLogic(
@@ -520,21 +534,23 @@ async def test_delete_predictive_query_with_state_services_deletes_definition():
 
     deleted = await logic.delete_predictive_query(
         MagicMock(),
-        PredictiveQueryID("saved_query"),
+        PredictiveQueryID('saved_query'),
         ml_backend,
     )
 
     assert deleted is True
     pquery_service.get_definition_by_id.assert_awaited_once_with(
-        PredictiveQueryID("saved_query"))
+        PredictiveQueryID('saved_query')
+    )
     ml_job_service.list_job_tags.assert_awaited_once_with(
         JobType.TRAINING_JOB,
         {str(TAG_KEY_PQUERY_ID): str(JobTagValue.of_pquery_id(pq_def.fpid))},
     )
     ml_backend.cancel_training_job.assert_awaited_once_with(training_job_id)
     graph_service.decrement_or_delete_graph_definition.assert_awaited_once_with(
-        _TEST_PROJECT_ID, graph_fpid)
-    pquery_service.delete_alias.assert_awaited_once_with("saved_query")
+        _TEST_PROJECT_ID, graph_fpid
+    )
+    pquery_service.delete_alias.assert_awaited_once_with('saved_query')
     pquery_service.delete_definition.assert_awaited_once_with(pq_def.fpid)
 
 
@@ -573,18 +589,21 @@ def _stub_create_full_pquery_def_v2_dependencies(
         return parsed, ValidationResponse()
 
     monkeypatch.setattr(pquery_logic.graph_logic, 'GraphLogic', FakeGraphLogic)
-    monkeypatch.setattr(PQueryLogic, '_validate_predictive_query_args',
-                        fake_validate_predictive_query_args)
-    monkeypatch.setattr(PQueryLogic, 'parse_predictive_query_v2',
-                        fake_parse_predictive_query_v2)
+    monkeypatch.setattr(
+        PQueryLogic,
+        '_validate_predictive_query_args',
+        fake_validate_predictive_query_args,
+    )
+    monkeypatch.setattr(
+        PQueryLogic, 'parse_predictive_query_v2', fake_parse_predictive_query_v2
+    )
 
 
 def _pquery_resource():
     return SimpleNamespace(
         graph=GraphDefinition(tables={}, col_groups=[]),
         name='saved_query',
-        query_string=(
-            'PREDICT responses.is_sensitive FOR EACH responses.response_id'),
+        query_string=('PREDICT responses.is_sensitive FOR EACH responses.response_id'),
         list_distinct_target_is_array=None,
         lp_bp_layout='hstack',
     )
@@ -592,7 +611,8 @@ def _pquery_resource():
 
 @pytest.mark.asyncio
 async def test_create_full_pquery_def_v2_uses_validated_config_lp_bp_layout(
-    monkeypatch, ):
+    monkeypatch,
+):
     _stub_create_full_pquery_def_v2_dependencies(monkeypatch)
 
     fpid = FPID('b' * 32)
@@ -622,7 +642,8 @@ async def test_create_full_pquery_def_v2_uses_validated_config_lp_bp_layout(
 
 @pytest.mark.asyncio
 async def test_create_full_pquery_def_v2_rejects_lp_bp_layout_divergence(
-    monkeypatch, ):
+    monkeypatch,
+):
     _stub_create_full_pquery_def_v2_dependencies(
         monkeypatch,
         config_lp_bp_layout='separate_lhs_rhs',
@@ -662,8 +683,7 @@ def _custom_sql_graph_definition() -> GraphDefinition:
         ),
         cols=[
             Column(name='response_id', stype=Stype.ID, dtype=Dtype.string),
-            Column(name='is_sensitive', stype=Stype.categorical,
-                   dtype=Dtype.string),
+            Column(name='is_sensitive', stype=Stype.categorical, dtype=Dtype.string),
         ],
         pkey='response_id',
     )
@@ -680,30 +700,41 @@ async def test_build_pquery_def_v2_uses_canonical_graph_fpid(monkeypatch):
     original_graph = _custom_sql_graph_definition()
     state_services = SimpleNamespace(
         pqueries=SimpleNamespace(),
-        connectors=SimpleNamespace(get_for_project=AsyncMock(
-            return_value=SimpleNamespace(config=SimpleNamespace(
-                type=SimpleNamespace(value='snowflake'))))),
+        connectors=SimpleNamespace(
+            get_for_project=AsyncMock(
+                return_value=SimpleNamespace(
+                    config=SimpleNamespace(type=SimpleNamespace(value='snowflake'))
+                )
+            )
+        ),
     )
     # Expected canonical fingerprint, resolved by the same shared helper.
     canonical_graph = await canonicalize_graph_custom_sql_tables(
-        original_graph, _TEST_PROJECT_ID, state_services, None)
+        original_graph, _TEST_PROJECT_ID, state_services, None
+    )
     assert canonical_graph.fpid != original_graph.fpid
 
     async def fake_validate_predictive_query_args(self, *args, **kwargs):
         return MagicMock(name='validated-snapshot')
 
     async def fake_parse_predictive_query_v2(self, *args, **kwargs):
-        pquery = SimpleNamespace(get_task_type=lambda: None, query_type=None,
-                                 lp_bp_layout='separate_lhs_rhs')
+        pquery = SimpleNamespace(
+            get_task_type=lambda: None, query_type=None, lp_bp_layout='separate_lhs_rhs'
+        )
         parsed = SimpleNamespace(
             config=SimpleNamespace(lp_bp_layout='separate_lhs_rhs'),
-            predictive_query=pquery)
+            predictive_query=pquery,
+        )
         return parsed, ValidationResponse()
 
-    monkeypatch.setattr(PQueryLogic, '_validate_predictive_query_args',
-                        fake_validate_predictive_query_args)
-    monkeypatch.setattr(PQueryLogic, 'parse_predictive_query_v2',
-                        fake_parse_predictive_query_v2)
+    monkeypatch.setattr(
+        PQueryLogic,
+        '_validate_predictive_query_args',
+        fake_validate_predictive_query_args,
+    )
+    monkeypatch.setattr(
+        PQueryLogic, 'parse_predictive_query_v2', fake_parse_predictive_query_v2
+    )
 
     logic = PQueryLogic(
         data_backend_ctx=MagicMock(),
@@ -713,8 +744,7 @@ async def test_build_pquery_def_v2_uses_canonical_graph_fpid(monkeypatch):
     pquery_resource = SimpleNamespace(
         graph=original_graph,
         name='saved_query',
-        query_string='PREDICT responses.is_sensitive FOR EACH '
-        'responses.response_id',
+        query_string='PREDICT responses.is_sensitive FOR EACH responses.response_id',
         list_distinct_target_is_array=None,
         lp_bp_layout='separate_lhs_rhs',
     )
@@ -732,11 +762,11 @@ async def test_build_pquery_def_v2_uses_canonical_graph_fpid(monkeypatch):
 
 @pytest.mark.parametrize('source_kind', ['file', 'warehouse'])
 def test_predictive_query_activity_preserves_missing_source_error(
-        monkeypatch, source_kind):
+    monkeypatch, source_kind
+):
     connector = CompositeFileConnector(
         'csv',
-        root_dir=str(
-            Path(__file__).resolve().parents[2] / 'csv_data' / 'movielens'),
+        root_dir=str(Path(__file__).resolve().parents[2] / 'csv_data' / 'movielens'),
     )
     graph = Graph(name='missing_source_graph')
     graph.connect(connector)
@@ -760,15 +790,13 @@ def test_predictive_query_activity_preserves_missing_source_error(
         def missing_warehouse_table(self, table_name):
             raise SourceTableNotFoundError(table_name, 'warehouse')
 
-        monkeypatch.setattr(FileConnector, '_get_data_version',
-                            missing_warehouse_table)
+        monkeypatch.setattr(FileConnector, '_get_data_version', missing_warehouse_table)
 
     @contextmanager
     def authorized_graph(_config, _references):
         yield Graph.from_config(config)
 
-    monkeypatch.setattr(pquery_logic, 'authorized_graph_for_activity',
-                        authorized_graph)
+    monkeypatch.setattr(pquery_logic, 'authorized_graph_for_activity', authorized_graph)
     args = PQueryValidationArgs(
         name='missing-source-table',
         query_string='PREDICT events.tag FOR EACH events.userId',

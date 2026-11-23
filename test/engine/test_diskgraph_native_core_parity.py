@@ -17,5 +17,5 @@ def auto_setup_kumo_backend() -> bool:
 
 
 def test_platform_translates_portable_retry_classification() -> None:
-    assert is_error_non_retryable(core_runner.NonRetryableDiskgraphError("bad"))
-    assert not is_error_non_retryable(core_runner.DiskgraphNoSpaceError("full"))
+    assert is_error_non_retryable(core_runner.NonRetryableDiskgraphError('bad'))
+    assert not is_error_non_retryable(core_runner.DiskgraphNoSpaceError('full'))

@@ -37,19 +37,24 @@ from kumo.engine._manifest import (
 
 Location = Union[str, Tuple[Any, str]]
 Hint = Callable[[str, str], str]
-_READERS = (('@', 'SnowflakeConnector'), ('/Volumes/', 'DatabricksConnector'),
-            ('s3://', 'S3Connector'), ('gs://', 'GCSConnector'),
-            ('abfss://', 'ADLSConnector'))
+_READERS = (
+    ('@', 'SnowflakeConnector'),
+    ('/Volumes/', 'DatabricksConnector'),
+    ('s3://', 'S3Connector'),
+    ('gs://', 'GCSConnector'),
+    ('abfss://', 'ADLSConnector'),
+)
 
 _LOCATIONS: ContextVar[Tuple[Location, ...]] = ContextVar(
-    'kumo_asset_locations', default=())
-_HINT: ContextVar[Optional[Hint]] = ContextVar('kumo_asset_hint',
-                                               default=None)
+    'kumo_asset_locations', default=()
+)
+_HINT: ContextVar[Optional[Hint]] = ContextVar('kumo_asset_hint', default=None)
 
 
 @contextmanager
-def asset_locations(locations: Sequence[Location],
-                    hint: Optional[Hint] = None) -> Iterator[None]:
+def asset_locations(
+    locations: Sequence[Location], hint: Optional[Hint] = None
+) -> Iterator[None]:
     r"""Asset roots to look in first, and how to hint at a missing reader."""
     token = _LOCATIONS.set((*locations, *_LOCATIONS.get()))
     hinted = _HINT.set(hint or _HINT.get())
@@ -67,11 +72,9 @@ class Asset(Protocol):
     name: str
     version: Optional[str]
 
-    def fingerprint(self) -> str:
-        ...
+    def fingerprint(self) -> str: ...
 
-    def files(self) -> Mapping[str, Path]:
-        ...
+    def files(self) -> Mapping[str, Path]: ...
 
 
 class MissingDependencyError(RuntimeError):
@@ -80,8 +83,14 @@ class MissingDependencyError(RuntimeError):
 
 class FileAsset:
     r"""A plain file, or a directory of files."""
-    def __init__(self, asset_kind: str, name: str, path: Union[str, Path],
-                 version: Optional[str] = None) -> None:
+
+    def __init__(
+        self,
+        asset_kind: str,
+        name: str,
+        path: Union[str, Path],
+        version: Optional[str] = None,
+    ) -> None:
         self.asset_kind, self.name, self.version = asset_kind, name, version
         self.path = Path(path)
 
@@ -106,12 +115,16 @@ class FileAsset:
     @classmethod
     def load(cls, directory: Path, dependency: Dependency) -> 'FileAsset':
         files = [
-            path for path in directory.iterdir()
+            path
+            for path in directory.iterdir()
             if path.is_file() and path.name != PROVENANCE_FILE
         ]
-        return cls(str(dependency.asset_kind), dependency.name,
-                   files[0] if len(files) == 1 else directory,
-                   dependency.version)
+        return cls(
+            str(dependency.asset_kind),
+            dependency.name,
+            files[0] if len(files) == 1 else directory,
+            dependency.version,
+        )
 
 
 def predictor(entry_point: str) -> Dependency:
@@ -119,8 +132,7 @@ def predictor(entry_point: str) -> Dependency:
 
 
 def package(name: str, version: str, extras: Sequence[str]) -> Dependency:
-    return Dependency(kind='package', name=name, version=version,
-                      extras=list(extras))
+    return Dependency(kind='package', name=name, version=version, extras=list(extras))
 
 
 def entry_point(value: Any) -> str:
@@ -138,8 +150,10 @@ def imported(entry: str) -> Any:
 
 class Dependencies:
     r"""Records a fit's dependencies and resolves a model's assets."""
-    def __init__(self, records: Sequence[Dependency] = (),
-                 settings: Any = None) -> None:
+
+    def __init__(
+        self, records: Sequence[Dependency] = (), settings: Any = None
+    ) -> None:
         self.records: List[Dependency] = list(records)
         self.errors: List[BaseException] = []
         self._settings = settings
@@ -147,8 +161,9 @@ class Dependencies:
         self._hint = _HINT.get()
 
     @classmethod
-    def of(cls, manifest: Optional[ModelManifest],
-           settings: Any = None) -> 'Dependencies':
+    def of(
+        cls, manifest: Optional[ModelManifest], settings: Any = None
+    ) -> 'Dependencies':
         return cls((manifest and manifest.dependencies) or (), settings)
 
     def add(self, dependency: Dependency) -> Dependency:
@@ -165,24 +180,34 @@ class Dependencies:
             except Exception as error:
                 self.errors.append(error)
         return self.add(
-            Dependency(kind='asset', name=asset.name, version=asset.version,
-                       asset_kind=asset.asset_kind, sha256=sha256,
-                       entry_point=entry_point(asset), packing='external',
-                       location=location))
+            Dependency(
+                kind='asset',
+                name=asset.name,
+                version=asset.version,
+                asset_kind=asset.asset_kind,
+                sha256=sha256,
+                entry_point=entry_point(asset),
+                packing='external',
+                location=location,
+            )
+        )
 
     def assets(self, asset_kind: str) -> List[Dependency]:
         return [
-            record for record in self.records
+            record
+            for record in self.records
             if record.kind == 'asset' and record.asset_kind == asset_kind
         ]
 
     def resolve(self, asset_kind: str, name: str) -> Path:
         r"""A local directory holding the asset, checked by sha256."""
-        record = next((record for record in self.assets(asset_kind)
-                       if record.name == name), None)
+        record = next(
+            (record for record in self.assets(asset_kind) if record.name == name), None
+        )
         if record is None:
             raise MissingDependencyError(
-                f'The model has no {asset_kind} dependency named {name!r}.')
+                f'The model has no {asset_kind} dependency named {name!r}.'
+            )
         tried = []
         for connector, path in self.candidates(record):
             tried.append(str(path))
@@ -194,19 +219,25 @@ class Dependencies:
                 return directory
         location = record.location or ''
         reader = next(
-            (name
-             for prefix, name in _READERS if location.startswith(prefix) or (
-                 prefix == 'abfss://' and location.lower().startswith(prefix))),
-            None)
+            (
+                name
+                for prefix, name in _READERS
+                if location.startswith(prefix)
+                or (prefix == 'abfss://' and location.lower().startswith(prefix))
+            ),
+            None,
+        )
         if reader is not None and self._hint is not None:
             raise MissingDependencyError(
-                f"Cannot read {asset_kind} {name!r} (sha256 {record.sha256}) "
-                f"at {location}: {self._hint(reader, location)}.")
+                f'Cannot read {asset_kind} {name!r} (sha256 {record.sha256}) '
+                f'at {location}: {self._hint(reader, location)}.'
+            )
         raise MissingDependencyError(
-            f"The model needs {asset_kind} {name!r} (sha256 "
-            f"{record.sha256}), which is in none of "
-            f"{tried or 'no configured locations'}; predict in a kumo.mlops "
-            f"block whose artifact root holds it.")
+            f'The model needs {asset_kind} {name!r} (sha256 '
+            f'{record.sha256}), which is in none of '
+            f'{tried or "no configured locations"}; predict in a kumo.mlops '
+            f'block whose artifact root holds it.'
+        )
 
     def candidates(self, record: Dependency) -> List[Tuple[Any, str]]:
         from kumo.engine.connector import connector_for_root
@@ -218,7 +249,7 @@ class Dependencies:
                 found.append((connector_for_root(location), relative))
             else:
                 connector, path = location
-                found.append((connector, f"{path.rstrip('/')}/{relative}"))
+                found.append((connector, f'{path.rstrip("/")}/{relative}'))
         if record.location and not record.location.startswith('@'):
             parent, _, leaf = record.location.rstrip('/').rpartition('/')
             try:
@@ -227,10 +258,10 @@ class Dependencies:
                 pass
         settings = self._settings
         if settings is not None:
-            found.append((settings.root.connector,
-                          settings.root.location(f'assets/{relative}')))
-            if record.location and reads(settings.root.connector,
-                                         record.location):
+            found.append(
+                (settings.root.connector, settings.root.location(f'assets/{relative}'))
+            )
+            if record.location and reads(settings.root.connector, record.location):
                 found.append((settings.root.connector, record.location))
         return found
 
@@ -253,40 +284,52 @@ def reads(connector: Any, location: str) -> bool:
         except ValueError:
             return False
         return True
-    for kind, prefix in ((S3Connector, 's3://'), (GCSConnector, 'gs://'),
-                         (FileConnector, None)):
+    for kind, prefix in (
+        (S3Connector, 's3://'),
+        (GCSConnector, 'gs://'),
+        (FileConnector, None),
+    ):
         if isinstance(connector, kind):
             return prefix is not None and location.startswith(prefix)
-    return (location.startswith(('@', '/Volumes/'))
-            and is_file_destination(connector, location))
+    return location.startswith(('@', '/Volumes/')) and is_file_destination(
+        connector, location
+    )
 
 
-def stored_roots(manifest: Optional[ModelManifest],
-                 accepts: Callable[[str], bool]) -> List[str]:
-    return sorted({
-        record.location.rsplit('/', 2)[0]
-        for record in Dependencies.of(manifest).records
-        if record.location and accepts(record.location)
-    })
+def stored_roots(
+    manifest: Optional[ModelManifest], accepts: Callable[[str], bool]
+) -> List[str]:
+    return sorted(
+        {
+            record.location.rsplit('/', 2)[0]
+            for record in Dependencies.of(manifest).records
+            if record.location and accepts(record.location)
+        }
+    )
 
 
-def connector_roots(manifest: Optional[ModelManifest],
-                    connector: Any) -> List[Tuple[Any, str]]:
+def connector_roots(
+    manifest: Optional[ModelManifest], connector: Any
+) -> List[Tuple[Any, str]]:
     r"""The asset roots of ``manifest`` that ``connector`` reads."""
     if connector is None:
         return []
-    return [(connector, root) for root in stored_roots(
-        manifest, lambda location: reads(connector, location))]
+    return [
+        (connector, root)
+        for root in stored_roots(manifest, lambda location: reads(connector, location))
+    ]
 
 
 @contextmanager
-def assets_through(connector: Any, bundle: Union[str, Path],
-                   hint: Hint) -> Iterator[None]:
+def assets_through(
+    connector: Any, bundle: Union[str, Path], hint: Hint
+) -> Iterator[None]:
     r"""Resolves ``bundle``'s stored assets through ``connector`` too."""
     from kumo.engine.trainer._provenance import read_provenance
 
     with asset_locations(
-            connector_roots(read_provenance(Path(bundle)), connector), hint):
+        connector_roots(read_provenance(Path(bundle)), connector), hint
+    ):
         yield
 
 
@@ -297,16 +340,19 @@ def _store(asset: Asset, sha256: str, settings: Any) -> Optional[str]:
 
     relative = f'assets/{asset.asset_kind}/{sha256}'
     try:
-        filesystem, root = file_store(settings.root.connector,
-                                      settings.root.location(relative))
+        filesystem, root = file_store(
+            settings.root.connector, settings.root.location(relative)
+        )
         root = root.rstrip('/')
         marker = f'{root}/{PROVENANCE_FILE}'
         if filesystem.get_file_info(marker).is_file:
             return settings.root.uri(relative)
         _prepared(filesystem, root)
         for name, path in asset.files().items():
-            with open(path, 'rb') as reader, \
-                    filesystem.open_output_stream(f'{root}/{name}') as writer:
+            with (
+                open(path, 'rb') as reader,
+                filesystem.open_output_stream(f'{root}/{name}') as writer,
+            ):
                 shutil.copyfileobj(reader, writer, 1 << 20)
         location = settings.root.uri(relative)
         with filesystem.open_output_stream(marker) as writer:
@@ -314,17 +360,22 @@ def _store(asset: Asset, sha256: str, settings: Any) -> Optional[str]:
         return location
     except Exception as error:
         raise RuntimeError(
-            f"Could not store {asset.asset_kind} {asset.name!r} under the "
-            f"artifact root: {error}") from error
+            f'Could not store {asset.asset_kind} {asset.name!r} under the '
+            f'artifact root: {error}'
+        ) from error
 
 
 def _manifest(asset: Asset, sha256: str, location: str) -> AssetManifest:
-    return AssetManifest(id=sha256, location=location,
-                         asset_kind=asset.asset_kind,
-                         name=asset.name, version=asset.version,
-                         format=entry_point(asset),
-                         source=str(getattr(asset, 'path', '') or '') or None,
-                         **stamp())
+    return AssetManifest(
+        id=sha256,
+        location=location,
+        asset_kind=asset.asset_kind,
+        name=asset.name,
+        version=asset.version,
+        format=entry_point(asset),
+        source=str(getattr(asset, 'path', '') or '') or None,
+        **stamp(),
+    )
 
 
 def _fetch(connector: Any, path: str, sha256: str) -> Optional[Path]:
@@ -337,8 +388,7 @@ def _fetch(connector: Any, path: str, sha256: str) -> Optional[Path]:
         return None
     filesystem, root = store
     root = root.rstrip('/')
-    if filesystem.get_file_info(
-            f'{root}/{PROVENANCE_FILE}').type != FileType.File:
+    if filesystem.get_file_info(f'{root}/{PROVENANCE_FILE}').type != FileType.File:
         return None
     if isinstance(filesystem, LocalFileSystem):
         return Path(root)
@@ -349,14 +399,15 @@ def _fetch(connector: Any, path: str, sha256: str) -> Optional[Path]:
     target.parent.mkdir(parents=True, exist_ok=True)
     partial = Path(tempfile.mkdtemp(prefix=f'.{sha256}-', dir=target.parent))
     try:
-        for info in filesystem.get_file_info(FileSelector(root,
-                                                          recursive=True)):
+        for info in filesystem.get_file_info(FileSelector(root, recursive=True)):
             if info.type != FileType.File:
                 continue
-            local = partial / info.path[len(root) + 1:]
+            local = partial / info.path[len(root) + 1 :]
             local.parent.mkdir(parents=True, exist_ok=True)
-            with filesystem.open_input_stream(info.path) as reader, \
-                    open(local, 'wb') as writer:
+            with (
+                filesystem.open_input_stream(info.path) as reader,
+                open(local, 'wb') as writer,
+            ):
                 shutil.copyfileobj(reader, writer, 1 << 20)
         try:
             partial.rename(target)

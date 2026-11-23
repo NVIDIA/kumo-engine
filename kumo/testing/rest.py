@@ -5,6 +5,7 @@ r"""
 This module contains helper functions required for writing unit tests
 against the kumo REST api.
 """
+
 import json
 import os
 import re
@@ -114,22 +115,22 @@ def fixture_admin_user_authorization_context() -> Generator[UserAuthorization]:
         _current_user_ctx.reset(token)
 
 
-def databricks_test_identity(
-) -> tuple[data_source_api.DatabricksIdentityConfig,
-           data_source_api.DatabricksOAuthCredentials]:
+def databricks_test_identity() -> tuple[
+    data_source_api.DatabricksIdentityConfig, data_source_api.DatabricksOAuthCredentials
+]:
     info = DatabricksConnectionInfo.get()
     client_id = info.credentials.get('client_id')
     client_secret = info.credentials.get('client_secret')
     if client_id is None or client_secret is None:
-        raise RuntimeError(
-            'Identity tests require Databricks OAuth credentials')
+        raise RuntimeError('Identity tests require Databricks OAuth credentials')
     return (
         data_source_api.DatabricksIdentityConfig(
             host=info.host,
             client_id=client_id.get_secret_value(),
         ),
         data_source_api.DatabricksOAuthCredentials(
-            client_secret=client_secret, ),
+            client_secret=client_secret,
+        ),
     )
 
 
@@ -137,18 +138,17 @@ def snowflake_test_identity(
     credentials: UsernamePassword | KeyPair,
     *,
     account: str = 'xva19026',
-) -> tuple[data_source_api.SnowflakeIdentityConfig,
-           data_source_api.IdentityCredentials]:
+) -> tuple[
+    data_source_api.SnowflakeIdentityConfig, data_source_api.IdentityCredentials
+]:
     if isinstance(credentials, UsernamePassword):
         return (
             data_source_api.SnowflakeIdentityConfig(
                 account=account,
                 username=credentials.username.get_secret_value(),
-                authentication=(
-                    data_source_api.SnowflakeAuthenticationKind.PASSWORD),
+                authentication=(data_source_api.SnowflakeAuthenticationKind.PASSWORD),
             ),
-            data_source_api.SnowflakePasswordCredentials(
-                password=credentials.password),
+            data_source_api.SnowflakePasswordCredentials(password=credentials.password),
         )
     if credentials.user is None or credentials.private_key is None:
         raise ValueError('Snowflake key-pair credentials require user and key')
@@ -156,8 +156,7 @@ def snowflake_test_identity(
         data_source_api.SnowflakeIdentityConfig(
             account=account,
             username=credentials.user.get_secret_value(),
-            authentication=(
-                data_source_api.SnowflakeAuthenticationKind.KEY_PAIR),
+            authentication=(data_source_api.SnowflakeAuthenticationKind.KEY_PAIR),
         ),
         data_source_api.SnowflakeKeyPairCredentials(
             private_key=credentials.private_key,
@@ -166,16 +165,20 @@ def snowflake_test_identity(
     )
 
 
-def bigquery_test_identity(
-) -> tuple[data_source_api.BigQueryIdentityConfig,
-           Optional[data_source_api.IdentityCredentials]]:
+def bigquery_test_identity() -> tuple[
+    data_source_api.BigQueryIdentityConfig,
+    Optional[data_source_api.IdentityCredentials],
+]:
     workload_service_account = os.getenv('GCP_TEST_SERVICE_ACCOUNT')
     if workload_service_account:
         return (
             data_source_api.BigQueryIdentityConfig(
                 authentication=(
                     data_source_api.GoogleWorkloadIdentityAuthentication(
-                        service_account_email=workload_service_account, )), ),
+                        service_account_email=workload_service_account,
+                    )
+                ),
+            ),
             None,
         )
 
@@ -184,9 +187,11 @@ def bigquery_test_identity(
         ENV_GOOGLE_CREDENTIALS_JSON,
     )
 
-    path = (os.getenv(ENV_GOOGLE_CREDENTIALS_JSON)
-            or os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
-            or ENV_GOOGLE_CREDENTIALS_DEFAULT_PATH)
+    path = (
+        os.getenv(ENV_GOOGLE_CREDENTIALS_JSON)
+        or os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
+        or ENV_GOOGLE_CREDENTIALS_DEFAULT_PATH
+    )
     with open(path, encoding='utf-8') as credentials_file:
         payload = json.load(credentials_file)
     if payload.get('type') != 'service_account':
@@ -200,9 +205,10 @@ def bigquery_test_identity(
                     client_id=payload['client_id'],
                     auth_uri=payload['auth_uri'],
                     token_uri=payload['token_uri'],
-                    universe_domain=payload.get('universe_domain',
-                                                'googleapis.com'),
-                )), ),
+                    universe_domain=payload.get('universe_domain', 'googleapis.com'),
+                )
+            ),
+        ),
         data_source_api.GoogleServiceAccountKeyCredentials(
             private_key_id=SecretStr(payload['private_key_id']),
             private_key=SecretStr(payload['private_key']),
@@ -210,19 +216,22 @@ def bigquery_test_identity(
     )
 
 
-def invalid_bigquery_key_test_identity_config(
-) -> data_source_api.BigQueryIdentityConfig:
+def invalid_bigquery_key_test_identity_config() -> (
+    data_source_api.BigQueryIdentityConfig
+):
     """Build key-auth metadata for testing invalid private-key rejection."""
     return data_source_api.BigQueryIdentityConfig(
         authentication=data_source_api.GoogleServiceAccountKeyAuthentication(
             project_id='example-project',
-            client_email=('invalid-bigquery-test@'
-                          'example-project.iam.gserviceaccount.com'),
+            client_email=(
+                'invalid-bigquery-test@example-project.iam.gserviceaccount.com'
+            ),
             client_id='0',
             auth_uri='https://accounts.google.com/o/oauth2/auth',
             token_uri='https://oauth2.googleapis.com/token',
             universe_domain='googleapis.com',
-        ), )
+        ),
+    )
 
 
 # When running unit tests, we don't pass the token into the header, we
@@ -236,18 +245,22 @@ def inject_access_token(test_token: RequestsResponse) -> dict[str, str]:
     return {'authorization': f'Bearer {test_token.get("access_token")}'}
 
 
-def _combine_headers(headers: Mapping[str, str],
-                     extra_values: Mapping[str, str]) -> Mapping[str, str]:
+def _combine_headers(
+    headers: Mapping[str, str], extra_values: Mapping[str, str]
+) -> Mapping[str, str]:
     x = dict(headers.items())
     x.update(extra_values)
     return x
 
 
-def get_and_expect_success(client: TestClient, path: str, params: dict[str,
-                                                                       str],
-                           response_type: type[ResponseType],
-                           headers: Mapping[str, str] = {},
-                           skip_cache: bool = False) -> ResponseType:
+def get_and_expect_success(
+    client: TestClient,
+    path: str,
+    params: dict[str, str],
+    response_type: type[ResponseType],
+    headers: Mapping[str, str] = {},
+    skip_cache: bool = False,
+) -> ResponseType:
     """Send a get request and parse the response into a Pydantic dataclass.
 
     Args:
@@ -262,8 +275,9 @@ def get_and_expect_success(client: TestClient, path: str, params: dict[str,
     request_params = dict(params)
     if skip_cache:
         request_params['skip_cache'] = 'true'
-    response = client.get(path, params=request_params, headers=headers,
-                          follow_redirects=True)
+    response = client.get(
+        path, params=request_params, headers=headers, follow_redirects=True
+    )
     _check_status_code(response, HTTPStatus.OK)
     return parse_dataclass(response_type, response)
 
@@ -305,29 +319,38 @@ def poll_get_and_expect_success(
         AssertionError: If the response does not contain the specified token attribute
 
     """
-    response = get_and_expect_success(client, path, params, response_type,
-                                      headers, skip_cache)
+    response = get_and_expect_success(
+        client, path, params, response_type, headers, skip_cache
+    )
     response_token = getattr(response, response_token_attr, None)
-    assert response_token is not None, f"Response does not have a response token {response_token_attr}"
+    assert response_token is not None, (
+        f'Response does not have a response token {response_token_attr}'
+    )
     params['response_token'] = response_token
     start_time = time.time()
-    while response_token != '' and (max_time is None
-                                    or time.time() - start_time < max_time):
+    while response_token != '' and (
+        max_time is None or time.time() - start_time < max_time
+    ):
         time.sleep(sleep_time)
-        response = get_and_expect_success(client, path, params, response_type,
-                                          headers, skip_cache)
+        response = get_and_expect_success(
+            client, path, params, response_type, headers, skip_cache
+        )
         response_token = getattr(response, response_token_attr)
     return response
 
 
-def poll_get_and_expect_error(client: TestClient, path: str, params: dict[str,
-                                                                          str],
-                              response_type: type[ResponseType],
-                              status_code: HTTPStatus, error_pattern: str,
-                              response_token_attr: str = 'response_token',
-                              sleep_time: int = 5, headers: Mapping[str,
-                                                                    str] = {},
-                              skip_cache: bool = True):
+def poll_get_and_expect_error(
+    client: TestClient,
+    path: str,
+    params: dict[str, str],
+    response_type: type[ResponseType],
+    status_code: HTTPStatus,
+    error_pattern: str,
+    response_token_attr: str = 'response_token',
+    sleep_time: int = 5,
+    headers: Mapping[str, str] = {},
+    skip_cache: bool = True,
+):
     """
     Polls an API endpoint that uses a token-based long-running operation pattern,
     expecting a specific error to occur.
@@ -355,16 +378,20 @@ def poll_get_and_expect_error(client: TestClient, path: str, params: dict[str,
     """
     if skip_cache:
         params['skip_cache'] = 'true'
-    response_raw = client.get(path, params=params, headers=headers,
-                              follow_redirects=True)
+    response_raw = client.get(
+        path, params=params, headers=headers, follow_redirects=True
+    )
     response = parse_dataclass(response_type, response_raw)
     response_token = getattr(response, response_token_attr, None)
-    assert response_token is not None, f"Response does not have a response token {response_token_attr}"
+    assert response_token is not None, (
+        f'Response does not have a response token {response_token_attr}'
+    )
     params['response_token'] = response_token
     while response_token != '':
         time.sleep(sleep_time)
-        response_raw = client.get(path, params=params, headers=headers,
-                                  follow_redirects=True)
+        response_raw = client.get(
+            path, params=params, headers=headers, follow_redirects=True
+        )
         response = parse_dataclass(response_type, response_raw)
         response_token = getattr(response, response_token_attr)
     _check_status_code(response_raw, status_code)
@@ -387,18 +414,21 @@ def patch_and_expect_success(
     Returns:
         bool: whether the resource was modified or not
     """
-    response = client.patch(path, params=params, headers=headers,
-                            follow_redirects=True)
+    response = client.patch(path, params=params, headers=headers, follow_redirects=True)
     _check_status_code(response, HTTPStatus.OK)
     return parse_dataclass(PatchResponse, response).resource_updated
 
 
-def post_and_expect_success(client: TestClient, path: str, payload: Any,
-                            response_type: type[ResponseType],
-                            headers: Mapping[str, str] = {},
-                            skip_cache: bool = False,
-                            expected_status_code: HTTPStatus = HTTPStatus.OK,
-                            **params) -> ResponseType:
+def post_and_expect_success(
+    client: TestClient,
+    path: str,
+    payload: Any,
+    response_type: type[ResponseType],
+    headers: Mapping[str, str] = {},
+    skip_cache: bool = False,
+    expected_status_code: HTTPStatus = HTTPStatus.OK,
+    **params,
+) -> ResponseType:
     """Send a post request and parse the response into a Pydantic dataclass.
 
     Args:
@@ -442,9 +472,12 @@ def put_and_expect_success(
     Returns:
         ResponseType: the parsed response
     """
-    response = client.put(path, data=_dump_dataclass(payload),
-                          headers=_combine_headers(headers, _JSON_HEADERS),
-                          follow_redirects=True)
+    response = client.put(
+        path,
+        data=_dump_dataclass(payload),
+        headers=_combine_headers(headers, _JSON_HEADERS),
+        follow_redirects=True,
+    )
     _check_status_code(response, HTTPStatus.OK)
     return parse_dataclass(response_type, response)
 
@@ -484,8 +517,7 @@ def get_and_expect_error(
     """
     if skip_cache:
         params['skip_cache'] = 'true'
-    response = client.get(path, params=params, headers=headers,
-                          follow_redirects=True)
+    response = client.get(path, params=params, headers=headers, follow_redirects=True)
     _check_status_code(response, status_code)
     _check_error_pattern(error_pattern, response)
 
@@ -507,9 +539,12 @@ def post_and_expect_error(
         error_pattern (str): a regex that is expected to match the error
             message
     """
-    response = client.post(path, data=_dump_dataclass(payload),
-                           headers=_combine_headers(headers, _JSON_HEADERS),
-                           follow_redirects=True)
+    response = client.post(
+        path,
+        data=_dump_dataclass(payload),
+        headers=_combine_headers(headers, _JSON_HEADERS),
+        follow_redirects=True,
+    )
     _check_status_code(response, status_code)
     _check_error_pattern(error_pattern, response)
 
@@ -531,9 +566,12 @@ def put_and_expect_error(
         error_pattern (str): a regex that is expected to match the error
             message
     """
-    response = client.put(path, data=_dump_dataclass(payload),
-                          headers=_combine_headers(headers, _JSON_HEADERS),
-                          follow_redirects=True)
+    response = client.put(
+        path,
+        data=_dump_dataclass(payload),
+        headers=_combine_headers(headers, _JSON_HEADERS),
+        follow_redirects=True,
+    )
     _check_status_code(response, status_code)
     _check_error_pattern(error_pattern, response)
 
@@ -555,8 +593,7 @@ def patch_and_expect_error(
         error_pattern (str): a regex that is expected to match the error
             message
     """
-    response = client.patch(path, params=params, headers=headers,
-                            follow_redirects=True)
+    response = client.patch(path, params=params, headers=headers, follow_redirects=True)
     _check_status_code(response, status_code)
     _check_error_pattern(error_pattern, response)
 
@@ -601,9 +638,12 @@ def post_and_expect_field_matches(
         error_pattern (str): a regex that is expected to match the error
             message
     """
-    response = client.post(path, data=_dump_dataclass(payload),
-                           headers=_combine_headers(headers, _JSON_HEADERS),
-                           follow_redirects=True)
+    response = client.post(
+        path,
+        data=_dump_dataclass(payload),
+        headers=_combine_headers(headers, _JSON_HEADERS),
+        follow_redirects=True,
+    )
     _check_status_code(response, HTTPStatus.OK)
     response = parse_dataclass(response_type, response)
 
@@ -615,31 +655,39 @@ def post_and_expect_field_matches(
 
 def _check_status_code(response: Response, expected_status_code: HTTPStatus):
     import pytest
+
     if response.status_code != expected_status_code:
         pytest.fail(
-            f"Expected HTTP status code = {expected_status_code}, but got "
-            f"{response.status_code}. Response headers: {response.headers} "
-            f"Response body: '{response.text[:_RESPONSE_TEXT_DISPLAY_LIMIT]}'")
+            f'Expected HTTP status code = {expected_status_code}, but got '
+            f'{response.status_code}. Response headers: {response.headers} '
+            f"Response body: '{response.text[:_RESPONSE_TEXT_DISPLAY_LIMIT]}'"
+        )
 
 
 def _check_error_pattern(error_pattern: str, response: Response):
     import pytest
+
     if not re.search(error_pattern, response.text):
-        pytest.fail(f"Expected error message matching '{error_pattern}' but "
-                    f"got: {response.text[:_RESPONSE_TEXT_DISPLAY_LIMIT]}")
+        pytest.fail(
+            f"Expected error message matching '{error_pattern}' but "
+            f'got: {response.text[:_RESPONSE_TEXT_DISPLAY_LIMIT]}'
+        )
 
 
 def _check_field_pattern(pattern: str, text: str):
     import pytest
+
     if not re.search(pattern, text):
-        pytest.fail(f"Expected field value matching '{pattern}' but "
-                    f"got: {text[:_RESPONSE_TEXT_DISPLAY_LIMIT]}")
+        pytest.fail(
+            f"Expected field value matching '{pattern}' but "
+            f'got: {text[:_RESPONSE_TEXT_DISPLAY_LIMIT]}'
+        )
 
 
 def _dump_dataclass(payload: Any) -> str:
     return json.dumps(
-        payload, default=partial(trusted_custom_pydantic_encoder,
-                                 insecure=True))
+        payload, default=partial(trusted_custom_pydantic_encoder, insecure=True)
+    )
 
 
 def configure_test_client_token(
@@ -650,17 +698,18 @@ def configure_test_client_token(
     del app, test_token, call_with_access_token
 
 
-def assert_has_call_to_action(call_to_actions: list[CallToAction],
-                              message: str):
+def assert_has_call_to_action(call_to_actions: list[CallToAction], message: str):
     assert any(message in cta.message for cta in call_to_actions), (
-        f"No call to action containing '{message}' was "
-        f"found. Got: {call_to_actions}")
+        f"No call to action containing '{message}' was found. Got: {call_to_actions}"
+    )
 
 
-def validate_name_test_helper(client: TestClient, name: str, endpoint: str,
-                              should_succeed: bool):
-    response = get_and_expect_success(client, endpoint, {"name": name},
-                                      ValidateNameResponse)
+def validate_name_test_helper(
+    client: TestClient, name: str, endpoint: str, should_succeed: bool
+):
+    response = get_and_expect_success(
+        client, endpoint, {'name': name}, ValidateNameResponse
+    )
     if not should_succeed:
         assert response.is_valid is False
         assert response.error_msg is not None
@@ -681,14 +730,14 @@ def _remap_fixture_ids_v2(
     remapped = from_json(json_dump, FixtureDefinition)
 
     old_to_new_graph_fpid: dict[FPID, FPID] = {
-        old_g.fpid: new_g.fpid
-        for old_g, new_g in zip(dump.graphs, remapped.graphs)
+        old_g.fpid: new_g.fpid for old_g, new_g in zip(dump.graphs, remapped.graphs)
     }
     queries_remapped = [
         replace(
             q,
             graph_fpid=old_to_new_graph_fpid.get(q.graph_fpid, q.graph_fpid),
-        ) for q in remapped.queries
+        )
+        for q in remapped.queries
     ]
     return replace(remapped, queries=queries_remapped)
 
@@ -732,16 +781,15 @@ def randomize_fixture_ids_v2(dump: FixtureDefinition) -> FixtureDefinition:
         """
         source_table = table.source_table
         for field_name in (
-                'snowflake_connector_id',
-                'databricks_connector_id',
-                'bigquery_connector_id',
-                'connector_id',
+            'snowflake_connector_id',
+            'databricks_connector_id',
+            'bigquery_connector_id',
+            'connector_id',
         ):
             value = getattr(source_table, field_name, None)
             if value is not None:
                 return str(value)
-        raise ValueError(
-            f'Fixture table has no connector reference: {source_table!r}')
+        raise ValueError(f'Fixture table has no connector reference: {source_table!r}')
 
     connector_ids = {
         raw_connector_id(table)
@@ -789,8 +837,7 @@ def create_identity_binding(
         list[data_source_api.IdentityResponse],
     )
     identity = next(
-        (candidate
-         for candidate in identities if candidate.config == identity_config),
+        (candidate for candidate in identities if candidate.config == identity_config),
         None,
     )
     if identity is None:
@@ -813,10 +860,12 @@ def create_identity_binding(
     put_and_expect_success(
         client,
         f'/v0/identities/{identity.id}/groups',
-        data_source_api.ReplaceIdentityGroupsArgs(group_ids=[
-            *[str(group_id) for group_id in mapped_groups.group_ids],
-            str(group.id),
-        ]),
+        data_source_api.ReplaceIdentityGroupsArgs(
+            group_ids=[
+                *[str(group_id) for group_id in mapped_groups.group_ids],
+                str(group.id),
+            ]
+        ),
         data_source_api.IdentityGroupsResponse,
     )
     return IdentityBindingSetup(
@@ -880,39 +929,44 @@ def fake_materialization_info(
 ) -> MaterializationTaskInfo:
     return MaterializationTaskInfo(
         table_stats=fake_table_stats or [],
-        code_version="1.2.3",
+        code_version='1.2.3',
         start_time=datetime.now(),
         end_time=datetime.now(),
         job_id=batch_prediction_job_id or training_job_id,
-        graph_id=GraphIDv1("fake_graph"),
-        predictive_query_id=PredictiveQueryID("fake_pq"),
-        temporal_workflow_id="temporal_id",
+        graph_id=GraphIDv1('fake_graph'),
+        predictive_query_id=PredictiveQueryID('fake_pq'),
+        temporal_workflow_id='temporal_id',
     )
 
 
-def financial_snowflake_config(
-        connector_name: str) -> SnowflakeConnectorResourceConfig:
-    return SnowflakeConnectorResourceConfig(name=connector_name,
-                                            warehouse='WH_XS', database='KUMO',
-                                            schema_name='FINANCIAL_PYTEST')
-
-
-def writable_snowflake_config(
-        connector_name: str) -> SnowflakeConnectorResourceConfig:
+def financial_snowflake_config(connector_name: str) -> SnowflakeConnectorResourceConfig:
     return SnowflakeConnectorResourceConfig(
-        name=connector_name, warehouse='WH_XS', database='KUMO',
-        schema_name='TEST_SNOWFLAKE_WRITE_PANDAS')
+        name=connector_name,
+        warehouse='WH_XS',
+        database='KUMO',
+        schema_name='FINANCIAL_PYTEST',
+    )
 
 
-def writable_bigquery_connector(
-        connector_name: str) -> BigQueryConnectorResourceConfig:
-    return BigQueryConnectorResourceConfig(name=connector_name,
-                                           project_id='kumo-engineering',
-                                           dataset_id='test', location='US')
+def writable_snowflake_config(connector_name: str) -> SnowflakeConnectorResourceConfig:
+    return SnowflakeConnectorResourceConfig(
+        name=connector_name,
+        warehouse='WH_XS',
+        database='KUMO',
+        schema_name='TEST_SNOWFLAKE_WRITE_PANDAS',
+    )
 
 
-def hm_databricks_config(
-        connector_name: str) -> DatabricksConnectorResourceConfig:
+def writable_bigquery_connector(connector_name: str) -> BigQueryConnectorResourceConfig:
+    return BigQueryConnectorResourceConfig(
+        name=connector_name,
+        project_id='kumo-engineering',
+        dataset_id='test',
+        location='US',
+    )
+
+
+def hm_databricks_config(connector_name: str) -> DatabricksConnectorResourceConfig:
     return DatabricksConnectorResourceConfig(
         name=connector_name,
         warehouse_id='82d859e4a6b283a0',
@@ -929,20 +983,24 @@ def hm_bigquery_config(connector_name: str) -> BigQueryConnectorResourceConfig:
     used by the BigQuery ingestion e2e tests. Analog of
     ``hm_databricks_config``.
     """
-    return BigQueryConnectorResourceConfig(name=connector_name,
-                                           project_id='kumo-engineering',
-                                           dataset_id='hnm_integ_test',
-                                           location='US')
+    return BigQueryConnectorResourceConfig(
+        name=connector_name,
+        project_id='kumo-engineering',
+        dataset_id='hnm_integ_test',
+        location='US',
+    )
 
 
 def fake_admin_request_context() -> RequestContext:
     """Returns an administrator request context."""
-    return RequestContext(user_authorization=UserAuthorization(
-        user_id=UserID('user@kumo.ai'),
-        access_token="",
-        permissions=[
-            Permissions.READ.compose(),
-            Permissions.WRITE.compose(),
-            Permissions.ADMIN.compose()
-        ],
-    ))
+    return RequestContext(
+        user_authorization=UserAuthorization(
+            user_id=UserID('user@kumo.ai'),
+            access_token='',
+            permissions=[
+                Permissions.READ.compose(),
+                Permissions.WRITE.compose(),
+                Permissions.ADMIN.compose(),
+            ],
+        )
+    )

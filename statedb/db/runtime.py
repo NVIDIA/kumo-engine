@@ -35,10 +35,10 @@ from statedb.db.schema import (
 
 
 def _sqlite_md5(value: object) -> str:
-    return hashlib.md5(str(value).encode("utf-8")).hexdigest()
+    return hashlib.md5(str(value).encode('utf-8')).hexdigest()
 
 
-TxMode = Literal["read", "write"]
+TxMode = Literal['read', 'write']
 PostgresConnection = asyncpg.Connection | PoolConnectionProxy
 _SQLITE_POOL_WAIT_SECONDS = 0.001
 
@@ -55,7 +55,7 @@ async def _await_aiosqlite(
     while not task.done():
         if loop.time() >= deadline:
             task.cancel()
-            raise TimeoutError("StateDB sqlite operation timed out")
+            raise TimeoutError('StateDB sqlite operation timed out')
         await asyncio.sleep(0.001)
     return task.result()
 
@@ -77,7 +77,7 @@ class StateTx(Protocol):
 @dataclass
 class _SqliteStateTx:
     connection: aiosqlite.Connection
-    backend: BackendName = "sqlite"
+    backend: BackendName = 'sqlite'
 
     async def execute(self, sql: str, *args: Any) -> Any:
         cursor = await _await_aiosqlite(self.connection.execute(sql, args))
@@ -100,9 +100,9 @@ class _SqliteStateTx:
 
 @dataclass
 class _PostgresStateTx:
-    pool: "_PostgresConnectionPool"
+    pool: '_PostgresConnectionPool'
     connection: PostgresConnection
-    backend: BackendName = "postgres"
+    backend: BackendName = 'postgres'
 
     async def execute(self, sql: str, *args: Any) -> str:
         return await self.pool.execute(self.connection, sql, *args)
@@ -191,8 +191,9 @@ class _PostgresConnectionPool:
     ) -> str:
         await self._ensure_open()
         with restricted_diagnostic_boundary(
-                safe_message='StateDB PostgreSQL execute failed',
-                exception_types=asyncpg.PostgresError):
+            safe_message='StateDB PostgreSQL execute failed',
+            exception_types=asyncpg.PostgresError,
+        ):
             return await self._run(connection.execute(sql, *args))
 
     async def fetchrow(
@@ -203,8 +204,9 @@ class _PostgresConnectionPool:
     ) -> asyncpg.Record | None:
         await self._ensure_open()
         with restricted_diagnostic_boundary(
-                safe_message='StateDB PostgreSQL fetch failed',
-                exception_types=asyncpg.PostgresError):
+            safe_message='StateDB PostgreSQL fetch failed',
+            exception_types=asyncpg.PostgresError,
+        ):
             return await self._run(connection.fetchrow(sql, *args))
 
     async def fetch(
@@ -215,8 +217,9 @@ class _PostgresConnectionPool:
     ) -> Sequence[asyncpg.Record]:
         await self._ensure_open()
         with restricted_diagnostic_boundary(
-                safe_message='StateDB PostgreSQL fetch failed',
-                exception_types=asyncpg.PostgresError):
+            safe_message='StateDB PostgreSQL fetch failed',
+            exception_types=asyncpg.PostgresError,
+        ):
             return await self._run(connection.fetch(sql, *args))
 
     async def close(self) -> None:
@@ -247,10 +250,12 @@ class _PostgresConnectionPool:
         while True:
             with self._lock:
                 if self._closed:
-                    raise RuntimeError("StateDB postgres backend is closed")
-                if (self._open_future is not None
-                        and self._open_future.done()
-                        and self._open_future_failed(self._open_future)):
+                    raise RuntimeError('StateDB postgres backend is closed')
+                if (
+                    self._open_future is not None
+                    and self._open_future.done()
+                    and self._open_future_failed(self._open_future)
+                ):
                     self._open_future = None
                 if self._open_future is None:
                     self._start_loop()
@@ -274,7 +279,7 @@ class _PostgresConnectionPool:
 
     async def _ensure_owner_process(self) -> None:
         if self._pid != os.getpid():
-            raise RuntimeError("StateDB postgres pool belongs to another process")
+            raise RuntimeError('StateDB postgres pool belongs to another process')
 
     def _open_future_failed(self, open_future: Any) -> bool:
         if open_future.cancelled():
@@ -295,7 +300,7 @@ class _PostgresConnectionPool:
             return
         self._thread = threading.Thread(
             target=self._run_loop,
-            name="statedb-postgres-pool",
+            name='statedb-postgres-pool',
             daemon=True,
         )
         self._thread.start()
@@ -313,15 +318,16 @@ class _PostgresConnectionPool:
 
     async def _open_pool(self) -> None:
         options: dict[str, Any] = {
-            "dsn": self._dsn,
-            "min_size": self._min_pool_size,
-            "max_size": self._max_pool_size,
+            'dsn': self._dsn,
+            'min_size': self._min_pool_size,
+            'max_size': self._max_pool_size,
         }
         if self._password is not None:
-            options["password"] = self._password
+            options['password'] = self._password
         with restricted_diagnostic_boundary(
-                safe_message='StateDB PostgreSQL connection failed',
-                exception_types=(asyncpg.PostgresError, OSError)):
+            safe_message='StateDB PostgreSQL connection failed',
+            exception_types=(asyncpg.PostgresError, OSError),
+        ):
             self._pool = await asyncpg.create_pool(**options)
 
     async def _acquire(
@@ -330,19 +336,21 @@ class _PostgresConnectionPool:
         state: _PostgresAcquireState,
     ) -> _PostgresConnectionLease:
         if self._pool is None:
-            raise RuntimeError("StateDB postgres backend is not open")
+            raise RuntimeError('StateDB postgres backend is not open')
         acquire_context = self._pool.acquire()
         state.acquire_context = acquire_context
         with restricted_diagnostic_boundary(
-                safe_message='StateDB PostgreSQL acquire failed',
-                exception_types=asyncpg.PostgresError):
+            safe_message='StateDB PostgreSQL acquire failed',
+            exception_types=asyncpg.PostgresError,
+        ):
             connection = await acquire_context.__aenter__()
         state.connection = connection
-        transaction_context = connection.transaction(readonly=(mode == "read"))
+        transaction_context = connection.transaction(readonly=(mode == 'read'))
         try:
             with restricted_diagnostic_boundary(
-                    safe_message='StateDB PostgreSQL transaction failed',
-                    exception_types=asyncpg.PostgresError):
+                safe_message='StateDB PostgreSQL transaction failed',
+                exception_types=asyncpg.PostgresError,
+            ):
                 await transaction_context.__aenter__()
         except BaseException:
             await acquire_context.__aexit__(None, None, None)
@@ -362,21 +370,23 @@ class _PostgresConnectionPool:
     ) -> None:
         try:
             with restricted_diagnostic_boundary(
-                    safe_message='StateDB PostgreSQL transaction failed',
-                    exception_types=asyncpg.PostgresError):
-                await lease.transaction_context.__aexit__(
-                    exc_type, exc, traceback)
+                safe_message='StateDB PostgreSQL transaction failed',
+                exception_types=asyncpg.PostgresError,
+            ):
+                await lease.transaction_context.__aexit__(exc_type, exc, traceback)
         finally:
             with restricted_diagnostic_boundary(
-                    safe_message='StateDB PostgreSQL release failed',
-                    exception_types=asyncpg.PostgresError):
+                safe_message='StateDB PostgreSQL release failed',
+                exception_types=asyncpg.PostgresError,
+            ):
                 await lease.acquire_context.__aexit__(exc_type, exc, traceback)
 
     async def _close_pool(self) -> None:
         if self._pool is not None:
             with restricted_diagnostic_boundary(
-                    safe_message='StateDB PostgreSQL close failed',
-                    exception_types=asyncpg.PostgresError):
+                safe_message='StateDB PostgreSQL close failed',
+                exception_types=asyncpg.PostgresError,
+            ):
                 await self._pool.close()
             self._pool = None
 
@@ -403,7 +413,8 @@ class _PostgresConnectionPool:
                         type(cancellation),
                         cancellation,
                         cancellation.__traceback__,
-                    ))
+                    )
+                )
             except RuntimeError:
                 return
             with self._lock:
@@ -445,7 +456,7 @@ class _PostgresConnectionPool:
         if loop is None or loop.is_closed() or not loop.is_running():
             if asyncio.iscoroutine(awaitable):
                 awaitable.close()
-            raise RuntimeError("StateDB postgres backend is closed")
+            raise RuntimeError('StateDB postgres backend is closed')
         return asyncio.run_coroutine_threadsafe(awaitable, loop)
 
     async def _run(self, awaitable: Any) -> Any:
@@ -487,7 +498,7 @@ class _PostgresConnectionPools:
         password: Callable[[], Awaitable[str]] | None = None,
         min_pool_size: int,
         max_pool_size: int,
-    ) -> "_PostgresConnectionPools":
+    ) -> '_PostgresConnectionPools':
         pools = cls(
             dsn,
             password=password,
@@ -528,7 +539,7 @@ class _PostgresConnectionPools:
         with self._lock:
             pid = self._discard_inherited_pools_locked()
             if self._closed:
-                raise RuntimeError("StateDB postgres backend is closed")
+                raise RuntimeError('StateDB postgres backend is closed')
             pool = self._pools.get(pid)
             if pool is None:
                 pool = _PostgresConnectionPool(
@@ -559,7 +570,7 @@ class _PostgresConnectionPools:
 class _SqliteConnectionPool:
     def __init__(self, connections: Sequence[aiosqlite.Connection]) -> None:
         if not connections:
-            raise ValueError("StateDB sqlite pool must own at least one connection")
+            raise ValueError('StateDB sqlite pool must own at least one connection')
         self._available = list(connections)
         self._leased: set[aiosqlite.Connection] = set()
         self._lock = threading.Lock()
@@ -571,9 +582,9 @@ class _SqliteConnectionPool:
         sqlite_path: str,
         *,
         pool_size: int,
-    ) -> "_SqliteConnectionPool":
+    ) -> '_SqliteConnectionPool':
         if pool_size < 1:
-            raise ValueError("sqlite pool_size must be at least 1")
+            raise ValueError('sqlite pool_size must be at least 1')
         connections: list[aiosqlite.Connection] = []
         try:
             for _ in range(pool_size):
@@ -584,13 +595,15 @@ class _SqliteConnectionPool:
                 connection.row_factory = aiosqlite.Row
                 await _await_aiosqlite(
                     connection.create_function(
-                        "md5",
+                        'md5',
                         1,
                         _sqlite_md5,
                         deterministic=True,
-                    ))
+                    )
+                )
                 cursor = await _await_aiosqlite(
-                    connection.execute("PRAGMA busy_timeout=30000"))
+                    connection.execute('PRAGMA busy_timeout=30000')
+                )
                 await _await_aiosqlite(cursor.close())
                 connections.append(connection)
         except BaseException:
@@ -604,7 +617,7 @@ class _SqliteConnectionPool:
         while True:
             with self._lock:
                 if self._closed:
-                    raise RuntimeError("StateDB sqlite backend is closed")
+                    raise RuntimeError('StateDB sqlite backend is closed')
                 if self._available:
                     connection = self._available.pop()
                     self._leased.add(connection)
@@ -652,8 +665,9 @@ async def _open_aiosqlite_connection(
     **kwargs: Any,
 ) -> aiosqlite.Connection:
     connection_or_awaitable = aiosqlite.connect(sqlite_path, **kwargs)
-    if (hasattr(connection_or_awaitable, "start")
-            and hasattr(connection_or_awaitable, "_connect")):
+    if hasattr(connection_or_awaitable, 'start') and hasattr(
+        connection_or_awaitable, '_connect'
+    ):
         connection = connection_or_awaitable
         # aiosqlite 0.17 wraps this same path in Connection.__await__.
         # Owning it here keeps startup consistent with the pooled lifecycle.
@@ -668,7 +682,7 @@ async def _close_aiosqlite_connection(
     try:
         await _await_aiosqlite(connection.close())
     except ValueError as exc:
-        if "Connection closed" not in str(exc):
+        if 'Connection closed' not in str(exc):
             raise
 
 
@@ -709,14 +723,14 @@ class StateDB:
         sqlite_path: str,
         *,
         pool_size: int = 4,
-    ) -> "StateDB":
+    ) -> 'StateDB':
         result = await bootstrap_sqlite(sqlite_path)
         sqlite_pool = await _SqliteConnectionPool.open(
             sqlite_path,
             pool_size=pool_size,
         )
         return cls(
-            backend="sqlite",
+            backend='sqlite',
             target=sqlite_path,
             bootstrap_result=result,
             _sqlite_pool=sqlite_pool,
@@ -730,7 +744,7 @@ class StateDB:
         password: Callable[[], Awaitable[str]] | None = None,
         min_pool_size: int = 1,
         max_pool_size: int = 10,
-    ) -> "StateDB":
+    ) -> 'StateDB':
         if password is None:
             result = await bootstrap_postgres(
                 dsn,
@@ -749,7 +763,7 @@ class StateDB:
             max_pool_size=max_pool_size,
         )
         return cls(
-            backend="postgres",
+            backend='postgres',
             target=dsn,
             bootstrap_result=result,
             _postgres_pools=postgres_pools,
@@ -759,12 +773,13 @@ class StateDB:
         expected_hash = schema_identity(self.backend)
         try:
             async with self.read_tx() as tx:
-                if self.backend == "sqlite":
+                if self.backend == 'sqlite':
                     table_rows = await tx.fetch(
-                        "SELECT name FROM sqlite_master WHERE type = 'table'")
+                        "SELECT name FROM sqlite_master WHERE type = 'table'"
+                    )
                     existing_tables = {row[0] for row in table_rows}
                     schema_row = await tx.fetchrow(
-                        "SELECT payload FROM statedb_schema WHERE id = ?",
+                        'SELECT payload FROM statedb_schema WHERE id = ?',
                         SCHEMA_ROW_ID,
                     )
                     payload_text = schema_row[0] if schema_row else None
@@ -774,8 +789,9 @@ class StateDB:
                         SELECT tablename
                         FROM pg_catalog.pg_tables
                         WHERE schemaname = current_schema()
-                        """)
-                    existing_tables = {row["tablename"] for row in table_rows}
+                        """
+                    )
+                    existing_tables = {row['tablename'] for row in table_rows}
                     schema_row = await tx.fetchrow(
                         """
                         SELECT payload::text AS payload
@@ -784,21 +800,27 @@ class StateDB:
                         """,
                         SCHEMA_ROW_ID,
                     )
-                    payload_text = schema_row["payload"] if schema_row else None
+                    payload_text = schema_row['payload'] if schema_row else None
 
             missing_tables = tuple(
                 sorted(
-                    table for table in STATE_DB_TABLE_NAMES
-                    if table not in existing_tables))
+                    table
+                    for table in STATE_DB_TABLE_NAMES
+                    if table not in existing_tables
+                )
+            )
             payload = json.loads(payload_text) if payload_text else {}
-            stored_hash = payload.get("schema_hash")
-            stored_version = payload.get("schema_version")
+            stored_hash = payload.get('schema_hash')
+            stored_version = payload.get('schema_version')
             if not isinstance(stored_hash, str):
                 stored_hash = None
             if type(stored_version) is not int:
                 stored_version = None
-            ok = (stored_hash == expected_hash and
-                  stored_version == SCHEMA_VERSION and not missing_tables)
+            ok = (
+                stored_hash == expected_hash
+                and stored_version == SCHEMA_VERSION
+                and not missing_tables
+            )
             return StateDBSchemaStatus(
                 backend=self.backend,
                 expected_schema_version=SCHEMA_VERSION,
@@ -807,7 +829,8 @@ class StateDB:
                 stored_schema_hash=stored_hash,
                 expected_table_count=len(STATE_DB_TABLE_NAMES),
                 existing_state_table_count=len(
-                    set(STATE_DB_TABLE_NAMES).intersection(existing_tables)),
+                    set(STATE_DB_TABLE_NAMES).intersection(existing_tables)
+                ),
                 missing_table_names=missing_tables,
                 ok=ok,
             )
@@ -830,14 +853,14 @@ class StateDB:
         return (await self.get_schema_status()).ok
 
     async def close(self) -> None:
-        if self.backend == "sqlite":
+        if self.backend == 'sqlite':
             if self._sqlite_pool is not None:
                 await self._sqlite_pool.close()
             return
         if self._postgres_pools is not None:
             await self._postgres_pools.close()
 
-    async def __aenter__(self) -> "StateDB":
+    async def __aenter__(self) -> 'StateDB':
         return self
 
     async def __aexit__(self, *exc_info: object) -> None:
@@ -845,17 +868,17 @@ class StateDB:
 
     @asynccontextmanager
     async def read_tx(self) -> AsyncGenerator[StateTx, None]:
-        async with self._tx("read") as tx:
+        async with self._tx('read') as tx:
             yield tx
 
     @asynccontextmanager
     async def write_tx(self) -> AsyncGenerator[StateTx, None]:
-        async with self._tx("write") as tx:
+        async with self._tx('write') as tx:
             yield tx
 
     @asynccontextmanager
     async def _tx(self, mode: TxMode) -> AsyncGenerator[StateTx, None]:
-        if self.backend == "sqlite":
+        if self.backend == 'sqlite':
             async with self._sqlite_tx(mode) as tx:
                 yield tx
             return
@@ -865,7 +888,7 @@ class StateDB:
     @asynccontextmanager
     async def _sqlite_tx(self, mode: TxMode) -> AsyncGenerator[StateTx, None]:
         if self._sqlite_pool is None:
-            raise RuntimeError("StateDB sqlite backend is not open")
+            raise RuntimeError('StateDB sqlite backend is not open')
         async with self._sqlite_pool.acquire() as connection:
             # BEGIN stays inside the handler: aiosqlite runs SQLite work on a
             # per-connection thread, so a cancelled BEGIN can still execute.
@@ -874,10 +897,12 @@ class StateDB:
             try:
                 cursor = await _await_aiosqlite(
                     connection.execute(
-                        "BEGIN IMMEDIATE" if mode == "write" else "BEGIN"))
+                        'BEGIN IMMEDIATE' if mode == 'write' else 'BEGIN'
+                    )
+                )
                 await _await_aiosqlite(cursor.close())
                 yield _SqliteStateTx(connection)
-                if mode == "write":
+                if mode == 'write':
                     await _await_aiosqlite(connection.commit())
                 else:
                     await _await_aiosqlite(connection.rollback())
@@ -888,6 +913,6 @@ class StateDB:
     @asynccontextmanager
     async def _postgres_tx(self, mode: TxMode) -> AsyncGenerator[StateTx, None]:
         if self._postgres_pools is None:
-            raise RuntimeError("StateDB postgres backend is not open")
+            raise RuntimeError('StateDB postgres backend is not open')
         async with self._postgres_pools.transaction(mode) as tx:
             yield tx

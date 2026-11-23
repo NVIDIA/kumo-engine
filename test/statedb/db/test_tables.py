@@ -55,8 +55,9 @@ def _timestamps() -> ResourceTimestamps:
     return ResourceTimestamps(created_at=now, updated_at=now)
 
 
-def _entry(project_id: ProjectID, label: str, alias: str,
-           ref_count: int = 1) -> TableDBEntryV2:
+def _entry(
+    project_id: ProjectID, label: str, alias: str, ref_count: int = 1
+) -> TableDBEntryV2:
     connector_id = CONNECTOR_A if project_id == PROJECT_A else CONNECTOR_B
     definition = TableDefinition(
         cols=[Column(name='a', stype=Stype.ID, dtype=Dtype.int)],
@@ -106,15 +107,17 @@ async def _seed_projects_and_connectors(db: StateDB) -> None:
                 timestamps=_timestamps(),
             ),
         )
-        for project_id, connector_id in ((PROJECT_A, CONNECTOR_A),
-                                         (PROJECT_B, CONNECTOR_B)):
+        for project_id, connector_id in (
+            (PROJECT_A, CONNECTOR_A),
+            (PROJECT_B, CONNECTOR_B),
+        ):
             await projects.upsert(
                 tx,
                 str(project_id),
                 ProjectDBEntry(
                     id=project_id,
                     group_id=GROUP_ID,
-                    slug=f"project-{str(project_id)[-8:]}",
+                    slug=f'project-{str(project_id)[-8:]}',
                     display_name=str(project_id),
                     normalized_display_name=str(project_id),
                     timestamps=_timestamps(),
@@ -128,7 +131,8 @@ async def _seed_projects_and_connectors(db: StateDB) -> None:
                     name='uploads',
                     normalized_name='uploads',
                     config=FileConnectorResourceConfig(
-                        name='uploads', root_dir=f'/tmp/{project_id}'),
+                        name='uploads', root_dir=f'/tmp/{project_id}'
+                    ),
                     timestamps=_timestamps(),
                 ),
             )
@@ -195,13 +199,18 @@ async def test_table_repository_round_trips_any_uri_source(tmp_path) -> None:
                 display_name='GCS reader',
                 normalized_display_name='gcs reader',
                 description='',
-                identity_key=('gcs:workload_identity:'
-                              'reader@example-project.iam.gserviceaccount.com'),
+                identity_key=(
+                    'gcs:workload_identity:'
+                    'reader@example-project.iam.gserviceaccount.com'
+                ),
                 credentials_rotated_at=None,
                 config=api.GCSIdentityConfig(
                     authentication=api.GoogleWorkloadIdentityAuthentication(
                         service_account_email=(
-                            'reader@example-project.iam.gserviceaccount.com'))),
+                            'reader@example-project.iam.gserviceaccount.com'
+                        )
+                    )
+                ),
                 timestamps=_timestamps(),
             ),
         )
@@ -235,7 +244,8 @@ async def test_table_repository_round_trips_any_uri_source(tmp_path) -> None:
     assert restored is not None
     assert restored == entry
     assert restored.config.source_table.source.uri == (
-        'gs://customer-data/deep/orders.parquet')
+        'gs://customer-data/deep/orders.parquet'
+    )
     await db.close()
 
 
@@ -259,7 +269,8 @@ async def test_table_alias_uniqueness_is_per_project(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_table_alias_uses_one_nfkc_key_for_lookup_batch_and_collision(
-        tmp_path) -> None:
+    tmp_path,
+) -> None:
     db = await StateDB.open_sqlite(str(tmp_path / 'state.db'))
     await _seed_projects_and_connectors(db)
     repo = StateDBTableRepository()
@@ -279,8 +290,7 @@ async def test_table_alias_uses_one_nfkc_key_for_lookup_batch_and_collision(
 
 
 @pytest.mark.asyncio
-async def test_table_delete_and_reference_count_cannot_cross_projects(
-        tmp_path) -> None:
+async def test_table_delete_and_reference_count_cannot_cross_projects(tmp_path) -> None:
     db = await StateDB.open_sqlite(str(tmp_path / 'state.db'))
     await _seed_projects_and_connectors(db)
     repo = StateDBTableRepository()
@@ -300,8 +310,7 @@ async def test_table_delete_and_reference_count_cannot_cross_projects(
 
 
 @pytest.mark.asyncio
-async def test_table_repository_rejects_cross_project_connector(
-        tmp_path) -> None:
+async def test_table_repository_rejects_cross_project_connector(tmp_path) -> None:
     db = await StateDB.open_sqlite(str(tmp_path / 'state.db'))
     await _seed_projects_and_connectors(db)
     repo = StateDBTableRepository()
@@ -329,7 +338,8 @@ async def test_table_repository_rejects_cross_project_connector(
 
 @pytest.mark.asyncio
 async def test_table_repository_locks_connector_before_validation_read(
-        tmp_path, monkeypatch) -> None:
+    tmp_path, monkeypatch
+) -> None:
     db = await StateDB.open_sqlite(str(tmp_path / 'state.db'))
     await _seed_projects_and_connectors(db)
     entry = _entry(PROJECT_A, 'race', 'race')
@@ -343,9 +353,9 @@ async def test_table_repository_locks_connector_before_validation_read(
         events.append(('get', PROJECT_A, connector_id))
         return await original_get(repository, tx, connector_id)
 
-    monkeypatch.setattr(connector_admission_module,
-                        'lock_connector_admission_and_delete',
-                        record_lock)
+    monkeypatch.setattr(
+        connector_admission_module, 'lock_connector_admission_and_delete', record_lock
+    )
     monkeypatch.setattr(StateDBConnectorRepository, 'get', record_get)
 
     async with db.write_tx() as tx:

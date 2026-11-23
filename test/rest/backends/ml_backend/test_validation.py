@@ -18,12 +18,23 @@ from rest.backends.ml_backend.validation import (
 )
 
 
-@pytest.mark.parametrize('validator,stage', [
-    (GenerateTrainingTableValidator(task_type=TaskType.BINARY_CLASSIFICATION,
-                                    query_type=QueryType.STATIC), 'training'),
-    (GeneratePredictionTableValidator(task_type=TaskType.BINARY_CLASSIFICATION,
-                                      query_type=QueryType.STATIC), 'pred'),
-])
+@pytest.mark.parametrize(
+    'validator,stage',
+    [
+        (
+            GenerateTrainingTableValidator(
+                task_type=TaskType.BINARY_CLASSIFICATION, query_type=QueryType.STATIC
+            ),
+            'training',
+        ),
+        (
+            GeneratePredictionTableValidator(
+                task_type=TaskType.BINARY_CLASSIFICATION, query_type=QueryType.STATIC
+            ),
+            'pred',
+        ),
+    ],
+)
 def test_non_empty_training_table(
     tmp_path: pathlib.Path,
     validator: TableValidator,
@@ -39,12 +50,23 @@ def test_non_empty_training_table(
     assert len(validation_response.errors) == 0
 
 
-@pytest.mark.parametrize('validator,stage', [
-    (GenerateTrainingTableValidator(task_type=TaskType.BINARY_CLASSIFICATION,
-                                    query_type=QueryType.STATIC), 'training'),
-    (GeneratePredictionTableValidator(task_type=TaskType.BINARY_CLASSIFICATION,
-                                      query_type=QueryType.STATIC), 'pred'),
-])
+@pytest.mark.parametrize(
+    'validator,stage',
+    [
+        (
+            GenerateTrainingTableValidator(
+                task_type=TaskType.BINARY_CLASSIFICATION, query_type=QueryType.STATIC
+            ),
+            'training',
+        ),
+        (
+            GeneratePredictionTableValidator(
+                task_type=TaskType.BINARY_CLASSIFICATION, query_type=QueryType.STATIC
+            ),
+            'pred',
+        ),
+    ],
+)
 def test_empty_training_table(
     tmp_path: pathlib.Path,
     validator: TableValidator,
@@ -58,12 +80,16 @@ def test_empty_training_table(
     validation_response = validator.post_generation(stage, path)
 
     assert len(validation_response.errors) == 1
-    if (stage == 'pred' and validator.query_type == QueryType.STATIC
-            and validator.task_type.is_node_pred):
+    if (
+        stage == 'pred'
+        and validator.query_type == QueryType.STATIC
+        and validator.task_type.is_node_pred
+    ):
         expected_message = 'Your prediction column is completely filled.'
     else:
         expected_message = (
             f'Generated {stage} table is empty. Please modify your query to '
             'make filters less restrictive or add more data that will fit '
-            'your desired filters.')
+            'your desired filters.'
+        )
     assert validation_response.errors[0].message.startswith(expected_message)

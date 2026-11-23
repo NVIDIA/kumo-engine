@@ -36,7 +36,7 @@ class WithBeforeValidator:
 def test_remove_field():
     # Ensure that the dataclass is forwards-compatible (old code should ignore
     # newly added field).
-    x = Cls(x=1, y="b")
+    x = Cls(x=1, y='b')
     data = to_json(x)
     y = from_json(data, MissingY)
     assert y.x == x.x
@@ -45,8 +45,7 @@ def test_remove_field():
 def test_before_validator_dict_keyword_ok():
     # Keyword / mapping construction is normalized to a dict and round-trips.
     assert WithBeforeValidator(x=5).x == 5
-    assert from_json(to_json(WithBeforeValidator(x=5)),
-                     WithBeforeValidator).x == 5
+    assert from_json(to_json(WithBeforeValidator(x=5)), WithBeforeValidator).x == 5
 
 
 def test_before_validator_dict_rejects_positional():

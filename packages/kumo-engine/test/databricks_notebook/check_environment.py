@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Require main-only dispatch and independent maintainer approval."""
+
 import sys
 from pathlib import Path
 

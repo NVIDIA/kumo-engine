@@ -12,8 +12,8 @@ _LOG_RECORD_BASE_FIELDS = frozenset(logging.makeLogRecord({}).__dict__.keys())
 
 class JsonLogFormatter(logging.Formatter):
     """Serialize log records as one-line JSON objects."""
-    def formatTime(self, record: logging.LogRecord,
-                   datefmt: str | None = None) -> str:
+
+    def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:
         if datefmt is not None:
             return super().formatTime(record, datefmt)
         timestamp = datetime.fromtimestamp(record.created, tz=timezone.utc)

@@ -16,6 +16,7 @@ The container-scoped client is captured eagerly at construction time, on the
 request thread: PyArrow issues reads from its own IO threads, which must not
 re-resolve the request-local (``ContextVar``) credential scope.
 """
+
 from azure.core.exceptions import ResourceNotFoundError
 from azure.storage.filedatalake import FileSystemClient
 from fsspec.spec import AbstractBufferedFile, AbstractFileSystem
@@ -25,23 +26,26 @@ from io_utils.fsutil.uri import ADLSURI, ParseURI
 
 class ADLSRangeReadFile(AbstractBufferedFile):
     """Read-only buffered file whose cache misses become ADLS range reads."""
-    def __init__(self, fs: 'ADLSArrowFileSystem', path: str, mode: str = 'rb',
-                 **kwargs):
+
+    def __init__(
+        self, fs: 'ADLSArrowFileSystem', path: str, mode: str = 'rb', **kwargs
+    ):
         if mode != 'rb':
-            raise NotImplementedError(
-                'ADLS arrow filesystem supports read-only access')
+            raise NotImplementedError('ADLS arrow filesystem supports read-only access')
         self._file_client = fs.fs_client.get_file_client(path)
         super().__init__(fs, path, mode=mode, **kwargs)
 
     def _fetch_range(self, start: int, end: int) -> bytes:
         if end <= start:
             return b''
-        return self._file_client.download_file(offset=start,
-                                               length=end - start).readall()
+        return self._file_client.download_file(
+            offset=start, length=end - start
+        ).readall()
 
 
 class ADLSArrowFileSystem(AbstractFileSystem):
     """fsspec view of one ADLS container through an eagerly-bound client."""
+
     protocol = 'kumo-adls'
     # Instances wrap a request-scoped credentialed client; fsspec's instance
     # cache would leak one request's identity into the next.
@@ -54,12 +58,13 @@ class ADLSArrowFileSystem(AbstractFileSystem):
     @classmethod
     def from_uri(cls, uri: str) -> 'ADLSArrowFileSystem':
         from io_utils.fsutil.impl_adls import threadsafe_adls
+
         parsed = ParseURI(uri)
         if not isinstance(parsed, ADLSURI):
             raise ValueError(f'Not an ADLS URI: {uri}')
         client = threadsafe_adls.data_lake_client(
-            parsed.storage_account,
-            parsed.endpoint_suffix).get_file_system_client(parsed.container)
+            parsed.storage_account, parsed.endpoint_suffix
+        ).get_file_system_client(parsed.container)
         return cls(client)
 
     @classmethod
@@ -87,22 +92,33 @@ class ADLSArrowFileSystem(AbstractFileSystem):
             entries = [info]
         else:
             try:
-                entries = [{
-                    'name':
-                    str(child.name),
-                    'size':
-                    child.content_length or 0,
-                    'type':
-                    'directory' if child.is_directory else 'file',
-                }
-                           for child in self.fs_client.get_paths(
-                               path=path or None, recursive=False)]
+                entries = [
+                    {
+                        'name': str(child.name),
+                        'size': child.content_length or 0,
+                        'type': 'directory' if child.is_directory else 'file',
+                    }
+                    for child in self.fs_client.get_paths(
+                        path=path or None, recursive=False
+                    )
+                ]
             except ResourceNotFoundError as error:
                 raise FileNotFoundError(path) from error
         return entries if detail else [entry['name'] for entry in entries]
 
-    def _open(self, path, mode='rb', block_size=None, autocommit=True,
-              cache_options=None, **kwargs):
-        return ADLSRangeReadFile(self, self._strip_protocol(path), mode=mode,
-                                 block_size=block_size,
-                                 cache_options=cache_options)
+    def _open(
+        self,
+        path,
+        mode='rb',
+        block_size=None,
+        autocommit=True,
+        cache_options=None,
+        **kwargs,
+    ):
+        return ADLSRangeReadFile(
+            self,
+            self._strip_protocol(path),
+            mode=mode,
+            block_size=block_size,
+            cache_options=cache_options,
+        )

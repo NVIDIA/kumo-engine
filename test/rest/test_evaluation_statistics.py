@@ -50,58 +50,73 @@ def test_binary_classification(client: TestClient, fake_training_job):
     # Make fake training job
     job_id = fake_training_job.training_job_id
     get_and_expect_error(
-        client, f"/v0/training_jobs/{job_id}/eval/binary_classification", {},
-        HTTPStatus.NOT_FOUND, RestStatusCode.EVALUATION_NOT_YET_COMPLETED.value)
+        client,
+        f'/v0/training_jobs/{job_id}/eval/binary_classification',
+        {},
+        HTTPStatus.NOT_FOUND,
+        RestStatusCode.EVALUATION_NOT_YET_COMPLETED.value,
+    )
 
 
 @pytest.mark.asyncio
 async def test_eval_training_job_lookup_uses_pquery_driver_helper():
-    training_job_id = TrainingJobID("training-job-123")
-    pquery_id = PredictiveQueryID("predictive_query_123")
-    project_id = ProjectID("project_" + "1" * 32)
+    training_job_id = TrainingJobID('training-job-123')
+    pquery_id = PredictiveQueryID('predictive_query_123')
+    project_id = ProjectID('project_' + '1' * 32)
     expected_execution = object()
     ctx = object()
     pq_driver = SimpleNamespace(
         get_current_training_job_id=AsyncMock(return_value=training_job_id),
         _pquery_settings=None,
     )
-    driver = SimpleNamespace(pquery_driver=SimpleNamespace(
-        get_training_job=AsyncMock(return_value=SimpleNamespace(
-            execution=expected_execution))))
+    driver = SimpleNamespace(
+        pquery_driver=SimpleNamespace(
+            get_training_job=AsyncMock(
+                return_value=SimpleNamespace(execution=expected_execution)
+            )
+        )
+    )
     resource = EvaluationStatisticsResource(
         auth=SimpleNamespace(authenticate_request_header=lambda: None),
         driver=driver,
         pq_driver=pq_driver,
     )
 
-    assert (await resource._get_completed_training_job_for_pq(
-        pquery_id, project_id=project_id, ctx=ctx)) is expected_execution
+    assert (
+        await resource._get_completed_training_job_for_pq(
+            pquery_id, project_id=project_id, ctx=ctx
+        )
+    ) is expected_execution
 
     pq_driver.get_current_training_job_id.assert_awaited_once_with(
-        ctx, pquery_id, project_id)
-    driver.pquery_driver.get_training_job.assert_awaited_once_with(
-        ctx, training_job_id)
+        ctx, pquery_id, project_id
+    )
+    driver.pquery_driver.get_training_job.assert_awaited_once_with(ctx, training_job_id)
 
 
 @pytest.mark.asyncio
 async def test_rest_home_dir_lookup_uses_pquery_driver_helper(tmp_path):
-    training_job_id = TrainingJobID("training-job-123")
-    pquery_id = PredictiveQueryID("predictive_query_123")
-    project_id = ProjectID("project_00000000000000000000000000000001")
+    training_job_id = TrainingJobID('training-job-123')
+    pquery_id = PredictiveQueryID('predictive_query_123')
+    project_id = ProjectID('project_00000000000000000000000000000001')
     user_authorization = object()
     ctx = SimpleNamespace(user_authorization=user_authorization)
     driver = object.__new__(RestApiDriver)
     driver._pquery_api_driver = SimpleNamespace(
-        get_current_training_job_id=AsyncMock(return_value=training_job_id))
+        get_current_training_job_id=AsyncMock(return_value=training_job_id)
+    )
     driver._ml_job_backend = SimpleNamespace(
-        get_training_job=AsyncMock(return_value=SimpleNamespace(
-            execution=SimpleNamespace(
-                status=JobStatus.DONE), project_id=project_id)),
+        get_training_job=AsyncMock(
+            return_value=SimpleNamespace(
+                execution=SimpleNamespace(status=JobStatus.DONE), project_id=project_id
+            )
+        ),
         get_job_home_dir=AsyncMock(return_value=str(tmp_path)),
     )
     get_project = AsyncMock()
-    driver._state_services = SimpleNamespace(projects=SimpleNamespace(
-        get_project=get_project))
+    driver._state_services = SimpleNamespace(
+        projects=SimpleNamespace(get_project=get_project)
+    )
 
     home_dir, resolved_project_id, job = await driver._get_home_dir(
         id=pquery_id,
@@ -114,28 +129,32 @@ async def test_rest_home_dir_lookup_uses_pquery_driver_helper(tmp_path):
     assert resolved_project_id == project_id
     assert job.project_id == project_id
     driver._pquery_api_driver.get_current_training_job_id.assert_awaited_once_with(
-        ctx, pquery_id, project_id)
+        ctx, pquery_id, project_id
+    )
     driver._ml_job_backend.get_training_job.assert_awaited_once_with(
-        ctx, training_job_id)
-    driver._ml_job_backend.get_job_home_dir.assert_awaited_once_with(
-        training_job_id)
+        ctx, training_job_id
+    )
+    driver._ml_job_backend.get_job_home_dir.assert_awaited_once_with(training_job_id)
     get_project.assert_awaited_once_with(project_id, user_authorization)
 
 
 @pytest.mark.asyncio
-async def test_get_xai(client: TestClient, ml_backend: MLJobBackend,
-                       fake_graph_v2: GraphResourceResponse, fake_training_job):
+async def test_get_xai(
+    client: TestClient,
+    ml_backend: MLJobBackend,
+    fake_graph_v2: GraphResourceResponse,
+    fake_training_job,
+):
     pquery = fake_training_job
 
     # after 120 seconds, the original job should be in the DONE state
-    await ml_backend.mock_training_job_complete(
-        fake_training_job.training_job_id)
+    await ml_backend.mock_training_job_complete(fake_training_job.training_job_id)
 
     # Currently when column analysis is not ready,
     # an empty XAIResponse will be returned
     response = get_and_expect_success(
-        client, f"/v0/training_jobs/{pquery.training_job_id}/eval/xai", {},
-        XAIResponse)
+        client, f'/v0/training_jobs/{pquery.training_job_id}/eval/xai', {}, XAIResponse
+    )
     assert response == XAIResponse()  # empty
 
     col_cohorts = ColumnCohorts(
@@ -152,40 +171,46 @@ async def test_get_xai(client: TestClient, ml_backend: MLJobBackend,
     # ``pquery_logic.get_xai_training_job``, which keys ``XAIResponse.tables``
     # by the bare ``to_table_id(Table.name).table_name`` (connector_id is
     # stripped), so we look the response up by the unqualified table name.
-    table_name_str, _ = next(
-        iter(fake_graph_v2.table_name_to_fpid_mapping.items()))
+    table_name_str, _ = next(iter(fake_graph_v2.table_name_to_fpid_mapping.items()))
     table_name = TableName(table_name_str)
     cohort_output = ColumnAnalysisOutput(task_type=fake_training_job.task_type)
     cohort_output[table_name, 0, 'FREQUENCY'] = col_cohorts
 
     # Upload mock file to the training dir
     assert pquery.training_job_id is not None
-    home_dir_mgr = HomeDirManager(await ml_backend.get_job_home_dir(
-        pquery.training_job_id))
+    home_dir_mgr = HomeDirManager(
+        await ml_backend.get_job_home_dir(pquery.training_job_id)
+    )
     await save_json.coroutine(
-        BestTrainerConfig(
-            best_trainer=home_dir_mgr.automl_dir(pquery.pquery_id)),
-        home_dir_mgr.best_trainer_config_path(pquery.pquery_id))
+        BestTrainerConfig(best_trainer=home_dir_mgr.automl_dir(pquery.pquery_id)),
+        home_dir_mgr.best_trainer_config_path(pquery.pquery_id),
+    )
     best_trainer_dir = await home_dir_mgr.get_best_trainer_dir.coroutine(
-        pquery.pquery_id)
+        pquery.pquery_id
+    )
     column_analysis_file_path = os.path.join(
-        best_trainer_dir, 'column_analysis/test/column_analysis.json')
+        best_trainer_dir, 'column_analysis/test/column_analysis.json'
+    )
     await save_json.coroutine(cohort_output, column_analysis_file_path)
 
     # Test successful S3 load
     response = get_and_expect_success(
-        client, f"/v0/training_jobs/{pquery.training_job_id}/eval/xai", {},
-        XAIResponse)
-    assert len(response.tables.keys()) == len(
-        fake_graph_v2.table_name_to_fpid_mapping)
+        client, f'/v0/training_jobs/{pquery.training_job_id}/eval/xai', {}, XAIResponse
+    )
+    assert len(response.tables.keys()) == len(fake_graph_v2.table_name_to_fpid_mapping)
     col_xai = response.tables[table_name_str]['FREQUENCY (seed entities)']
     assert col_xai.cohort
     assert col_xai.cohort.dimensions == [
         DimensionSpec(
-            name='Data Field', all_values=[
-                'Column Value', 'Population Ratio', 'Target Average Score',
-                'Predicted Average Score'
-            ], value_type='str')
+            name='Data Field',
+            all_values=[
+                'Column Value',
+                'Population Ratio',
+                'Target Average Score',
+                'Predicted Average Score',
+            ],
+            value_type='str',
+        )
     ]
     assert col_xai.cohort.json_data == {
         'Target Average Score': col_cohorts.targets,
@@ -199,32 +224,32 @@ async def test_get_xai(client: TestClient, ml_backend: MLJobBackend,
         stype=Stype.categorical,
         cohorts=['catA', 'catB'],
         populations=[0.4, 0.6],
-        predictions={
-            'ClassA': [0.3, 0.7],
-            'ClassB': [0.2, 0.8]
-        },
-        targets={
-            'ClassA': [0.25, 0.65],
-            'ClassB': [0.22, 0.68]
-        },
+        predictions={'ClassA': [0.3, 0.7], 'ClassB': [0.2, 0.8]},
+        targets={'ClassA': [0.25, 0.65], 'ClassB': [0.22, 0.68]},
         prediction_score=0.1,
         target_score=0.1,
     )
     cohort_output[table_name, 1, 'FREQUENCY'] = col_cohorts_multicls
     await save_json.coroutine(cohort_output, column_analysis_file_path)
     response = get_and_expect_success(
-        client, f"/v0/training_jobs/{pquery.training_job_id}/eval/xai", {},
-        XAIResponse)
+        client, f'/v0/training_jobs/{pquery.training_job_id}/eval/xai', {}, XAIResponse
+    )
     col_xai = response.tables[table_name_str]['FREQUENCY (1 hop)']
     assert col_xai.cohort
     assert col_xai.cohort.dimensions == [
-        DimensionSpec(name='Class Label', all_values=['ClassA', 'ClassB'],
-                      value_type='str'),
         DimensionSpec(
-            name='Data Field', all_values=[
-                'Column Value', 'Population Ratio', 'Target Average Score',
-                'Predicted Average Score'
-            ], value_type='str')
+            name='Class Label', all_values=['ClassA', 'ClassB'], value_type='str'
+        ),
+        DimensionSpec(
+            name='Data Field',
+            all_values=[
+                'Column Value',
+                'Population Ratio',
+                'Target Average Score',
+                'Predicted Average Score',
+            ],
+            value_type='str',
+        ),
     ]
     assert isinstance(col_cohorts_multicls.targets, dict)
     assert isinstance(col_cohorts_multicls.predictions, dict)
@@ -244,62 +269,65 @@ async def test_get_xai(client: TestClient, ml_backend: MLJobBackend,
     # Test column analysis refit_trainval
     trainer_config_path = os.path.join(best_trainer_dir, 'config.json')
     trainer_config = TrainerConfig(
-        None, None, None, refit_cfg=RefitConfig(refitted_trainval=True))
+        None, None, None, refit_cfg=RefitConfig(refitted_trainval=True)
+    )
     await save_json.coroutine(trainer_config, trainer_config_path)
     column_analysis_refit_file_path = os.path.join(
         best_trainer_dir.rstrip('/') + '_refit_trainval',
-        'column_analysis/test/column_analysis.json')
+        'column_analysis/test/column_analysis.json',
+    )
     await save_json.coroutine(cohort_output, column_analysis_refit_file_path)
     response = get_and_expect_success(
-        client, f"/v0/training_jobs/{pquery.training_job_id}/eval/xai", {},
-        XAIResponse)
-    assert len(response.tables.keys()) == len(
-        fake_graph_v2.table_name_to_fpid_mapping)
+        client, f'/v0/training_jobs/{pquery.training_job_id}/eval/xai', {}, XAIResponse
+    )
+    assert len(response.tables.keys()) == len(fake_graph_v2.table_name_to_fpid_mapping)
 
 
 @pytest.mark.asyncio
-async def test_get_entity_output(client: TestClient, ml_backend: MLJobBackend,
-                                 fake_training_job):
+async def test_get_entity_output(
+    client: TestClient, ml_backend: MLJobBackend, fake_training_job
+):
     pquery = fake_training_job
 
     # The "safe" entity name saved in mappings and as file name
-    entity_id = "0"
+    entity_id = '0'
 
     # after 120 seconds, the original job should be in the DONE state
-    await ml_backend.mock_training_job_complete(
-        fake_training_job.training_job_id)
+    await ml_backend.mock_training_job_complete(fake_training_job.training_job_id)
 
     # Currently when subgraph collection is not ready,
     # an empty entity output will be returned
     response = get_and_expect_success(
         client,
-        f"/v0/training_jobs/{pquery.training_job_id}/eval/entity_output/{entity_id}",
+        f'/v0/training_jobs/{pquery.training_job_id}/eval/entity_output/{entity_id}',
         {},
         EntityOutput,
     )
     assert response == EntityOutput(task_type=None)  # empty
 
-    output = EntityOutput(task_type=TaskType.BINARY_CLASSIFICATION,
-                          prediction=0.0)
+    output = EntityOutput(task_type=TaskType.BINARY_CLASSIFICATION, prediction=0.0)
 
     # Upload mock file to the training dir
     assert pquery.training_job_id is not None
-    home_dir_mgr = HomeDirManager(await ml_backend.get_job_home_dir(
-        pquery.training_job_id))
+    home_dir_mgr = HomeDirManager(
+        await ml_backend.get_job_home_dir(pquery.training_job_id)
+    )
     await save_json.coroutine(
-        BestTrainerConfig(
-            best_trainer=home_dir_mgr.automl_dir(pquery.pquery_id)),
-        home_dir_mgr.best_trainer_config_path(pquery.pquery_id))
+        BestTrainerConfig(best_trainer=home_dir_mgr.automl_dir(pquery.pquery_id)),
+        home_dir_mgr.best_trainer_config_path(pquery.pquery_id),
+    )
     best_trainer_dir = await home_dir_mgr.get_best_trainer_dir.coroutine(
-        pquery.pquery_id)
+        pquery.pquery_id
+    )
     output_file_path = os.path.join(
-        best_trainer_dir, f'subgraph_collector/test/output/{entity_id}.json')
+        best_trainer_dir, f'subgraph_collector/test/output/{entity_id}.json'
+    )
     await save_json.coroutine(output, output_file_path)
 
     # Test successful S3 load
     response = get_and_expect_success(
         client,
-        f"/v0/training_jobs/{pquery.training_job_id}/eval/entity_output/{entity_id}",
+        f'/v0/training_jobs/{pquery.training_job_id}/eval/entity_output/{entity_id}',
         {},
         EntityOutput,
     )
@@ -308,15 +336,17 @@ async def test_get_entity_output(client: TestClient, ml_backend: MLJobBackend,
     # Test output refit_trainval
     trainer_config_path = os.path.join(best_trainer_dir, 'config.json')
     trainer_config = TrainerConfig(
-        None, None, None, refit_cfg=RefitConfig(refitted_trainval=True))
+        None, None, None, refit_cfg=RefitConfig(refitted_trainval=True)
+    )
     await save_json.coroutine(trainer_config, trainer_config_path)
     output_refit_file_path = os.path.join(
         best_trainer_dir.rstrip('/') + '_refit_trainval',
-        f'subgraph_collector/test/output/{entity_id}.json')
+        f'subgraph_collector/test/output/{entity_id}.json',
+    )
     await save_json.coroutine(output, output_refit_file_path)
     response = get_and_expect_success(
         client,
-        f"/v0/training_jobs/{pquery.training_job_id}/eval/entity_output/{entity_id}",
+        f'/v0/training_jobs/{pquery.training_job_id}/eval/entity_output/{entity_id}',
         {},
         EntityOutput,
     )
@@ -324,54 +354,57 @@ async def test_get_entity_output(client: TestClient, ml_backend: MLJobBackend,
 
 
 @pytest.mark.asyncio
-async def test_get_entity_historical_items(client: TestClient,
-                                           ml_backend: MLJobBackend,
-                                           fake_training_job):
+async def test_get_entity_historical_items(
+    client: TestClient, ml_backend: MLJobBackend, fake_training_job
+):
     pquery = fake_training_job
 
-    entity_id: str = "0"
+    entity_id: str = '0'
 
     # after 120 seconds, the original job should be in the DONE state
-    await ml_backend.mock_training_job_complete(
-        fake_training_job.training_job_id)
+    await ml_backend.mock_training_job_complete(fake_training_job.training_job_id)
 
     # Currently when subgraph collection is not ready,
     # an empty historical items will be returned
     response = get_and_expect_success(
         client,
-        f"/v0/training_jobs/{pquery.training_job_id}/eval/entity_historical_items/{entity_id}",
+        f'/v0/training_jobs/{pquery.training_job_id}/eval/entity_historical_items/{entity_id}',
         {},
         HistoricalItems,
     )
     assert response == HistoricalItems()  # empty
 
-    items = HistoricalItems(nodes=[
-        NodeOutputData(
-            id=entity_id,
-            cols=[ColumnData(name="a", value=2, stype=Stype.numerical)],
-            id_name='article_id',
-        )
-    ])
+    items = HistoricalItems(
+        nodes=[
+            NodeOutputData(
+                id=entity_id,
+                cols=[ColumnData(name='a', value=2, stype=Stype.numerical)],
+                id_name='article_id',
+            )
+        ]
+    )
 
     # Upload mock file to the training dir
     assert pquery.training_job_id is not None
-    home_dir_mgr = HomeDirManager(await ml_backend.get_job_home_dir(
-        pquery.training_job_id))
+    home_dir_mgr = HomeDirManager(
+        await ml_backend.get_job_home_dir(pquery.training_job_id)
+    )
     await save_json.coroutine(
-        BestTrainerConfig(
-            best_trainer=home_dir_mgr.automl_dir(pquery.pquery_id)),
-        home_dir_mgr.best_trainer_config_path(pquery.pquery_id))
+        BestTrainerConfig(best_trainer=home_dir_mgr.automl_dir(pquery.pquery_id)),
+        home_dir_mgr.best_trainer_config_path(pquery.pquery_id),
+    )
     best_trainer_dir = await home_dir_mgr.get_best_trainer_dir.coroutine(
-        pquery.pquery_id)
+        pquery.pquery_id
+    )
     items_file_path = os.path.join(
-        best_trainer_dir,
-        f'subgraph_collector/test/historical_items/{entity_id}.json')
+        best_trainer_dir, f'subgraph_collector/test/historical_items/{entity_id}.json'
+    )
     await save_json.coroutine(items, items_file_path)
 
     # Test successful S3 load
     response = get_and_expect_success(
         client,
-        f"/v0/training_jobs/{pquery.training_job_id}/eval/entity_historical_items/{entity_id}",
+        f'/v0/training_jobs/{pquery.training_job_id}/eval/entity_historical_items/{entity_id}',
         {},
         HistoricalItems,
     )
@@ -381,15 +414,17 @@ async def test_get_entity_historical_items(client: TestClient,
     # Test historical items refit_trainval
     trainer_config_path = os.path.join(best_trainer_dir, 'config.json')
     trainer_config = TrainerConfig(
-        None, None, None, refit_cfg=RefitConfig(refitted_trainval=True))
+        None, None, None, refit_cfg=RefitConfig(refitted_trainval=True)
+    )
     await save_json.coroutine(trainer_config, trainer_config_path)
     items_refit_file_path = os.path.join(
         best_trainer_dir.rstrip('/') + '_refit_trainval',
-        f'subgraph_collector/test/historical_items/{entity_id}.json')
+        f'subgraph_collector/test/historical_items/{entity_id}.json',
+    )
     await save_json.coroutine(items, items_refit_file_path)
     response = get_and_expect_success(
         client,
-        f"/v0/training_jobs/{pquery.training_job_id}/eval/entity_historical_items/{entity_id}",
+        f'/v0/training_jobs/{pquery.training_job_id}/eval/entity_historical_items/{entity_id}',
         {},
         HistoricalItems,
     )
@@ -398,47 +433,49 @@ async def test_get_entity_historical_items(client: TestClient,
 
 
 @pytest.mark.asyncio
-async def test_get_available_xai_entities(client: TestClient,
-                                          ml_backend: MLJobBackend,
-                                          fake_training_job):
+async def test_get_available_xai_entities(
+    client: TestClient, ml_backend: MLJobBackend, fake_training_job
+):
     pquery = fake_training_job
 
     # after 120 seconds, the original job should be in the DONE state
-    await ml_backend.mock_training_job_complete(
-        fake_training_job.training_job_id)
+    await ml_backend.mock_training_job_complete(fake_training_job.training_job_id)
 
     # Currently when subgraph collection is not ready,
     # an empty StrategyMappings will be returned
     response = get_and_expect_success(
         client,
-        f"/v0/training_jobs/{pquery.training_job_id}/eval/available_xai_entities",
+        f'/v0/training_jobs/{pquery.training_job_id}/eval/available_xai_entities',
         {},
         StrategyMappings,
     )
     assert response == StrategyMappings()  # empty
 
-    strategy_mappings = StrategyMappings(mappings={
-        ClassificationSelectionStrategy.UNSURE.value: ['0', '1', '2']
-    })
+    strategy_mappings = StrategyMappings(
+        mappings={ClassificationSelectionStrategy.UNSURE.value: ['0', '1', '2']}
+    )
 
     # Upload mock file to the training dir
     assert pquery.training_job_id is not None
-    home_dir_mgr = HomeDirManager(await ml_backend.get_job_home_dir(
-        pquery.training_job_id))
+    home_dir_mgr = HomeDirManager(
+        await ml_backend.get_job_home_dir(pquery.training_job_id)
+    )
     await save_json.coroutine(
-        BestTrainerConfig(
-            best_trainer=home_dir_mgr.automl_dir(pquery.pquery_id)),
-        home_dir_mgr.best_trainer_config_path(pquery.pquery_id))
+        BestTrainerConfig(best_trainer=home_dir_mgr.automl_dir(pquery.pquery_id)),
+        home_dir_mgr.best_trainer_config_path(pquery.pquery_id),
+    )
     best_trainer_dir = await home_dir_mgr.get_best_trainer_dir.coroutine(
-        pquery.pquery_id)
+        pquery.pquery_id
+    )
     mappings_file_path = os.path.join(
-        best_trainer_dir, 'subgraph_collector/test/strategy_mappings.json')
+        best_trainer_dir, 'subgraph_collector/test/strategy_mappings.json'
+    )
     await save_json.coroutine(strategy_mappings, mappings_file_path)
 
     # Test successful S3 load
     response = get_and_expect_success(
         client,
-        f"/v0/training_jobs/{pquery.training_job_id}/eval/available_xai_entities",
+        f'/v0/training_jobs/{pquery.training_job_id}/eval/available_xai_entities',
         {},
         StrategyMappings,
     )
@@ -446,15 +483,13 @@ async def test_get_available_xai_entities(client: TestClient,
     assert response.orig_mappings is None
 
     strategy_mappings = StrategyMappings(
-        mappings={
-            ClassificationSelectionStrategy.UNSURE.value: ['0', '1', '2']
-        }, orig_mappings={
-            ClassificationSelectionStrategy.UNSURE.value: ['2', '1', '0']
-        })
+        mappings={ClassificationSelectionStrategy.UNSURE.value: ['0', '1', '2']},
+        orig_mappings={ClassificationSelectionStrategy.UNSURE.value: ['2', '1', '0']},
+    )
     await save_json.coroutine(strategy_mappings, mappings_file_path)
     response = get_and_expect_success(
         client,
-        f"/v0/training_jobs/{pquery.training_job_id}/eval/available_xai_entities",
+        f'/v0/training_jobs/{pquery.training_job_id}/eval/available_xai_entities',
         {},
         StrategyMappings,
     )
@@ -465,14 +500,15 @@ async def test_get_available_xai_entities(client: TestClient,
     # Test available xai entities refit_trainval
     trainer_config_path = os.path.join(best_trainer_dir, 'config.json')
     trainer_config = TrainerConfig(
-        None, None, None, refit_cfg=RefitConfig(refitted_trainval=True))
+        None, None, None, refit_cfg=RefitConfig(refitted_trainval=True)
+    )
     await save_json.coroutine(trainer_config, trainer_config_path)
 
     # Currently when subgraph collection is not ready,
     # an empty StrategyMappings will be returned
     response = get_and_expect_success(
         client,
-        f"/v0/training_jobs/{pquery.training_job_id}/eval/available_xai_entities",
+        f'/v0/training_jobs/{pquery.training_job_id}/eval/available_xai_entities',
         {},
         StrategyMappings,
     )
@@ -480,12 +516,13 @@ async def test_get_available_xai_entities(client: TestClient,
 
     mappings_refit_file_path = os.path.join(
         best_trainer_dir.rstrip('/') + '_refit_trainval',
-        'subgraph_collector/test/strategy_mappings.json')
+        'subgraph_collector/test/strategy_mappings.json',
+    )
     await save_json.coroutine(strategy_mappings, mappings_refit_file_path)
 
     response = get_and_expect_success(
         client,
-        f"/v0/training_jobs/{pquery.training_job_id}/eval/available_xai_entities",
+        f'/v0/training_jobs/{pquery.training_job_id}/eval/available_xai_entities',
         {},
         StrategyMappings,
     )
@@ -495,37 +532,40 @@ async def test_get_available_xai_entities(client: TestClient,
 
 
 @pytest.mark.asyncio
-async def test_get_regression_histogram(client: TestClient,
-                                        ml_backend: MLJobBackend,
-                                        fake_training_job):
+async def test_get_regression_histogram(
+    client: TestClient, ml_backend: MLJobBackend, fake_training_job
+):
     pquery = fake_training_job
 
     # after 120 seconds, the original job should be in the DONE state
-    await ml_backend.mock_training_job_complete(
-        fake_training_job.training_job_id)
+    await ml_backend.mock_training_job_complete(fake_training_job.training_job_id)
 
     # Currently when histogram is not available, an empty dataclass is returned
     result1 = get_and_expect_success(
         client,
-        f"/v0/training_jobs/{pquery.training_job_id}/eval/regression_histogram",
-        {}, AllTargetRegressionStats)
+        f'/v0/training_jobs/{pquery.training_job_id}/eval/regression_histogram',
+        {},
+        AllTargetRegressionStats,
+    )
     assert result1 == AllTargetRegressionStats.empty()
 
     # Upload mock file to the training dir
     assert pquery.training_job_id is not None
-    path = HomeDirManager(await ml_backend.get_job_home_dir(
-        pquery.training_job_id)).all_target_regression_stats
+    path = HomeDirManager(
+        await ml_backend.get_job_home_dir(pquery.training_job_id)
+    ).all_target_regression_stats
 
     stats = AllTargetRegressionStats.empty()
-    stats.label_distribution.test_table_stats = TargetHistogramAndStats(
-        target_mean=2)
+    stats.label_distribution.test_table_stats = TargetHistogramAndStats(target_mean=2)
 
     await save_json.coroutine(stats, path)
 
     # Test successful S3 load
     result2 = get_and_expect_success(
         client,
-        f"/v0/training_jobs/{pquery.training_job_id}/eval/regression_histogram",
-        {}, AllTargetRegressionStats)
+        f'/v0/training_jobs/{pquery.training_job_id}/eval/regression_histogram',
+        {},
+        AllTargetRegressionStats,
+    )
     assert result2.label_distribution.test_table_stats is not None
     assert result2.label_distribution.test_table_stats.target_mean == 2

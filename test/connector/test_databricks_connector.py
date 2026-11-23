@@ -33,44 +33,48 @@ _HOST = os.environ.get('DATABRICKS_HOST', 'workspace.cloud.databricks.com')
 
 _TEST_SEED_STAGING_PATH = os.environ.get(
     'VOLUME_MOUNT_PATH',
-    's3://kumo-preprod-dataplane-bucket/databricks-integ-test-staging/')
+    's3://kumo-preprod-dataplane-bucket/databricks-integ-test-staging/',
+)
 
 
-def _write_df_to_databricks(connector, table_schema_name, df, replace=False,
-                            **kwargs):
+def _write_df_to_databricks(connector, table_schema_name, df, replace=False, **kwargs):
     r"""Test helper: write a pandas DataFrame to a Databricks table."""
 
     schema_name, _ = connector.require_output_table_within_connector_target(
-        table_schema_name)
+        table_schema_name
+    )
     fqn = connector._fully_qualify_output_table_name(table_schema_name)
 
     if len(df.columns) == 0:
-        raise ValueError(f"Cannot write to table {fqn} as "
-                         "the data frame has no columns")
+        raise ValueError(
+            f'Cannot write to table {fqn} as the data frame has no columns'
+        )
 
     df.convert_dtypes()
     for col in df.select_dtypes(include='datetime64[ns]').columns:
-        df[col] = df[col].astype(str).replace({"NaT": None})
+        df[col] = df[col].astype(str).replace({'NaT': None})
 
-    staging_root_path = os.path.join(_TEST_SEED_STAGING_PATH,
-                                     'kumo_prediction_table')
-    tmp_staging_folder = os.path.join(staging_root_path,
-                                      next(tempfile._get_candidate_names()), '')
+    staging_root_path = os.path.join(_TEST_SEED_STAGING_PATH, 'kumo_prediction_table')
+    tmp_staging_folder = os.path.join(
+        staging_root_path, next(tempfile._get_candidate_names()), ''
+    )
     try:
         context = connector.context
         connector._get_df_result(
-            context, f'describe schema '
-            f'{quote_identifier(schema_name)}')
+            context, f'describe schema {quote_identifier(schema_name)}'
+        )
 
         if replace:
             query = f'CREATE OR REPLACE TABLE {fqn} ('
             for col in df:
-                if (len(df[col]) > 0 and isinstance(df[col].iloc[0], np.ndarray)
-                        and df[col].iloc[0].ndim == 1):
-                    query += f"{quote_identifier(col)} ARRAY, "
+                if (
+                    len(df[col]) > 0
+                    and isinstance(df[col].iloc[0], np.ndarray)
+                    and df[col].iloc[0].ndim == 1
+                ):
+                    query += f'{quote_identifier(col)} ARRAY, '
                 else:
-                    query += (f"{quote_identifier(col)} "
-                              f"{PANDAS_TO_SQL[df[col].dtype]}, ")
+                    query += f'{quote_identifier(col)} {PANDAS_TO_SQL[df[col].dtype]}, '
             query = query[:-2] + ')'
         else:
             query = f'CREATE TABLE IF NOT EXISTS {fqn}'
@@ -78,18 +82,21 @@ def _write_df_to_databricks(connector, table_schema_name, df, replace=False,
 
         if not fsutil.exists(tmp_staging_folder):
             fsutil.makedirs(tmp_staging_folder)
-        path = os.path.join(tmp_staging_folder, "prediction.parquet")
+        path = os.path.join(tmp_staging_folder, 'prediction.parquet')
         df.to_parquet(path, **kwargs)
 
-        upload_sql = ("COPY INTO {table_name} FROM '{staging_path}' "
-                      "FILEFORMAT = PARQUET "
-                      "COPY_OPTIONS ('mergeSchema' = 'true')").format(
-                          table_name=fqn, staging_path=path)
+        upload_sql = (
+            "COPY INTO {table_name} FROM '{staging_path}' "
+            'FILEFORMAT = PARQUET '
+            "COPY_OPTIONS ('mergeSchema' = 'true')"
+        ).format(table_name=fqn, staging_path=path)
         connector._get_df_result(context, upload_sql)
     except Exception as e:
         if 'SCHEMA_NOT_FOUND' in str(e):
-            raise ValueError(f"Cannot write to table {fqn} "
-                             f"since schema {schema_name} does not exist.")
+            raise ValueError(
+                f'Cannot write to table {fqn} '
+                f'since schema {schema_name} does not exist.'
+            )
         raise RuntimeError(f"Error writing data to '{fqn}': {str(e)}.") from e
     finally:
         fsutil.rm(tmp_staging_folder, ignore_errors=True)
@@ -97,7 +104,8 @@ def _write_df_to_databricks(connector, table_schema_name, df, replace=False,
 
 @withDatabricksOauthCredentials
 def test_dbx_non_existent_table_data_version(
-        databricks_hm_connector: DatabricksConnector):
+    databricks_hm_connector: DatabricksConnector,
+):
 
     # table's legit - should not fail.
     databricks_hm_connector._get_data_version('customers')
@@ -110,46 +118,56 @@ def test_dbx_non_existent_table_data_version(
 @withDatabricksOauthCredentials
 def test_wrong_credentials():
     wrong_creds = {'client_id': 'wrong_id', 'client_secret': 'wrong_secret'}
-    safe_connection_error = (
-        'Databricks could not establish the configured connection')
+    safe_connection_error = 'Databricks could not establish the configured connection'
 
     # Wrong OAuth credentials
     with pytest.raises(ConnectorError, match=safe_connection_error):
-        connector = DatabricksConnector('databricks', host=_HOST,
-                                        cluster_id='0626-191119-75431625',
-                                        warehouse_id='82d859e4a6b283a0',
-                                        catalog='hive_mapped_uc',
-                                        schema_name='hm')
+        connector = DatabricksConnector(
+            'databricks',
+            host=_HOST,
+            cluster_id='0626-191119-75431625',
+            warehouse_id='82d859e4a6b283a0',
+            catalog='hive_mapped_uc',
+            schema_name='hm',
+        )
         connector.open(credentials=wrong_creds)
 
     # Wrong host (use PAT — OAuth hangs due to OIDC retry on unreachable host)
     with pytest.raises(ConnectorError, match=safe_connection_error):
-        connector = DatabricksConnector('databricks', host='wrong_host',
-                                        cluster_id='0626-191119-75431625',
-                                        warehouse_id='82d859e4a6b283a0',
-                                        catalog='hive_mapped_uc',
-                                        schema_name='hm')
+        connector = DatabricksConnector(
+            'databricks',
+            host='wrong_host',
+            cluster_id='0626-191119-75431625',
+            warehouse_id='82d859e4a6b283a0',
+            catalog='hive_mapped_uc',
+            schema_name='hm',
+        )
         connector.open(credentials={'pat': 'dummy_token'})
 
     # Wrong warehouse (use PAT — same OIDC retry issue with OAuth)
     with pytest.raises(ConnectorError, match=safe_connection_error):
-        connector = DatabricksConnector('databricks', host=_HOST,
-                                        cluster_id='0626-191119-75431625',
-                                        warehouse_id='wrong_warehouse',
-                                        catalog='hive_mapped_uc',
-                                        schema_name='hm')
+        connector = DatabricksConnector(
+            'databricks',
+            host=_HOST,
+            cluster_id='0626-191119-75431625',
+            warehouse_id='wrong_warehouse',
+            catalog='hive_mapped_uc',
+            schema_name='hm',
+        )
         connector.open(credentials={'pat': 'dummy_token'})
 
     # Wrong catalog (connects with valid OAuth, fails at query time)
-    with pytest.raises(ConnectorError,
-                       match='Schema hm does not exist under catalog'):
-        connector = DatabricksConnector('databricks', host=_HOST,
-                                        cluster_id='0626-191119-75431625',
-                                        warehouse_id='82d859e4a6b283a0',
-                                        catalog='wrong_catalog',
-                                        schema_name='hm')
+    with pytest.raises(ConnectorError, match='Schema hm does not exist under catalog'):
+        connector = DatabricksConnector(
+            'databricks',
+            host=_HOST,
+            cluster_id='0626-191119-75431625',
+            warehouse_id='82d859e4a6b283a0',
+            catalog='wrong_catalog',
+            schema_name='hm',
+        )
         connector.open()
-        connector.read_table("customers", num_rows=100)
+        connector.read_table('customers', num_rows=100)
         connector.close()
 
 
@@ -163,14 +181,14 @@ def test_databricks_read_table(databricks_hm_connector: DatabricksConnector):
     chunk = connector.read_table('customers', pkey='customer_id', num_rows=5)
     assert df[:5].equals(chunk)
 
-    chunk = connector.read_table('customers', pkey='customer_id', num_rows=3,
-                                 offset=2)
+    chunk = connector.read_table('customers', pkey='customer_id', num_rows=3, offset=2)
     assert chunk.shape == (3, 6)
 
 
 @withDatabricksOauthCredentials
 def test_databricks_export_query_is_exact_not_an_estimate(
-        databricks_hm_connector: DatabricksConnector, tmp_path):
+    databricks_hm_connector: DatabricksConnector, tmp_path
+):
     """A Custom SQL table is staged through the shared reader, so its
     NUM_ROWS is the rows that landed in Kumo parquet -- equal to the query's
     own COUNT(*), and exact rather than an optimizer estimate."""
@@ -187,10 +205,14 @@ def test_databricks_export_query_is_exact_not_an_estimate(
     truth = connector.get_query_num_rows(sql)
     assert truth > 0
 
-    table_fp = SqlTableFingerprint(connector_name='dbx_export_query',
-                                   source_name='customers_query',
-                                   cols={'customer_id': Dtype.string},
-                                   pkey=None, time_col=None, end_time_col=None)
+    table_fp = SqlTableFingerprint(
+        connector_name='dbx_export_query',
+        source_name='customers_query',
+        cols={'customer_id': Dtype.string},
+        pkey=None,
+        time_col=None,
+        end_time_col=None,
+    )
     metrics = connector.export_query(sql, table_fp, 'v1')
 
     assert metrics.num_rows == truth
@@ -203,18 +225,21 @@ def test_databricks_export_query_is_exact_not_an_estimate(
 
 @withDatabricksOauthCredentials
 def test_databricks_get_table_metadata(
-        databricks_hm_connector: DatabricksConnector,
-        databricks_test_schema_connector: DatabricksConnector):
+    databricks_hm_connector: DatabricksConnector,
+    databricks_test_schema_connector: DatabricksConnector,
+):
     connector = databricks_hm_connector
 
     table_metadata_config = connector.get_table_metadata()
     assert len(table_metadata_config) >= 6  # Including train/pred tables
-    articles = next(config for config in table_metadata_config
-                    if config.table_name == 'articles')
+    articles = next(
+        config for config in table_metadata_config if config.table_name == 'articles'
+    )
     assert len(articles.cols) == 25
 
     table_metadata_config = databricks_test_schema_connector.get_table_metadata(
-        skip_cache=True, skip_inferral=True)
+        skip_cache=True, skip_inferral=True
+    )
     # >= 3: test_schema has empty_table, type_test, type_test_2 plus
     # whatever fixture tables tests have provisioned (e.g. the
     # hm_*_small subset tables used by the diskgraph e2e).
@@ -257,8 +282,7 @@ def test_get_exact_col_stats(databricks_hm_connector: DatabricksConnector):
     assert len(stats) == 2
     assert stats[ColStatType.NUM_UNIQUE].value == 2
     assert stats[ColStatType.NUM_UNIQUE].num_entries == 31788324
-    assert stats[ColStatType.CATEGORY_COUNTS].value == [(2, 22379862),
-                                                        (1, 9408462)]
+    assert stats[ColStatType.CATEGORY_COUNTS].value == [(2, 22379862), (1, 9408462)]
     assert stats[ColStatType.CATEGORY_COUNTS].num_entries == 31788324
 
 
@@ -298,37 +322,45 @@ def test_databricks_table_info(databricks_hm_connector: DatabricksConnector):
 
 @withDatabricksOauthCredentials
 def test_databricks_write_df_and_write_artifacts_to_table(
-        writable_databricks_table: DatabricksTableConnector):
+    writable_databricks_table: DatabricksTableConnector,
+):
     name = writable_databricks_table.table_name
     connector = writable_databricks_table.connector
 
     nrows = 2
-    pred_df = pd.DataFrame({
-        'LOAN_ID': range(nrows),
-        'EMBEDDING': [np.array(range(5))] * nrows,
-        'A_PROB': [0.51] * nrows
-    })
+    pred_df = pd.DataFrame(
+        {
+            'LOAN_ID': range(nrows),
+            'EMBEDDING': [np.array(range(5))] * nrows,
+            'A_PROB': [0.51] * nrows,
+        }
+    )
     _write_df_to_databricks(connector, name, pred_df)
 
     output_table = connector._fully_qualify_output_table_name(name)
-    uploaded_df = connector._get_df_result(connector.context,
-                                           f'SELECT * FROM {output_table}')
+    uploaded_df = connector._get_df_result(
+        connector.context, f'SELECT * FROM {output_table}'
+    )
     assert str(uploaded_df) == str(pred_df)
     with tempfile.TemporaryDirectory() as temp_dir:
         artifact_path = os.path.join(temp_dir, 'predictions.parquet')
-        pd.DataFrame({
-            'LOAN_ID': range(99),
-            'A_PROB': [0.51] * 99,
-        }).to_parquet(artifact_path)
+        pd.DataFrame(
+            {
+                'LOAN_ID': range(99),
+                'A_PROB': [0.51] * 99,
+            }
+        ).to_parquet(artifact_path)
         connector.write_artifacts_to_table(name, artifact_path, True)
-    uploaded_df = connector._get_df_result(connector.context,
-                                           f'SELECT * FROM {output_table}')
+    uploaded_df = connector._get_df_result(
+        connector.context, f'SELECT * FROM {output_table}'
+    )
     assert len(uploaded_df) == 99
 
 
 @withDatabricksOauthCredentials
 def test_databricks_col_types_infer_and_cast(
-        databricks_test_schema_connector: DatabricksConnector):
+    databricks_test_schema_connector: DatabricksConnector,
+):
 
     connector = databricks_test_schema_connector
     table_metadata_configs = connector.get_table_metadata()
@@ -361,7 +393,7 @@ def test_databricks_col_types_infer_and_cast(
             'DAT_1': Dtype.date,
             'MULTICAT_1': Dtype.string,
             'MULTICAT_2': Dtype.string,
-        }
+        },
     }
     expected_stypes = {
         f'databricks.{table_name_1}': {
@@ -383,8 +415,8 @@ def test_databricks_col_types_infer_and_cast(
             'INT_8': Stype.categorical,
             'DAT_1': Stype.timestamp,
             'MULTICAT_1': Stype.multicategorical,
-            'MULTICAT_2': Stype.multicategorical
-        }
+            'MULTICAT_2': Stype.multicategorical,
+        },
     }
 
     table_dict = {table.name: table for table in table_metadata_configs}
@@ -414,9 +446,11 @@ def test_databricks_col_types_infer_and_cast(
         for col in graph[table_name_1].metadata_config().all_cols()
     }
 
-    stats_dict_2 = get_full_encoder_stats([
-        graph[table_name_1].col('ARR_1'),
-    ])
+    stats_dict_2 = get_full_encoder_stats(
+        [
+            graph[table_name_1].col('ARR_1'),
+        ]
+    )
 
     stats_dict_3 = {
         col: [ColStatType.NUM_NA]
@@ -426,8 +460,8 @@ def test_databricks_col_types_infer_and_cast(
     # read table sample checks if the data can be cast to the assigned types
     # without failures
     df = connector.read_table_sample(
-        table_name_1,
-        cols=[col.base_config() for col in graph[table_name_1].cols])
+        table_name_1, cols=[col.base_config() for col in graph[table_name_1].cols]
+    )
     assert df.shape[0] == 20
     assert df.shape[1] == 10
 
@@ -440,8 +474,8 @@ def test_databricks_col_types_infer_and_cast(
         assert stats_result[ColStatType.SEQUENCE_MAX_LENGTH].value == 4
 
     df = connector.read_table_sample(
-        table_name_2,
-        cols=[col.base_config() for col in graph[table_name_2].cols])
+        table_name_2, cols=[col.base_config() for col in graph[table_name_2].cols]
+    )
     assert df.shape[0] == 50
     assert df.shape[1] == 7
 
@@ -451,21 +485,18 @@ def test_databricks_col_types_infer_and_cast(
 
 
 @withDatabricksOauthCredentials
-def test_databricks_connector_list_types(databricks_test_connector,
-                                         monkeypatch):
+def test_databricks_connector_list_types(databricks_test_connector, monkeypatch):
     monkeypatch.setattr(
         ast_node,
         'ALLOW_ARRAY_TARGETS',
         True,
     )
 
-    metadata = databricks_test_connector.get_table_metadata(
-        ["movie_stringlist"])[0]
+    metadata = databricks_test_connector.get_table_metadata(['movie_stringlist'])[0]
     genres_col = [col for col in metadata.cols if col.name == 'genres'][0]
     assert genres_col.dtype == Dtype.stringlist
 
-    metadata = databricks_test_connector.get_table_metadata(["movie_intlist"
-                                                             ])[0]
+    metadata = databricks_test_connector.get_table_metadata(['movie_intlist'])[0]
     genres_col = [col for col in metadata.cols if col.name == 'genres'][0]
     assert genres_col.dtype == Dtype.intlist
 
@@ -474,8 +505,9 @@ def test_databricks_connector_list_types(databricks_test_connector,
 
 @withDatabricksOauthCredentials
 def test_databricks_read_sample(
-        databricks_hm_connector: DatabricksConnector,
-        databricks_test_schema_connector: DatabricksConnector):
+    databricks_hm_connector: DatabricksConnector,
+    databricks_test_schema_connector: DatabricksConnector,
+):
     connector = databricks_hm_connector
 
     expected_shapes = {
@@ -487,38 +519,40 @@ def test_databricks_read_sample(
         df = connector.read_table_sample(table, num_rows=10)
         assert expected_shape == df.shape
 
-    with pytest.raises(ConnectorError,
-                       match="Failed to read any rows from table"):
-        databricks_test_schema_connector.read_table_sample(
-            'empty_table', num_rows=10)
+    with pytest.raises(ConnectorError, match='Failed to read any rows from table'):
+        databricks_test_schema_connector.read_table_sample('empty_table', num_rows=10)
 
 
 @withDatabricksOauthCredentials
-def test_connector_validate_table_schema(
-        databricks_hm_connector: DatabricksConnector):
+def test_connector_validate_table_schema(databricks_hm_connector: DatabricksConnector):
     databricks_hm_connector.check_schema_exists(schema_name='hm')
-    with pytest.raises(ConnectorError, match="Schema hm2 does not exist"):
+    with pytest.raises(ConnectorError, match='Schema hm2 does not exist'):
         databricks_hm_connector.check_schema_exists(schema_name='hm2')
     # There is no stable schema in this shared workspace that the test
     # principal is guaranteed to be unable to use, so the no-permission
     # branch is covered by mock-only tests.
     databricks_hm_connector.check_table_write_permissions(
-        'predictions', 'hm', InternalWriteMode.APPEND)
+        'predictions', 'hm', InternalWriteMode.APPEND
+    )
 
 
 @withDatabricksOauthCredentials
 def test_databricks_sample_rows_numeric_timestamps(
-        databricks_otto_connector: DatabricksConnector):
+    databricks_otto_connector: DatabricksConnector,
+):
     connector = databricks_otto_connector
     from rest.utils.connector import get_sample_rows
 
     # num rows
-    result = get_sample_rows(connector, None, 100, serialize_to_json=False,
-                             source_table_name='events')
-    assert (result.columns[1].name == 'ts'
-            and result.columns[1].dtype == Dtype.int64)
+    result = get_sample_rows(
+        connector, None, 100, serialize_to_json=False, source_table_name='events'
+    )
+    assert result.columns[1].name == 'ts' and result.columns[1].dtype == Dtype.int64
     assert result.rows[0][1] and result.rows[0][1] != 'NaT'
-    result = get_sample_rows(connector, None, 100, serialize_to_json=False,
-                             source_table_name='events_float')
-    assert (result.columns[6].name == 'ts_decimal'
-            and result.columns[6].dtype == Dtype.float)
+    result = get_sample_rows(
+        connector, None, 100, serialize_to_json=False, source_table_name='events_float'
+    )
+    assert (
+        result.columns[6].name == 'ts_decimal'
+        and result.columns[6].dtype == Dtype.float
+    )

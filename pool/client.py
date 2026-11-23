@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Client-side helpers for reaching the ``PoolController`` via AutoRPC."""
+
 from typing import Protocol
 
 from pool import timeouts
@@ -20,19 +21,15 @@ from temporalio_commons.auto_rpc_config import AutoRpcClientConfig
 
 
 class PoolControllerClient(Protocol):
-    async def report_status(self, report: WorkerStatusReport) -> None:
-        ...
+    async def report_status(self, report: WorkerStatusReport) -> None: ...
 
-    async def place_snapshot(
-            self, request: PlacementRequest) -> PlacementResult:
-        ...
+    async def place_snapshot(self, request: PlacementRequest) -> PlacementResult: ...
 
-    async def release_lease(self, snapshot_id: str, job_id: str) -> None:
-        ...
+    async def release_lease(self, snapshot_id: str, job_id: str) -> None: ...
 
     async def get_pool_stats(
-            self, filter: PoolStatsFilter | None = None) -> PoolStats:
-        ...
+        self, filter: PoolStatsFilter | None = None
+    ) -> PoolStats: ...
 
 
 def get_controller_client(config: DeployEnvConfig) -> PoolControllerClient:

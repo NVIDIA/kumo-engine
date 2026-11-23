@@ -29,10 +29,12 @@ def test_real_sdk_property_models_and_conditional_ranges(service):
     filesystem = ADLSFileSystem(service, 'companylake', 'dfs.core.windows.net')
     arrow = PyFileSystem(FSSpecHandler(filesystem))
     assert arrow.get_file_info(AUTHORITY + '/orders').type == FileType.Directory
-    assert arrow.get_file_info(AUTHORITY +
-                               '/orders/events.parquet').type == FileType.File
-    with filesystem.open(AUTHORITY + '/orders/events.parquet', 'rb',
-                         block_size=4, cache_type='none') as stream:
+    assert (
+        arrow.get_file_info(AUTHORITY + '/orders/events.parquet').type == FileType.File
+    )
+    with filesystem.open(
+        AUTHORITY + '/orders/events.parquet', 'rb', block_size=4, cache_type='none'
+    ) as stream:
         assert stream.read(4) == b'PAR1'
         service.files['curated/orders/events.parquet'] = b'changed'
         with pytest.raises(TransientSourceError, match='changed'):
@@ -43,8 +45,7 @@ def test_real_sdk_property_models_and_conditional_ranges(service):
 def test_chunked_output_and_empty_file(service):
     filesystem = ADLSFileSystem(service, 'companylake', 'dfs.core.windows.net')
     for name, chunks in [('chunked', [b'abcd', b'efgh', b'ij']), ('empty', [])]:
-        with filesystem.open(AUTHORITY + '/' + name, 'wb',
-                             block_size=4) as stream:
+        with filesystem.open(AUTHORITY + '/' + name, 'wb', block_size=4) as stream:
             for chunk in chunks:
                 stream.write(chunk)
         assert service.files['curated/' + name] == b''.join(chunks)
@@ -62,19 +63,34 @@ def test_arrow_wrapper_closes_partial_output_after_caller_error(service):
     assert service.files['curated/partial'] == b'partial serialized content'
 
 
-@pytest.mark.parametrize('error, expected', [
-    (ClientAuthenticationError('token=secret'), ReconnectRequiredError),
-    (ResourceNotFoundError('token=secret'), FileNotFoundError),
-    (ResourceModifiedError('token=secret'), TransientSourceError),
-    (HttpResponseError(
-        'token=secret', response=Mock(status_code=403, reason='denied',
-                                      headers={})), SourceAccessDeniedError),
-    (HttpResponseError(
-        'token=secret', response=Mock(status_code=429, reason='throttled',
-                                      headers={})), TransientSourceError),
-    (HttpResponseError('token=secret', response=Mock(
-        status_code=400, reason='bad', headers={})), PermanentSourceError),
-])
+@pytest.mark.parametrize(
+    'error, expected',
+    [
+        (ClientAuthenticationError('token=secret'), ReconnectRequiredError),
+        (ResourceNotFoundError('token=secret'), FileNotFoundError),
+        (ResourceModifiedError('token=secret'), TransientSourceError),
+        (
+            HttpResponseError(
+                'token=secret',
+                response=Mock(status_code=403, reason='denied', headers={}),
+            ),
+            SourceAccessDeniedError,
+        ),
+        (
+            HttpResponseError(
+                'token=secret',
+                response=Mock(status_code=429, reason='throttled', headers={}),
+            ),
+            TransientSourceError,
+        ),
+        (
+            HttpResponseError(
+                'token=secret', response=Mock(status_code=400, reason='bad', headers={})
+            ),
+            PermanentSourceError,
+        ),
+    ],
+)
 def test_errors_are_classified_without_request_metadata(error, expected):
     with pytest.raises(expected) as result:
         with translated():
@@ -107,10 +123,12 @@ def test_memory_failure_preserves_allocation_traceback_and_adds_advice():
     assert 'restart' in message
 
 
-@pytest.mark.parametrize('metadata_key',
-                         ['hdi_isfolder', 'Hdi_isfolder', 'HDI_ISFOLDER'])
-def test_directory_metadata_is_case_insensitive(service, connector, monkeypatch,
-                                                metadata_key):
+@pytest.mark.parametrize(
+    'metadata_key', ['hdi_isfolder', 'Hdi_isfolder', 'HDI_ISFOLDER']
+)
+def test_directory_metadata_is_case_insensitive(
+    service, connector, monkeypatch, metadata_key
+):
     from fakes import FakeFile
     from kumo_adls.backend import ADLSSourceBackend
 
@@ -122,14 +140,14 @@ def test_directory_metadata_is_case_insensitive(service, connector, monkeypatch,
             properties.metadata = {metadata_key: 'true'}
         return properties
 
-    monkeypatch.setattr(FakeFile, 'get_file_properties',
-                        properties_with_header_spelling)
+    monkeypatch.setattr(
+        FakeFile, 'get_file_properties', properties_with_header_spelling
+    )
     filesystem = ADLSFileSystem(service, 'companylake', 'dfs.core.windows.net')
     arrow = PyFileSystem(FSSpecHandler(filesystem))
     directory = AUTHORITY + '/orders'
     assert arrow.get_file_info(directory).type == FileType.Directory
-    assert ADLSSourceBackend().list_tables(
-        connector()).table_names == ['events']
+    assert ADLSSourceBackend().list_tables(connector()).table_names == ['events']
     with pytest.raises(ValueError, match='versioned file'):
         filesystem.object_identity(directory)
 
@@ -137,7 +155,8 @@ def test_directory_metadata_is_case_insensitive(service, connector, monkeypatch,
 @pytest.mark.parametrize('failure', ['append', 'flush', 'body'])
 @pytest.mark.parametrize('cleanup_fails', [False, True])
 def test_failed_write_aborts_without_retry_or_masking_original_error(
-        service, monkeypatch, failure, cleanup_fails):
+    service, monkeypatch, failure, cleanup_fails
+):
     from fakes import FakeFile
 
     attempts = []
@@ -166,8 +185,7 @@ def test_failed_write_aborts_without_retry_or_masking_original_error(
         monkeypatch.setattr(FakeFile, 'flush_data', flush)
     filesystem = ADLSFileSystem(service, 'companylake', 'dfs.core.windows.net')
     with pytest.raises(RuntimeError, match='original failure'):
-        with filesystem.open(AUTHORITY + '/failed', 'wb',
-                             block_size=4) as stream:
+        with filesystem.open(AUTHORITY + '/failed', 'wb', block_size=4) as stream:
             stream.write(b'abcd')
             if failure == 'body':
                 raise RuntimeError('original failure')
@@ -181,8 +199,7 @@ def test_failed_write_aborts_without_retry_or_masking_original_error(
 
 
 @pytest.mark.parametrize('failure', ['append', 'flush', 'body'])
-def test_failed_streaming_write_preserves_replacement(service, monkeypatch,
-                                                      failure):
+def test_failed_streaming_write_preserves_replacement(service, monkeypatch, failure):
     from azure.core import MatchConditions
     from fakes import FakeFile
 
@@ -212,8 +229,7 @@ def test_failed_streaming_write_preserves_replacement(service, monkeypatch,
         monkeypatch.setattr(FakeFile, 'flush_data', flush_or_fail)
     filesystem = ADLSFileSystem(service, 'companylake', 'dfs.core.windows.net')
     with pytest.raises(RuntimeError, match='original failure'):
-        with filesystem.open(AUTHORITY + '/shared', 'wb',
-                             block_size=4) as stream:
+        with filesystem.open(AUTHORITY + '/shared', 'wb', block_size=4) as stream:
             stream.write(b'abcd')
             if failure == 'body':
                 service.files['curated/shared'] = replacement
@@ -224,7 +240,8 @@ def test_failed_streaming_write_preserves_replacement(service, monkeypatch,
 
 
 def test_streaming_creation_without_etag_never_deletes_unknown_object(
-        service, monkeypatch):
+    service, monkeypatch
+):
     from fakes import FakeFile
 
     create = FakeFile.create_file
@@ -238,8 +255,7 @@ def test_streaming_creation_without_etag_never_deletes_unknown_object(
     monkeypatch.setattr(FakeFile, 'delete_file', delete)
     filesystem = ADLSFileSystem(service, 'companylake', 'dfs.core.windows.net')
     with pytest.raises(TransientSourceError, match='object identity'):
-        with filesystem.open(AUTHORITY + '/unknown', 'wb',
-                             block_size=4) as stream:
+        with filesystem.open(AUTHORITY + '/unknown', 'wb', block_size=4) as stream:
             stream.write(b'abcd')
     delete.assert_not_called()
 
@@ -254,8 +270,7 @@ def test_exception_before_first_upload_does_not_create_file(service):
 
 
 @pytest.mark.parametrize('started', [False, True])
-def test_discard_only_deletes_started_upload_and_is_idempotent(
-        service, started):
+def test_discard_only_deletes_started_upload_and_is_idempotent(service, started):
     filesystem = ADLSFileSystem(service, 'companylake', 'dfs.core.windows.net')
     service.files['curated/existing'] = b'original'
     stream = filesystem.open(AUTHORITY + '/existing', 'wb', block_size=4)

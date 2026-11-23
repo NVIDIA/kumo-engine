@@ -34,25 +34,31 @@ class _RestrictedPublicError(PublicException):
     _kumo_restricted_log_message = True
 
 
-@pytest.mark.parametrize('module', [
-    'requests.exceptions',
-    'snowflake.connector.errors',
-    'future_provider.errors',
-    'diskgraph._c',
-])
+@pytest.mark.parametrize(
+    'module',
+    [
+        'requests.exceptions',
+        'snowflake.connector.errors',
+        'future_provider.errors',
+        'diskgraph._c',
+    ],
+)
 def test_module_name_does_not_restrict_an_exception(module: str) -> None:
-    error_type = type('ProviderError', (Exception, ), {'__module__': module})
+    error_type = type('ProviderError', (Exception,), {'__module__': module})
     error = error_type('diagnostic detail')
 
     assert not exception_chain_contains_restricted_detail(error)
     assert exception_message_should_be_logged_at_error(error)
 
 
-@pytest.mark.parametrize('error', [
-    FileNotFoundError('/private/customer/path'),
-    UnicodeDecodeError('utf-8', b'private-row-value', 0, 1, 'invalid'),
-    SyntaxError('private source expression'),
-])
+@pytest.mark.parametrize(
+    'error',
+    [
+        FileNotFoundError('/private/customer/path'),
+        UnicodeDecodeError('utf-8', b'private-row-value', 0, 1, 'invalid'),
+        SyntaxError('private source expression'),
+    ],
+)
 def test_builtin_exception_families_are_visible_until_marked(error) -> None:
     assert exception_message_should_be_logged_at_error(error)
 
@@ -123,8 +129,7 @@ def test_marker_can_supply_an_explicit_safe_error_message() -> None:
 
     assert getattr(type(error), RESTRICTED_LOG_MESSAGE_ATTRIBUTE) is True
     assert not exception_message_should_be_logged_at_error(error)
-    assert safe_exception_message_for_log(error) == (
-        'converter failed (exit code 17)')
+    assert safe_exception_message_for_log(error) == ('converter failed (exit code 17)')
 
 
 def test_boundary_helper_preserves_exception_identity_and_pickling() -> None:
@@ -140,18 +145,21 @@ def test_boundary_helper_preserves_exception_identity_and_pickling() -> None:
     assert type(marked_error) is ValueError
     assert not exception_message_should_be_logged_at_error(marked_error)
     assert safe_exception_message_for_log(marked_error) == (
-        'Warehouse operation failed')
+        'Warehouse operation failed'
+    )
     assert not exception_message_should_be_logged_at_error(round_tripped)
     assert safe_exception_message_for_log(round_tripped) == (
-        'Warehouse operation failed')
+        'Warehouse operation failed'
+    )
 
 
 def test_boundary_context_marks_and_reraises_same_exception() -> None:
     error = RuntimeError('authorization=secret')
 
     with pytest.raises(RuntimeError) as raised:
-        with restricted_diagnostic_boundary(exception_types=RuntimeError,
-                                            safe_message='HTTP request failed'):
+        with restricted_diagnostic_boundary(
+            exception_types=RuntimeError, safe_message='HTTP request failed'
+        ):
             raise error
 
     assert raised.value is error
@@ -163,24 +171,23 @@ def test_boundary_context_leaves_nonmatching_exception_visible() -> None:
 
     with pytest.raises(ValueError) as raised:
         with restricted_diagnostic_boundary(
-                safe_message='StateDB operation failed',
-                exception_types=RuntimeError):
+            safe_message='StateDB operation failed', exception_types=RuntimeError
+        ):
             raise error
 
     assert raised.value is error
     assert exception_message_should_be_logged_at_error(error)
 
 
-def test_boundary_context_uses_fixed_fallback_for_unmarkable_exception(
-) -> None:
+def test_boundary_context_uses_fixed_fallback_for_unmarkable_exception() -> None:
     class UnmarkableError(Exception):
         def __setattr__(self, name, value):
             raise TypeError('metadata disabled')
 
     with pytest.raises(RestrictedDiagnosticError) as raised:
         with restricted_diagnostic_boundary(
-                exception_types=UnmarkableError,
-                safe_message='Provider operation failed'):
+            exception_types=UnmarkableError, safe_message='Provider operation failed'
+        ):
             raise UnmarkableError('authorization=secret')
 
     assert str(raised.value) == 'Provider operation failed'
@@ -191,7 +198,8 @@ def test_boundary_context_uses_fixed_fallback_for_unmarkable_exception(
 
 def test_existing_public_messages_remain_visible() -> None:
     assert exception_message_should_be_logged_at_error(
-        PublicException('existing public detail'))
+        PublicException('existing public detail')
+    )
 
 
 def test_explicit_restricted_marker_overrides_public_compatibility() -> None:

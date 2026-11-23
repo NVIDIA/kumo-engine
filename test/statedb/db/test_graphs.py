@@ -41,10 +41,7 @@ def _table_definition(connector_id: ConnectorID) -> TableDefinition:
         cols=[Column(name='id', stype=Stype.ID, dtype=Dtype.int64)],
         source_table=S3SourceTable(
             connector_id=connector_id,
-            source={
-                'mode': 'relative',
-                'path': 'account.parquet'
-            },
+            source={'mode': 'relative', 'path': 'account.parquet'},
             file_type='PARQUET',
             data_source_type=DataSourceType.S3,
         ),
@@ -55,15 +52,13 @@ TABLE_A = _table_definition(CONNECTOR_A).fpid
 TABLE_B = _table_definition(CONNECTOR_B).fpid
 
 
-def _entry(project_id: ProjectID, alias: str,
-           ref_count: int = 1) -> GraphDBEntryV2:
+def _entry(project_id: ProjectID, alias: str, ref_count: int = 1) -> GraphDBEntryV2:
     now = datetime(2026, 1, 1, tzinfo=timezone.utc)
     return GraphDBEntryV2(
         id=GRAPH_FPID,
         project_id=project_id,
         table_name_to_dbid={
-            TableName('ACCOUNT'):
-            TABLE_A if project_id == PROJECT_A else TABLE_B
+            TableName('ACCOUNT'): TABLE_A if project_id == PROJECT_A else TABLE_B
         },
         col_groups=[ColumnKeyGroup(columns=())],
         alias=alias,
@@ -94,17 +89,17 @@ async def _seed_projects_connectors_and_tables(db: StateDB) -> None:
                 ),
             ),
         )
-        for project_id, connector_id, table_id in ((PROJECT_A, CONNECTOR_A,
-                                                    TABLE_A),
-                                                   (PROJECT_B, CONNECTOR_B,
-                                                    TABLE_B)):
+        for project_id, connector_id, table_id in (
+            (PROJECT_A, CONNECTOR_A, TABLE_A),
+            (PROJECT_B, CONNECTOR_B, TABLE_B),
+        ):
             await projects.upsert(
                 tx,
                 str(project_id),
                 ProjectDBEntry(
                     id=project_id,
                     group_id=group_id,
-                    slug=f"project-{str(project_id)[-8:]}",
+                    slug=f'project-{str(project_id)[-8:]}',
                     display_name=str(project_id),
                     normalized_display_name=str(project_id),
                     timestamps=ResourceTimestamps(
@@ -121,7 +116,8 @@ async def _seed_projects_connectors_and_tables(db: StateDB) -> None:
                     name='uploads',
                     normalized_name='uploads',
                     config=FileConnectorResourceConfig(
-                        name='uploads', root_dir=f'/tmp/{project_id}'),
+                        name='uploads', root_dir=f'/tmp/{project_id}'
+                    ),
                     timestamps=ResourceTimestamps(
                         created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
                         updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
@@ -177,15 +173,13 @@ async def test_graph_alias_uniqueness_is_per_project(tmp_path) -> None:
         await repo.upsert(tx, first.id, first)
         with pytest.raises(ValueError) as error:
             await repo.upsert(tx, collision.id, collision)
-        assert str(error.value) == (
-            'Graph name GRAPH is already used in this project.')
+        assert str(error.value) == ('Graph name GRAPH is already used in this project.')
         await repo.upsert(tx, other_project.id, other_project)
     await db.close()
 
 
 @pytest.mark.asyncio
-async def test_graph_alias_uses_one_nfkc_key_for_lookup_and_collision(
-        tmp_path) -> None:
+async def test_graph_alias_uses_one_nfkc_key_for_lookup_and_collision(tmp_path) -> None:
     db = await StateDB.open_sqlite(str(tmp_path / 'state.db'))
     await _seed_projects_connectors_and_tables(db)
     repo = StateDBGraphRepository()
@@ -221,8 +215,7 @@ async def test_graph_delete_cannot_cross_projects(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_graph_repository_rejects_table_from_another_project(
-        tmp_path) -> None:
+async def test_graph_repository_rejects_table_from_another_project(tmp_path) -> None:
     db = await StateDB.open_sqlite(str(tmp_path / 'state.db'))
     await _seed_projects_connectors_and_tables(db)
     repo = StateDBGraphRepository()

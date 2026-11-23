@@ -28,31 +28,33 @@ from kumo_core.sources.types import Attestation, ReadMode
 from kumo_databricks import DatabricksSourceReader
 from kumoapi.typing import Dtype
 
-CATALOG, SCHEMA, TABLE = "samples", "tpch", "customer"
-SOURCE = "`samples`.`tpch`.`customer`"
-VOLUME = "/Volumes/example_catalog/example_schema/vol/out"
-ROOT = f"{VOLUME}/{TABLE}"
+CATALOG, SCHEMA, TABLE = 'samples', 'tpch', 'customer'
+SOURCE = '`samples`.`tpch`.`customer`'
+VOLUME = '/Volumes/example_catalog/example_schema/vol/out'
+ROOT = f'{VOLUME}/{TABLE}'
 #: An attempt other than the one under test: an overlapping read, or one
 #: interrupted before it could clear up after itself.
-ELSEWHERE = f"{ROOT}/{'0' * 32}"
+ELSEWHERE = f'{ROOT}/{"0" * 32}'
 ROWS = 7_500
-COLUMNS = {"c_custkey": Dtype.int64, "c_acctbal": Dtype.float}
-PROJECTION = "`c_custkey`, CAST(`c_acctbal` AS DOUBLE) AS `c_acctbal`"
+COLUMNS = {'c_custkey': Dtype.int64, 'c_acctbal': Dtype.float}
+PROJECTION = '`c_custkey`, CAST(`c_acctbal` AS DOUBLE) AS `c_acctbal`'
 DESCRIPTION = [
-    ("c_custkey", "bigint", None),
-    ("c_acctbal", "decimal(38,2)", None),
-    ("", "", ""),
-    ("# Detailed Table Information", "", ""),
-    ("Type", "MANAGED", ""),
+    ('c_custkey', 'bigint', None),
+    ('c_acctbal', 'decimal(38,2)', None),
+    ('', '', ''),
+    ('# Detailed Table Information', '', ''),
+    ('Type', 'MANAGED', ''),
 ]
-HISTORY = [(947, "2026-08-27T15:07:20", "WRITE")]
+HISTORY = [(947, '2026-08-27T15:07:20', 'WRITE')]
 
 
 def arrow(rows=ROWS):
-    return pa.table({
-        "c_custkey": list(range(rows)),
-        "c_acctbal": [float(index) for index in range(rows)]
-    })
+    return pa.table(
+        {
+            'c_custkey': list(range(rows)),
+            'c_acctbal': [float(index) for index in range(rows)],
+        }
+    )
 
 
 def parquet_bytes(rows):
@@ -84,12 +86,13 @@ class StagingCursor(FakeCursor):
 
     def execute(self, sql):
         result = super().execute(sql)
-        if "INSERT OVERWRITE" in sql and self.files is not None:
+        if 'INSERT OVERWRITE' in sql and self.files is not None:
             location = directory_in(sql)
             self.locations.append(location)
-            self.files.objects[f"{location}/_SUCCESS"] = b""
-            self.files.objects[f"{location}/part-00000-tid-1.c000"
-                               f".snappy.parquet"] = parquet_bytes(ROWS)
+            self.files.objects[f'{location}/_SUCCESS'] = b''
+            self.files.objects[f'{location}/part-00000-tid-1.c000.snappy.parquet'] = (
+                parquet_bytes(ROWS)
+            )
             during, self.during = self.during, None
             if during is not None:
                 during()
@@ -97,19 +100,21 @@ class StagingCursor(FakeCursor):
 
 
 def volume_files(stale=False):
-    objects = ({
-        f"{ELSEWHERE}/part-09999-tid-0.c000.snappy.parquet":
-        parquet_bytes(11)
-    } if stale else {})
+    objects = (
+        {f'{ELSEWHERE}/part-09999-tid-0.c000.snappy.parquet': parquet_bytes(11)}
+        if stale
+        else {}
+    )
     return FakeFiles(objects)
 
 
 def warehouse(raises=None, during=None):
     return StagingCursor(
-        {
-            "DESCRIBE EXTENDED": DESCRIPTION,
-            "DESCRIBE HISTORY": HISTORY
-        }, raises=raises, arrow=arrow(), during=during)
+        {'DESCRIBE EXTENDED': DESCRIPTION, 'DESCRIBE HISTORY': HISTORY},
+        raises=raises,
+        arrow=arrow(),
+        during=during,
+    )
 
 
 def build(cursor=None, files=None, **extra):
@@ -128,22 +133,24 @@ def build(cursor=None, files=None, **extra):
 
 def read(tmp_path, mode, cursor=None, files=None, **kwargs):
     dest = str(tmp_path / mode.value)
-    return build(cursor, files).prepare(TABLE, dest, columns=COLUMNS, mode=mode,
-                                        **kwargs)
+    return build(cursor, files).prepare(
+        TABLE, dest, columns=COLUMNS, mode=mode, **kwargs
+    )
 
 
 def test_streaming_is_always_offered_and_staging_leads_where_a_volume_is():
     cursor = warehouse()
-    assert build(cursor).read_modes(TABLE) == (ReadMode.STREAMED, )
+    assert build(cursor).read_modes(TABLE) == (ReadMode.STREAMED,)
     assert cursor.sql() == []
 
-    assert build(files=volume_files()).read_modes(TABLE) == (ReadMode.STAGED,
-                                                             ReadMode.STREAMED)
+    assert build(files=volume_files()).read_modes(TABLE) == (
+        ReadMode.STAGED,
+        ReadMode.STREAMED,
+    )
 
 
-@pytest.mark.parametrize("mode", list(ReadMode))
-def test_neither_mode_reports_a_count_the_warehouse_stands_behind(
-        tmp_path, mode):
+@pytest.mark.parametrize('mode', list(ReadMode))
+def test_neither_mode_reports_a_count_the_warehouse_stands_behind(tmp_path, mode):
     """``INSERT OVERWRITE DIRECTORY`` returns no row count, so staging attests
     nothing that streaming does not."""
     staged = read(tmp_path, mode, files=volume_files())
@@ -154,37 +161,35 @@ def test_neither_mode_reports_a_count_the_warehouse_stands_behind(
 def test_a_streamed_read_selects_the_projection_and_nothing_else(tmp_path):
     cursor = warehouse()
     read(tmp_path, ReadMode.STREAMED, cursor)
-    assert cursor.matching("SELECT") == [f"SELECT {PROJECTION} FROM {SOURCE}"]
+    assert cursor.matching('SELECT') == [f'SELECT {PROJECTION} FROM {SOURCE}']
 
 
 def test_a_staged_read_unloads_the_projection_to_the_volume_directory(tmp_path):
     cursor = warehouse()
     read(tmp_path, ReadMode.STAGED, cursor, volume_files())
-    location, = cursor.locations
-    assert cursor.matching("INSERT OVERWRITE DIRECTORY") == [
+    (location,) = cursor.locations
+    assert cursor.matching('INSERT OVERWRITE DIRECTORY') == [
         f"INSERT OVERWRITE DIRECTORY '{location}' USING PARQUET "
-        f"SELECT {PROJECTION} FROM {SOURCE}"
+        f'SELECT {PROJECTION} FROM {SOURCE}'
     ]
 
 
 def test_the_unload_names_a_directory_of_its_own_under_the_tables_one(tmp_path):
     first, second = warehouse(), warehouse()
-    read(tmp_path / "first", ReadMode.STAGED, first, volume_files())
-    read(tmp_path / "second", ReadMode.STAGED, second, volume_files())
-    location, = first.locations
-    assert location.startswith(f"{ROOT}/")
-    attempt = location.removeprefix(f"{ROOT}/")
+    read(tmp_path / 'first', ReadMode.STAGED, first, volume_files())
+    read(tmp_path / 'second', ReadMode.STAGED, second, volume_files())
+    (location,) = first.locations
+    assert location.startswith(f'{ROOT}/')
+    attempt = location.removeprefix(f'{ROOT}/')
     assert attempt.isalnum() and len(attempt) == 32
     assert second.locations != first.locations
 
 
-@pytest.mark.parametrize("mode", list(ReadMode))
+@pytest.mark.parametrize('mode', list(ReadMode))
 def test_an_alias_renames_the_column_the_warehouse_returns(tmp_path, mode):
     cursor = warehouse()
-    read(tmp_path, mode, cursor, volume_files(),
-         aliases={"c_custkey": "customer"})
-    assert any("`c_custkey` AS `customer`" in statement
-               for statement in cursor.sql())
+    read(tmp_path, mode, cursor, volume_files(), aliases={'c_custkey': 'customer'})
+    assert any('`c_custkey` AS `customer`' in statement for statement in cursor.sql())
 
 
 def test_another_attempts_parquet_is_neither_downloaded_nor_deleted(tmp_path):
@@ -193,8 +198,7 @@ def test_another_attempts_parquet_is_neither_downloaded_nor_deleted(tmp_path):
     files = volume_files(stale=True)
     staged = read(tmp_path, ReadMode.STAGED, files=files)
     assert staged.num_rows == ROWS
-    assert sum(pq.ParquetFile(path).metadata.num_rows
-               for path in staged.paths) == ROWS
+    assert sum(pq.ParquetFile(path).metadata.num_rows for path in staged.paths) == ROWS
     assert list(files.objects) == list(volume_files(stale=True).objects)
 
 
@@ -204,26 +208,30 @@ def test_the_staging_directory_is_left_empty_by_a_read_that_worked(tmp_path):
     assert files.objects == {}
 
 
-@pytest.mark.parametrize("asked,unloading,reported", [
-    ({
-        "expected_rows": ROWS + 1
-    }, None, RowCountMismatchError),
-    ({}, OperationalError("lost"), TransientSourceError),
-])
+@pytest.mark.parametrize(
+    'asked,unloading,reported',
+    [
+        ({'expected_rows': ROWS + 1}, None, RowCountMismatchError),
+        ({}, OperationalError('lost'), TransientSourceError),
+    ],
+)
 def test_a_staged_read_that_failed_still_clears_the_staging_directory(
-        tmp_path, asked, unloading, reported):
+    tmp_path, asked, unloading, reported
+):
     files = volume_files(stale=True)
-    raises = {"INSERT OVERWRITE": unloading} if unloading else None
+    raises = {'INSERT OVERWRITE': unloading} if unloading else None
     with pytest.raises(reported):
-        read(tmp_path, ReadMode.STAGED, warehouse(raises=raises), files,
-             **asked)
+        read(tmp_path, ReadMode.STAGED, warehouse(raises=raises), files, **asked)
     assert list(files.objects) == list(volume_files(stale=True).objects)
 
 
-@pytest.mark.parametrize("read_raises,outcome", [
-    (None, nullcontext()),
-    (OSError("reset"), pytest.raises(TransientSourceError)),
-])
+@pytest.mark.parametrize(
+    'read_raises,outcome',
+    [
+        (None, nullcontext()),
+        (OSError('reset'), pytest.raises(TransientSourceError)),
+    ],
+)
 def test_every_downloaded_stream_is_closed(tmp_path, read_raises, outcome):
     files = volume_files()
     files.read_raises = read_raises
@@ -237,52 +245,66 @@ def test_a_driver_failure_is_reported_by_its_code_not_its_text(tmp_path):
     """Driver messages carry the statement that failed and the data in it."""
     cursor = warehouse(
         raises={
-            "SELECT":
-            ServerOperationError("[UNRESOLVED_COLUMN] cannot resolve "
-                                 "`token` in SELECT `token`='hunter2'")
-        })
+            'SELECT': ServerOperationError(
+                "[UNRESOLVED_COLUMN] cannot resolve `token` in SELECT `token`='hunter2'"
+            )
+        }
+    )
     with pytest.raises(PermanentSourceError) as failure:
         read(tmp_path, ReadMode.STREAMED, cursor)
     reported = str(failure.value)
-    assert "hunter2" not in reported
-    assert "ServerOperationError code=UNRESOLVED_COLUMN" in reported
+    assert 'hunter2' not in reported
+    assert 'ServerOperationError code=UNRESOLVED_COLUMN' in reported
     assert failure.value.table == TABLE
-    assert "streamed" in reported
+    assert 'streamed' in reported
     assert failure.value.__cause__ is None
 
 
-@pytest.mark.parametrize("raised,reported", [
-    (DataError("some result batches must have been skipped"),
-     PermanentSourceError),
-    (ServerOperationError("TABLE_OR_VIEW_NOT_FOUND"), PermanentSourceError),
-    (Unauthenticated("token expired"), ReconnectRequiredError),
-    (ServerOperationError("Invalid access token"), ReconnectRequiredError),
-    (OperationalError("connection reset"), TransientSourceError),
-])
+@pytest.mark.parametrize(
+    'raised,reported',
+    [
+        (DataError('some result batches must have been skipped'), PermanentSourceError),
+        (ServerOperationError('TABLE_OR_VIEW_NOT_FOUND'), PermanentSourceError),
+        (Unauthenticated('token expired'), ReconnectRequiredError),
+        (ServerOperationError('Invalid access token'), ReconnectRequiredError),
+        (OperationalError('connection reset'), TransientSourceError),
+    ],
+)
 def test_a_driver_failure_is_classified_by_what_the_caller_should_do(
-        tmp_path, raised, reported):
+    tmp_path, raised, reported
+):
     with pytest.raises(reported):
-        read(tmp_path, ReadMode.STREAMED, warehouse(raises={"SELECT": raised}))
+        read(tmp_path, ReadMode.STREAMED, warehouse(raises={'SELECT': raised}))
 
 
-@pytest.mark.parametrize("failing,denied", [
-    (PermissionDenied("no WRITE VOLUME on the staging volume"), True),
-    (ServerOperationError("[INSUFFICIENT_PERMISSIONS] on `out`"), True),
-    (ServerOperationError("[INSUFFICIENT_PRIVILEGES] to write"), True),
-    (ServerOperationError("[TABLE_OR_VIEW_NOT_FOUND] no such table"), False),
-    (OperationalError("connection reset"), False),
-])
+@pytest.mark.parametrize(
+    'failing,denied',
+    [
+        (PermissionDenied('no WRITE VOLUME on the staging volume'), True),
+        (ServerOperationError('[INSUFFICIENT_PERMISSIONS] on `out`'), True),
+        (ServerOperationError('[INSUFFICIENT_PRIVILEGES] to write'), True),
+        (ServerOperationError('[TABLE_OR_VIEW_NOT_FOUND] no such table'), False),
+        (OperationalError('connection reset'), False),
+    ],
+)
 def test_only_a_missing_grant_is_what_falls_back_to_streaming(
-        tmp_path, failing, denied):
+    tmp_path, failing, denied
+):
     with pytest.raises(SourceError) as failure:
-        read(tmp_path, ReadMode.STAGED,
-             warehouse(raises={"INSERT OVERWRITE": failing}), volume_files())
+        read(
+            tmp_path,
+            ReadMode.STAGED,
+            warehouse(raises={'INSERT OVERWRITE': failing}),
+            volume_files(),
+        )
     assert isinstance(failure.value, SourceAccessDeniedError) is denied
 
 
 def test_the_worker_ceiling_is_what_reaches_the_volume_download_pool(
-        tmp_path, monkeypatch):
+    tmp_path, monkeypatch
+):
     from kumo_databricks import staging
+
     seen = []
     fetch_all = staging.fetch_all
 
@@ -290,16 +312,20 @@ def test_the_worker_ceiling_is_what_reaches_the_volume_download_pool(
         seen.append(worker_ceiling)
         return fetch_all(*args, worker_ceiling=worker_ceiling, **kwargs)
 
-    monkeypatch.setattr(staging, "fetch_all", record)
+    monkeypatch.setattr(staging, 'fetch_all', record)
     for ceiling in (None, 2):
         reader = build(files=volume_files())
-        reader.prepare(TABLE, str(tmp_path / f"{ceiling}"), columns=COLUMNS,
-                       mode=ReadMode.STAGED, worker_ceiling=ceiling)
+        reader.prepare(
+            TABLE,
+            str(tmp_path / f'{ceiling}'),
+            columns=COLUMNS,
+            mode=ReadMode.STAGED,
+            worker_ceiling=ceiling,
+        )
     assert seen == [None, 2]
 
 
-def test_two_overlapping_reads_of_one_table_never_stage_over_each_other(
-        tmp_path):
+def test_two_overlapping_reads_of_one_table_never_stage_over_each_other(tmp_path):
     """One volume serves every read, so two reads of the same table -- a retry
     that overlaps its predecessor, or two graphs built at once -- meet in it."""
     files = volume_files()
@@ -308,10 +334,11 @@ def test_two_overlapping_reads_of_one_table_never_stage_over_each_other(
     def second_read():
         cursor = warehouse()
         finished.append(
-            (cursor, read(tmp_path / "second", ReadMode.STAGED, cursor, files)))
+            (cursor, read(tmp_path / 'second', ReadMode.STAGED, cursor, files))
+        )
 
     first = warehouse(during=second_read)
-    landed = read(tmp_path / "first", ReadMode.STAGED, first, files)
+    landed = read(tmp_path / 'first', ReadMode.STAGED, first, files)
     second, overlapped = finished[0]
 
     assert set(first.locations).isdisjoint(second.locations)

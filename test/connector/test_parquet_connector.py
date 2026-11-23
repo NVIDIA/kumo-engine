@@ -12,9 +12,11 @@ from kumo.connector.parquet_connector import ParquetConnector
 
 
 def test_parquet_connector_load_full_s3_dataset(
-        tempdir, require_kumo_public_datasets_s3):
+    tempdir, require_kumo_public_datasets_s3
+):
     connector = ParquetConnector(
-        'parquet', root_dir="s3://kumo-public-datasets/financial/parquet/")
+        'parquet', root_dir='s3://kumo-public-datasets/financial/parquet/'
+    )
 
     pkey = 'TRANS_ID'
     cols = [
@@ -32,16 +34,16 @@ def test_parquet_connector_load_full_s3_dataset(
     df = connector.read_table(table_name, pkey, cols)
     assert len(df.columns) == len(cols)
     assert df.columns.values.tolist() == [col[0] for col in cols]
-    assert df.dtypes.values.tolist() == [
-        dtype_to_pandas(col[2]) for col in cols
-    ]
+    assert df.dtypes.values.tolist() == [dtype_to_pandas(col[2]) for col in cols]
     assert df.shape[0] == 1056320
 
 
 def test_parquet_connector_common_error_year_timestamp(
-        tempdir, require_kumo_public_datasets_s3):
+    tempdir, require_kumo_public_datasets_s3
+):
     connector = ParquetConnector(
-        'parquet', root_dir="s3://kumo-public-datasets/common_error/")
+        'parquet', root_dir='s3://kumo-public-datasets/common_error/'
+    )
 
     cols = [
         ('timestamp', Stype.timestamp, Dtype.time),
@@ -53,9 +55,7 @@ def test_parquet_connector_common_error_year_timestamp(
     df = connector.read_table(table_name, cols=cols)
     assert len(df.columns) == len(cols)
     assert df.columns.values.tolist() == [col[0] for col in cols]
-    assert df.dtypes.values.tolist() == [
-        dtype_to_pandas(col[2]) for col in cols
-    ]
+    assert df.dtypes.values.tolist() == [dtype_to_pandas(col[2]) for col in cols]
     assert df.shape[0] == 3
 
     assert pd.isna(df['timestamp'][0])

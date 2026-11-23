@@ -13,6 +13,7 @@ from kumoapi.pquery.AST import (
     Join,
     LogicalOperation,
 )
+
 from kumopql.rewriting.filter_splitter import FilterSplitter, SplitFilter
 
 
@@ -24,6 +25,7 @@ class StaticFilterSplitter(FilterSplitter):
     filters that can be applied before timeframe generation and filters that
     must be applied after timeframe generation.
     """
+
     def __init__(self) -> None:
         pass
 
@@ -31,17 +33,18 @@ class StaticFilterSplitter(FilterSplitter):
         """Check if there are duplicate inapplicable nodes in the filter
         tree.
         """
-        if (split_filter.non_applicable_filter is None
-                or split_filter.original_filter is None):
+        if (
+            split_filter.non_applicable_filter is None
+            or split_filter.original_filter is None
+        ):
             return False
-        old_num_aggregations = self._count_aggregations(
-            split_filter.original_filter)
+        old_num_aggregations = self._count_aggregations(split_filter.original_filter)
         new_num_aggregations = self._count_aggregations(
-            split_filter.non_applicable_filter)
+            split_filter.non_applicable_filter
+        )
         return old_num_aggregations < new_num_aggregations
 
-    def can_be_split_for_entity_optimization(
-            self, split_filter: SplitFilter) -> bool:
+    def can_be_split_for_entity_optimization(self, split_filter: SplitFilter) -> bool:
         """Check if the filter can be split for entity optimization.
 
         A filter can be split for entity optimization if:
@@ -50,15 +53,16 @@ class StaticFilterSplitter(FilterSplitter):
         - The non-applicable part of the filter is valid.
         - There are no duplicate inapplicable nodes in the filter tree.
         """
-        return (split_filter.non_applicable_is_valid
-                and split_filter.applicable_filter is not None
-                and not self.duplicates_inapplicable_nodes(split_filter))
+        return (
+            split_filter.non_applicable_is_valid
+            and split_filter.applicable_filter is not None
+            and not self.duplicates_inapplicable_nodes(split_filter)
+        )
 
     def _count_aggregations(self, node: ASTNode) -> int:
         """Count the number of aggregations in the subtree."""
         if isinstance(node, Aggregation):
-            return 1 + sum(
-                self._count_aggregations(child) for child in node.children)
+            return 1 + sum(self._count_aggregations(child) for child in node.children)
         return sum(self._count_aggregations(child) for child in node.children)
 
     def _check_if_duplicates_exist(
@@ -97,8 +101,7 @@ class StaticFilterSplitter(FilterSplitter):
             applicable or not.
         """
         if isinstance(node, Filter):
-            return self._recursively_split_filter(node.condition,
-                                                  node.condition)
+            return self._recursively_split_filter(node.condition, node.condition)
         if isinstance(node, Join):
             return self.split(node.rhs_target)
         if isinstance(node, Aggregation):
@@ -113,7 +116,7 @@ class StaticFilterSplitter(FilterSplitter):
                 non_applicable_is_valid=True,
                 original_filter=None,
             )
-        raise AssertionError(f"Unknown node type {type(node)}.")
+        raise AssertionError(f'Unknown node type {type(node)}.')
 
     def _condition_base_case(
         self,
@@ -147,8 +150,10 @@ class StaticFilterSplitter(FilterSplitter):
                 sub_filter = self.split(target.target)
 
                 # No sub-filters, so this aggregation is valid.
-                if (sub_filter.n_applicable_conditions == 0
-                        and sub_filter.n_non_applicable_conditions == 0):
+                if (
+                    sub_filter.n_applicable_conditions == 0
+                    and sub_filter.n_non_applicable_conditions == 0
+                ):
                     return SplitFilter(
                         applicable_filter=node,
                         non_applicable_filter=None,

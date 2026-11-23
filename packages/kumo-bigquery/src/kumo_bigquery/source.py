@@ -9,6 +9,18 @@ from dataclasses import KW_ONLY, dataclass, field
 from typing import Any
 
 from google.auth.credentials import Credentials
+from kumo_core.custom_sql import subquery_safe_sql
+from kumo_core.sources.arrow_parquet import (
+    count_rows,
+    materialize_arrow_streams,
+)
+from kumo_core.sources.identity import sql_data_version
+from kumo_core.sources.prepare import ReadOutput, run_prepare
+from kumo_core.sources.protocol import require_mode, staged_first
+from kumo_core.sources.types import Capability, ReadMode, StagedTable
+from kumo_core.types.enums import ConnectorType
+from kumoapi.typing import Dtype
+
 from kumo_bigquery.errors import resolving, translated
 from kumo_bigquery.identity import data_version as read_data_version
 from kumo_bigquery.identity import is_logical_view
@@ -23,17 +35,6 @@ from kumo_bigquery.sql import (
 )
 from kumo_bigquery.staging import StagingLocation, probe, staged_read
 from kumo_bigquery.streaming import ReadTarget, query_target, target_streams
-from kumo_core.custom_sql import subquery_safe_sql
-from kumo_core.sources.arrow_parquet import (
-    count_rows,
-    materialize_arrow_streams,
-)
-from kumo_core.sources.identity import sql_data_version
-from kumo_core.sources.prepare import ReadOutput, run_prepare
-from kumo_core.sources.protocol import require_mode, staged_first
-from kumo_core.sources.types import Capability, ReadMode, StagedTable
-from kumo_core.types.enums import ConnectorType
-from kumoapi.typing import Dtype
 
 
 @dataclass
@@ -60,8 +61,7 @@ class BigQuerySourceReader:
         if self.staging_uri is None:
             return
         if self.storage_client is None:
-            raise ValueError(
-                "a staging uri needs a storage client to fetch the export")
+            raise ValueError('a staging uri needs a storage client to fetch the export')
         self.staging = StagingLocation.parse(self.staging_uri)
 
     @property
@@ -74,8 +74,7 @@ class BigQuerySourceReader:
         if self.staging is None:
             return Capability.DENIED
         if self._staging_capability is None:
-            answer = probe(self.client, self.storage_client,
-                           location=self.staging)
+            answer = probe(self.client, self.storage_client, location=self.staging)
             if answer is Capability.UNKNOWN:
                 return answer
             self._staging_capability = answer
@@ -84,18 +83,30 @@ class BigQuerySourceReader:
     def read_modes(self, table: str) -> Sequence[ReadMode]:
         return staged_first(self.probe_staging() is Capability.ALLOWED)
 
-    def data_version(self, table: str, *, sql: str | None = None,
-                     columns: Mapping[str, Dtype] | None = None) -> str:
+    def data_version(
+        self,
+        table: str,
+        *,
+        sql: str | None = None,
+        columns: Mapping[str, Dtype] | None = None,
+    ) -> str:
         with translated(table, ReadMode.STREAMED):
             return self._stamp(table, sql, columns)
 
-    def _stamp(self, table: str, sql: str | None = None,
-               columns: Mapping[str, Dtype] | None = None) -> str:
+    def _stamp(
+        self,
+        table: str,
+        sql: str | None = None,
+        columns: Mapping[str, Dtype] | None = None,
+    ) -> str:
         if sql is not None:
             return sql_data_version(
-                sql, ConnectorType.BIGQUERY,
+                sql,
+                ConnectorType.BIGQUERY,
                 lambda leaf: read_data_version(self.client, self._name(leaf)),
-                columns, table=table)
+                columns,
+                table=table,
+            )
         with resolving(table):
             return read_data_version(self.client, self._name(table))
 
@@ -127,18 +138,24 @@ class BigQuerySourceReader:
                     info = self.client.get_table(self._name(table))
                 # A read session opens on a table but not a view.
                 schema, streamed_by_query = info.schema, is_logical_view(info)
-            ordered = order_by_schema(columns,
-                                      [column.name for column in schema])
+            ordered = order_by_schema(columns, [column.name for column in schema])
             projection = build_projection(ordered, aliases)
             return run_prepare(
                 table,
                 dest,
                 mode,
                 stamp=lambda: self._stamp(table, sql, columns),
-                read=lambda: self._read(table, dest, ordered, aliases,
-                                        projection, mode, worker_ceiling,
-                                        self._embedded(table, sql
-                                                       ), streamed_by_query),
+                read=lambda: self._read(
+                    table,
+                    dest,
+                    ordered,
+                    aliases,
+                    projection,
+                    mode,
+                    worker_ceiling,
+                    self._embedded(table, sql),
+                    streamed_by_query,
+                ),
                 expected_rows=expected_rows,
                 version=version,
             )
@@ -156,18 +173,30 @@ class BigQuerySourceReader:
         streamed_by_query: bool,
     ) -> ReadOutput:
         if mode is ReadMode.STAGED:
-            paths, scanned = staged_read(self.client, self.storage_client,
-                                         location=self.staging.child(table),
-                                         projection=projection, source=source,
-                                         dest=dest,
-                                         worker_ceiling=worker_ceiling,
-                                         job_config=self._job_config())
+            paths, scanned = staged_read(
+                self.client,
+                self.storage_client,
+                location=self.staging.child(table),
+                projection=projection,
+                source=source,
+                dest=dest,
+                worker_ceiling=worker_ceiling,
+                job_config=self._job_config(),
+            )
         else:
-            paths, scanned = self._streamed(table, dest, columns, aliases,
-                                            projection, worker_ceiling, source,
-                                            streamed_by_query)
-        return ReadOutput(paths=paths, num_rows=count_rows(paths),
-                          scanned_bytes=scanned)
+            paths, scanned = self._streamed(
+                table,
+                dest,
+                columns,
+                aliases,
+                projection,
+                worker_ceiling,
+                source,
+                streamed_by_query,
+            )
+        return ReadOutput(
+            paths=paths, num_rows=count_rows(paths), scanned_bytes=scanned
+        )
 
     def _streamed(
         self,
@@ -185,33 +214,36 @@ class BigQuerySourceReader:
         table BigQuery writes every query result to."""
         fields = output_columns(columns, aliases)
         if streamed_by_query or aliases:
-            target = query_target(self.client,
-                                  sql=f"SELECT {projection} FROM {source}",
-                                  fields=fields, job_config=self._job_config())
+            target = query_target(
+                self.client,
+                sql=f'SELECT {projection} FROM {source}',
+                fields=fields,
+                job_config=self._job_config(),
+            )
         else:
             target = ReadTarget(
-                path=table_path(self.project, self.dataset, table),
-                fields=fields)
-        with target_streams(self.read_client, target,
-                            billing_project=self._billing(),
-                            credentials=self.credentials,
-                            worker_ceiling=worker_ceiling) as (streams,
-                                                               workers):
-            written = materialize_arrow_streams(streams, dest,
-                                                worker_ceiling=workers)
+                path=table_path(self.project, self.dataset, table), fields=fields
+            )
+        with target_streams(
+            self.read_client,
+            target,
+            billing_project=self._billing(),
+            credentials=self.credentials,
+            worker_ceiling=worker_ceiling,
+        ) as (streams, workers):
+            written = materialize_arrow_streams(streams, dest, worker_ceiling=workers)
         return written.paths, target.bytes_scanned
 
     def _name(self, table: str) -> str:
-        return f"{self.project}.{self.dataset}.{table}"
+        return f'{self.project}.{self.dataset}.{table}'
 
     def _embedded(self, table: str, sql: str | None) -> str:
         if sql is None:
             return qualified_name(self.project, self.dataset, table)
-        return f"({subquery_safe_sql(sql, self.source_type)})"
+        return f'({subquery_safe_sql(sql, self.source_type)})'
 
     def _plan(self, sql: str) -> Any:
-        return query_plan(self.client, sql, project=self.project,
-                          dataset=self.dataset)
+        return query_plan(self.client, sql, project=self.project, dataset=self.dataset)
 
     def _job_config(self) -> Any:
         return home_dataset(self.project, self.dataset)

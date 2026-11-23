@@ -108,8 +108,9 @@ class PredictionAttributes(ConfigMixin):
     def customize_from_config(cls, values: dict[str, Any]) -> dict[str, Any]:
         encoder = (values.get('target_col') or {}).get('encoder', None)
         if encoder is not None:
-            values['target_col']['encoder'] = TypeAdapter(
-                EncoderType).validate_python(encoder)
+            values['target_col']['encoder'] = TypeAdapter(EncoderType).validate_python(
+                encoder
+            )
         return values
 
 
@@ -193,6 +194,7 @@ class Task(ConfigMixin, _HasData):
             specific artifacts such as split table stats. Sometimes known
             as home_dir (default: :obj:`None`)
     """
+
     def __init__(
         self,
         graph: Graph,
@@ -263,8 +265,9 @@ class Task(ConfigMixin, _HasData):
             if self.graph.num_data_sources != 1:
                 raise ValueError(
                     f"Cannot add table '{train_table_name}' to task without "
-                    "specifying a data_source. Provided graph has "
-                    f"{len(graph.connectors)} data_sources.")
+                    'specifying a data_source. Provided graph has '
+                    f'{len(graph.connectors)} data_sources.'
+                )
             data_source = self.graph.connectors[0]
 
         connector = data_source
@@ -276,34 +279,39 @@ class Task(ConfigMixin, _HasData):
 
         # NOTE: Right now `target_table_name` is only used in static link
         # prediction for inserting pseudo time in target table
-        if (self.task_type.is_link_pred and time_col is not None
-                and time_col.is_pseudo):
+        if self.task_type.is_link_pred and time_col is not None and time_col.is_pseudo:
             assert target_table_name is not None
         self.target_table_name = target_table_name
 
         if not self.is_pred:
             if target_col is None and not self.task_type.is_link_pred:
                 raise ValueError(
-                    f"Task type {self.task_type} must define an associated "
-                    f"target column. Please specify a target column to "
-                    f"proceed.")
+                    f'Task type {self.task_type} must define an associated '
+                    f'target column. Please specify a target column to '
+                    f'proceed.'
+                )
 
             if target_col is not None and self.task_type.is_link_pred:
                 raise ValueError(
-                    f"Task type {self.task_type} does not support a target "
-                    f"column (got {target_col}). Please remove the target "
-                    f"column to proceed.")
+                    f'Task type {self.task_type} does not support a target '
+                    f'column (got {target_col}). Please remove the target '
+                    f'column to proceed.'
+                )
 
-            if (self.task_type.is_link_pred and time_col is not None
-                    and time_col.is_pseudo
-                    and not self.list_distinct_target_is_array):
+            if (
+                self.task_type.is_link_pred
+                and time_col is not None
+                and time_col.is_pseudo
+                and not self.list_distinct_target_is_array
+            ):
                 # Static LP scalar targets use pseudo time for row-stage
                 # materialization, so ratio-based LP splits become temporal
                 # splits over that pseudo time.
                 if isinstance(split, (RandomSplit, RandomLinkSplit)):
                     logger.info(
-                        "Overwrite '%s' to 'TemporalSplit' for "
-                        "static link prediction", split.__class__.__name__)
+                        "Overwrite '%s' to 'TemporalSplit' for static link prediction",
+                        split.__class__.__name__,
+                    )
                     split = TemporalSplit(split.ratio)
                 elif isinstance(split, TimeSplit):
                     # TimeSplit over pseudo time is not meaningful; fall back
@@ -312,20 +320,25 @@ class Task(ConfigMixin, _HasData):
                         ratio = split.fractions
                     else:
                         ratio = [1.0 / split.num_splits] * split.num_splits
-                    logger.info("Overwrite 'TimeSplit' to 'TemporalSplit' "
-                                "for static link prediction")
+                    logger.info(
+                        "Overwrite 'TimeSplit' to 'TemporalSplit' "
+                        'for static link prediction'
+                    )
                     split = TemporalSplit(ratio)
                 if not isinstance(split, TemporalSplit):
                     raise ValueError(
-                        "Static link prediction with scalar targets and "
-                        "pseudo time requires a TemporalSplit-compatible "
-                        "split. "
-                        f"task_type={self.task_type}, "
-                        f"split_type={type(split).__name__}, "
-                        "list_distinct_target_is_array="
-                        f"{self.list_distinct_target_is_array}")
-            if (self.task_type == TaskType.STATIC_LINK_PREDICTION
-                    and self.list_distinct_target_is_array):
+                        'Static link prediction with scalar targets and '
+                        'pseudo time requires a TemporalSplit-compatible '
+                        'split. '
+                        f'task_type={self.task_type}, '
+                        f'split_type={type(split).__name__}, '
+                        'list_distinct_target_is_array='
+                        f'{self.list_distinct_target_is_array}'
+                    )
+            if (
+                self.task_type == TaskType.STATIC_LINK_PREDICTION
+                and self.list_distinct_target_is_array
+            ):
                 assert time_col is None
                 assert isinstance(split, RandomLinkSplit)
 
@@ -364,8 +377,11 @@ class Task(ConfigMixin, _HasData):
             target_col = self.train_table.target_col
             if target_col is not None and target_col.stype is None:
                 target_col.stype = self._infer_target_stype()
-            if (not skip_encoder_inference and target_col is not None
-                    and target_col.encoder is None):
+            if (
+                not skip_encoder_inference
+                and target_col is not None
+                and target_col.encoder is None
+            ):
                 target_col.encoder = self._infer_target_encoder(target_col)
 
         # Infer info for previous label columns, used with autoregression:
@@ -373,13 +389,14 @@ class Task(ConfigMixin, _HasData):
             if current_col.name[:-1].endswith(AUTOREGRESSION_SUFFIX):
                 if current_col.stype is None:
                     current_col.stype = self._infer_target_stype()
-                if (not skip_encoder_inference and current_col.encoder is None):
+                if not skip_encoder_inference and current_col.encoder is None:
                     current_col.encoder = self._infer_autoregression_encoder(
-                        current_col)
+                        current_col
+                    )
             if current_col.name == AUTOREGRESSION_COL:
                 if current_col.stype is None:
                     current_col.stype = Stype.sequence
-                if (not skip_encoder_inference and current_col.encoder is None):
+                if not skip_encoder_inference and current_col.encoder is None:
                     # TODO: Remove this dependency on `self.lag_timesteps`
                     #       from `Task` and change this logic to instead
                     #       use stats computation
@@ -420,7 +437,7 @@ class Task(ConfigMixin, _HasData):
     # Built-ins ###############################################################
 
     def __repr__(self) -> str:
-        target_col_name = "???"
+        target_col_name = '???'
         if self.is_pred:
             target_col = self.prediction_attrs.target_col
             if target_col is not None:
@@ -428,20 +445,21 @@ class Task(ConfigMixin, _HasData):
         else:
             target_col_name = self.train_table.target_col_name
 
-        return (f'{self.__class__.__name__}(\n'
-                f'  name={self.name or "???"},\n'
-                f'  type={self.task_type.value},\n'
-                f'  graph={self.graph.name or "???"},\n'
-                f'  train_table={self.train_table.name},\n'
-                f'  target_col={target_col_name},\n'
-                f'  time_col={self.train_table.time_col_name or "???"},\n'
-                f'  weight_col={self.train_table.weight_col_name or "???"},\n'
-                f'  split={self.train_table.split},\n'
-                f')')
+        return (
+            f'{self.__class__.__name__}(\n'
+            f'  name={self.name or "???"},\n'
+            f'  type={self.task_type.value},\n'
+            f'  graph={self.graph.name or "???"},\n'
+            f'  train_table={self.train_table.name},\n'
+            f'  target_col={target_col_name},\n'
+            f'  time_col={self.train_table.time_col_name or "???"},\n'
+            f'  weight_col={self.train_table.weight_col_name or "???"},\n'
+            f'  split={self.train_table.split},\n'
+            f')'
+        )
 
     def __getitem__(self, name: str) -> Table:
-        if (name == self.train_table.name
-                or name == self.train_table.source_name):
+        if name == self.train_table.name or name == self.train_table.source_name:
             return self.train_table
         return self.graph[name]
 
@@ -455,7 +473,8 @@ class Task(ConfigMixin, _HasData):
     def is_temporal(self) -> bool:
         # Using a pseudo-time column should not make the task temporal:
         return self.train_table.has_time_col() and (
-            not self.train_table.time_col.is_pseudo)
+            not self.train_table.time_col.is_pseudo
+        )
 
     @property
     def metrics(self) -> list[str]:
@@ -471,15 +490,15 @@ class Task(ConfigMixin, _HasData):
     def edge_strs(self) -> list[str]:
         r"""The list of all the edges in the task in string format"""
         if not self.has_data:
-            raise ValueError("Task should be materialized to get edge names")
-        return ["__".join(edge) for edge in self.data.edge_types]
+            raise ValueError('Task should be materialized to get edge names')
+        return ['__'.join(edge) for edge in self.data.edge_types]
 
     @property
-    def unqualified_target_to_entity_paths(
-            self) -> list[list[tuple[str, str, str]]]:
-        return [[(get_table_name(src), rel, get_table_name(dst))
-                 for src, rel, dst in path]
-                for path in self.target_to_entity_paths]
+    def unqualified_target_to_entity_paths(self) -> list[list[tuple[str, str, str]]]:
+        return [
+            [(get_table_name(src), rel, get_table_name(dst)) for src, rel, dst in path]
+            for path in self.target_to_entity_paths
+        ]
 
     def get_default_metrics(self) -> list[str]:
         if self.task_type == TaskType.MULTICLASS_CLASSIFICATION:
@@ -499,7 +518,10 @@ class Task(ConfigMixin, _HasData):
             default_top_k_list = [1, 10, 100]
             for k in default_top_k_list:
                 default_metrics += [
-                    f'map@{k}', f'precision@{k}', f'recall@{k}', f'f1@{k}'
+                    f'map@{k}',
+                    f'precision@{k}',
+                    f'recall@{k}',
+                    f'f1@{k}',
                 ]
             return default_metrics
         if self.task_type == TaskType.FORECASTING:
@@ -568,21 +590,24 @@ class Task(ConfigMixin, _HasData):
             raise RuntimeError(
                 'diskgraph strict path requires train table data_version '
                 'to seed train_table_col_stats cache from a DataFrame; '
-                'set Task(..., train_table_data_version=...) at construction')
+                'set Task(..., train_table_data_version=...) at construction'
+            )
 
         # Declared train-table cols + the separately-stored target_col.
         col_by_name: dict[str, Any] = {
-            col.name: col.base_config()
-            for col in self.train_table.cols
+            col.name: col.base_config() for col in self.train_table.cols
         }
         if self.train_table.target_col is not None:
             col_by_name[self.train_table.target_col.name] = (
-                self.train_table.target_col.base_config())
+                self.train_table.target_col.base_config()
+            )
 
         # Empty cols (e.g. LP pre-materialization) — defer to the lazy path.
         if not col_by_name:
-            logger.info('train_table.cols empty — deferring col stats seeding '
-                        'from DataFrame to lazy path during encoder inference')
+            logger.info(
+                'train_table.cols empty — deferring col stats seeding '
+                'from DataFrame to lazy path during encoder inference'
+            )
             return False
 
         stats_to_add: dict[Any, dict[ColStatType, Stats]] = {}
@@ -591,9 +616,11 @@ class Task(ConfigMixin, _HasData):
                 # Skip rather than fabricate; the strict-path raise surfaces the
                 # genuine missing-stat error at the right column.
                 logger.warning(
-                    "seed_train_table_col_stats_from_dataframe: column "
+                    'seed_train_table_col_stats_from_dataframe: column '
                     "'%s' declared on train table but absent from "
-                    "DataFrame; skipping", col_name)
+                    'DataFrame; skipping',
+                    col_name,
+                )
                 continue
             ser = df[col_name]
             _, stats_for_col = (
@@ -601,7 +628,8 @@ class Task(ConfigMixin, _HasData):
                     ser,
                     data_version=data_version,
                     approx=False,
-                ))
+                )
+            )
             if stats_for_col:
                 stats_to_add[col_cfg] = stats_for_col
 
@@ -610,7 +638,8 @@ class Task(ConfigMixin, _HasData):
                 'diskgraph strict path: seed_train_table_col_stats_from_'
                 'dataframe produced no usable stats for any declared train '
                 'table column; check that the DataFrame columns match the '
-                'train table schema')
+                'train table schema'
+            )
 
         fingerprint = self.train_table.fingerprint()
         cache = get_active_cache()
@@ -650,25 +679,29 @@ class Task(ConfigMixin, _HasData):
             # The producer omits the block when nothing needs stats (FK-free LP).
             # Degrade to False when there is nothing to seed; node-pred
             # (target_col present) still raises.
-            needs_col_stats = (self.train_table.target_col is not None
-                               or bool(self.train_table.cols))
+            needs_col_stats = self.train_table.target_col is not None or bool(
+                self.train_table.cols
+            )
             if not needs_col_stats:
                 return False
             raise RuntimeError(
                 'diskgraph strict path requires parsed train_table_col_stats '
-                'artifact in manifest')
+                'artifact in manifest'
+            )
 
         raw_stats = parsed.get('stats')
         if not isinstance(raw_stats, dict):
             raise RuntimeError(
                 'diskgraph strict path requires train_table_col_stats.stats '
-                'payload in manifest artifact')
+                'payload in manifest artifact'
+            )
 
         return self._seed_col_stats_from_raw_stats(
             raw_stats,
             empty_artifact_error=(
                 'diskgraph strict path found train_table_col_stats artifact '
-                'but no usable stats entries for train table columns'),
+                'but no usable stats entries for train table columns'
+            ),
         )
 
     def seed_train_table_col_stats_from_sidecar(
@@ -695,19 +728,21 @@ class Task(ConfigMixin, _HasData):
             return False
 
         import kumo.diskgraph.diskgraph_native_tt_artifacts as tt_artifacts
-        payload = tt_artifacts.parse_train_table_col_stats_artifact(
-            sidecar_path)
+
+        payload = tt_artifacts.parse_train_table_col_stats_artifact(sidecar_path)
         raw_stats = payload.get('stats')
         if not isinstance(raw_stats, dict):
             raise RuntimeError(
                 'diskgraph strict path requires train_table_col_stats.stats '
-                'payload in durable sidecar artifact')
+                'payload in durable sidecar artifact'
+            )
 
         return self._seed_col_stats_from_raw_stats(
             raw_stats,
             empty_artifact_error=(
                 'diskgraph strict path found train_table_col_stats sidecar '
-                'but no usable stats entries for train table columns'),
+                'but no usable stats entries for train table columns'
+            ),
         )
 
     def _seed_col_stats_from_raw_stats(
@@ -728,21 +763,22 @@ class Task(ConfigMixin, _HasData):
         if data_version is None:
             raise RuntimeError(
                 'diskgraph strict path requires train table data_version to '
-                'seed train_table_col_stats cache')
+                'seed train_table_col_stats cache'
+            )
 
-        col_by_name = {
-            col.name: col.base_config()
-            for col in self.train_table.cols
-        }
+        col_by_name = {col.name: col.base_config() for col in self.train_table.cols}
         if self.train_table.target_col is not None:
             col_by_name[self.train_table.target_col.name] = (
-                self.train_table.target_col.base_config())
+                self.train_table.target_col.base_config()
+            )
 
         # Empty cols (e.g. LP) — defer to the lazy path in
         # _get_encoder_stats_from_cache_or_fail when columns are available.
         if not col_by_name:
-            logger.info('train_table.cols empty — deferring col stats seeding '
-                        'to lazy path during encoder inference')
+            logger.info(
+                'train_table.cols empty — deferring col stats seeding '
+                'to lazy path during encoder inference'
+            )
             self._diskgraph_train_table_col_stats_seeded = False
             return False
 
@@ -752,8 +788,7 @@ class Task(ConfigMixin, _HasData):
 
         stats_to_add: dict[Any, dict[ColStatType, Stats]] = {}
         for stat_key, stat_payload in raw_stats.items():
-            if not isinstance(stat_key, str) or not isinstance(
-                    stat_payload, dict):
+            if not isinstance(stat_key, str) or not isinstance(stat_payload, dict):
                 continue
             parts = stat_key.rsplit('__', 3)
             if len(parts) != 4:
@@ -798,23 +833,27 @@ class Task(ConfigMixin, _HasData):
         if self.train_table.data_version is None:
             raise RuntimeError(
                 'diskgraph strict path requires train table data_version for '
-                f"column '{col.name}'")
+                f"column '{col.name}'"
+            )
 
         fingerprint = self.train_table.fingerprint()
         data_version = self.train_table.data_version
         cache = get_active_cache()
 
-        def _fetch() -> tuple[dict[Any, Any], dict[Any, Any], list[ColStatType],
-                              list[ColStatType]]:
+        def _fetch() -> tuple[
+            dict[Any, Any], dict[Any, Any], list[ColStatType], list[ColStatType]
+        ]:
             cache.load_col_stats_cache(fingerprint, data_version)
 
             col_cfg = col.base_config()
             exact_types = [
-                stat for stat in EncoderGenerator.REQUIRED_EXACT_STATS
+                stat
+                for stat in EncoderGenerator.REQUIRED_EXACT_STATS
                 if stat.supports(col.dtype) and stat.supports_stype(col.stype)
             ]
             approx_types = [
-                stat for stat in EncoderGenerator.REQUIRED_APPROX_STATS
+                stat
+                for stat in EncoderGenerator.REQUIRED_APPROX_STATS
                 if stat.supports(col.dtype) and stat.supports_stype(col.stype)
             ]
 
@@ -823,27 +862,31 @@ class Task(ConfigMixin, _HasData):
 
             # DG-native: read directly from BackendCacheManager (DG ingest
             # populates it); the severed legacy factory has no get_col_stats.
-            exact_stats = cache.get_col_stats(
-                fingerprint,
-                exact_request,
-                approx=False,
-                data_version=data_version,
-            ) if exact_request else {}
-            approx_stats = cache.get_col_stats(
-                fingerprint,
-                approx_request,
-                approx=True,
-                data_version=data_version,
-            ) if approx_request else {}
+            exact_stats = (
+                cache.get_col_stats(
+                    fingerprint,
+                    exact_request,
+                    approx=False,
+                    data_version=data_version,
+                )
+                if exact_request
+                else {}
+            )
+            approx_stats = (
+                cache.get_col_stats(
+                    fingerprint,
+                    approx_request,
+                    approx=True,
+                    data_version=data_version,
+                )
+                if approx_request
+                else {}
+            )
 
             col_exact = exact_stats.get(col_cfg, {})
             col_approx = approx_stats.get(col_cfg, {})
-            missing_exact = [
-                stat for stat in exact_types if stat not in col_exact
-            ]
-            missing_approx = [
-                stat for stat in approx_types if stat not in col_approx
-            ]
+            missing_exact = [stat for stat in exact_types if stat not in col_exact]
+            missing_approx = [stat for stat in approx_types if stat not in col_approx]
             return col_exact, col_approx, missing_exact, missing_approx
 
         col_exact, col_approx, missing_exact, missing_approx = _fetch()
@@ -866,17 +909,18 @@ class Task(ConfigMixin, _HasData):
             missing = [s.value for s in (missing_exact + missing_approx)]
             raise RuntimeError(
                 f"Encoder stats for '{self.train_table.name}.{col.name}' are "
-                f"missing from the backend col-stats cache (data_version="
-                f"{data_version}). Missing stat types: {missing}. Under the "
-                f"TT-NG / DiskGraph strict path these must already be present: "
-                f"graph-column stats are populated during GRAPH INGESTION and "
-                f"train-table-column stats are seeded from the DiskGraph "
-                f"producer sidecar during MATERIALIZATION "
-                f"(Task.seed_train_table_col_stats_from_sidecar). There is "
-                f"intentionally no manifest or connector fallback here -- a "
-                f"miss indicates a real upstream gap (ingest / materialization "
-                f"/ sidecar seed did not cover this column), not something to "
-                f"paper over by re-reading the table.")
+                f'missing from the backend col-stats cache (data_version='
+                f'{data_version}). Missing stat types: {missing}. Under the '
+                f'TT-NG / DiskGraph strict path these must already be present: '
+                f'graph-column stats are populated during GRAPH INGESTION and '
+                f'train-table-column stats are seeded from the DiskGraph '
+                f'producer sidecar during MATERIALIZATION '
+                f'(Task.seed_train_table_col_stats_from_sidecar). There is '
+                f'intentionally no manifest or connector fallback here -- a '
+                f'miss indicates a real upstream gap (ingest / materialization '
+                f'/ sidecar seed did not cover this column), not something to '
+                f'paper over by re-reading the table.'
+            )
 
         merged = dict(col_exact)
         merged.update(col_approx)
@@ -893,8 +937,7 @@ class Task(ConfigMixin, _HasData):
             return Numerical()
         assert target_col is not None
         stats = self._get_encoder_stats_from_cache_or_fail(target_col)
-        return select_target_encoder(stype,
-                                     EncoderGenerator._shared_stats(stats))
+        return select_target_encoder(stype, EncoderGenerator._shared_stats(stats))
 
     def _infer_autoregression_encoder(
         self,
@@ -917,7 +960,8 @@ class Task(ConfigMixin, _HasData):
                     encoder_fn = Numerical()
                 else:
                     encoder_fn = EncoderGenerator.get_numerical_encoder(
-                        col, encoder_stats)
+                        col, encoder_stats
+                    )
                 encoder_fn.na_strategy = 'mean'
             return encoder_fn
 
@@ -949,9 +993,12 @@ class Task(ConfigMixin, _HasData):
         # encoder here so callers that build the task with
         # `ignore_encoders=True` and then explicitly call `infer_encoders`
         # get a fully-encoded task.
-        if (not self.is_pred and not self.task_type.is_link_pred
-                and self.train_table.target_col is not None
-                and self.train_table.target_col.encoder is None):
+        if (
+            not self.is_pred
+            and not self.task_type.is_link_pred
+            and self.train_table.target_col is not None
+            and self.train_table.target_col.encoder is None
+        ):
             target_col = self.train_table.target_col
             target_col.encoder = self._infer_target_encoder(target_col)
         self.train_table.infer_encoders(*args, **kwargs)
@@ -1019,9 +1066,10 @@ class Task(ConfigMixin, _HasData):
             connector = PandasConnector({name: df})
         elif isinstance(data_source, str):
             raise ValueError(
-                "data source for the prediction table should either be a "
-                "connector of a Pandas Dataframe. Received string: "
-                f"{data_source}")
+                'data source for the prediction table should either be a '
+                'connector of a Pandas Dataframe. Received string: '
+                f'{data_source}'
+            )
 
         # Set basic properties:
         pred_table = copy.copy(self.train_table)
@@ -1076,12 +1124,11 @@ class Task(ConfigMixin, _HasData):
         train_table = TrainingTable.from_config(cfg.train_table)
 
         # TODO(manan): see comment in the PredictionAttributes class:
-        prediction_attrs = PredictionAttributes.from_config(
-            cfg.prediction_attrs)
-        if (prediction_attrs is not None
-                and prediction_attrs.target_col is not None):
+        prediction_attrs = PredictionAttributes.from_config(cfg.prediction_attrs)
+        if prediction_attrs is not None and prediction_attrs.target_col is not None:
             prediction_attrs.target_col = Column.from_config(
-                prediction_attrs.target_col)
+                prediction_attrs.target_col
+            )
 
         task = cls(
             graph=graph,
@@ -1119,7 +1166,8 @@ class Task(ConfigMixin, _HasData):
         return task
 
     def persist_train_table_pandas_connector(
-            self, destination: str | None = None) -> None:
+        self, destination: str | None = None
+    ) -> None:
         r"""If the TrainingTable has a PandasConnector we need to persist it
         to a ParquetConnector. It is also required to rename the associated
         nodes and edges in the graph.
@@ -1157,9 +1205,12 @@ class Task(ConfigMixin, _HasData):
 
         # Mirror load-time target-encoder inference so saved/loaded configs
         # don't diverge (``ignore_encoders=True`` leaves it unset at construction).
-        if (not self.is_pred and not self.task_type.is_link_pred
-                and self.train_table.target_col is not None
-                and self.train_table.target_col.encoder is None):
+        if (
+            not self.is_pred
+            and not self.task_type.is_link_pred
+            and self.train_table.target_col is not None
+            and self.train_table.target_col.encoder is None
+        ):
             target_col = self.train_table.target_col
             target_col.encoder = self._infer_target_encoder(target_col)
 
@@ -1172,8 +1223,7 @@ class Task(ConfigMixin, _HasData):
         save_json(task_config, path)
 
         if self.train_table.has_data:
-            self.train_table.data.save_data(
-                osp.join(root_dir, self.train_table.name))
+            self.train_table.data.save_data(osp.join(root_dir, self.train_table.name))
 
         return name
 
@@ -1208,16 +1258,19 @@ class Task(ConfigMixin, _HasData):
         try:
             task = cls.load_from_config(name, home_dir)
         except ValueError as err:
-            logger.error(f"Got error: {err}")
-            raise ValueError(f"Task checkpoint '{name}' does not exist. "
-                             f"Please check the task name, and make sure "
-                             f"you have called `task.save()` when "
-                             f"creating your 'kumo.Task'") from err
+            logger.error(f'Got error: {err}')
+            raise ValueError(
+                f"Task checkpoint '{name}' does not exist. "
+                f'Please check the task name, and make sure '
+                f'you have called `task.save()` when '
+                f"creating your 'kumo.Task'"
+            ) from err
 
         return task
 
     def to_task_config(self):
         from kumo_core.training.task_config import TaskConfig as MLTaskConfig
+
         return MLTaskConfig(
             task_type=self.task_type,
             name=self.name,
@@ -1248,33 +1301,34 @@ class Task(ConfigMixin, _HasData):
             **fitted_task_options(vars(self)),
             sampling=sampling,
         )
-        resolved.target_to_entity_paths = [[
-            tuple(edge) for edge in path
-        ] for path in self.unqualified_target_to_entity_paths]
+        resolved.target_to_entity_paths = [
+            [tuple(edge) for edge in path]
+            for path in self.unqualified_target_to_entity_paths
+        ]
         resolved.exclude_cols_dict = {
-            str(table): list(columns)
-            for table, columns in self.exclude_cols.items()
+            str(table): list(columns) for table, columns in self.exclude_cols.items()
         }
         return resolved
 
     # Validation ##############################################################
 
-    def validate(self, raise_on_error: bool = True,
-                 ignore_encoders: bool = False) -> bool:
+    def validate(
+        self, raise_on_error: bool = True, ignore_encoders: bool = False
+    ) -> bool:
         status = True
         status &= self.graph.validate(raise_on_error, ignore_encoders)
         status &= self.train_table.validate(raise_on_error)
 
         for fkey in self.train_table.fkeys:
             # 1. For each foreign key, there exists a valid destination:
-            if (fkey.dst_table is None
-                    or not fkey_destination_exists(self.graph, fkey)):
+            if fkey.dst_table is None or not fkey_destination_exists(self.graph, fkey):
                 status = False
                 logging.warn_or_raise(
                     f"The foreign key '{fkey.name}' of the table "
                     f"'{self.train_table.name}' is expected to point to a "
-                    f"valid destination table (got {fkey.dst_table})",
-                    raise_on_error)
+                    f'valid destination table (got {fkey.dst_table})',
+                    raise_on_error,
+                )
 
             if fkey.dst_key is None:
                 # 2. Each table referenced by a foreign key without a
@@ -1284,30 +1338,39 @@ class Task(ConfigMixin, _HasData):
                     logging.warn_or_raise(
                         f"The foreign key '{fkey.name}' of the table "
                         f"'{self.train_table.name}' is expected to point to a "
-                        f"destination table with a primary key", raise_on_error)
+                        f'destination table with a primary key',
+                        raise_on_error,
+                    )
             else:
                 # 3. Each table referenced by a foreign key with a destination
                 # column has that destination column as a key:
-                if (not self.graph[fkey.dst_table].has_fkey(fkey.dst_key) and
-                        not self.graph[fkey.dst_table].is_pkey(fkey.dst_key)):
+                if not self.graph[fkey.dst_table].has_fkey(
+                    fkey.dst_key
+                ) and not self.graph[fkey.dst_table].is_pkey(fkey.dst_key):
                     status = False
                     logging.warn_or_raise(
                         f"The foreign key '{fkey.name}' of the table "
                         f"'{self.train_table.name}' points to the "
                         f"non-existent key '{fkey.dst_key}' in table "
-                        f"'{fkey.dst_table}'", raise_on_error)
+                        f"'{fkey.dst_table}'",
+                        raise_on_error,
+                    )
 
         if self.task_type.is_link_pred and len(self.train_table.fkeys) != 2:
             status = False
-            logging.warn_or_raise(f"Link prediction requires exactly two "
-                                  f"foreign keys in the training table "
-                                  f"(got {len(self.train_table.fkeys)})")
+            logging.warn_or_raise(
+                f'Link prediction requires exactly two '
+                f'foreign keys in the training table '
+                f'(got {len(self.train_table.fkeys)})'
+            )
 
         if self.task_type.is_link_pred and len(self.train_table.cols) > 0:
             status = False
-            logging.warn_or_raise(f"Link prediction does not support feature "
-                                  f"columns in the training table "
-                                  f"(got {len(self.train_table.cols)})")
+            logging.warn_or_raise(
+                f'Link prediction does not support feature '
+                f'columns in the training table '
+                f'(got {len(self.train_table.cols)})'
+            )
 
         return status
 
@@ -1343,7 +1406,8 @@ class Task(ConfigMixin, _HasData):
                 _stats={
                     ColStatType.SEQUENCE_MIN_LENGTH: self.forecast_length,
                     ColStatType.SEQUENCE_MAX_LENGTH: self.forecast_length,
-                })
+                }
+            )
             self.train_table.add_col(
                 name=FUTURE_LABELS_COL,
                 dtype=Dtype.floatlist,
@@ -1357,7 +1421,8 @@ class Task(ConfigMixin, _HasData):
                 _stats={
                     ColStatType.SEQUENCE_MIN_LENGTH: lag_timesteps,
                     ColStatType.SEQUENCE_MAX_LENGTH: lag_timesteps,
-                })
+                }
+            )
             self.train_table.add_col(
                 name=AUTOREGRESSION_COL,
                 dtype=Dtype.floatlist,
@@ -1371,11 +1436,12 @@ class Task(ConfigMixin, _HasData):
         if year_over_year:
             encoder = NumericalList(
                 _stats={
-                    ColStatType.SEQUENCE_MIN_LENGTH:
-                    self.forecast_length + 2 * PADDING_SIZE,
-                    ColStatType.SEQUENCE_MAX_LENGTH:
-                    self.forecast_length + 2 * PADDING_SIZE,
-                })
+                    ColStatType.SEQUENCE_MIN_LENGTH: self.forecast_length
+                    + 2 * PADDING_SIZE,
+                    ColStatType.SEQUENCE_MAX_LENGTH: self.forecast_length
+                    + 2 * PADDING_SIZE,
+                }
+            )
             self.train_table.add_col(
                 name=YOY_COL,
                 dtype=Dtype.floatlist,
@@ -1412,8 +1478,9 @@ class Task(ConfigMixin, _HasData):
 def fkey_destination_exists(graph: Graph, fkey: ForeignKey) -> bool:
     r"""Since fkey dst_table can be fully qualified or simply table name,
     checking in both."""
-    all_table_names = ([table_name for table_name in graph.table_names] +
-                       [table.table_name for table in graph.tables])
+    all_table_names = [table_name for table_name in graph.table_names] + [
+        table.table_name for table in graph.tables
+    ]
     return fkey.dst_table in all_table_names
 
 
@@ -1422,7 +1489,7 @@ def collect_encoders(task: Task | Graph) -> EncodersConfig:
     materializes these encoders (by initializing them with statistics computed
     on each column), and returns an object with these initialized encoders.
     This object is intended to be passed to the feature store."""
-    logger.info(f"Collecting encoders for Task {task.name}")
+    logger.info(f'Collecting encoders for Task {task.name}')
 
     encoders = EncodersConfig()
 

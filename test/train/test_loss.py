@@ -94,10 +94,12 @@ def test_huber_loss(weighted: bool, delta: float) -> None:
 @pytest.mark.parametrize('weighted', [False, True])
 def test_multi_quantile_loss(weighted: bool) -> None:
     quantiles = STANDARD_QUANTILE_LEVELS
-    y_pred = torch.stack([
-        torch.linspace(1.0, 2.0, len(quantiles)),
-        torch.linspace(2.0, 3.0, len(quantiles)),
-    ])
+    y_pred = torch.stack(
+        [
+            torch.linspace(1.0, 2.0, len(quantiles)),
+            torch.linspace(2.0, 3.0, len(quantiles)),
+        ]
+    )
     y_true = torch.tensor([2.0, 1.0])
     weight = torch.tensor([1.0, 2.0]) if weighted else None
 
@@ -118,10 +120,12 @@ def test_multi_quantile_loss(weighted: bool) -> None:
 def test_multi_quantile_loss_outputs() -> None:
     loss_fn = MultiQuantileLoss(task_type=TaskType.FORECASTING)
     regression_loss_fn = MultiQuantileLoss(task_type=TaskType.REGRESSION)
-    y_pred = torch.stack([
-        torch.linspace(2.0, 1.0, len(loss_fn.quantiles)),
-        torch.linspace(5.0, 4.0, len(loss_fn.quantiles)),
-    ]).unsqueeze(0)
+    y_pred = torch.stack(
+        [
+            torch.linspace(2.0, 1.0, len(loss_fn.quantiles)),
+            torch.linspace(5.0, 4.0, len(loss_fn.quantiles)),
+        ]
+    ).unsqueeze(0)
 
     expected = y_pred.sort(dim=-1).values
     assert torch.equal(loss_fn.to_probability(y_pred), expected)
@@ -133,7 +137,10 @@ def test_multi_quantile_loss_outputs() -> None:
     regression_pred = y_pred[:, 0, :]
     assert regression_loss_fn.to_prediction(regression_pred).shape == (1, 1)
     assert regression_loss_fn.to_probability(regression_pred).shape == (
-        1, 1, len(regression_loss_fn.quantiles))
+        1,
+        1,
+        len(regression_loss_fn.quantiles),
+    )
 
 
 def test_multi_quantile_loss_resolver_default_quantiles() -> None:
@@ -154,11 +161,13 @@ def test_ordinal_log_loss(dtype: type) -> None:
         task_type=TaskType.MULTICLASS_CLASSIFICATION,
         target_encoder=CategoricalTargetEncoder(
             task_type=TaskType.MULTICLASS_CLASSIFICATION,
-            tensor_mapper=CategoricalTensorMapper(category_counts=[
-                [dtype(1.1), WHATEVER],
-                [dtype(2.2), WHATEVER],
-                [dtype(3.3), WHATEVER],
-            ]),
+            tensor_mapper=CategoricalTensorMapper(
+                category_counts=[
+                    [dtype(1.1), WHATEVER],
+                    [dtype(2.2), WHATEVER],
+                    [dtype(3.3), WHATEVER],
+                ]
+            ),
         ),
         alpha=alpha,
     )
@@ -168,24 +177,26 @@ def test_ordinal_log_loss(dtype: type) -> None:
     y_true = torch.tensor([[0], [2]])
     out = loss_fn(y_pred, y_true)
 
-    if dtype == str:
+    if dtype is str:
         # OrdinalLogLoss should fall back to cross entropy loss if the target
         # values cannot be interpreted as ordinal numbers.
         assert loss_fn.target_values is None
         assert torch.allclose(out, F.cross_entropy(y_pred, y_true.view(-1)))
     else:
-        expected = torch.tensor([
-            # 1st sample:
+        expected = torch.tensor(
             [
-                -math.log(1 - 0.1) * abs(dtype(1.1) - dtype(1.1))**alpha,
-                -math.log(1 - 0.2) * abs(dtype(2.2) - dtype(1.1))**alpha,
-                -math.log(1 - 0.7) * abs(dtype(3.3) - dtype(1.1))**alpha,
-            ],
-            # 2nd sample:
-            [
-                -math.log(1 - 0.4) * abs(dtype(1.1) - dtype(3.3))**alpha,
-                -math.log(1 - 0.4) * abs(dtype(2.2) - dtype(3.3))**alpha,
-                -math.log(1 - 0.2) * abs(dtype(3.3) - dtype(3.3))**alpha,
-            ],
-        ]).mean()
+                # 1st sample:
+                [
+                    -math.log(1 - 0.1) * abs(dtype(1.1) - dtype(1.1)) ** alpha,
+                    -math.log(1 - 0.2) * abs(dtype(2.2) - dtype(1.1)) ** alpha,
+                    -math.log(1 - 0.7) * abs(dtype(3.3) - dtype(1.1)) ** alpha,
+                ],
+                # 2nd sample:
+                [
+                    -math.log(1 - 0.4) * abs(dtype(1.1) - dtype(3.3)) ** alpha,
+                    -math.log(1 - 0.4) * abs(dtype(2.2) - dtype(3.3)) ** alpha,
+                    -math.log(1 - 0.2) * abs(dtype(3.3) - dtype(3.3)) ** alpha,
+                ],
+            ]
+        ).mean()
         assert torch.allclose(out, expected)

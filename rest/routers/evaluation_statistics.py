@@ -38,73 +38,72 @@ logger = logging.getLogger(__name__)
 
 
 class EvaluationStatisticsResource:
-    def __init__(self, auth: Authentication, driver: RestApiDriver,
-                 pq_driver: PQueryApiDriver) -> None:
+    def __init__(
+        self, auth: Authentication, driver: RestApiDriver, pq_driver: PQueryApiDriver
+    ) -> None:
         self._driver = driver
         self._pq_driver = pq_driver
         self._auth = auth
         self._pquery_settings = pq_driver._pquery_settings
 
         self.router = APIRouter(
-            prefix="/v0/eval",
-            tags=["EvaluationStatistics"],
+            prefix='/v0/eval',
+            tags=['EvaluationStatistics'],
             dependencies=[Depends(auth.authenticate_request_header)],
-            responses={HTTPStatus.NOT_FOUND: {
-                "description": "Not found"
-            }},
+            responses={HTTPStatus.NOT_FOUND: {'description': 'Not found'}},
         )
 
         self.router.add_api_route(
-            "/{id}/binary_classification",
+            '/{id}/binary_classification',
             self.get_binary_classification,
             response_model=ClassificationEvaluationResponse,
             methods=['GET'],
         )
 
         self.router.add_api_route(
-            "/{id}/regression_histogram",
+            '/{id}/regression_histogram',
             self.get_regression_histogram,
             response_model=AllTargetRegressionStats,
             methods=['GET'],
         )
 
         self.router.add_api_route(
-            "/{id}/regression_heatmap",
+            '/{id}/regression_heatmap',
             self.get_regression_heatmap,
             response_model=RegressionHeatmapResponse,
             methods=['GET'],
         )
 
         self.router.add_api_route(
-            "/{id}/xai",
+            '/{id}/xai',
             self.get_xai,
             response_model=XAIResponse,
             methods=['GET'],
         )
 
         self.router.add_api_route(
-            "/{id}/available_xai_entities",
+            '/{id}/available_xai_entities',
             self.get_available_xai_entities,
             response_model=StrategyMappings,
             methods=['GET'],
         )
 
         self.router.add_api_route(
-            "/{id}/entity_subgraph/{entity_id}",
+            '/{id}/entity_subgraph/{entity_id}',
             self.get_old_subgraph,
             response_model=OldSubgraph,
             methods=['GET'],
         )
 
         self.router.add_api_route(
-            "/{id}/entity_output/{entity_id}",
+            '/{id}/entity_output/{entity_id}',
             self.get_entity_output,
             response_model=EntityOutput,
             methods=['GET'],
         )
 
         self.router.add_api_route(
-            "/{id}/entity_historical_items/{entity_id}",
+            '/{id}/entity_historical_items/{entity_id}',
             self.get_entity_historical_items,
             response_model=HistoricalItems,
             methods=['GET'],
@@ -130,24 +129,27 @@ class EvaluationStatisticsResource:
 
         with wrap_validation_exceptions(PredictiveQueryDoesNotExistError):
             training_job = await self._get_completed_training_job_for_pq(
-                id, project_id=ProjectID(project_id), ctx=ctx)
+                id, project_id=ProjectID(project_id), ctx=ctx
+            )
 
         if not training_job.results:
             raise HTTPException(
-                HTTPStatus.NOT_FOUND,
-                RestStatusCode.EVALUATION_NOT_YET_COMPLETED.value)
+                HTTPStatus.NOT_FOUND, RestStatusCode.EVALUATION_NOT_YET_COMPLETED.value
+            )
         if not training_job.results.test_eval:
-            raise HTTPException(HTTPStatus.NOT_FOUND,
-                                RestStatusCode.EVALUATION_NOT_AVAILABLE.value)
+            raise HTTPException(
+                HTTPStatus.NOT_FOUND, RestStatusCode.EVALUATION_NOT_AVAILABLE.value
+            )
 
         return ClassificationEvaluationResponse.from_binary_confusion_matrix(
-            training_job.results.test_eval.confusion_matrix)
+            training_job.results.test_eval.confusion_matrix
+        )
 
     async def get_regression_histogram(
-            self,
-            id: PredictiveQueryID,
-            project_id: Annotated[str, Query()],
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        id: PredictiveQueryID,
+        project_id: Annotated[str, Query()],
+        ctx: RequestContext = Depends(get_ctx),
     ) -> AllTargetRegressionStats:
         r"""Get histograms for the target column of the training table for a
         regression task. See #7243
@@ -164,13 +166,14 @@ class EvaluationStatisticsResource:
         """
         with wrap_validation_exceptions(PredictiveQueryDoesNotExistError):
             return await self._driver.get_regression_histogram(
-                ctx, id, project_id=ProjectID(project_id))
+                ctx, id, project_id=ProjectID(project_id)
+            )
 
     async def get_regression_heatmap(
-            self,
-            id: PredictiveQueryID,
-            project_id: Annotated[str, Query()],
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        id: PredictiveQueryID,
+        project_id: Annotated[str, Query()],
+        ctx: RequestContext = Depends(get_ctx),
     ) -> RegressionHeatmapResponse:
         r"""Get a heatmap for predicted vs actual samples for each train, val,
         test split
@@ -187,13 +190,14 @@ class EvaluationStatisticsResource:
         """
         with wrap_validation_exceptions(PredictiveQueryDoesNotExistError):
             return await self._driver.get_regression_heatmap(
-                ctx, id, project_id=ProjectID(project_id))
+                ctx, id, project_id=ProjectID(project_id)
+            )
 
     async def get_xai(
-            self,
-            id: PredictiveQueryID,
-            project_id: Annotated[str, Query()],
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        id: PredictiveQueryID,
+        project_id: Annotated[str, Query()],
+        ctx: RequestContext = Depends(get_ctx),
     ) -> XAIResponse:
         r"""Get explanation for a pquery.
         Args:
@@ -204,14 +208,13 @@ class EvaluationStatisticsResource:
             (entity) table.
         """
         with wrap_validation_exceptions(PredictiveQueryDoesNotExistError):
-            return await self._driver.get_xai(ctx, id,
-                                              project_id=ProjectID(project_id))
+            return await self._driver.get_xai(ctx, id, project_id=ProjectID(project_id))
 
     async def get_available_xai_entities(
-            self,
-            id: PredictiveQueryID,
-            project_id: Annotated[str, Query()],
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        id: PredictiveQueryID,
+        project_id: Annotated[str, Query()],
+        ctx: RequestContext = Depends(get_ctx),
     ) -> StrategyMappings:
         r"""Get preselection strategy mappings of prediction-level XAI
         for a pquery.
@@ -224,14 +227,15 @@ class EvaluationStatisticsResource:
         """
         with wrap_validation_exceptions(PredictiveQueryDoesNotExistError):
             return await self._driver.get_available_xai_entities(
-                ctx, id, project_id=ProjectID(project_id))
+                ctx, id, project_id=ProjectID(project_id)
+            )
 
     async def get_old_subgraph(
-            self,
-            id: PredictiveQueryID,
-            entity_id: str,
-            project_id: Annotated[str, Query()],
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        id: PredictiveQueryID,
+        entity_id: str,
+        project_id: Annotated[str, Query()],
+        ctx: RequestContext = Depends(get_ctx),
     ) -> OldSubgraph:
         r"""Get XAI subgraph of an entity (old version).
 
@@ -243,14 +247,15 @@ class EvaluationStatisticsResource:
         """
         with wrap_validation_exceptions(PredictiveQueryDoesNotExistError):
             return await self._driver.get_entity_old_subgraph(
-                ctx, entity_id, id, project_id=ProjectID(project_id))
+                ctx, entity_id, id, project_id=ProjectID(project_id)
+            )
 
     async def get_entity_output(
-            self,
-            id: PredictiveQueryID,
-            entity_id: str,
-            project_id: Annotated[str, Query()],
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        id: PredictiveQueryID,
+        entity_id: str,
+        project_id: Annotated[str, Query()],
+        ctx: RequestContext = Depends(get_ctx),
     ) -> EntityOutput:
         r"""Get XAI output of an entity.
 
@@ -262,14 +267,15 @@ class EvaluationStatisticsResource:
         """
         with wrap_validation_exceptions(PredictiveQueryDoesNotExistError):
             return await self._driver.get_entity_output(
-                ctx, id, entity_id, project_id=ProjectID(project_id))
+                ctx, id, entity_id, project_id=ProjectID(project_id)
+            )
 
     async def get_entity_historical_items(
-            self,
-            id: PredictiveQueryID,
-            entity_id: str,
-            project_id: Annotated[str, Query()],
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        id: PredictiveQueryID,
+        entity_id: str,
+        project_id: Annotated[str, Query()],
+        ctx: RequestContext = Depends(get_ctx),
     ) -> HistoricalItems:
         r"""Get XAI historical items of an entity for link prediction tasks.
 
@@ -281,24 +287,27 @@ class EvaluationStatisticsResource:
         """
         with wrap_validation_exceptions(PredictiveQueryDoesNotExistError):
             return await self._driver.get_entity_historical_items(
-                ctx, id, entity_id, project_id=ProjectID(project_id))
+                ctx, id, entity_id, project_id=ProjectID(project_id)
+            )
 
     async def _get_completed_training_job_for_pq(
-            self,
-            id: PredictiveQueryID,
-            project_id: ProjectID,
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        id: PredictiveQueryID,
+        project_id: ProjectID,
+        ctx: RequestContext = Depends(get_ctx),
     ) -> TrainingJobOutput:
         training_job_id = await self._pq_driver.get_current_training_job_id(
-            ctx, id, project_id)
+            ctx, id, project_id
+        )
         if training_job_id is None:
-            raise ValueError("Predictive Query has not been trained yet")
+            raise ValueError('Predictive Query has not been trained yet')
 
         training_job = await self._driver.pquery_driver.get_training_job(
-            ctx, training_job_id)
+            ctx, training_job_id
+        )
         if training_job is None:
             raise HTTPException(
-                HTTPStatus.NOT_FOUND,
-                RestStatusCode.TRAINING_JOB_DOES_NOT_EXIST.value)
+                HTTPStatus.NOT_FOUND, RestStatusCode.TRAINING_JOB_DOES_NOT_EXIST.value
+            )
 
         return training_job.execution

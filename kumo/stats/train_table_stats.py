@@ -99,9 +99,7 @@ ALL_TEMPORAL_NODE_STATS = ALL_TEMPORAL_STATS + [
     SCORING_TABLE_COLUMN_STATS,
 ]
 
-ALL_TEMPORAL_LINK_STATS = ALL_TEMPORAL_STATS + [
-    AVG_TARGETS_PER_TIMEFRAME, NUM_LINKS
-]
+ALL_TEMPORAL_LINK_STATS = ALL_TEMPORAL_STATS + [AVG_TARGETS_PER_TIMEFRAME, NUM_LINKS]
 
 ALL_STATIC_LINK_STATS = ALL_STATS + [NUM_LINKS]
 
@@ -130,6 +128,7 @@ class TrainTableStats(ConfigMixin, ABC):
 @dataclass(repr=False)
 class NodeDegreeStats:
     r"""Node degree statistics for train table."""
+
     # Average entity node degree
     avg_entity_degree: float
     # Minimum entity node degree
@@ -148,21 +147,22 @@ class NodeDegreeStats:
         avg_target_degree = None
         if self.avg_target_degree is not None:
             avg_target_degree = round(self.avg_target_degree, 2)
-        return (f"{self.__class__.__name__}(\n"
-                f"  avg_entity_degree={avg_entity_degree},\n"
-                f"  min_entity_degree={self.min_entity_degree},\n"
-                f"  max_entity_degree={self.max_entity_degree},\n"
-                f"  avg_target_degree={avg_target_degree},\n"
-                f"  min_target_degree={self.min_target_degree},\n"
-                f"  max_target_degree={self.max_target_degree},\n"
-                ")")
+        return (
+            f'{self.__class__.__name__}(\n'
+            f'  avg_entity_degree={avg_entity_degree},\n'
+            f'  min_entity_degree={self.min_entity_degree},\n'
+            f'  max_entity_degree={self.max_entity_degree},\n'
+            f'  avg_target_degree={avg_target_degree},\n'
+            f'  min_target_degree={self.min_target_degree},\n'
+            f'  max_target_degree={self.max_target_degree},\n'
+            ')'
+        )
 
 
 CategoricalDictTargetDistribution = TypedDict(
-    'CategoricalDictTargetDistribution', {
-        'count': Dict[str, int],
-        'percentage': Dict[str, float]
-    })
+    'CategoricalDictTargetDistribution',
+    {'count': Dict[str, int], 'percentage': Dict[str, float]},
+)
 
 
 @kumo_dataclass
@@ -174,16 +174,15 @@ class CategoricalTargetDistribution:
         return asdict(self)  # type: ignore
 
 
-TargetHistogramDictType = TypedDict('TargetHistogramDictType', {
-    'bins': List[float],
-    'counts': List[int],
-    'bin_width': float,
-    'num_bins': int
-})
+TargetHistogramDictType = TypedDict(
+    'TargetHistogramDictType',
+    {'bins': List[float], 'counts': List[int], 'bin_width': float, 'num_bins': int},
+)
 
 # Dict version of TargetHistogramAndStats
 NumericalDictTargetDistribution = TypedDict(
-    'NumericalDictTargetDistribution', {
+    'NumericalDictTargetDistribution',
+    {
         'target_mean': float,
         'target_min': float,
         'target_max': float,
@@ -194,7 +193,8 @@ NumericalDictTargetDistribution = TypedDict(
         'target_mode_percentage': float,
         'target_mode_count': int,
         'histogram': TargetHistogramDictType,
-    })
+    },
+)
 
 
 @dataclass(repr=False)
@@ -223,21 +223,24 @@ class TemporalNodeTimeFrameStats:
         convert_str_to_timestamp(self, ['min_date', 'max_date', 'anchor_date'])
 
     def __repr__(self) -> str:
-        return (f"{self.__class__.__name__}(\n"
-                f"  min_date={self.min_date},\n"
-                f"  max_date={self.max_date},\n"
-                f"  anchor_date={self.anchor_date},\n"
-                f"  num_train_rows={self.num_train_rows},\n"
-                f"  num_entities={self.num_entities},\n"
-                f"  num_targets={self.num_targets},\n"
-                f"  index={self.index},\n"
-                f"  target_distribution={self.target_distribution},\n"
-                ")")
+        return (
+            f'{self.__class__.__name__}(\n'
+            f'  min_date={self.min_date},\n'
+            f'  max_date={self.max_date},\n'
+            f'  anchor_date={self.anchor_date},\n'
+            f'  num_train_rows={self.num_train_rows},\n'
+            f'  num_entities={self.num_entities},\n'
+            f'  num_targets={self.num_targets},\n'
+            f'  index={self.index},\n'
+            f'  target_distribution={self.target_distribution},\n'
+            ')'
+        )
 
 
 @dataclass(repr=False)
 class TemporalLinkTimeFrameStats:
     r"""Train table stats for each timeframe."""
+
     # Minimum date in the timeframe. ``PandasTimestamp`` (not bare
     # ``pd.Timestamp``) so that when this dataclass is validated as an element
     # of ``TrainTableGenerationProgress.iteration_data`` (a pydantic v2
@@ -266,17 +269,19 @@ class TemporalLinkTimeFrameStats:
         convert_str_to_timestamp(self, ['min_date', 'max_date', 'anchor_date'])
 
     def __repr__(self) -> str:
-        return (f"{self.__class__.__name__}(\n"
-                f"  min_date={self.min_date},\n"
-                f"  max_date={self.max_date},\n"
-                f"  anchor_date={self.anchor_date},\n"
-                f"  num_train_rows={self.num_train_rows},\n"
-                f"  num_entities={self.num_entities},\n"
-                f"  num_targets={self.num_targets},\n"
-                f"  num_links={self.num_links},\n"
-                f"  index={self.index},\n"
-                f"  node_degree_stats={self.node_degree_stats},\n"
-                ")")
+        return (
+            f'{self.__class__.__name__}(\n'
+            f'  min_date={self.min_date},\n'
+            f'  max_date={self.max_date},\n'
+            f'  anchor_date={self.anchor_date},\n'
+            f'  num_train_rows={self.num_train_rows},\n'
+            f'  num_entities={self.num_entities},\n'
+            f'  num_targets={self.num_targets},\n'
+            f'  num_links={self.num_links},\n'
+            f'  index={self.index},\n'
+            f'  node_degree_stats={self.node_degree_stats},\n'
+            ')'
+        )
 
 
 IterationStats = Union[TemporalNodeTimeFrameStats, TemporalLinkTimeFrameStats]
@@ -291,8 +296,9 @@ class TemporalTrainTableStats(TrainTableStats):
     num_timeframes_post_filter: int
     avg_entities_per_timeframe: int
     node_degree_stats: Optional[NodeDegreeStats] = None
-    stats_per_timeframe: List[TemporalNodeTimeFrameStats] | List[
-        TemporalLinkTimeFrameStats] | None = field(default_factory=list)
+    stats_per_timeframe: (
+        List[TemporalNodeTimeFrameStats] | List[TemporalLinkTimeFrameStats] | None
+    ) = field(default_factory=list)
 
     def __post_init__(self):
         convert_str_to_timestamp(self, ['min_date', 'max_date', 'anchor_date'])
@@ -303,42 +309,47 @@ class TemporalNodeTrainTableStats(TemporalTrainTableStats):
     num_target_rows: Optional[int] = 0
     target_distribution: Optional[Dict[str, Any]] = field(default_factory=dict)
     scoring_table_column_stats: Optional[Dict[str, Dict[str, float]]] = field(
-        default_factory=dict)
+        default_factory=dict
+    )
     stats_type: TrainTableType = TrainTableType.TEMPORAL_NODE_PRED
 
     def __repr__(self) -> str:
         return (
-            f"{self.__class__.__name__}(\n"
-            f"  min_date={self.min_date},\n"
-            f"  max_date={self.max_date},\n"
-            f"  anchor_date={self.anchor_date},\n"
-            f"  num_entities={self.num_entities},\n"
-            f"  num_target_rows={self.num_target_rows},\n"
-            f"  num_timeframes={self.num_timeframes},\n"
-            f"  num_timeframes_post_filter={self.num_timeframes_post_filter},\n"  # noqa  E501
-            f"  avg_entities_per_timeframe={self.avg_entities_per_timeframe},\n"  # noqa  E501
-            f"  num_train_rows={self.num_train_rows},\n"
-            f"  num_targets={self.num_targets},\n"
-            f"  target_distribution={self.target_distribution},\n"
-            f"  stats_per_timeframe={self.stats_per_timeframe},\n"
-            f"  node_degree_stats={self.node_degree_stats},\n"
-            f"  scoring_table_column_stats="
-            f"{self.scoring_table_column_stats},\n"
-            f"  stats_type={self.stats_type},\n"
-            ")")
+            f'{self.__class__.__name__}(\n'
+            f'  min_date={self.min_date},\n'
+            f'  max_date={self.max_date},\n'
+            f'  anchor_date={self.anchor_date},\n'
+            f'  num_entities={self.num_entities},\n'
+            f'  num_target_rows={self.num_target_rows},\n'
+            f'  num_timeframes={self.num_timeframes},\n'
+            f'  num_timeframes_post_filter={self.num_timeframes_post_filter},\n'  # noqa  E501
+            f'  avg_entities_per_timeframe={self.avg_entities_per_timeframe},\n'  # noqa  E501
+            f'  num_train_rows={self.num_train_rows},\n'
+            f'  num_targets={self.num_targets},\n'
+            f'  target_distribution={self.target_distribution},\n'
+            f'  stats_per_timeframe={self.stats_per_timeframe},\n'
+            f'  node_degree_stats={self.node_degree_stats},\n'
+            f'  scoring_table_column_stats='
+            f'{self.scoring_table_column_stats},\n'
+            f'  stats_type={self.stats_type},\n'
+            ')'
+        )
 
     @classmethod
     def from_cache(cls, job_id: str) -> 'TemporalNodeTrainTableStats':
         from kumo.data.backend_cache import BackendCacheManager
+
         cache: BackendCacheManager = get_active_cache()
         training_table_stats = cache.pquery_table_stats_cache.get_stats(
-            job_id, ALL_TEMPORAL_NODE_STATS)
+            job_id, ALL_TEMPORAL_NODE_STATS
+        )
 
         node_degree_stats = None
         stats_per_timeframe = None
         if training_table_stats[NODE_DEGREE_STATS].value is not None:
             node_degree_stats = NodeDegreeStats(
-                **training_table_stats[NODE_DEGREE_STATS].value)
+                **training_table_stats[NODE_DEGREE_STATS].value
+            )
         if training_table_stats[STATS_PER_TIMEFRAME].value is not None:
             stats_per_timeframe = [
                 TemporalNodeTimeFrameStats(**stat)
@@ -353,28 +364,31 @@ class TemporalNodeTrainTableStats(TemporalTrainTableStats):
             num_target_rows=training_table_stats[NUM_TARGET_ROWS].value,
             num_timeframes=training_table_stats[NUM_TIMEFRAMES].value,
             num_timeframes_post_filter=(
-                training_table_stats[NUM_TIMEFRAMES_POST_FILTER].value),
+                training_table_stats[NUM_TIMEFRAMES_POST_FILTER].value
+            ),
             avg_entities_per_timeframe=(
-                training_table_stats[AVG_ENTITIES_PER_TIMEFRAME].value),
+                training_table_stats[AVG_ENTITIES_PER_TIMEFRAME].value
+            ),
             num_train_rows=training_table_stats[NUM_TRAIN_ROWS].value,
             num_targets=training_table_stats[NUM_TARGETS].value,
             target_distribution=training_table_stats[TARGET_DISTRIBUTION].value,
             node_degree_stats=node_degree_stats,
             stats_per_timeframe=stats_per_timeframe,
             scoring_table_column_stats=training_table_stats[
-                SCORING_TABLE_COLUMN_STATS].value,
+                SCORING_TABLE_COLUMN_STATS
+            ].value,
         )
 
     @classmethod
     def from_stats(
-        cls,
-        training_table_stats: Dict[str,
-                                   Stats]) -> 'TemporalNodeTrainTableStats':
+        cls, training_table_stats: Dict[str, Stats]
+    ) -> 'TemporalNodeTrainTableStats':
         node_degree_stats = None
         stats_per_timeframe = None
         if training_table_stats[NODE_DEGREE_STATS].value is not None:
             node_degree_stats = NodeDegreeStats(
-                **training_table_stats[NODE_DEGREE_STATS].value)
+                **training_table_stats[NODE_DEGREE_STATS].value
+            )
         if training_table_stats[STATS_PER_TIMEFRAME].value is not None:
             stats_per_timeframe = [
                 TemporalNodeTimeFrameStats(**stat)
@@ -392,14 +406,17 @@ class TemporalNodeTrainTableStats(TemporalTrainTableStats):
             num_train_rows=training_table_stats[NUM_TRAIN_ROWS].value,
             num_timeframes=training_table_stats[NUM_TIMEFRAMES].value,
             num_timeframes_post_filter=training_table_stats[
-                NUM_TIMEFRAMES_POST_FILTER].value,
+                NUM_TIMEFRAMES_POST_FILTER
+            ].value,
             avg_entities_per_timeframe=training_table_stats[
-                AVG_ENTITIES_PER_TIMEFRAME].value,
+                AVG_ENTITIES_PER_TIMEFRAME
+            ].value,
             num_target_rows=training_table_stats[NUM_TARGET_ROWS].value,
             stats_per_timeframe=stats_per_timeframe,
             target_distribution=training_table_stats[TARGET_DISTRIBUTION].value,
             scoring_table_column_stats=training_table_stats[
-                SCORING_TABLE_COLUMN_STATS].value,
+                SCORING_TABLE_COLUMN_STATS
+            ].value,
             node_degree_stats=node_degree_stats,
         )
 
@@ -421,35 +438,39 @@ class TemporalLinkTrainTableStats(TemporalTrainTableStats):
 
     def __repr__(self) -> str:
         return (
-            f"{self.__class__.__name__}(\n"
-            f"  min_date={self.min_date},\n"
-            f"  max_date={self.max_date},\n"
-            f"  anchor_date={self.anchor_date},\n"
-            f"  num_train_rows={self.num_train_rows},\n"
-            f"  num_entities={self.num_entities},\n"
-            f"  num_targets={self.num_targets},\n"
-            f"  num_timeframes={self.num_timeframes},\n"
-            f"  num_timeframes_post_filter={self.num_timeframes_post_filter},\n"  # noqa  E501
-            f"  avg_entities_per_timeframe={self.avg_entities_per_timeframe},\n"  # noqa  E501
-            f"  avg_targets_per_timeframe={self.avg_targets_per_timeframe},\n"
-            f"  num_links={self.num_links},\n"
-            f"  node_degree_stats={self.node_degree_stats},\n"
-            f"  stats_per_timeframe={self.stats_per_timeframe},\n"
-            f"  stats_type={self.stats_type},\n"
-            ")")
+            f'{self.__class__.__name__}(\n'
+            f'  min_date={self.min_date},\n'
+            f'  max_date={self.max_date},\n'
+            f'  anchor_date={self.anchor_date},\n'
+            f'  num_train_rows={self.num_train_rows},\n'
+            f'  num_entities={self.num_entities},\n'
+            f'  num_targets={self.num_targets},\n'
+            f'  num_timeframes={self.num_timeframes},\n'
+            f'  num_timeframes_post_filter={self.num_timeframes_post_filter},\n'  # noqa  E501
+            f'  avg_entities_per_timeframe={self.avg_entities_per_timeframe},\n'  # noqa  E501
+            f'  avg_targets_per_timeframe={self.avg_targets_per_timeframe},\n'
+            f'  num_links={self.num_links},\n'
+            f'  node_degree_stats={self.node_degree_stats},\n'
+            f'  stats_per_timeframe={self.stats_per_timeframe},\n'
+            f'  stats_type={self.stats_type},\n'
+            ')'
+        )
 
     @classmethod
     def from_cache(cls, job_id: str) -> 'TemporalLinkTrainTableStats':
         from kumo.data.backend_cache import BackendCacheManager
+
         cache: BackendCacheManager = get_active_cache()
         training_table_stats = cache.pquery_table_stats_cache.get_stats(
-            job_id, ALL_TEMPORAL_LINK_STATS)
+            job_id, ALL_TEMPORAL_LINK_STATS
+        )
 
         node_degree_stats = None
         stats_per_timeframe = None
         if training_table_stats[NODE_DEGREE_STATS].value is not None:
             node_degree_stats = NodeDegreeStats(
-                **training_table_stats[NODE_DEGREE_STATS].value)
+                **training_table_stats[NODE_DEGREE_STATS].value
+            )
         if training_table_stats[STATS_PER_TIMEFRAME].value is not None:
             stats_per_timeframe = [
                 TemporalLinkTimeFrameStats(**stat)
@@ -457,6 +478,7 @@ class TemporalLinkTrainTableStats(TemporalTrainTableStats):
             ]
 
         from kumo_core.training.options import allow_array_targets
+
         return cls(
             min_date=training_table_stats[MIN_DATE].value,
             max_date=training_table_stats[MAX_DATE].value,
@@ -466,27 +488,31 @@ class TemporalLinkTrainTableStats(TemporalTrainTableStats):
             num_targets=training_table_stats[NUM_TARGETS].value,
             num_timeframes=training_table_stats[NUM_TIMEFRAMES].value,
             num_timeframes_post_filter=training_table_stats[
-                NUM_TIMEFRAMES_POST_FILTER].value,
+                NUM_TIMEFRAMES_POST_FILTER
+            ].value,
             avg_entities_per_timeframe=(
-                training_table_stats[AVG_ENTITIES_PER_TIMEFRAME].value),
+                training_table_stats[AVG_ENTITIES_PER_TIMEFRAME].value
+            ),
             avg_targets_per_timeframe=training_table_stats[
-                AVG_TARGETS_PER_TIMEFRAME].value,
-            num_links=(training_table_stats[NUM_LINKS].value
-                       if allow_array_targets() else None),
+                AVG_TARGETS_PER_TIMEFRAME
+            ].value,
+            num_links=(
+                training_table_stats[NUM_LINKS].value if allow_array_targets() else None
+            ),
             node_degree_stats=node_degree_stats,
             stats_per_timeframe=stats_per_timeframe,
         )
 
     @classmethod
     def from_stats(
-        cls,
-        training_table_stats: Dict[str,
-                                   Stats]) -> 'TemporalLinkTrainTableStats':
+        cls, training_table_stats: Dict[str, Stats]
+    ) -> 'TemporalLinkTrainTableStats':
         node_degree_stats = None
         stats_per_timeframe = None
         if training_table_stats[NODE_DEGREE_STATS].value is not None:
             node_degree_stats = NodeDegreeStats(
-                **training_table_stats[NODE_DEGREE_STATS].value)
+                **training_table_stats[NODE_DEGREE_STATS].value
+            )
         if training_table_stats[STATS_PER_TIMEFRAME].value is not None:
             stats_per_timeframe = [
                 TemporalLinkTimeFrameStats(**stat)
@@ -494,22 +520,27 @@ class TemporalLinkTrainTableStats(TemporalTrainTableStats):
             ]
 
         from kumo_core.training.options import allow_array_targets
+
         return cls(
             min_date=training_table_stats[MIN_DATE].value,
             max_date=training_table_stats[MAX_DATE].value,
             anchor_date=training_table_stats[ANCHOR_DATE].value,
             num_timeframes=training_table_stats[NUM_TIMEFRAMES].value,
             num_timeframes_post_filter=training_table_stats[
-                NUM_TIMEFRAMES_POST_FILTER].value,
+                NUM_TIMEFRAMES_POST_FILTER
+            ].value,
             num_train_rows=training_table_stats[NUM_TRAIN_ROWS].value,
             num_entities=training_table_stats[NUM_ENTITIES].value,
             num_targets=training_table_stats[NUM_TARGETS].value,
             avg_entities_per_timeframe=training_table_stats[
-                AVG_ENTITIES_PER_TIMEFRAME].value,
+                AVG_ENTITIES_PER_TIMEFRAME
+            ].value,
             avg_targets_per_timeframe=training_table_stats[
-                AVG_TARGETS_PER_TIMEFRAME].value,
+                AVG_TARGETS_PER_TIMEFRAME
+            ].value,
             num_links=training_table_stats[NUM_LINKS].value
-            if allow_array_targets() else None,
+            if allow_array_targets()
+            else None,
             node_degree_stats=node_degree_stats,
             stats_per_timeframe=stats_per_timeframe,
         )
@@ -518,6 +549,7 @@ class TemporalLinkTrainTableStats(TemporalTrainTableStats):
 @dataclass(repr=False)
 class TemporalLinkPredTableStats:
     r"""Temporal link pred task prediction table statistics."""
+
     # Time used for prediction
     pred_time: pd.Timestamp
     # Number of total rows
@@ -531,12 +563,14 @@ class TemporalLinkPredTableStats:
         convert_str_to_timestamp(self, ['pred_time'])
 
     def __repr__(self) -> str:
-        return (f"{self.__class__.__name__}(\n"
-                f"  pred_time={self.pred_time},\n"
-                f"  num_pred_rows={self.num_pred_rows},\n"
-                f"  num_pred_entities={self.num_pred_entities},\n"
-                f"  num_pred_targets={self.num_pred_targets},\n"
-                ")")
+        return (
+            f'{self.__class__.__name__}(\n'
+            f'  pred_time={self.pred_time},\n'
+            f'  num_pred_rows={self.num_pred_rows},\n'
+            f'  num_pred_entities={self.num_pred_entities},\n'
+            f'  num_pred_targets={self.num_pred_targets},\n'
+            ')'
+        )
 
 
 @dataclass(repr=False, kw_only=True)
@@ -547,22 +581,26 @@ class StaticNodeTrainTableStats(TrainTableStats):
     stats_type: TrainTableType = TrainTableType.STATIC_NODE_PRED
 
     def __repr__(self) -> str:
-        return (f"{self.__class__.__name__}(\n"
-                f"  num_entities={self.num_entities},\n"
-                f"  num_target_rows={self.num_target_rows},\n"
-                f"  num_total_rows={self.num_total_rows},\n"
-                f"  num_train_rows={self.num_train_rows},\n"
-                f"  num_targets={self.num_targets},\n"
-                f"  target_distribution={self.target_distribution},\n"
-                f"  stats_type={self.stats_type},\n"
-                ")")
+        return (
+            f'{self.__class__.__name__}(\n'
+            f'  num_entities={self.num_entities},\n'
+            f'  num_target_rows={self.num_target_rows},\n'
+            f'  num_total_rows={self.num_total_rows},\n'
+            f'  num_train_rows={self.num_train_rows},\n'
+            f'  num_targets={self.num_targets},\n'
+            f'  target_distribution={self.target_distribution},\n'
+            f'  stats_type={self.stats_type},\n'
+            ')'
+        )
 
     @classmethod
     def from_cache(cls, job_id: str) -> 'StaticNodeTrainTableStats':
         from kumo.data.backend_cache import BackendCacheManager
+
         cache: BackendCacheManager = get_active_cache()
         training_table_stats = cache.pquery_table_stats_cache.get_stats(
-            job_id, ALL_STATIC_NODE_STATS)
+            job_id, ALL_STATIC_NODE_STATS
+        )
         return cls(
             num_entities=training_table_stats[NUM_ENTITIES].value,
             num_target_rows=training_table_stats[NUM_TARGET_ROWS].value,
@@ -574,9 +612,8 @@ class StaticNodeTrainTableStats(TrainTableStats):
 
     @classmethod
     def from_stats(
-            cls,
-            training_table_stats: Dict[str,
-                                       Stats]) -> 'StaticNodeTrainTableStats':
+        cls, training_table_stats: Dict[str, Stats]
+    ) -> 'StaticNodeTrainTableStats':
         return cls(
             num_entities=training_table_stats[NUM_ENTITIES].value,
             num_target_rows=training_table_stats[NUM_TARGET_ROWS].value,
@@ -602,97 +639,115 @@ class StaticLinkTrainTableStats(TrainTableStats):
     stats_type: TrainTableType = TrainTableType.STATIC_LINK_PRED
 
     def __repr__(self) -> str:
-        return (f"{self.__class__.__name__}(\n"
-                f"  num_entities={self.num_entities},\n"
-                f"  num_targets={self.num_targets},\n"
-                f"  num_train_rows={self.num_train_rows},\n"
-                f"  num_links={self.num_links},\n"
-                f"  stats_type={self.stats_type},\n"
-                ")")
+        return (
+            f'{self.__class__.__name__}(\n'
+            f'  num_entities={self.num_entities},\n'
+            f'  num_targets={self.num_targets},\n'
+            f'  num_train_rows={self.num_train_rows},\n'
+            f'  num_links={self.num_links},\n'
+            f'  stats_type={self.stats_type},\n'
+            ')'
+        )
 
     @classmethod
     def from_cache(cls, job_id: str) -> 'StaticLinkTrainTableStats':
         from kumo.data.backend_cache import BackendCacheManager
+
         cache: BackendCacheManager = get_active_cache()
         training_table_stats = cache.pquery_table_stats_cache.get_stats(
-            job_id, ALL_STATIC_LINK_STATS)
+            job_id, ALL_STATIC_LINK_STATS
+        )
         from kumo_core.training.options import allow_array_targets
+
         return cls(
             num_entities=training_table_stats[NUM_ENTITIES].value,
             num_train_rows=training_table_stats[NUM_TRAIN_ROWS].value,
             num_targets=training_table_stats[NUM_TARGETS].value,
             num_links=training_table_stats[NUM_LINKS].value
-            if allow_array_targets() else None,
+            if allow_array_targets()
+            else None,
         )
 
     @classmethod
     def from_stats(
-            cls,
-            training_table_stats: Dict[str,
-                                       Stats]) -> 'StaticLinkTrainTableStats':
+        cls, training_table_stats: Dict[str, Stats]
+    ) -> 'StaticLinkTrainTableStats':
         from kumo_core.training.options import allow_array_targets
+
         return cls(
             num_entities=training_table_stats[NUM_ENTITIES].value,
             num_targets=training_table_stats[NUM_TARGETS].value,
             num_train_rows=training_table_stats[NUM_TRAIN_ROWS].value,
             num_links=training_table_stats[NUM_LINKS].value
-            if allow_array_targets() else None,
+            if allow_array_targets()
+            else None,
         )
 
 
 @blocking_func()
 def load_train_table_stats_from_cache(job_id: str):
     from kumo.data.backend_cache import BackendCacheManager
+
     cache: BackendCacheManager = get_active_cache()
     train_table_stats_type = cache.pquery_table_stats_cache.get_stats(
-        job_id, [STATS_TYPE]).get(STATS_TYPE)
+        job_id, [STATS_TYPE]
+    ).get(STATS_TYPE)
     if train_table_stats_type is None:
         return None
     train_table_stats_type = TrainTableType(train_table_stats_type.value)
     if train_table_stats_type == TrainTableType.STATIC_NODE_PRED:
         training_table_stats = cache.pquery_table_stats_cache.get_stats(
-            job_id, ALL_STATIC_NODE_STATS)
+            job_id, ALL_STATIC_NODE_STATS
+        )
         return StaticNodeTrainTableStats.from_stats(training_table_stats)
     elif train_table_stats_type == TrainTableType.STATIC_LINK_PRED:
         training_table_stats = cache.pquery_table_stats_cache.get_stats(
-            job_id, ALL_STATIC_LINK_STATS)
+            job_id, ALL_STATIC_LINK_STATS
+        )
         return StaticLinkTrainTableStats.from_stats(training_table_stats)
     elif train_table_stats_type == TrainTableType.TEMPORAL_NODE_PRED:
         training_table_stats = cache.pquery_table_stats_cache.get_stats(
-            job_id, ALL_TEMPORAL_NODE_STATS)
+            job_id, ALL_TEMPORAL_NODE_STATS
+        )
         return TemporalNodeTrainTableStats.from_stats(training_table_stats)
     elif train_table_stats_type == TrainTableType.TEMPORAL_LINK_PRED:
         training_table_stats = cache.pquery_table_stats_cache.get_stats(
-            job_id, ALL_TEMPORAL_LINK_STATS)
+            job_id, ALL_TEMPORAL_LINK_STATS
+        )
         return TemporalLinkTrainTableStats.from_stats(training_table_stats)
 
     raise ValueError(
-        f"Non-supported train table stats type: '{train_table_stats_type}'")
+        f"Non-supported train table stats type: '{train_table_stats_type}'"
+    )
 
 
 @kumo_dataclass(repr=False)
 class TrainTableGenerationProgress:
     num_expected_iterations: int = 0
     num_finished_iterations: int = 0
-    iteration_data: List[TemporalNodeTimeFrameStats] | List[
-        TemporalLinkTimeFrameStats] | None = None
+    iteration_data: (
+        List[TemporalNodeTimeFrameStats] | List[TemporalLinkTimeFrameStats] | None
+    ) = None
 
     def __repr__(self) -> str:
-        return (f"{self.__class__.__name__}(\n"
-                f"  num_finished_iterations={self.num_finished_iterations},\n"
-                f"  num_expected_iterations={self.num_expected_iterations},\n"
-                f"  iteration_data={self.iteration_data},\n"
-                ")")
+        return (
+            f'{self.__class__.__name__}(\n'
+            f'  num_finished_iterations={self.num_finished_iterations},\n'
+            f'  num_expected_iterations={self.num_expected_iterations},\n'
+            f'  iteration_data={self.iteration_data},\n'
+            ')'
+        )
 
     @classmethod
-    def from_cache(cls,
-                   job_id: str) -> Optional['TrainTableGenerationProgress']:
+    def from_cache(cls, job_id: str) -> Optional['TrainTableGenerationProgress']:
         from kumo.data.backend_cache import BackendCacheManager
+
         cache: BackendCacheManager = get_active_cache()
-        train_table_progress = cache.pquery_table_progress_cache.get_stats(
-            job_id)
-        if (ITERATION_DATA not in train_table_progress
-                or NUM_EXPECTED_ITERATIONS not in train_table_progress):
+        train_table_progress = cache.pquery_table_progress_cache.get_stats(job_id)
+        if (
+            ITERATION_DATA not in train_table_progress
+            or NUM_EXPECTED_ITERATIONS not in train_table_progress
+        ):
             return None
         else:
             iteration_data = train_table_progress[ITERATION_DATA].value
@@ -707,30 +762,34 @@ class TrainTableGenerationProgress:
                     # Necessary for backwards compatitbility
                     is_regression = (
                         'histogram' in timeframe_stats[TARGET_DISTRIBUTION]
-                        or 'target_max' in timeframe_stats[TARGET_DISTRIBUTION])
+                        or 'target_max' in timeframe_stats[TARGET_DISTRIBUTION]
+                    )
 
-                    if 'count' not in timeframe_stats[
-                            TARGET_DISTRIBUTION] and not is_regression:
-                        total = sum(
-                            timeframe_stats[TARGET_DISTRIBUTION].values())
+                    if (
+                        'count' not in timeframe_stats[TARGET_DISTRIBUTION]
+                        and not is_regression
+                    ):
+                        total = sum(timeframe_stats[TARGET_DISTRIBUTION].values())
                         timeframe_stats[TARGET_DISTRIBUTION] = {
-                            "count": timeframe_stats[TARGET_DISTRIBUTION],
-                            "percentage": {
+                            'count': timeframe_stats[TARGET_DISTRIBUTION],
+                            'percentage': {
                                 k: v / total
-                                for k, v in
-                                timeframe_stats[TARGET_DISTRIBUTION].items()
-                            }
+                                for k, v in timeframe_stats[TARGET_DISTRIBUTION].items()
+                            },
                         }
 
                     stats_per_timeframe.append(
-                        TemporalNodeTimeFrameStats(**timeframe_stats))
+                        TemporalNodeTimeFrameStats(**timeframe_stats)
+                    )
                 else:
                     # saved stats are TemporalLinkTimeFrameStats
                     stats_per_timeframe.append(
-                        TemporalLinkTimeFrameStats(**timeframe_stats))
+                        TemporalLinkTimeFrameStats(**timeframe_stats)
+                    )
             return cls(
                 num_expected_iterations=train_table_progress[
-                    NUM_EXPECTED_ITERATIONS].value,
+                    NUM_EXPECTED_ITERATIONS
+                ].value,
                 num_finished_iterations=len(iteration_data),
                 iteration_data=stats_per_timeframe,  # type: ignore
             )
@@ -738,7 +797,8 @@ class TrainTableGenerationProgress:
 
 @blocking_func()
 def train_table_generation_stats_from_cache_v2(
-        job_id: str) -> Optional['TrainTableGenerationProgress']:
+    job_id: str,
+) -> Optional['TrainTableGenerationProgress']:
     r"""Load train table generation stats from backend cache in PQLv2 setup.
 
     Args:
@@ -749,14 +809,13 @@ def train_table_generation_stats_from_cache_v2(
             is temporal, None otherwise.
     """
     train_table_stats = load_train_table_stats_from_cache(job_id)
-    if (train_table_stats is not None and isinstance(
-            train_table_stats,
-            TemporalNodeTrainTableStats | TemporalLinkTrainTableStats)):
+    if train_table_stats is not None and isinstance(
+        train_table_stats, TemporalNodeTrainTableStats | TemporalLinkTrainTableStats
+    ):
         iteration_data = train_table_stats.stats_per_timeframe
         progress = TrainTableGenerationProgress(
             num_expected_iterations=train_table_stats.num_timeframes,
-            num_finished_iterations=train_table_stats.
-            num_timeframes_post_filter,
+            num_finished_iterations=train_table_stats.num_timeframes_post_filter,
             iteration_data=iteration_data,
         )
         return progress
@@ -781,15 +840,17 @@ class SplitTableStats:
         convert_str_to_timestamp(self, ['min_date', 'max_date', 'anchor_date'])
 
     def __repr__(self) -> str:
-        return (f"{self.__class__.__name__}(\n"
-                f"  num_train_rows={self.num_train_rows},\n"
-                f"  num_entities={self.num_entities},\n"
-                f"  num_targets={self.num_targets},\n"
-                f"  target_distribution={self.target_distribution},\n"
-                f"  min_date={self.min_date},\n"
-                f"  max_date={self.max_date},\n"
-                f"  anchor_date={self.anchor_date},\n"
-                ")")
+        return (
+            f'{self.__class__.__name__}(\n'
+            f'  num_train_rows={self.num_train_rows},\n'
+            f'  num_entities={self.num_entities},\n'
+            f'  num_targets={self.num_targets},\n'
+            f'  target_distribution={self.target_distribution},\n'
+            f'  min_date={self.min_date},\n'
+            f'  max_date={self.max_date},\n'
+            f'  anchor_date={self.anchor_date},\n'
+            ')'
+        )
 
 
 # TODO: Change `val_table_stats` to be required after separate the predict
@@ -803,45 +864,51 @@ class SplitTrainTableStats:
     test_table_stats: Optional[SplitTableStats] = None
 
     def __repr__(self) -> str:
-        return (f"{self.__class__.__name__}(\n"
-                f"  train_table_stats={self.train_table_stats},\n"
-                f"  val_table_stats={self.val_table_stats},\n"
-                f"  test_table_stats={self.test_table_stats},\n"
-                ")")
+        return (
+            f'{self.__class__.__name__}(\n'
+            f'  train_table_stats={self.train_table_stats},\n'
+            f'  val_table_stats={self.val_table_stats},\n'
+            f'  test_table_stats={self.test_table_stats},\n'
+            ')'
+        )
 
     @classmethod
     def from_cache(cls, job_id: str) -> Optional['SplitTrainTableStats']:
         from kumo.data.backend_cache import BackendCacheManager
-        cache: BackendCacheManager = get_active_cache()
-        training_table_stats = \
-            cache.training_table_split_stats_cache.get_stats(
-                job_id,
-                ['train_table_stats', 'val_table_stats', 'test_table_stats'])
 
-        if ('train_table_stats' not in training_table_stats
-                and 'val_table_stats' not in training_table_stats
-                and 'test_table_stats' not in training_table_stats):
+        cache: BackendCacheManager = get_active_cache()
+        training_table_stats = cache.training_table_split_stats_cache.get_stats(
+            job_id, ['train_table_stats', 'val_table_stats', 'test_table_stats']
+        )
+
+        if (
+            'train_table_stats' not in training_table_stats
+            and 'val_table_stats' not in training_table_stats
+            and 'test_table_stats' not in training_table_stats
+        ):
             return None
 
         # TODO (xinwei): Fix the serialization problem
         train_table_stats = SplitTableStats(
-            **training_table_stats['train_table_stats'].value)
+            **training_table_stats['train_table_stats'].value
+        )
         val_table_stats = None
         if training_table_stats['val_table_stats'].value is not None:
             val_table_stats = SplitTableStats(
-                **training_table_stats['val_table_stats'].value)
+                **training_table_stats['val_table_stats'].value
+            )
         test_table_stats = None
         if 'test_table_stats' in training_table_stats:
             test_table_stats = SplitTableStats(
-                **training_table_stats['test_table_stats'].value)
+                **training_table_stats['test_table_stats'].value
+            )
         return cls(
             train_table_stats=train_table_stats,
             val_table_stats=val_table_stats,
             test_table_stats=test_table_stats,
         )
 
-    def get_stage_table_stats(
-            self, stage: TrainingStage) -> Optional[SplitTableStats]:
+    def get_stage_table_stats(self, stage: TrainingStage) -> Optional[SplitTableStats]:
         split_table_stats = None
         if stage == TrainingStage.TRAIN:
             split_table_stats = self.train_table_stats
@@ -853,16 +920,16 @@ class SplitTrainTableStats:
 
 
 @blocking_func()
-def train_table_split_stats_from_cache(
-        job_id: str) -> Optional['SplitTrainTableStats']:
-    """ Helper function to call from_cache()
-    which had to be made blocking. """
+def train_table_split_stats_from_cache(job_id: str) -> Optional['SplitTrainTableStats']:
+    """Helper function to call from_cache()
+    which had to be made blocking."""
     return SplitTrainTableStats.from_cache(job_id)
 
 
 @blocking_func(tracing_options=TraceOptions(trace_params=True))
 def train_table_generation_stats_from_job_dir(
-        job_dir: str) -> Optional[TrainTableGenerationProgress]:
+    job_dir: str,
+) -> Optional[TrainTableGenerationProgress]:
     r"""Load train table generation stats from a job directory.
 
     Args:
@@ -874,20 +941,20 @@ def train_table_generation_stats_from_job_dir(
             None otherwise.
     """
     home_dir_mgr = HomeDirManager(job_dir)
-    logger.info(
-        f"Loading train table stats from {home_dir_mgr.train_table_stats}")
+    logger.info(f'Loading train table stats from {home_dir_mgr.train_table_stats}')
 
     # Load stats as dict first
-    stats_dict = load_json(home_dir_mgr.train_table_stats, dict, default=None,
-                           raise_on_missing=False)
+    stats_dict = load_json(
+        home_dir_mgr.train_table_stats, dict, default=None, raise_on_missing=False
+    )
     if stats_dict is None:
-        logger.warning(f"No stats found at {home_dir_mgr.train_table_stats}")
+        logger.warning(f'No stats found at {home_dir_mgr.train_table_stats}')
         return None
 
     stats_type = stats_dict.get('stats_type')
     assert stats_type is not None
     stats_type = TrainTableType(stats_type)
-    logger.info(f"Found stats_type: {stats_type}")
+    logger.info(f'Found stats_type: {stats_type}')
 
     # Convert dict to proper type based on stats_type
     if stats_type == TrainTableType.TEMPORAL_NODE_PRED:
@@ -899,19 +966,18 @@ def train_table_generation_stats_from_job_dir(
     elif stats_type == TrainTableType.STATIC_LINK_PRED:
         train_table_stats = StaticLinkTrainTableStats(**stats_dict)
     else:
-        raise ValueError(
-            f"Non-supported train table stats type: '{stats_type}'")
+        raise ValueError(f"Non-supported train table stats type: '{stats_type}'")
 
-    if isinstance(train_table_stats,
-                  TemporalNodeTrainTableStats | TemporalLinkTrainTableStats):
+    if isinstance(
+        train_table_stats, TemporalNodeTrainTableStats | TemporalLinkTrainTableStats
+    ):
         iteration_data = train_table_stats.stats_per_timeframe
         progress = TrainTableGenerationProgress(
             num_expected_iterations=train_table_stats.num_timeframes,
-            num_finished_iterations=train_table_stats.
-            num_timeframes_post_filter,
+            num_finished_iterations=train_table_stats.num_timeframes_post_filter,
             iteration_data=iteration_data,
         )
-        logger.info("Successfully created TrainTableGenerationProgress")
+        logger.info('Successfully created TrainTableGenerationProgress')
         return progress
 
     return None
@@ -936,15 +1002,14 @@ def train_table_split_stats_from_job_dir(
     """
     home_dir_mgr = HomeDirManager(job_dir)
     path = home_dir_mgr.split_train_table_stats(split_fpid)
-    logger.info(f"Loading split train table stats from "
-                f"{path}")
+    logger.info(f'Loading split train table stats from {path}')
 
-    split_stats = load_json(path, SplitTrainTableStats, default=None,
-                            raise_on_missing=False)
+    split_stats = load_json(
+        path, SplitTrainTableStats, default=None, raise_on_missing=False
+    )
 
     if split_stats is None:  # type: ignore
-        logger.warning(f"No split train table stats found at "
-                       f"{path}")
+        logger.warning(f'No split train table stats found at {path}')
         return None
 
     return split_stats

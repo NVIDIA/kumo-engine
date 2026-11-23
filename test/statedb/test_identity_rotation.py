@@ -16,28 +16,38 @@ from statedb.config.common import IdentityID
 @pytest.mark.parametrize(
     ('credentials', 'expected'),
     [
-        ({
-            'kind': 's3_access_key',
-            'access_key_id': 'access',
-            'secret_access_key': 'secret',
-        }, True),
-        ({
-            'kind': 's3_access_key',
-            'access_key_id': 'access',
-            'secret_access_key': 'secret',
-            'ca_certificate': None,
-        }, False),
-        ({
-            'kind': 's3_access_key',
-            'access_key_id': 'access',
-            'secret_access_key': 'secret',
-            'ca_certificate': 'replacement PEM',
-        }, False),
+        (
+            {
+                'kind': 's3_access_key',
+                'access_key_id': 'access',
+                'secret_access_key': 'secret',
+            },
+            True,
+        ),
+        (
+            {
+                'kind': 's3_access_key',
+                'access_key_id': 'access',
+                'secret_access_key': 'secret',
+                'ca_certificate': None,
+            },
+            False,
+        ),
+        (
+            {
+                'kind': 's3_access_key',
+                'access_key_id': 'access',
+                'secret_access_key': 'secret',
+                'ca_certificate': 'replacement PEM',
+            },
+            False,
+        ),
     ],
 )
 @pytest.mark.asyncio
 async def test_preserves_s3_ca_certificate_only_when_field_is_omitted(
-        credentials: dict[str, object], expected: bool) -> None:
+    credentials: dict[str, object], expected: bool
+) -> None:
     request = MagicMock()
     request.json = AsyncMock(return_value={'credentials': credentials})
 
@@ -47,15 +57,20 @@ async def test_preserves_s3_ca_certificate_only_when_field_is_omitted(
 @pytest.mark.parametrize(
     ('resource_type', 'authorization_path'),
     [
-        (IdentitiesResource,
-         'rest.routers.identities.get_user_authorization_from_request'),
-        (IdentityRouter,
-         'rest.public.routers.identity.get_user_authorization_from_request'),
+        (
+            IdentitiesResource,
+            'rest.routers.identities.get_user_authorization_from_request',
+        ),
+        (
+            IdentityRouter,
+            'rest.public.routers.identity.get_user_authorization_from_request',
+        ),
     ],
 )
 @pytest.mark.asyncio
 async def test_identity_router_preserves_an_omitted_s3_ca_certificate(
-        resource_type, authorization_path: str) -> None:
+    resource_type, authorization_path: str
+) -> None:
     service = MagicMock()
     response = MagicMock(spec=api.IdentityResponse)
     service.rotate_credentials = AsyncMock(return_value=response)
@@ -68,17 +83,18 @@ async def test_identity_router_preserves_an_omitted_s3_ca_certificate(
     args = MagicMock(spec=api.RotateIdentityCredentialsArgs)
     principal = MagicMock()
     request = MagicMock()
-    request.json = AsyncMock(return_value={
-        'credentials': {
-            'kind': 's3_access_key',
-            'access_key_id': 'access',
-            'secret_access_key': 'secret',
+    request.json = AsyncMock(
+        return_value={
+            'credentials': {
+                'kind': 's3_access_key',
+                'access_key_id': 'access',
+                'secret_access_key': 'secret',
+            }
         }
-    })
+    )
 
     with patch(authorization_path, return_value=principal):
-        assert await resource.rotate_credentials(identity_id, args,
-                                                 request) is response
+        assert await resource.rotate_credentials(identity_id, args, request) is response
 
     service.rotate_credentials.assert_awaited_once_with(
         identity_id,

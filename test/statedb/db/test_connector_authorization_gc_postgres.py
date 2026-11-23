@@ -26,7 +26,7 @@ from statedb.rest.connector_authorization import (
 class _Principal:
     user_id: UserID = UserID('postgres-user')
     user_name: str = 'Postgres User'
-    kumo_group_ids: tuple[str, ...] = ('group-1', )
+    kumo_group_ids: tuple[str, ...] = ('group-1',)
     external_membership_unavailable: bool = False
     is_admin: bool = False
 
@@ -44,8 +44,7 @@ async def _issue(service: ConnectorAuthorizationService):
         resource_id='connector-1',
         project_id='project-1',
         request_digest='',
-        allowed_actions=(
-            ConnectorCapabilityAction.GET_CONNECTOR_SAMPLE_ROWS, ),
+        allowed_actions=(ConnectorCapabilityAction.GET_CONNECTOR_SAMPLE_ROWS,),
         deployment_id='customer:instance:client',
         temporal_namespace='namespace',
     )
@@ -67,10 +66,8 @@ async def test_postgres_concurrent_replicas_cleanup_once_and_preserve_live(
         maintenance_interval=timedelta(days=1),
         maintenance_batches_per_tick=1,
     )
-    first = ConnectorAuthorizationService(
-        state_db, retention_policy=policy)
-    second = ConnectorAuthorizationService(
-        state_db, retention_policy=policy)
+    first = ConnectorAuthorizationService(state_db, retention_policy=policy)
+    second = ConnectorAuthorizationService(state_db, retention_policy=policy)
     try:
         stale, _ = await _issue(first)
         active, active_token = await _issue(first)

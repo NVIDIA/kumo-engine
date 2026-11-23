@@ -37,8 +37,7 @@ def clamp_e2e_training_budget(
     optimization = getattr(model_plan, 'optimization', None)
 
     if training_job is not None:
-        _clamp_int_attr(training_job, 'num_experiments',
-                        DEFAULT_E2E_NUM_EXPERIMENTS)
+        _clamp_int_attr(training_job, 'num_experiments', DEFAULT_E2E_NUM_EXPERIMENTS)
         if hasattr(training_job, 'refit_trainval') and not keep_refit_trainval:
             training_job.refit_trainval = False
         if hasattr(training_job, 'refit_full') and not keep_refit_full:
@@ -46,11 +45,10 @@ def clamp_e2e_training_budget(
 
     if optimization is not None:
         _clamp_int_attr(optimization, 'max_epochs', DEFAULT_E2E_MAX_EPOCHS)
-        _clamp_int_attr(optimization, 'max_steps_per_epoch',
-                        DEFAULT_E2E_MAX_STEPS_PER_EPOCH)
-        _clamp_int_attr(optimization, 'max_val_steps',
-                        DEFAULT_E2E_MAX_VAL_STEPS)
-        _clamp_int_attr(optimization, 'max_test_steps',
-                        DEFAULT_E2E_MAX_TEST_STEPS)
+        _clamp_int_attr(
+            optimization, 'max_steps_per_epoch', DEFAULT_E2E_MAX_STEPS_PER_EPOCH
+        )
+        _clamp_int_attr(optimization, 'max_val_steps', DEFAULT_E2E_MAX_VAL_STEPS)
+        _clamp_int_attr(optimization, 'max_test_steps', DEFAULT_E2E_MAX_TEST_STEPS)
 
     return model_plan

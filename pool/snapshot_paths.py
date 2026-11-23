@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Shared snapshot path helpers."""
+
 import posixpath
 from pathlib import Path
 from typing import NamedTuple, Optional
@@ -21,8 +22,7 @@ class NormalizedDiskgraphSnapshotId(NamedTuple):
         return f'NA-{self.graph_fpid}'
 
 
-def dataplane_snapshot_path(data_plane_storage_root: str,
-                            snapshot_id: str) -> str:
+def dataplane_snapshot_path(data_plane_storage_root: str, snapshot_id: str) -> str:
     """Return the L2 snapshot payload prefix."""
     normalized = normalize_diskgraph_snapshot_id(snapshot_id)
     if normalized is not None:
@@ -33,14 +33,15 @@ def dataplane_snapshot_path(data_plane_storage_root: str,
             normalized.graph_data_version,
         )
     snapshot_segment = quote(snapshot_id, safe='')
-    return posixpath.join(data_plane_storage_root, 'snapshots',
-                          snapshot_segment)
+    return posixpath.join(data_plane_storage_root, 'snapshots', snapshot_segment)
 
 
 def normalize_diskgraph_snapshot_id(
-        snapshot_id: SnapshotID) -> Optional[NormalizedDiskgraphSnapshotId]:
+    snapshot_id: SnapshotID,
+) -> Optional[NormalizedDiskgraphSnapshotId]:
     """Parse a diskgraph snapshot id into fpid + data version."""
     from statedb.config.common import DataSnapshot
+
     try:
         canonical = DataSnapshot.GRAPH.canonicalize(snapshot_id)
         fpid, version = DataSnapshot.GRAPH.parse_id(canonical)
@@ -60,12 +61,13 @@ def snapshot_relative_path(snapshot_id: SnapshotID) -> Path:
 
 
 def require_normalized_diskgraph_snapshot_id(
-        snapshot_id: SnapshotID) -> NormalizedDiskgraphSnapshotId:
+    snapshot_id: SnapshotID,
+) -> NormalizedDiskgraphSnapshotId:
     normalized = normalize_diskgraph_snapshot_id(snapshot_id)
     if normalized is None:
         raise EnsureFailedSource(
-            f'Fresh Diskgraph ingest requires a graph snapshot id: '
-            f'{snapshot_id}')
+            f'Fresh Diskgraph ingest requires a graph snapshot id: {snapshot_id}'
+        )
     return normalized
 
 
@@ -76,31 +78,31 @@ def dataplane_root_from_snapshot_path(
 ) -> str:
     if dataplane_path is None:
         raise EnsureFailedSource(
-            'Fresh Diskgraph ingest requires a dataplane snapshot path.')
+            'Fresh Diskgraph ingest requires a dataplane snapshot path.'
+        )
     normalized = dataplane_path.rstrip('/')
     candidate_keys = [graph_key]
     if graph_key.startswith(('NA-', 'graph-')):
         candidate_keys.append(graph_key.split('-', 1)[1])
     for candidate_key in candidate_keys:
-        suffix = (
-            f'diskgraph_snapshots/{candidate_key}/{graph_data_version}')
+        suffix = f'diskgraph_snapshots/{candidate_key}/{graph_data_version}'
         if normalized == suffix:
             return ''
         if normalized.endswith(f'/{suffix}'):
-            return normalized[:-(len(suffix) + 1)] or '/'
+            return normalized[: -(len(suffix) + 1)] or '/'
     raise EnsureFailedSource(
-        'Dataplane snapshot path does not match Diskgraph layout: '
-        f'{dataplane_path}')
+        f'Dataplane snapshot path does not match Diskgraph layout: {dataplane_path}'
+    )
 
 
 def normalized_diskgraph_snapshot_id_from_path(
-        graph_key: str, graph_data_version: str) -> Optional[SnapshotID]:
-    if (not graph_data_version or
-            not graph_key.startswith(('graph-', 'NA-'))):
+    graph_key: str, graph_data_version: str
+) -> Optional[SnapshotID]:
+    if not graph_data_version or not graph_key.startswith(('graph-', 'NA-')):
         return None
     try:
         from statedb.config.common import DataSnapshot
-        return DataSnapshot.GRAPH.canonicalize(
-            f'{graph_key}@{graph_data_version}')
+
+        return DataSnapshot.GRAPH.canonicalize(f'{graph_key}@{graph_data_version}')
     except Exception:
         return None

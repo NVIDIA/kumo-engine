@@ -46,7 +46,7 @@ class MultiDevserverDependencies:
     python_executable: str
     main_script: Path
     child_popen: Callable[..., object]
-    wait_for_listeners: Optional[Callable[["ChildLaunchSpec"], bool]] = None
+    wait_for_listeners: Optional[Callable[['ChildLaunchSpec'], bool]] = None
     # Stale-manifest recovery probes/actions; None resolves to the real ones.
     resource_verifier: Optional[ResourceVerifier] = None
     scope_is_active: Optional[Callable[[str], bool]] = None
@@ -79,8 +79,9 @@ class MultiDevserverLaunchError(DevserverLifecycleError):
     """
 
 
-def _cgroup_v2_min(filename: str,
-                   parse: Callable[[Sequence[str]], float]) -> Optional[float]:
+def _cgroup_v2_min(
+    filename: str, parse: Callable[[Sequence[str]], float]
+) -> Optional[float]:
     """Most-restrictive cgroup-v2 limit for this process (leaf->root), or None.
 
     Walks up so a limit set on an ancestor scope/pod still counts; ``max`` at
@@ -95,8 +96,9 @@ def _cgroup_v2_min(filename: str,
     best: Optional[float] = None
     for depth in range(len(parts), -1, -1):
         try:
-            raw = (Path('/sys/fs/cgroup', *parts[:depth])
-                   / filename).read_text().split()
+            raw = (
+                (Path('/sys/fs/cgroup', *parts[:depth]) / filename).read_text().split()
+            )
         except OSError:
             continue
         if not raw or raw[0] == 'max':
@@ -158,8 +160,9 @@ def _systemctl_scope_active(scope_name: str) -> bool:
     A missing/inactive scope exits non-zero with a benign status word; only an
     unexpected failure to even run ``systemctl`` propagates (fail-closed).
     """
-    result = subprocess.run(['systemctl', '--user', 'is-active', scope_name],
-                            capture_output=True, text=True)
+    result = subprocess.run(
+        ['systemctl', '--user', 'is-active', scope_name], capture_output=True, text=True
+    )
     return result.stdout.strip() == 'active'
 
 
@@ -184,11 +187,9 @@ def _recoverable_resource_verifier(
 ) -> ResourceVerifier:
     """True means a recorded child is provably NOT running (safe to reclaim)."""
 
-    def verify(resource_id: str, resource: Mapping[str, Any],
-               owner_token: str) -> bool:
+    def verify(resource_id: str, resource: Mapping[str, Any], owner_token: str) -> bool:
         child_id = resource_id.split('/', 1)[0]
-        instance = DevserverInstance(int(resource['base_port']),
-                                     child_id=child_id)
+        instance = DevserverInstance(int(resource['base_port']), child_id=child_id)
         if scope_is_active(f'kumo-{instance.name}.scope'):
             return False  # scope alive
         if port_is_listening(instance.ports()['public_rest_api']):
@@ -203,34 +204,40 @@ def _cleanup_child_residue(instance: DevserverInstance) -> None:
     with contextlib.suppress(Exception):
         subprocess.run(
             ['systemctl', '--user', 'reset-failed', f'kumo-{instance.name}.scope'],
-            capture_output=True)
+            capture_output=True,
+        )
     with contextlib.suppress(Exception):
-        subprocess.run(['tmux', '-L', instance.name, 'kill-server'],
-                       capture_output=True)
+        subprocess.run(
+            ['tmux', '-L', instance.name, 'kill-server'], capture_output=True
+        )
     with contextlib.suppress(Exception):
         listed = subprocess.run(
             ['docker', 'ps', '-aq', '--filter', f'label={instance.docker_label}'],
-            capture_output=True, text=True)
+            capture_output=True,
+            text=True,
+        )
         ids = listed.stdout.split()
         if ids:
             subprocess.run(['docker', 'rm', '-f', *ids], capture_output=True)
 
 
 def _recover_or_block_stale_manifest(
-        manifest_path: Path,
-        dependencies: MultiDevserverDependencies) -> None:
+    manifest_path: Path, dependencies: MultiDevserverDependencies
+) -> None:
     """Reclaim a manifest whose every child is verified dead, else fail closed."""
     existing = read_manifest(manifest_path)
     scope_is_active = dependencies.scope_is_active or _systemctl_scope_active
     port_is_listening = dependencies.port_is_listening or _tcp_port_listening
     cleanup = dependencies.cleanup_child_residue or _cleanup_child_residue
     verifier = dependencies.resource_verifier or _recoverable_resource_verifier(
-        scope_is_active, port_is_listening)
+        scope_is_active, port_is_listening
+    )
     inspection = inspect_stale_manifest(existing, verifier)
     if inspection.status is not StaleManifestStatus.VERIFIED:
         raise MultiDevserverLaunchError(
             f'existing lifecycle manifest requires owner-verified recovery: '
-            f'{manifest_path}: {inspection.reason}')
+            f'{manifest_path}: {inspection.reason}'
+        )
     for child_id, child in existing.children.items():
         launch_spec = child.get('resources', {}).get('launch_spec', {})
         base_port = launch_spec.get('base_port')
@@ -240,11 +247,15 @@ def _recover_or_block_stale_manifest(
     manifest_path.unlink()
 
 
-def _all_ports_available(child: ChildLaunchSpec,
-                         is_port_available: Callable[[int], bool]) -> bool:
+def _all_ports_available(
+    child: ChildLaunchSpec, is_port_available: Callable[[int], bool]
+) -> bool:
     return all(
-        is_port_available(port) for port in DevserverInstance(
-            child.base_port, child_id=child.devserver_id).ports().values())
+        is_port_available(port)
+        for port in DevserverInstance(child.base_port, child_id=child.devserver_id)
+        .ports()
+        .values()
+    )
 
 
 def _wait_for_expected_listeners(
@@ -262,11 +273,9 @@ def _wait_for_expected_listeners(
     # web_ui + both APIs are the always-on readiness contract; metrics/Grafana/
     # Jaeger/Prometheus may be absent (e.g. DEVSERVER_MONITORING=0) but are
     # still reserved.
-    allocated = DevserverInstance(child.base_port,
-                                  child_id=child.devserver_id).ports()
+    allocated = DevserverInstance(child.base_port, child_id=child.devserver_id).ports()
     expected_ports = {
-        name: allocated[name]
-        for name in ('web_ui', 'rest_api', 'public_rest_api')
+        name: allocated[name] for name in ('web_ui', 'rest_api', 'public_rest_api')
     }
     deadline = time.monotonic() + timeout_seconds
     while True:
@@ -285,37 +294,43 @@ def _with_base_port(child: ChildLaunchSpec, base_port: int) -> ChildLaunchSpec:
 
 
 def _next_auto_port(
-        child: ChildLaunchSpec, *, reserved_ports: set[int],
-        is_port_available: Callable[[int], bool]) -> ChildLaunchSpec:
+    child: ChildLaunchSpec,
+    *,
+    reserved_ports: set[int],
+    is_port_available: Callable[[int], bool],
+) -> ChildLaunchSpec:
     """Choose a replacement only for a coordinator-auto-assigned block."""
     if not child.auto_base_port:
         raise MultiDevserverLaunchError(
             f'explicit base port {child.base_port} lost its complete port '
-            'block before launch; refusing to choose a different address')
+            'block before launch; refusing to choose a different address'
+        )
     # ``assign_auto_base_ports`` uses this stride.  Start after the original
     # allocation so a racing unrelated listener cannot cause an infinite retry.
     for base_port in range(child.base_port + 100, 65536, 100):
         candidate = _with_base_port(child, base_port)
         ports = set(
-            DevserverInstance(candidate.base_port,
-                              child_id=candidate.devserver_id).ports().values())
+            DevserverInstance(candidate.base_port, child_id=candidate.devserver_id)
+            .ports()
+            .values()
+        )
         if max(ports) > 65535:
             break
         if not ports & reserved_ports and _all_ports_available(
-                candidate, is_port_available):
+            candidate, is_port_available
+        ):
             return candidate
     raise MultiDevserverLaunchError(
         f'no replacement complete port block is available for auto child '
-        f'{child.devserver_id!r}')
+        f'{child.devserver_id!r}'
+    )
 
 
-def _manifest_with_child_spec(manifest: DevserverManifest,
-                              child: ChildLaunchSpec) -> DevserverManifest:
+def _manifest_with_child_spec(
+    manifest: DevserverManifest, child: ChildLaunchSpec
+) -> DevserverManifest:
     """Persist an auto-retried command before starting it."""
-    children = {
-        child_id: dict(data)
-        for child_id, data in manifest.children.items()
-    }
+    children = {child_id: dict(data) for child_id, data in manifest.children.items()}
     child_data = children[child.devserver_id]
     resources = dict(child_data['resources'])
     launch_spec = dict(resources['launch_spec'])
@@ -338,44 +353,64 @@ def build_multi_devserver_launch(
     manifest_path: Path,
     dependencies: MultiDevserverDependencies,
 ) -> MultiDevserverLaunch:
-    plan = build_multi_devserver_plan(cgroup_config, nums=nums,
-                                      devserver_ids=devserver_ids,
-                                      base_ports=base_ports, unfenced=unfenced)
-    plan = assign_auto_base_ports(plan,
-                                  is_available=dependencies.is_port_available)
+    plan = build_multi_devserver_plan(
+        cgroup_config,
+        nums=nums,
+        devserver_ids=devserver_ids,
+        base_ports=base_ports,
+        unfenced=unfenced,
+    )
+    plan = assign_auto_base_ports(plan, is_available=dependencies.is_port_available)
     if plan.cgroup_mode == 'auto':
         cpu_capacity, memory_gib = dependencies.capacity_provider()
-        limits = resolve_auto_cgroup_limits(cpu_capacity=cpu_capacity,
-                                            memory_gib=memory_gib,
-                                            count=plan.nums)
+        limits = resolve_auto_cgroup_limits(
+            cpu_capacity=cpu_capacity, memory_gib=memory_gib, count=plan.nums
+        )
         plan = MultiDevserverLaunchPlan(
-            cgroup_mode=plan.cgroup_mode, devservers=tuple(
+            cgroup_mode=plan.cgroup_mode,
+            devservers=tuple(
                 type(child)(child.devserver_id, child.base_port, limit)
-                for child, limit in zip(plan.devservers, limits)))
+                for child, limit in zip(plan.devservers, limits)
+            ),
+        )
 
     owner_token = new_owner_token()
-    auto_base_ports = base_ports is None or base_ports.strip().casefold(
-    ) == 'auto'
+    auto_base_ports = base_ports is None or base_ports.strip().casefold() == 'auto'
     specs = []
     children = {}
     for child in plan.devservers:
-        instance = DevserverInstance(child.base_port,
-                                     child_id=child.devserver_id)
+        instance = DevserverInstance(child.base_port, child_id=child.devserver_id)
         env = dict(parent_env)
         env.update(instance.environment(env))
         command = [
-            dependencies.python_executable, '-m', 'rest.devserver.main',
-            '--child-id', child.devserver_id, '--base_port',
-            str(child.base_port), '--detached'
+            dependencies.python_executable,
+            '-m',
+            'rest.devserver.main',
+            '--child-id',
+            child.devserver_id,
+            '--base_port',
+            str(child.base_port),
+            '--detached',
         ]
         if child.cgroup_limits is not None:
-            command.extend([
-                '--cgroup', '--cgroup-cpus', f'{child.cgroup_limits.cpus:g}',
-                '--cgroup-memory-gib', f'{child.cgroup_limits.memory_gib:g}'
-            ])
+            command.extend(
+                [
+                    '--cgroup',
+                    '--cgroup-cpus',
+                    f'{child.cgroup_limits.cpus:g}',
+                    '--cgroup-memory-gib',
+                    f'{child.cgroup_limits.memory_gib:g}',
+                ]
+            )
         specs.append(
-            ChildLaunchSpec(child.devserver_id, child.base_port, tuple(command),
-                            env, auto_base_port=auto_base_ports))
+            ChildLaunchSpec(
+                child.devserver_id,
+                child.base_port,
+                tuple(command),
+                env,
+                auto_base_port=auto_base_ports,
+            )
+        )
         children[child.devserver_id] = {
             'resources': {
                 'launch_spec': {
@@ -392,14 +427,19 @@ def build_multi_devserver_launch(
 def render_launch_plan(launch: MultiDevserverLaunch) -> str:
     lines = ['Multi-devserver launch plan (planned; no process started)']
     for child, spec in zip(launch.plan.devservers, launch.children):
-        limits = ('unfenced' if child.cgroup_limits is None else
-                  f'cgroup={child.cgroup_limits.cpus:g} CPUs, '
-                  f'{child.cgroup_limits.memory_gib:g} GiB')
-        lines.extend([
-            f'- {spec.devserver_id}: http://localhost:{spec.base_port + 1}/docs',
-            f'  raw INSTANCE_ID={spec.environment["INSTANCE_ID"]}',
-            f'  {limits}',
-        ])
+        limits = (
+            'unfenced'
+            if child.cgroup_limits is None
+            else f'cgroup={child.cgroup_limits.cpus:g} CPUs, '
+            f'{child.cgroup_limits.memory_gib:g} GiB'
+        )
+        lines.extend(
+            [
+                f'- {spec.devserver_id}: http://localhost:{spec.base_port + 1}/docs',
+                f'  raw INSTANCE_ID={spec.environment["INSTANCE_ID"]}',
+                f'  {limits}',
+            ]
+        )
     return '\n'.join(lines)
 
 
@@ -436,41 +476,47 @@ def launch_multi_devservers(
                     if other.devserver_id == child.devserver_id:
                         continue
                     reserved_ports.update(
-                        DevserverInstance(
-                            other.base_port,
-                            child_id=other.devserver_id).ports().values())
-                if not _all_ports_available(child,
-                                            dependencies.is_port_available):
+                        DevserverInstance(other.base_port, child_id=other.devserver_id)
+                        .ports()
+                        .values()
+                    )
+                if not _all_ports_available(child, dependencies.is_port_available):
                     child = _next_auto_port(
-                        child, reserved_ports=reserved_ports,
-                        is_port_available=dependencies.is_port_available)
-                    active_manifest = _manifest_with_child_spec(
-                        active_manifest, child)
+                        child,
+                        reserved_ports=reserved_ports,
+                        is_port_available=dependencies.is_port_available,
+                    )
+                    active_manifest = _manifest_with_child_spec(active_manifest, child)
                     write_manifest_atomic(manifest_path, active_manifest)
-                dependencies.child_popen(child.command,
-                                         env=dict(child.environment),
-                                         cwd=str(cwd), start_new_session=True)
+                dependencies.child_popen(
+                    child.command,
+                    env=dict(child.environment),
+                    cwd=str(cwd),
+                    start_new_session=True,
+                )
                 launched_children.append(child.devserver_id)
                 listener_ready = dependencies.wait_for_listeners
                 if listener_ready is None:
                     listener_ready = lambda spec: _wait_for_expected_listeners(
-                        spec, dependencies.is_port_available)
+                        spec, dependencies.is_port_available
+                    )
                 if not listener_ready(child):
                     raise MultiDevserverLaunchError(
                         f'child {child.devserver_id!r} did not bind every '
-                        'expected listener before the readiness deadline')
+                        'expected listener before the readiness deadline'
+                    )
         except BaseException as error:
             # Do not guess at teardown.  ``stopping`` makes the partial state
             # explicit and forces a later owner-verifying recovery operation.
-            write_manifest_atomic(manifest_path,
-                                  replace(active_manifest, phase='stopping'))
+            write_manifest_atomic(
+                manifest_path, replace(active_manifest, phase='stopping')
+            )
             if isinstance(error, MultiDevserverLaunchError):
                 raise
             raise MultiDevserverLaunchError(
-                f'launch failed after starting {launched_children}: {error}') \
-                from error
-        write_manifest_atomic(manifest_path,
-                              replace(active_manifest, phase='running'))
+                f'launch failed after starting {launched_children}: {error}'
+            ) from error
+        write_manifest_atomic(manifest_path, replace(active_manifest, phase='running'))
 
 
 def parse_multi_devserver_args(argv: Sequence[str]) -> argparse.Namespace:
@@ -479,19 +525,20 @@ def parse_multi_devserver_args(argv: Sequence[str]) -> argparse.Namespace:
         return value if value and value.strip() else None
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--cgroup-config',
-                        default=env_optional('CGROUP_CONFIG'))
+    parser.add_argument('--cgroup-config', default=env_optional('CGROUP_CONFIG'))
     parser.add_argument('--nums', default=env_optional('NUMS'))
-    parser.add_argument('--devserver-ids',
-                        default=env_optional('DEVSERVER_IDS'))
+    parser.add_argument('--devserver-ids', default=env_optional('DEVSERVER_IDS'))
     parser.add_argument('--base-ports', default=env_optional('BASE_PORTS'))
-    parser.add_argument('--unfenced', action='store_true',
-                        default=os.environ.get('UNFENCED') == '1')
+    parser.add_argument(
+        '--unfenced', action='store_true', default=os.environ.get('UNFENCED') == '1'
+    )
     parser.add_argument(
         '--print-child-env',
         metavar='DEVSERVER_ID',
-        help=('print shell exports for one running manifest-owned child; '
-              'intended for external clients such as test harnesses'),
+        help=(
+            'print shell exports for one running manifest-owned child; '
+            'intended for external clients such as test harnesses'
+        ),
     )
     args = parser.parse_args(argv)
     if args.unfenced and args.cgroup_config:
@@ -520,62 +567,79 @@ def render_child_client_environment(
     manifest = read_manifest(manifest_path)
     if manifest.phase != 'running':
         raise MultiDevserverLaunchError(
-            f'devserver manifest is {manifest.phase!r}, not running: '
-            f'{manifest_path}')
+            f'devserver manifest is {manifest.phase!r}, not running: {manifest_path}'
+        )
     child = manifest.children.get(normalized_id)
     if child is None:
         raise MultiDevserverLaunchError(
             f'devserver child {normalized_id!r} is not owned by manifest: '
-            f'{manifest_path}')
+            f'{manifest_path}'
+        )
     launch_spec = child['resources'].get('launch_spec')
     if not isinstance(launch_spec, Mapping):
         raise MultiDevserverLaunchError(
-            f'devserver child {normalized_id!r} has no launch specification')
+            f'devserver child {normalized_id!r} has no launch specification'
+        )
     command = launch_spec.get('command')
     if not isinstance(command, list):
         raise MultiDevserverLaunchError(
-            f'devserver child {normalized_id!r} has an invalid launch command')
+            f'devserver child {normalized_id!r} has an invalid launch command'
+        )
     try:
         child_arg = command[command.index('--child-id') + 1]
         base_port = int(command[command.index('--base_port') + 1])
     except (ValueError, IndexError) as error:
         raise MultiDevserverLaunchError(
-            f'devserver child {normalized_id!r} launch command is incomplete') \
-            from error
+            f'devserver child {normalized_id!r} launch command is incomplete'
+        ) from error
     if child_arg != normalized_id:
         raise MultiDevserverLaunchError(
             f'devserver manifest child {normalized_id!r} has mismatched '
-            f'launch identity {child_arg!r}')
+            f'launch identity {child_arg!r}'
+        )
     instance = DevserverInstance(base_port, child_id=normalized_id)
     child_home = os.path.abspath(instance.environment(parent_env)['KUMO_HOME'])
     if not os.path.isdir(child_home):
         raise MultiDevserverLaunchError(
-            f'devserver child {normalized_id!r} home is absent: {child_home}')
+            f'devserver child {normalized_id!r} home is absent: {child_home}'
+        )
     public_url = f'http://localhost:{instance.ports()["public_rest_api"]}'
     return 'export KUMO_API_URL={}; export KUMO_HOME={}'.format(
-        shlex.quote(public_url), shlex.quote(child_home))
+        shlex.quote(public_url), shlex.quote(child_home)
+    )
 
 
 def main(argv: Sequence[str] = ()) -> int:
     args = parse_multi_devserver_args(argv)
-    manifest_path = Path(os.environ.get('KUMO_HOME', '.')) / \
-        '.multi-devserver' / 'manifest.json'
+    manifest_path = (
+        Path(os.environ.get('KUMO_HOME', '.')) / '.multi-devserver' / 'manifest.json'
+    )
     if args.print_child_env:
-        print(render_child_client_environment(
-            args.print_child_env, manifest_path=manifest_path,
-            parent_env=os.environ))
+        print(
+            render_child_client_environment(
+                args.print_child_env, manifest_path=manifest_path, parent_env=os.environ
+            )
+        )
         return 0
     launch = build_multi_devserver_launch(
-        cgroup_config=args.cgroup_config, nums=args.nums,
-        devserver_ids=args.devserver_ids, base_ports=args.base_ports,
-        unfenced=args.unfenced, parent_env=os.environ,
+        cgroup_config=args.cgroup_config,
+        nums=args.nums,
+        devserver_ids=args.devserver_ids,
+        base_ports=args.base_ports,
+        unfenced=args.unfenced,
+        parent_env=os.environ,
         manifest_path=manifest_path,
-        dependencies=default_dependencies())
+        dependencies=default_dependencies(),
+    )
     print(render_launch_plan(launch))
     if os.environ.get('PLAN_ONLY') == '1':
         return 0
-    launch_multi_devservers(launch, manifest_path=manifest_path,
-                            dependencies=default_dependencies(), cwd=Path.cwd())
+    launch_multi_devservers(
+        launch,
+        manifest_path=manifest_path,
+        dependencies=default_dependencies(),
+        cwd=Path.cwd(),
+    )
     return 0
 
 

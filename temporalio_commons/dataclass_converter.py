@@ -47,11 +47,13 @@ def _reject_forbidden_temporal_values(
     if isinstance(value, SecretStr):
         raise TypeError(
             'SecretStr values are activity-local and cannot be serialized '
-            'into a Temporal payload')
+            'into a Temporal payload'
+        )
     if getattr(type(value), '__temporal_serializable__', True) is False:
         raise TypeError(
             f'{type(value).__name__} is activity-local and cannot be '
-            'serialized into a Temporal payload')
+            'serialized into a Temporal payload'
+        )
     if dataclasses.is_dataclass(value):
         for field in dataclasses.fields(value):
             _reject_forbidden_temporal_values(getattr(value, field.name), seen)
@@ -66,15 +68,16 @@ def _reject_forbidden_temporal_values(
 
 class PassthroughPayloadDataConverter(EncodingPayloadConverter):
     """A data converter that passes through raw Payload objects."""
+
     @property
     def encoding(self) -> str:
-        return "binary/passthrough"
+        return 'binary/passthrough'
 
     def to_payload(self, value: Any) -> Optional[Payload]:
         if isinstance(value, Payload):
             metadata = dict(value.metadata)  # shallow copy of metadata
-            metadata['original_encoding'] = value.metadata["encoding"]
-            metadata["encoding"] = self.encoding.encode()
+            metadata['original_encoding'] = value.metadata['encoding']
+            metadata['encoding'] = self.encoding.encode()
             return Payload(metadata=metadata, data=value.data)
         return None
 
@@ -83,12 +86,12 @@ class PassthroughPayloadDataConverter(EncodingPayloadConverter):
         payload: Payload,
         type_hint: Optional[Type] = None,
     ) -> Any:
-        if payload.metadata.get("encoding") == self.encoding.encode():
+        if payload.metadata.get('encoding') == self.encoding.encode():
             metadata = dict(payload.metadata)  # shallow copy of metadata
             # Restore original encoding if present
             metadata['encoding'] = metadata.pop('original_encoding')
             return Payload(metadata=metadata, data=payload.data)
-        raise ValueError("Not a passthrough payload")
+        raise ValueError('Not a passthrough payload')
 
 
 # Kumo's custom converter plugin to support json encoding for common Pydantic
@@ -98,13 +101,13 @@ class PassthroughPayloadDataConverter(EncodingPayloadConverter):
 class DataclassJsonPayloadConverter(EncodingPayloadConverter):
     def __init__(self) -> None:
         super().__init__()
-        self._encoding: str = "json/pydanticclass"
+        self._encoding: str = 'json/pydanticclass'
 
         # In order to handle container properly, we need to recursively apply
         # all converters: the "self" gets the first try and then others.
         default_converters = DefaultPayloadConverter().converters
         all_converters = {}
-        all_converters["json/pydanticclass".encode()] = self
+        all_converters['json/pydanticclass'.encode()] = self
         all_converters.update(default_converters)
         self._default_converter = DefaultPayloadConverter()
         self._default_converter.converters = all_converters
@@ -120,37 +123,41 @@ class DataclassJsonPayloadConverter(EncodingPayloadConverter):
         start_time = time.perf_counter()
         payload = self._to_payload(value)
         elapsed = time.perf_counter() - start_time
-        if payload and (elapsed > 1.0
-                        or len(payload.data) > LARGE_PAYLOAD_TO_WARN):
+        if payload and (elapsed > 1.0 or len(payload.data) > LARGE_PAYLOAD_TO_WARN):
             if activity.in_activity():
-                caller = (f'activity {activity.info().workflow_type}.'
-                          f'{activity.info().activity_type}')
+                caller = (
+                    f'activity {activity.info().workflow_type}.'
+                    f'{activity.info().activity_type}'
+                )
             else:
                 caller = 'Temporal Client'
                 try:
                     wf_info = workflow.info()
-                    caller = (f'workflow {wf_info.workflow_type}: '
-                              f'{wf_info.workflow_id}')
+                    caller = f'workflow {wf_info.workflow_type}: {wf_info.workflow_id}'
                 except (RuntimeError, TemporalError):  # no running event loop
                     pass
             log.warning(
                 'Encoded Temporal payload is too large: %d bytes, '
                 'invoked by %s, value type: %s, metadata: %s, '
-                'serialization took %.3f seconds.', len(payload.data), caller,
-                type(value), payload.metadata, elapsed)
+                'serialization took %.3f seconds.',
+                len(payload.data),
+                caller,
+                type(value),
+                payload.metadata,
+                elapsed,
+            )
         return payload
 
     def _to_payload(self, value: Any) -> Optional[Payload]:
         """See base class."""
-        cls_name = '.'.join(
-            [value.__class__.__module__, value.__class__.__name__])
+        cls_name = '.'.join([value.__class__.__module__, value.__class__.__name__])
         if dataclasses.is_dataclass(value):
             try:
                 json_dump = to_json(value)
                 return Payload(
                     metadata={
-                        "encoding": self._encoding.encode(),
-                        "class": cls_name.encode(),
+                        'encoding': self._encoding.encode(),
+                        'class': cls_name.encode(),
                     },
                     data=json_dump.encode(),
                 )
@@ -162,8 +169,8 @@ class DataclassJsonPayloadConverter(EncodingPayloadConverter):
             # Special handling for string subclass types
             return Payload(
                 metadata={
-                    "encoding": self._encoding.encode(),
-                    "class": f'str_{cls_name}'.encode(),
+                    'encoding': self._encoding.encode(),
+                    'class': f'str_{cls_name}'.encode(),
                 },
                 data=value.encode(),
             )
@@ -176,15 +183,15 @@ class DataclassJsonPayloadConverter(EncodingPayloadConverter):
             # For set, tuple, or list, we recursively apply converters to each
             # element
             payloads = self._default_converter.to_payloads(value)
-            payloads = Payloads(
-                payloads=self._default_converter.to_payloads(value))
+            payloads = Payloads(payloads=self._default_converter.to_payloads(value))
             return Payload(
                 metadata={
                     'encoding': self._encoding.encode(),
                     'class': f'iterable_{type_name}'.encode(),
                     'binary': ''.encode(),  # mark the data as binary
                 },
-                data=payloads.SerializeToString())
+                data=payloads.SerializeToString(),
+            )
 
         if isinstance(value, dict) and len(value) > 0:
             # For dict, we serialize into a payload list of:
@@ -200,14 +207,17 @@ class DataclassJsonPayloadConverter(EncodingPayloadConverter):
                     'class': 'dict'.encode(),
                     'binary': ''.encode(),  # mark the data as binary
                 },
-                data=payloads.SerializeToString())
+                data=payloads.SerializeToString(),
+            )
 
         if isinstance(value, datetime):
             return Payload(
                 metadata={
                     'encoding': self._encoding.encode(),
                     'class': datetime.__name__.encode(),
-                }, data=value.isoformat().encode())
+                },
+                data=value.isoformat().encode(),
+            )
 
         # Fall through to try other default converters.
         return None
@@ -223,21 +233,27 @@ class DataclassJsonPayloadConverter(EncodingPayloadConverter):
         elapsed = time.perf_counter() - start_time
         if elapsed > 1.0:
             if activity.in_activity():
-                caller = (f'activity {activity.info().workflow_type}.'
-                          f'{activity.info().activity_type}')
+                caller = (
+                    f'activity {activity.info().workflow_type}.'
+                    f'{activity.info().activity_type}'
+                )
             else:
                 caller = 'Temporal Client'
                 try:
                     wf_info = workflow.info()
-                    caller = (f'workflow {wf_info.workflow_type}: '
-                              f'{wf_info.workflow_id}')
+                    caller = f'workflow {wf_info.workflow_type}: {wf_info.workflow_id}'
                 except (RuntimeError, TemporalError):  # no running event loop
                     pass
             log.warning(
                 'Temporal payload is too large: %d bytes, '
                 'invoked by %s, type_hint: %s, metadata: %s, '
-                'deserialization took %.3f seconds.', len(payload.data), caller,
-                type_hint, payload.metadata, elapsed)
+                'deserialization took %.3f seconds.',
+                len(payload.data),
+                caller,
+                type_hint,
+                payload.metadata,
+                elapsed,
+            )
         return object
 
     def _from_payload(
@@ -250,7 +266,7 @@ class DataclassJsonPayloadConverter(EncodingPayloadConverter):
             cls_name = payload.metadata['class'].decode()
 
             if cls_name.startswith('str_'):
-                cls_name = cls_name[len('str_'):]
+                cls_name = cls_name[len('str_') :]
                 cls = locate(cls_name)
                 return cls(payload.data.decode())
 
@@ -261,18 +277,15 @@ class DataclassJsonPayloadConverter(EncodingPayloadConverter):
                 assert len(payload_list) % 2 == 0
                 dict_size = len(payload_list) // 2
                 assert dict_size > 0
-                keys = self._default_converter.from_payloads(
-                    payload_list[:dict_size])
-                values = self._default_converter.from_payloads(
-                    payload_list[dict_size:])
+                keys = self._default_converter.from_payloads(payload_list[:dict_size])
+                values = self._default_converter.from_payloads(payload_list[dict_size:])
                 return {keys[i]: values[i] for i in range(dict_size)}
 
             if cls_name.startswith('iterable_'):
-                cls_name = cls_name[len('iterable_'):]
+                cls_name = cls_name[len('iterable_') :]
                 payloads = Payloads()
                 payloads.MergeFromString(payload.data)
-                values = self._default_converter.from_payloads(
-                    payloads.payloads)
+                values = self._default_converter.from_payloads(payloads.payloads)
                 return self._iterable_types[cls_name](values)
 
             if cls_name == datetime.__name__:
@@ -285,7 +298,7 @@ class DataclassJsonPayloadConverter(EncodingPayloadConverter):
             return from_json(data=payload.data.decode(), cls=cls)
 
         except json.JSONDecodeError as err:
-            raise RuntimeError("Failed parsing") from err
+            raise RuntimeError('Failed parsing') from err
 
 
 # pylint: disable=too-few-public-methods
@@ -294,6 +307,7 @@ class PatchedJSONPlainPayloadConverter(JSONPlainPayloadConverter):
 
     TODO: Delete me after patch is applied to upstream.
     """
+
     def from_payload(
         self,
         payload: Payload,
@@ -304,14 +318,16 @@ class PatchedJSONPlainPayloadConverter(JSONPlainPayloadConverter):
             if type_hint:
                 if inspect.isclass(type_hint) and issubclass(type_hint, str):
                     if not isinstance(obj, str):
-                        raise TypeError(f"Cannot convert to {type_hint}, value "
-                                        f"not a string, value is {type(obj)}")
+                        raise TypeError(
+                            f'Cannot convert to {type_hint}, value '
+                            f'not a string, value is {type(obj)}'
+                        )
                     obj = type_hint(obj)
                 else:
                     obj = value_to_type(type_hint, obj)
             return obj
         except json.JSONDecodeError as err:
-            raise RuntimeError("Failed parsing") from err
+            raise RuntimeError('Failed parsing') from err
 
 
 # pylint: disable=too-few-public-methods
@@ -330,6 +346,7 @@ class KumoPayloadConverter(CompositePayloadConverter):
         return super().to_payloads(values)
 
     @trace()
-    def from_payloads(self, payloads: Sequence[Payload],
-                      type_hints: Optional[List[Type]] = None) -> List[Any]:
+    def from_payloads(
+        self, payloads: Sequence[Payload], type_hints: Optional[List[Type]] = None
+    ) -> List[Any]:
         return super().from_payloads(payloads, type_hints=type_hints)

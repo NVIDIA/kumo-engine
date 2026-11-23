@@ -28,8 +28,7 @@ def _write_training_xai_fixture(tmp_path):
     job_id = 'trainingjob-xai-aggr'
     task_name = 'task'
     home = HomeDirManager(str(tmp_path / job_id))
-    best_trainer_dir = (tmp_path / job_id / 'models' / task_name / 'automl' /
-                        'version_0')
+    best_trainer_dir = tmp_path / job_id / 'models' / task_name / 'automl' / 'version_0'
     subgraph_dir = best_trainer_dir / 'subgraph_collector' / 'test'
     subgraph_json_dir = subgraph_dir / 'subgraph_json'
     subgraph_json_dir.mkdir(parents=True)
@@ -46,34 +45,43 @@ def _write_training_xai_fixture(tmp_path):
         feature_store = SubgraphFeatureStore(
             features={
                 0: {
-                    'age':
-                    Feature(
+                    'age': Feature(
                         table_name='users',
                         name='age',
                         value=age,
                         stype=Stype.numerical,
                     )
                 }
-            })
-        save_json(Subgraph(feature_store=feature_store),
-                  str(subgraph_json_dir / f'{entity_id}.json'))
+            }
+        )
+        save_json(
+            Subgraph(feature_store=feature_store),
+            str(subgraph_json_dir / f'{entity_id}.json'),
+        )
 
     return job_id, task_name, subgraph_dir
 
 
 def _aggr_feature_path(subgraph_dir):
-    return (subgraph_dir / 'global_aggr_feature' / 'random' / 'users' / 'age' /
-            'mean' / 'feature.json')
+    return (
+        subgraph_dir
+        / 'global_aggr_feature'
+        / 'random'
+        / 'users'
+        / 'age'
+        / 'mean'
+        / 'feature.json'
+    )
 
 
-def test_xai_aggregation_writes_global_features_without_rfm(
-        monkeypatch, tmp_path):
+def test_xai_aggregation_writes_global_features_without_rfm(monkeypatch, tmp_path):
     job_id, task_name, subgraph_dir = _write_training_xai_fixture(tmp_path)
     monkeypatch.setattr(act, 'TrainingJobInput', _TrainingJobInput)
     monkeypatch.setattr(act, 'get_job_base_dir', lambda: str(tmp_path))
 
-    act.xai_aggregation_activity(_TrainingJobInput(job_id, task_name),
-                                 SimpleNamespace())
+    act.xai_aggregation_activity(
+        _TrainingJobInput(job_id, task_name), SimpleNamespace()
+    )
 
     feature_path = _aggr_feature_path(subgraph_dir)
 

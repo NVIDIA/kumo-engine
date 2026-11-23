@@ -21,13 +21,13 @@ Prerequisites:
 Usage:
     python -m pytest test/rest/integ/test_diskgraph_e2e.py -xvs --timeout=1800
 """
+
 import logging
 import math
 import os
 import os.path as osp
 import time
 from pathlib import Path
-from test.rest.integ.seed_helpers import seed_and_train
 from typing import Any, Dict, List, Optional, Tuple
 
 import pytest
@@ -69,6 +69,7 @@ from statedb.config.common import (
     PredictiveQueryID,
     TrainingJobID,
 )
+from test.rest.integ.seed_helpers import seed_and_train
 
 log = logging.getLogger(__name__)
 
@@ -83,18 +84,23 @@ log = logging.getLogger(__name__)
 # the default in-memory test config. Doing this in an autouse fixture is too
 # late: deploy_env_config has already cached its DeployEnvConfig by then.
 if 'DEPLOY_ENV_CONFIG_FILE' not in os.environ:
-    _default_deploy_config = (Path(__file__).resolve().parents[3] / 'rest' /
-                              'devserver' / 'configs' / 'diskgraph-test.json')
+    _default_deploy_config = (
+        Path(__file__).resolve().parents[3]
+        / 'rest'
+        / 'devserver'
+        / 'configs'
+        / 'diskgraph-test.json'
+    )
     os.environ['DEPLOY_ENV_CONFIG_FILE'] = str(_default_deploy_config)
 
-FIXTURE_PATH = Path(__file__).parent / "test_cases" / "test_e2e_fixtures.json"
+FIXTURE_PATH = Path(__file__).parent / 'test_cases' / 'test_e2e_fixtures.json'
 
 # Pool fixtures (storage_backend, _diskgraph_deploy_config, _pool_subprocesses)
 # live in ``test/rest/integ/conftest.py`` and are activated for every test in
 # this module via ``pytestmark`` below.
-pytestmark = pytest.mark.usefixtures("_pool_subprocesses")
+pytestmark = pytest.mark.usefixtures('_pool_subprocesses')
 
-PQL_TEST_CASE = "saas_temporal_regression_base"
+PQL_TEST_CASE = 'saas_temporal_regression_base'
 
 POLL_INTERVAL_SECONDS = 5
 MAX_POLL_SECONDS = 1200
@@ -142,53 +148,105 @@ _ColSpec = Tuple[
 EXPECTED_COL_STATS: Dict[str, Dict[str, _ColSpec]] = {
     'ACCOUNT': {
         'FREQUENCY': ('categorical', 4500, 0.0, 3, 0.0, []),
-        'DATE': ('timestamp', 4500, 0.0, 1535, 0.0, [('Range', '1,823 days'),
-                                                     ('Min', '1993-01-01'),
-                                                     ('Max', '1997-12-29')]),
+        'DATE': (
+            'timestamp',
+            4500,
+            0.0,
+            1535,
+            0.0,
+            [('Range', '1,823 days'), ('Min', '1993-01-01'), ('Max', '1997-12-29')],
+        ),
         'DISTRICT_ID': ('ID', 4500, 0.0, 77, 0.0, []),
         'ACCOUNT_ID': ('ID', 4500, 0.0, 4500, 0.0, []),
     },
     'LOAN': {
-        'AMOUNT': ('numerical', 682, 0.1466275659824047, 682, 0.0,
-                   [('Mean', 151490.96035242305), ('Min', 4980.0),
-                    ('25%', 66696.0), ('50%', 117082.5), ('75%', 210744.0),
-                    ('Max', 590820.0)]),
+        'AMOUNT': (
+            'numerical',
+            682,
+            0.1466275659824047,
+            682,
+            0.0,
+            [
+                ('Mean', 151490.96035242305),
+                ('Min', 4980.0),
+                ('25%', 66696.0),
+                ('50%', 117082.5),
+                ('75%', 210744.0),
+                ('Max', 590820.0),
+            ],
+        ),
         'DURATION': ('categorical', 682, 0.0, 5, 0.0, []),
-        'PAYMENTS':
-        ('numerical', 682, 0.0, 682, 0.0, [('Mean', 4190.664222873898),
-                                           ('Min', 304.0), ('25%', 2465.5),
-                                           ('50%', 3932.5666666666666),
-                                           ('75%', 5810.375), ('Max', 9910.0)]),
+        'PAYMENTS': (
+            'numerical',
+            682,
+            0.0,
+            682,
+            0.0,
+            [
+                ('Mean', 4190.664222873898),
+                ('Min', 304.0),
+                ('25%', 2465.5),
+                ('50%', 3932.5666666666666),
+                ('75%', 5810.375),
+                ('Max', 9910.0),
+            ],
+        ),
         'STATUS': ('categorical', 682, 0.0, 4, 0.0, []),
         'ACCOUNT_ID': ('ID', 682, 0.0, 682, 0.0, []),
         'LOAN_ID': ('ID', 682, 0.0, 678, 0.0, []),
-        'DATE': ('timestamp', 682, 0.0, 559, 0.0, [('Range', '1,982 days'),
-                                                   ('Min', '1993-07-05'),
-                                                   ('Max', '1998-12-08')]),
+        'DATE': (
+            'timestamp',
+            682,
+            0.0,
+            559,
+            0.0,
+            [('Range', '1,982 days'), ('Min', '1993-07-05'), ('Max', '1998-12-08')],
+        ),
     },
     'TRANS': {
         'TYPE': ('categorical', 5000, 0.0, 3, 0.0, []),
         'OPERATION': ('categorical', 5000, 22.18, 4, 0.0, []),
-        'AMOUNT':
-        ('numerical', 5000, 0.0, 5000, 0.0, [('Mean', 9060.554939984037),
-                                             ('Min', 0.800000011920929),
-                                             ('25%', 232.95833415278682),
-                                             ('50%', 3689.0),
-                                             ('75%', 13392.500865051903),
-                                             ('Max', 76500.0)]),
-        'BALANCE':
-        ('numerical', 5000, 0.0, 5000, 0.0, [('Mean', 31926.794406262186),
-                                             ('Min', -3724.699951171875),
-                                             ('25%', 14503.864717371323),
-                                             ('50%', 27175.834833559784),
-                                             ('75%', 44493.86989030934),
-                                             ('Max', 169292.09375)]),
+        'AMOUNT': (
+            'numerical',
+            5000,
+            0.0,
+            5000,
+            0.0,
+            [
+                ('Mean', 9060.554939984037),
+                ('Min', 0.800000011920929),
+                ('25%', 232.95833415278682),
+                ('50%', 3689.0),
+                ('75%', 13392.500865051903),
+                ('Max', 76500.0),
+            ],
+        ),
+        'BALANCE': (
+            'numerical',
+            5000,
+            0.0,
+            5000,
+            0.0,
+            [
+                ('Mean', 31926.794406262186),
+                ('Min', -3724.699951171875),
+                ('25%', 14503.864717371323),
+                ('50%', 27175.834833559784),
+                ('75%', 44493.86989030934),
+                ('Max', 169292.09375),
+            ],
+        ),
         'K_SYMBOL': ('categorical', 5000, 65.52, 7, 0.0, []),
         'ACCOUNT_ID': ('ID', 5000, 0.0, 556, 0.0, []),
         'TRANS_ID': ('ID', 5000, 0.0, 5000, 0.0, []),
-        'DATE': ('timestamp', 5000, 0.0, 181, 0.0, [('Range', '180 days'),
-                                                    ('Min', '1993-01-01'),
-                                                    ('Max', '1993-06-30')]),
+        'DATE': (
+            'timestamp',
+            5000,
+            0.0,
+            181,
+            0.0,
+            [('Range', '180 days'), ('Min', '1993-01-01'), ('Max', '1993-06-30')],
+        ),
     },
 }
 
@@ -215,10 +273,12 @@ def _approx_eq(actual: Any, expected: Any) -> bool:
 
 def _approx_summary_eq(label: str, actual: Any, expected: Any) -> bool:
     """Compare exact summaries and merge-order-dependent T-digest quantiles."""
-    if (label in {'25%', '50%', '75%'} and isinstance(expected, (int, float))
-            and isinstance(actual, (int, float))):
-        return math.isclose(float(actual), float(expected),
-                            rel_tol=_QUANTILE_REL_TOL)
+    if (
+        label in {'25%', '50%', '75%'}
+        and isinstance(expected, (int, float))
+        and isinstance(actual, (int, float))
+    ):
+        return math.isclose(float(actual), float(expected), rel_tol=_QUANTILE_REL_TOL)
     return _approx_eq(actual, expected)
 
 
@@ -262,15 +322,15 @@ def _wait_for_training(
             TrainingJobResponse,
         )
         if job.execution.status in {
-                JobStatus.DONE,
-                JobStatus.FAILED,
-                JobStatus.CANCELLED,
+            JobStatus.DONE,
+            JobStatus.FAILED,
+            JobStatus.CANCELLED,
         }:
             return job
         time.sleep(POLL_INTERVAL_SECONDS)
     raise TimeoutError(
-        f"Training job {training_job_id} did not complete within "
-        f"{MAX_POLL_SECONDS}s")
+        f'Training job {training_job_id} did not complete within {MAX_POLL_SECONDS}s'
+    )
 
 
 def _wait_for_materialization_info(
@@ -303,13 +363,15 @@ def _wait_for_materialization_info(
         )
         if job.execution.status in {JobStatus.FAILED, JobStatus.CANCELLED}:
             raise AssertionError(
-                f"Job ended status={job.execution.status} before "
-                f"materialization info was available: "
-                f"results={job.execution.results}")
+                f'Job ended status={job.execution.status} before '
+                f'materialization info was available: '
+                f'results={job.execution.results}'
+            )
         time.sleep(POLL_INTERVAL_SECONDS)
     raise TimeoutError(
-        f"Materialization info for {training_job_id} was not available "
-        f"within {MAX_POLL_SECONDS}s")
+        f'Materialization info for {training_job_id} was not available '
+        f'within {MAX_POLL_SECONDS}s'
+    )
 
 
 def _get_table_snapshot_ids(
@@ -332,15 +394,16 @@ def _get_table_snapshot_ids(
 
     if workflow.legacy_graph_id and graph_data_version:
         from rest.config.graph_v2 import GraphResourceResponse
+
         graph_v2_resp = get_and_expect_success(
             client,
-            f"/v1/graphs/{workflow.legacy_graph_id}",
+            f'/v1/graphs/{workflow.legacy_graph_id}',
             {},
             GraphResourceResponse,
         )
-        graph_v2_id = getattr(graph_v2_resp, "id", None)
+        graph_v2_id = getattr(graph_v2_resp, 'id', None)
         if graph_v2_id:
-            derived = f"{graph_v2_id}@{graph_data_version}"
+            derived = f'{graph_v2_id}@{graph_data_version}'
             if derived not in candidate_ids:
                 candidate_ids.append(derived)
 
@@ -362,12 +425,9 @@ def _get_table_snapshot_ids(
 
 def _check_metrics(results: TrainingJobResults) -> None:
     """Validate training metrics exist and are reasonable."""
-    assert results.test_metrics and len(
-        results.test_metrics) > 0, ("No test metrics")
-    assert results.val_metrics and len(
-        results.val_metrics) > 0, ("No val metrics")
-    assert results.train_metrics and len(
-        results.train_metrics) > 0, ("No train metrics")
+    assert results.test_metrics and len(results.test_metrics) > 0, 'No test metrics'
+    assert results.val_metrics and len(results.val_metrics) > 0, 'No val metrics'
+    assert results.train_metrics and len(results.train_metrics) > 0, 'No train metrics'
 
     # Check split sizes
     assert results.split_sizes is not None
@@ -388,7 +448,9 @@ def _get_job_home_dir(training_job_id: TrainingJobID) -> str:
     return osp.join(s3_root, 'jobs', str(training_job_id))
 
 
-def _assert_manifest_bundle_complete(manifest_path: str, ) -> tuple[dict, str]:
+def _assert_manifest_bundle_complete(
+    manifest_path: str,
+) -> tuple[dict, str]:
     """Verify the TT-NG durable train-table bundle is complete.
 
     The TT-NG DiskGraph producer publishes an immutable, self-contained bundle
@@ -432,26 +494,31 @@ def _check_diskgraph_train_table(training_job_id: TrainingJobID) -> None:
     train_table_root = osp.join(home_dir, 'train_table')
     pquery_dirs = list(fsutil.listdir(train_table_root))
     assert len(pquery_dirs) == 1, (
-        f"expected exactly one pquery subdir under {train_table_root}, "
-        f"got {len(pquery_dirs)}: {pquery_dirs}")
+        f'expected exactly one pquery subdir under {train_table_root}, '
+        f'got {len(pquery_dirs)}: {pquery_dirs}'
+    )
     staging_root = osp.join(pquery_dirs[0], 'train_table.ttng_staging')
     assert not fsutil.exists(osp.join(staging_root, '_current.json'))
     bundle_dirs = list(fsutil.listdir(osp.join(staging_root, '_bundles')))
     assert len(bundle_dirs) == 1, (
-        f'expected one immutable TT-NG bundle under {staging_root}, '
-        f'got {bundle_dirs}')
+        f'expected one immutable TT-NG bundle under {staging_root}, got {bundle_dirs}'
+    )
     manifest_path = osp.join(bundle_dirs[0], 'manifest.json')
     manifest, _bundle_dir = _assert_manifest_bundle_complete(manifest_path)
 
     # TT-NG owns edge sampling via the DiskGraph runtime sampler; there is no
     # materialized ``train_table_edges`` / ``reverse_edges`` bundle to assert.
     assert 'train_table_edges' not in manifest, (
-        f"unexpected train_table_edges in TT-NG manifest: {manifest_path}")
+        f'unexpected train_table_edges in TT-NG manifest: {manifest_path}'
+    )
 
     train_table = manifest['train_table']
     parts = train_table.get('parts')
-    parquet_paths = ([part['path'] for part in parts] if isinstance(
-        parts, list) else [train_table['path']])
+    parquet_paths = (
+        [part['path'] for part in parts]
+        if isinstance(parts, list)
+        else [train_table['path']]
+    )
     assert parquet_paths, 'train-table manifest has no parquet parts'
 
     total_rows = 0
@@ -468,8 +535,9 @@ def _check_diskgraph_train_table(training_job_id: TrainingJobID) -> None:
     # synthesized by the split-mask consumers -- see kumo/task/split.py).
     assert schema_names is not None
     assert 'ENTITY1' in schema_names, (
-        f"train table missing 'ENTITY1' column: {schema_names}")
-    assert total_rows > 0, "train table has 0 rows"
+        f"train table missing 'ENTITY1' column: {schema_names}"
+    )
+    assert total_rows > 0, 'train table has 0 rows'
 
 
 def _check_no_legacy_edge_persist(training_job_id: TrainingJobID) -> None:
@@ -485,17 +553,21 @@ def _check_no_legacy_edge_persist(training_job_id: TrainingJobID) -> None:
     edge_root = osp.join(_get_job_home_dir(training_job_id), 'persist', 'edges')
     if not fsutil.exists(edge_root):
         log.info(
-            "No legacy persist/edges dir (TT-NG serves edges from the DG "
-            "index): %s", edge_root)
+            'No legacy persist/edges dir (TT-NG serves edges from the DG index): %s',
+            edge_root,
+        )
         return
     entries = list(fsutil.listdir(edge_root))
     stray = [d for d in entries if fsutil.exists(osp.join(d, 'edge.parquet'))]
     assert not stray, (
-        f"TT-NG must not materialize per-job graph-edge artifacts, but found "
-        f"<EdgeKey>/edge.parquet under {edge_root}: {stray}")
+        f'TT-NG must not materialize per-job graph-edge artifacts, but found '
+        f'<EdgeKey>/edge.parquet under {edge_root}: {stray}'
+    )
     log.info(
-        "No legacy <EdgeKey>/edge.parquet materialized under %s "
-        "(TT-NG serves edges from the DG index)", edge_root)
+        'No legacy <EdgeKey>/edge.parquet materialized under %s '
+        '(TT-NG serves edges from the DG index)',
+        edge_root,
+    )
 
 
 def _check_job_config_diskgraph(training_job_id: TrainingJobID) -> None:
@@ -512,14 +584,16 @@ def _check_job_config_diskgraph(training_job_id: TrainingJobID) -> None:
     home_dir = _get_job_home_dir(training_job_id)
     config_path = osp.join(home_dir, 'jobs', f'{training_job_id}.json')
 
-    assert fsutil.exists(config_path), (f"JobConfig not found at {config_path}")
+    assert fsutil.exists(config_path), f'JobConfig not found at {config_path}'
 
     job_config = load_json(config_path, JobConfig)
 
     assert job_config.diskgraph_index_path, (
-        "JobConfig.diskgraph_index_path is empty/None")
-    log.info("JobConfig verified: diskgraph_index_path=%s",
-             job_config.diskgraph_index_path)
+        'JobConfig.diskgraph_index_path is empty/None'
+    )
+    log.info(
+        'JobConfig verified: diskgraph_index_path=%s', job_config.diskgraph_index_path
+    )
 
 
 def _check_column_stats(
@@ -531,7 +605,8 @@ def _check_column_stats(
     actual_tables = set(table_snapshot_ids.keys())
     expected_tables = set(EXPECTED_COL_STATS.keys())
     assert actual_tables == expected_tables, (
-        f"Table mismatch: got {actual_tables}, expected {expected_tables}")
+        f'Table mismatch: got {actual_tables}, expected {expected_tables}'
+    )
 
     for table_name, table_snapshot_id in table_snapshot_ids.items():
         col_stats = get_and_expect_success(
@@ -540,70 +615,85 @@ def _check_column_stats(
             {},
             ColStatsResponse,
         )
-        assert col_stats is not None, (f"No col_stats for table {table_name}")
+        assert col_stats is not None, f'No col_stats for table {table_name}'
         assert col_stats.statistics_available, (
-            f"Col stats not available for table {table_name}")
+            f'Col stats not available for table {table_name}'
+        )
 
         expected_cols = EXPECTED_COL_STATS[table_name]
 
         # Assert exact column names
         actual_col_names = {col.name for col in col_stats.columns}
-        assert actual_col_names == set(
-            expected_cols.keys()), (f"Column mismatch for {table_name}: "
-                                    f"got {sorted(actual_col_names)}, "
-                                    f"expected {sorted(expected_cols.keys())}")
+        assert actual_col_names == set(expected_cols.keys()), (
+            f'Column mismatch for {table_name}: '
+            f'got {sorted(actual_col_names)}, '
+            f'expected {sorted(expected_cols.keys())}'
+        )
 
         for col in col_stats.columns:
             spec = expected_cols[col.name]
-            (exp_stype, exp_total, exp_missing, exp_unique, exp_invalid,
-             exp_summary) = spec
-            prefix = f"{table_name}.{col.name}"
+            (
+                exp_stype,
+                exp_total,
+                exp_missing,
+                exp_unique,
+                exp_invalid,
+                exp_summary,
+            ) = spec
+            prefix = f'{table_name}.{col.name}'
 
             assert col.stype == exp_stype, (
-                f"{prefix}: stype {col.stype!r} != {exp_stype!r}")
+                f'{prefix}: stype {col.stype!r} != {exp_stype!r}'
+            )
 
-            assert col.statistics is not None, (f"{prefix}: statistics is None")
+            assert col.statistics is not None, f'{prefix}: statistics is None'
             counts = col.statistics.counts
 
             assert counts.total == exp_total, (
-                f"{prefix}: total {counts.total} != {exp_total}")
+                f'{prefix}: total {counts.total} != {exp_total}'
+            )
             assert _approx_eq(counts.missing_percentage, exp_missing), (
-                f"{prefix}: missing_pct {counts.missing_percentage} "
-                f"!= {exp_missing}")
+                f'{prefix}: missing_pct {counts.missing_percentage} != {exp_missing}'
+            )
             # num_unique is HLL-backed (P=14) for timestamp / categorical /
             # ID stypes — apply ±5% tolerance. Numerical / sequence stypes
             # use exact COUNT and must match exactly.
             if exp_stype in ('timestamp', 'categorical', 'ID'):
                 tol = max(1, int(round(exp_unique * 0.05)))
                 assert abs(counts.num_unique - exp_unique) <= tol, (
-                    f"{prefix}: num_unique {counts.num_unique} not within "
-                    f"±5% ({tol}) of {exp_unique}")
+                    f'{prefix}: num_unique {counts.num_unique} not within '
+                    f'±5% ({tol}) of {exp_unique}'
+                )
             else:
                 assert counts.num_unique == exp_unique, (
-                    f"{prefix}: num_unique {counts.num_unique} != "
-                    f"{exp_unique} (exact match required for {exp_stype})")
+                    f'{prefix}: num_unique {counts.num_unique} != '
+                    f'{exp_unique} (exact match required for {exp_stype})'
+                )
             assert _approx_eq(counts.invalid_percentage, exp_invalid), (
-                f"{prefix}: invalid_pct {counts.invalid_percentage} "
-                f"!= {exp_invalid}")
+                f'{prefix}: invalid_pct {counts.invalid_percentage} != {exp_invalid}'
+            )
 
             if exp_summary is not None:
                 actual_summary = col.statistics.summary_stats
                 assert len(actual_summary) == len(exp_summary), (
-                    f"{prefix}: summary_stats length {len(actual_summary)} "
-                    f"!= {len(exp_summary)}")
-                for (act_label,
-                     act_val), (exp_label,
-                                exp_val) in zip(actual_summary, exp_summary):
+                    f'{prefix}: summary_stats length {len(actual_summary)} '
+                    f'!= {len(exp_summary)}'
+                )
+                for (act_label, act_val), (exp_label, exp_val) in zip(
+                    actual_summary, exp_summary
+                ):
                     assert act_label == exp_label, (
-                        f"{prefix}: summary label {act_label!r} "
-                        f"!= {exp_label!r}")
-                    assert _approx_summary_eq(
-                        act_label, act_val,
-                        exp_val), (f"{prefix}: summary {act_label}={act_val!r} "
-                                   f"!= {exp_val!r}")
+                        f'{prefix}: summary label {act_label!r} != {exp_label!r}'
+                    )
+                    assert _approx_summary_eq(act_label, act_val, exp_val), (
+                        f'{prefix}: summary {act_label}={act_val!r} != {exp_val!r}'
+                    )
 
-        log.info("Col stats validated for %s: %d columns OK", table_name,
-                 len(col_stats.columns))
+        log.info(
+            'Col stats validated for %s: %d columns OK',
+            table_name,
+            len(col_stats.columns),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -631,14 +721,32 @@ _EdgeSpec = Tuple[str, str, str, str, int, float, float, float, float]
 EXPECTED_EDGE_STATS: List[_EdgeSpec] = [
     # LOAN → ACCOUNT: 682 edges, 682 unique LOANs, 682 unique ACCOUNTs
     # All 682 LOAN.ACCOUNT_ID values resolve to distinct ACCOUNTs.
-    ('ACCOUNT', 'LOAN', 'ACCOUNT_ID', 'ACCOUNT_ID', 682, 682, 682,
-     682 / 4500 * 100, 682 / 682 * 100),
+    (
+        'ACCOUNT',
+        'LOAN',
+        'ACCOUNT_ID',
+        'ACCOUNT_ID',
+        682,
+        682,
+        682,
+        682 / 4500 * 100,
+        682 / 682 * 100,
+    ),
     # TRANS → ACCOUNT: 5000 edges, 5000 unique TRANS, 554 unique ACCOUNTs
     # TRANS.ACCOUNT_ID has 556 unique values in the raw data, but 2 target
     # ACCOUNT rows are dropped by PK dedup during diskgraph ingest, leaving
     # 554 unique destination nodes.
-    ('ACCOUNT', 'TRANS', 'ACCOUNT_ID', 'ACCOUNT_ID', 5000, 554, 5000,
-     554 / 4500 * 100, 5000 / 5000 * 100),
+    (
+        'ACCOUNT',
+        'TRANS',
+        'ACCOUNT_ID',
+        'ACCOUNT_ID',
+        5000,
+        554,
+        5000,
+        554 / 4500 * 100,
+        5000 / 5000 * 100,
+    ),
 ]
 
 
@@ -654,11 +762,11 @@ def _check_edge_stats(
         EdgeHealthStats,
     )
 
-    assert edge_health.is_ready, "Edge stats not ready"
-    assert edge_health.link_stats is not None, "link_stats is None"
+    assert edge_health.is_ready, 'Edge stats not ready'
+    assert edge_health.link_stats is not None, 'link_stats is None'
     assert len(edge_health.link_stats) == len(EXPECTED_EDGE_STATS), (
-        f"Expected {len(EXPECTED_EDGE_STATS)} edges, "
-        f"got {len(edge_health.link_stats)}")
+        f'Expected {len(EXPECTED_EDGE_STATS)} edges, got {len(edge_health.link_stats)}'
+    )
 
     # Index actual edges by (col_a_table, col_b_table) for lookup.
     actual_by_key = {}
@@ -667,40 +775,50 @@ def _check_edge_stats(
         actual_by_key[key] = edge
 
     for spec in EXPECTED_EDGE_STATS:
-        (exp_a_table, exp_b_table, exp_a_col, exp_b_col, exp_edge_count,
-         exp_match_a, exp_match_b, exp_pct_a, exp_pct_b) = spec
+        (
+            exp_a_table,
+            exp_b_table,
+            exp_a_col,
+            exp_b_col,
+            exp_edge_count,
+            exp_match_a,
+            exp_match_b,
+            exp_pct_a,
+            exp_pct_b,
+        ) = spec
         key = (exp_a_table, exp_b_table)
-        prefix = f"{exp_a_table}↔{exp_b_table}"
+        prefix = f'{exp_a_table}↔{exp_b_table}'
 
-        assert key in actual_by_key, (f"Missing {prefix} edge. "
-                                      f"Got: {list(actual_by_key.keys())}")
+        assert key in actual_by_key, (
+            f'Missing {prefix} edge. Got: {list(actual_by_key.keys())}'
+        )
         edge = actual_by_key[key]
 
         assert edge.col_a.column_name == exp_a_col, (
-            f"{prefix}: col_a.column_name={edge.col_a.column_name!r}, "
-            f"expected {exp_a_col!r}")
+            f'{prefix}: col_a.column_name={edge.col_a.column_name!r}, '
+            f'expected {exp_a_col!r}'
+        )
         assert edge.col_b.column_name == exp_b_col, (
-            f"{prefix}: col_b.column_name={edge.col_b.column_name!r}, "
-            f"expected {exp_b_col!r}")
+            f'{prefix}: col_b.column_name={edge.col_b.column_name!r}, '
+            f'expected {exp_b_col!r}'
+        )
         assert edge.edge_count == exp_edge_count, (
-            f"{prefix}: edge_count={edge.edge_count}, "
-            f"expected {exp_edge_count}")
+            f'{prefix}: edge_count={edge.edge_count}, expected {exp_edge_count}'
+        )
         assert edge.matches.a_in_b == exp_match_a, (
-            f"{prefix}: matches.a_in_b={edge.matches.a_in_b}, "
-            f"expected {exp_match_a}")
+            f'{prefix}: matches.a_in_b={edge.matches.a_in_b}, expected {exp_match_a}'
+        )
         assert edge.matches.b_in_a == exp_match_b, (
-            f"{prefix}: matches.b_in_a={edge.matches.b_in_a}, "
-            f"expected {exp_match_b}")
-        assert _approx_eq(
-            edge.percents.a_in_b,
-            exp_pct_a), (f"{prefix}: percents.a_in_b={edge.percents.a_in_b}, "
-                         f"expected {exp_pct_a}")
-        assert _approx_eq(
-            edge.percents.b_in_a,
-            exp_pct_b), (f"{prefix}: percents.b_in_a={edge.percents.b_in_a}, "
-                         f"expected {exp_pct_b}")
+            f'{prefix}: matches.b_in_a={edge.matches.b_in_a}, expected {exp_match_b}'
+        )
+        assert _approx_eq(edge.percents.a_in_b, exp_pct_a), (
+            f'{prefix}: percents.a_in_b={edge.percents.a_in_b}, expected {exp_pct_a}'
+        )
+        assert _approx_eq(edge.percents.b_in_a, exp_pct_b), (
+            f'{prefix}: percents.b_in_a={edge.percents.b_in_a}, expected {exp_pct_b}'
+        )
 
-    log.info("Edge stats validated: %d edges OK", len(edge_health.link_stats))
+    log.info('Edge stats validated: %d edges OK', len(edge_health.link_stats))
 
 
 # ---------------------------------------------------------------------------
@@ -712,6 +830,7 @@ def _check_edge_stats(
 def test_cleanup_options():
     """Preserve state across the test — don't reset DB between operations."""
     from rest.testing.config import TestFunctionCleanupOptions
+
     return TestFunctionCleanupOptions(
         should_reset_rest_db=False,
         should_reset_ml_db=False,
@@ -742,7 +861,8 @@ async def _kick_off_batch_prediction(
         TrainingWorkflowResponse,
     )
     assert workflow.legacy_graph_id, (
-        f"Training job {training_job_id} has no graph id for BP")
+        f'Training job {training_job_id} has no graph id for BP'
+    )
     graph_fpid = GraphIDv2.from_public(workflow.legacy_graph_id).fpid
     assert graph_fpid is not None
     assert workflow.legacy_graph_id == GraphIDv2.public(graph_fpid)
@@ -750,20 +870,21 @@ async def _kick_off_batch_prediction(
     request = BatchPredictionInternalRequest(
         model_training_job_id=str(training_job_id),
         predict_options=BatchPredictionOptions(
-            num_parallel_workers=num_parallel_workers),
+            num_parallel_workers=num_parallel_workers
+        ),
         project_id=DEFAULT_PROJECT_ID,
         # This suite validates Kumo-managed prediction output, statistics, and
         # sharding. Provider export is covered by the identity-backed storage
         # E2Es and must not reuse an internal input fixture connector.
         outputs=[
-            LocalPredictionOutput(
-                artifact_type=PredictionArtifactType.PREDICTIONS)
+            LocalPredictionOutput(artifact_type=PredictionArtifactType.PREDICTIONS)
         ],
         graph_id=graph_fpid,
         explanations=False,
     )
-    res = post_and_expect_success(client, '/v1/batch_prediction_jobs/', request,
-                                  IDResponse)
+    res = post_and_expect_success(
+        client, '/v1/batch_prediction_jobs/', request, IDResponse
+    )
     return BatchPredictionJobID(res.id)
 
 
@@ -774,16 +895,20 @@ def _wait_for_bp(
     """Poll BP job until terminal status."""
     start = time.time()
     while time.time() - start < MAX_POLL_SECONDS:
-        resp = get_and_expect_success(client,
-                                      f'/v1/batch_prediction_jobs/{bp_job_id}',
-                                      {}, BatchPredictionJobResponse)
+        resp = get_and_expect_success(
+            client,
+            f'/v1/batch_prediction_jobs/{bp_job_id}',
+            {},
+            BatchPredictionJobResponse,
+        )
         if resp.execution.status in {
-                JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED
+            JobStatus.DONE,
+            JobStatus.FAILED,
+            JobStatus.CANCELLED,
         }:
             return resp
         time.sleep(POLL_INTERVAL_SECONDS)
-    raise TimeoutError(
-        f"BP job {bp_job_id} timed out after {MAX_POLL_SECONDS}s")
+    raise TimeoutError(f'BP job {bp_job_id} timed out after {MAX_POLL_SECONDS}s')
 
 
 def _wait_for_bp_stats(
@@ -802,25 +927,24 @@ def _wait_for_bp_stats(
         if stats.raw_predictions.statistics_available:
             return stats
         time.sleep(POLL_INTERVAL_SECONDS)
-    raise TimeoutError(
-        f"BP stats for {bp_job_id} timed out after {MAX_POLL_SECONDS}s")
+    raise TimeoutError(f'BP stats for {bp_job_id} timed out after {MAX_POLL_SECONDS}s')
 
 
 def _check_prediction_config_diskgraph(
-    bp_job_id: BatchPredictionJobID, ) -> None:
+    bp_job_id: BatchPredictionJobID,
+) -> None:
     """Assert PredictionConfig has diskgraph backend settings."""
     from io_utils import fsutil
 
     home_dir = _get_job_home_dir(str(bp_job_id))
     config_path = osp.join(home_dir, 'jobs', f'{bp_job_id}.json')
-    assert fsutil.exists(config_path), (
-        f"PredictionConfig not found at {config_path}")
+    assert fsutil.exists(config_path), f'PredictionConfig not found at {config_path}'
 
     pred_config = load_json(config_path, PredictionConfig)
     assert pred_config.diskgraph_index_path, (
-        "PredictionConfig.diskgraph_index_path is empty/None")
-    log.info("PredictionConfig verified: index=%s",
-             pred_config.diskgraph_index_path)
+        'PredictionConfig.diskgraph_index_path is empty/None'
+    )
+    log.info('PredictionConfig verified: index=%s', pred_config.diskgraph_index_path)
 
 
 # ---------------------------------------------------------------------------
@@ -838,41 +962,44 @@ async def test_diskgraph_e2e_training(
 
     # Load and randomize fixture
     fixture = load_json(str(FIXTURE_PATH), FixtureDefinition)
-    fixture.queries = [
-        q for q in fixture.queries if q.pquery_name == PQL_TEST_CASE
-    ]
+    fixture.queries = [q for q in fixture.queries if q.pquery_name == PQL_TEST_CASE]
     assert len(fixture.queries) == 1, (
-        f"Expected exactly one query matching {PQL_TEST_CASE}")
+        f'Expected exactly one query matching {PQL_TEST_CASE}'
+    )
     fixture = randomize_fixture_ids_v2(fixture)
     randomized_name = fixture.queries[0].pquery_name
 
     # Setup and kick off training
-    pquery_id, training_job_id = await _setup_and_train(client, fixture,
-                                                        randomized_name)
-    log.info("Training started: pquery_id=%s, training_job_id=%s", pquery_id,
-             training_job_id)
+    pquery_id, training_job_id = await _setup_and_train(
+        client, fixture, randomized_name
+    )
+    log.info(
+        'Training started: pquery_id=%s, training_job_id=%s', pquery_id, training_job_id
+    )
 
     # Wait for completion
     job = _wait_for_training(client, training_job_id)
     assert job.execution.status == JobStatus.DONE, (
-        f"Training failed with status={job.execution.status}, "
-        f"results={job.execution.results}")
+        f'Training failed with status={job.execution.status}, '
+        f'results={job.execution.results}'
+    )
     await wait_for_training_workflow_to_finish(training_job_id, temporal_client)
 
     # -----------------------------------------------------------------------
     # 1. Validate model metrics
     # -----------------------------------------------------------------------
     results = job.execution.results
-    assert results is not None, "Training job completed but has no results"
+    assert results is not None, 'Training job completed but has no results'
     _check_metrics(results)
 
     # Check that RMSE is within expected bounds (regression task)
     assert results.test_metrics is not None
     for metric in results.test_metrics:
         if 'rmse' in metric.name.lower():
-            log.info("Test RMSE: %s = %s", metric.name, metric.val)
+            log.info('Test RMSE: %s = %s', metric.name, metric.val)
             assert metric.val is not None and metric.val < EXPECTED_TEST_RMSE_MAX, (
-                f"Test RMSE {metric.val} exceeds max {EXPECTED_TEST_RMSE_MAX}")
+                f'Test RMSE {metric.val} exceeds max {EXPECTED_TEST_RMSE_MAX}'
+            )
 
     # -----------------------------------------------------------------------
     # 2. Validate the diskgraph TT bundle landed on the dataplane in full —
@@ -901,7 +1028,7 @@ async def test_diskgraph_e2e_training(
     # 4. Validate exact column stats
     # -----------------------------------------------------------------------
     table_snapshot_ids = _get_table_snapshot_ids(client, training_job_id)
-    assert len(table_snapshot_ids) > 0, "No table snapshot IDs found"
+    assert len(table_snapshot_ids) > 0, 'No table snapshot IDs found'
     _check_column_stats(client, table_snapshot_ids)
 
     # -----------------------------------------------------------------------
@@ -914,10 +1041,10 @@ async def test_diskgraph_e2e_training(
         TrainingWorkflowResponse,
     )
     graph_snapshot_id = workflow_resp.graph_snapshot_id
-    assert graph_snapshot_id, "No graph_snapshot_id in workflow response"
+    assert graph_snapshot_id, 'No graph_snapshot_id in workflow response'
     _check_edge_stats(client, graph_snapshot_id)
 
-    log.info("Diskgraph E2E training test passed.")
+    log.info('Diskgraph E2E training test passed.')
 
     # ===================================================================
     # Phase 2: Batch Prediction
@@ -925,27 +1052,28 @@ async def test_diskgraph_e2e_training(
 
     # 7. Run batch prediction against the trained model
     bp_job_id = await _kick_off_batch_prediction(client, training_job_id)
-    log.info("Batch prediction started: bp_job_id=%s", bp_job_id)
+    log.info('Batch prediction started: bp_job_id=%s', bp_job_id)
 
     bp_response = _wait_for_bp(client, bp_job_id)
     assert bp_response.execution.status == JobStatus.DONE, (
-        f"BP failed: status={bp_response.execution.status}, "
-        f"execution={bp_response.execution}")
+        f'BP failed: status={bp_response.execution.status}, '
+        f'execution={bp_response.execution}'
+    )
     assert bp_response.config.outputs == [
-        LocalPredictionOutput(
-            artifact_type=PredictionArtifactType.PREDICTIONS)
+        LocalPredictionOutput(artifact_type=PredictionArtifactType.PREDICTIONS)
     ]
-    log.info("Batch prediction completed successfully.")
+    log.info('Batch prediction completed successfully.')
 
     # 8. Validate BP results exist
     bp_results = bp_response.execution.results
-    assert bp_results is not None, "BP job completed but has no results"
+    assert bp_results is not None, 'BP job completed but has no results'
     assert bp_results.output_artifact_stats is not None
     assert len(bp_results.output_artifact_stats) > 0
     output_stats = bp_results.output_artifact_stats[0]
-    assert output_stats.num_rows > 0, "Prediction output has 0 rows"
-    log.info("BP output: %d rows, %d cols", output_stats.num_rows,
-             output_stats.num_cols)
+    assert output_stats.num_rows > 0, 'Prediction output has 0 rows'
+    log.info(
+        'BP output: %d rows, %d cols', output_stats.num_rows, output_stats.num_cols
+    )
 
     # 9. Validate PredictionConfig has diskgraph backend
     _check_prediction_config_diskgraph(bp_job_id)
@@ -962,10 +1090,10 @@ async def test_diskgraph_e2e_training(
     # output instead of racing the child workflow.
     bp_stats = _wait_for_bp_stats(client, bp_job_id)
     assert bp_stats.raw_predictions.statistics_available, (
-        "BP col-stats not available on DG — DataBackendActivities."
-        "start_bp_stats_activity did not populate the table cache.")
-    assert bp_stats.raw_predictions.columns, (
-        "BP col-stats response has no columns")
+        'BP col-stats not available on DG — DataBackendActivities.'
+        'start_bp_stats_activity did not populate the table cache.'
+    )
+    assert bp_stats.raw_predictions.columns, 'BP col-stats response has no columns'
     # SUMMARY_STATS_BY_CLASS (col.statistics.bp_stats) is computed by the DG
     # path only for multiclass/multilabel/ranking/link-pred (SCORE grouped by
     # CLASS). This is a regression task, whose BP output is the entity (ID)
@@ -976,17 +1104,20 @@ async def test_diskgraph_e2e_training(
     # summary_stats — IDs emit counts, not Mean/Min/Max.)
     cols_by_name = {c.name: c for c in bp_stats.raw_predictions.columns}
     target = cols_by_name.get('TARGET_PRED')
-    assert target is not None, ("TARGET_PRED column missing from BP col-stats: "
-                                f"{sorted(cols_by_name)}")
+    assert target is not None, (
+        f'TARGET_PRED column missing from BP col-stats: {sorted(cols_by_name)}'
+    )
     assert target.statistics is not None and target.statistics.summary_stats, (
-        "TARGET_PRED carries no summary stats — DG "
-        "compute_col_stats_for_parquet did not produce numerical stats for "
-        "the prediction column.")
+        'TARGET_PRED carries no summary stats — DG '
+        'compute_col_stats_for_parquet did not produce numerical stats for '
+        'the prediction column.'
+    )
     target_keys = {k for k, _ in target.statistics.summary_stats}
     assert {'Mean', 'Min', 'Max'} <= target_keys, (
-        f"TARGET_PRED summary stats missing Mean/Min/Max; got {target_keys}")
+        f'TARGET_PRED summary stats missing Mean/Min/Max; got {target_keys}'
+    )
 
-    log.info("Diskgraph E2E training + batch prediction test passed.")
+    log.info('Diskgraph E2E training + batch prediction test passed.')
 
     # =================================================================
     # Phase 3: Sharded Batch Prediction (num_parallel_workers=2)
@@ -994,14 +1125,15 @@ async def test_diskgraph_e2e_training(
     # Exercises per-shard config split, kumo-pred's
     # start/stop_partition_id handling, and postprocess merge.
     sharded_bp_job_id = await _kick_off_batch_prediction(
-        client, training_job_id, num_parallel_workers=2)
+        client, training_job_id, num_parallel_workers=2
+    )
     sharded_bp_response = _wait_for_bp(client, sharded_bp_job_id)
     assert sharded_bp_response.execution.status == JobStatus.DONE, (
-        f"Sharded BP failed: status={sharded_bp_response.execution.status}, "
-        f"execution={sharded_bp_response.execution}")
+        f'Sharded BP failed: status={sharded_bp_response.execution.status}, '
+        f'execution={sharded_bp_response.execution}'
+    )
     assert sharded_bp_response.config.outputs == [
-        LocalPredictionOutput(
-            artifact_type=PredictionArtifactType.PREDICTIONS)
+        LocalPredictionOutput(artifact_type=PredictionArtifactType.PREDICTIONS)
     ]
 
     # Merged sharded output must match the unsharded baseline row count.
@@ -1010,31 +1142,29 @@ async def test_diskgraph_e2e_training(
     assert sharded_results.output_artifact_stats
     sharded_stats = sharded_results.output_artifact_stats[0]
     assert sharded_stats.num_rows == output_stats.num_rows, (
-        f'sharded={sharded_stats.num_rows} != unsharded='
-        f'{output_stats.num_rows}')
+        f'sharded={sharded_stats.num_rows} != unsharded={output_stats.num_rows}'
+    )
 
 
 # Exercises the materialization path: read materialization info once the
 # materialize stage persists it, without waiting for the full GNN train.
 @pytest.mark.asyncio
 @pytest.mark.timeout(1800)
-@pytest.mark.parametrize("storage_backend", ["local"], indirect=True)
+@pytest.mark.parametrize('storage_backend', ['local'], indirect=True)
 async def test_make_materialization_info(
     client: TestClient,
     temporal_client,
 ):
     """Materialization info is fully populated after the materialize stage."""
     fixture = load_json(str(FIXTURE_PATH), FixtureDefinition)
-    fixture.queries = [
-        q for q in fixture.queries if q.pquery_name == PQL_TEST_CASE
-    ]
+    fixture.queries = [q for q in fixture.queries if q.pquery_name == PQL_TEST_CASE]
     assert len(fixture.queries) == 1, (
-        f"Expected exactly one query matching {PQL_TEST_CASE}")
+        f'Expected exactly one query matching {PQL_TEST_CASE}'
+    )
     fixture = randomize_fixture_ids_v2(fixture)
     randomized_name = fixture.queries[0].pquery_name
 
-    _, training_job_id = await _setup_and_train(client, fixture,
-                                                randomized_name)
+    _, training_job_id = await _setup_and_train(client, fixture, randomized_name)
     # Read materialization info as soon as the materialize stage persists it,
     # rather than waiting for the full GNN train to reach DONE.
     info = _wait_for_materialization_info(client, training_job_id)

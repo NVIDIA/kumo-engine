@@ -11,9 +11,9 @@ class _CheckpointMetadata:
 
 
 def test_kumo_checkpoint_io_loads_trusted_metadata(tmp_path):
-    checkpoint_path = tmp_path / "checkpoint.pt"
-    torch.save({"value": _CheckpointMetadata()}, checkpoint_path)
+    checkpoint_path = tmp_path / 'checkpoint.pt'
+    torch.save({'value': _CheckpointMetadata()}, checkpoint_path)
 
     checkpoint = KumoCheckpointIO().load_checkpoint(checkpoint_path)
 
-    assert isinstance(checkpoint["value"], _CheckpointMetadata)
+    assert isinstance(checkpoint['value'], _CheckpointMetadata)

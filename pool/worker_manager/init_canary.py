@@ -94,6 +94,7 @@ The Helm chart's readiness probe watches the sentinel created by
 complete. This gates startup readiness; it is not a steady-state Temporal
 worker health check.
 """
+
 import asyncio
 import hashlib
 import json
@@ -163,8 +164,9 @@ CANARY_GRACE_SECS = int(os.environ.get('POOL_CANARY_GRACE_SECS', '600'))
 # (infra may have drifted) and the canary re-runs. 24h balances catching
 # drift against the per-provision node cost. Override via
 # POOL_CANARY_RESULT_TTL_HOURS.
-CANARY_RESULT_TTL_SECS = int(
-    os.environ.get('POOL_CANARY_RESULT_TTL_HOURS', '24')) * 3600
+CANARY_RESULT_TTL_SECS = (
+    int(os.environ.get('POOL_CANARY_RESULT_TTL_HOURS', '24')) * 3600
+)
 
 # Poll cadence while waiting for a canary to schedule / its PVC to bind.
 _CANARY_POLL_INTERVAL_SECS = 5.0
@@ -184,8 +186,8 @@ _RECONCILE_WAIT_SECS = 30.0
 # (for example, to bring up the controller before its NodePools exist). Single
 # source of truth for the chart contract.
 CANARY_ENABLED = os.environ.get(
-    'POOL_INIT_CANARY_ENABLED', 'true').strip().lower() not in (
-        '0', 'false', 'no', 'off')
+    'POOL_INIT_CANARY_ENABLED', 'true'
+).strip().lower() not in ('0', 'false', 'no', 'off')
 
 # Independent gate for the EPHEMERAL canary - DEFAULT ENABLED (opt-OUT).
 #
@@ -212,8 +214,8 @@ CANARY_ENABLED = os.environ.get(
 # every run actually uses - stays governed by CANARY_ENABLED above and is
 # unaffected.
 EPH_CANARY_ENABLED = os.environ.get(
-    'POOL_INIT_EPHEMERAL_CANARY_ENABLED', 'true').strip().lower() not in (
-        '0', 'false', 'no', 'off')
+    'POOL_INIT_EPHEMERAL_CANARY_ENABLED', 'true'
+).strip().lower() not in ('0', 'false', 'no', 'off')
 
 # Canary identity label — narrows list/delete to canary resources only so
 # reconcile-on-start can't touch daemon / activity pods.
@@ -228,7 +230,8 @@ _CANARY_SPEC_HASH_ANNOTATION = 'kumo.ai/pool-canary-spec-hash'
 # Value is ``<config-hash>@<epoch-seconds>``.
 RESULT_ANNOTATION_KEY = 'kumo.ai/diskgraph-pools-validated'
 CONTROLLER_DEPLOYMENT_NAME = os.environ.get(
-    'POOL_CONTROLLER_DEPLOYMENT_NAME', 'kumo-poolcontroller')
+    'POOL_CONTROLLER_DEPLOYMENT_NAME', 'kumo-poolcontroller'
+)
 
 # Canary container resources: cache canaries request the configured tier GPU
 # count; eph canaries request one GPU. Tiny CPU / memory keeps the canary easy
@@ -258,6 +261,7 @@ class InitCanaryValidationError(PoolWorkerManagerError):
 @dataclass(frozen=True)
 class InitCanaryResult:
     """Pool capabilities proven usable for this controller process."""
+
     available_cache_tiers: frozenset[tuple[int, int]]
     ephemeral_available: bool
 
@@ -364,14 +368,15 @@ def _build_canary_pod(
     volume_mounts: List[V1VolumeMount] = []
     volumes: List[V1Volume] = []
     if pvc_name is not None:
-        volume_mounts.append(
-            V1VolumeMount(mount_path=NVME_MOUNT_PATH, name='ssd'))
+        volume_mounts.append(V1VolumeMount(mount_path=NVME_MOUNT_PATH, name='ssd'))
         volumes.append(
             V1Volume(
                 name='ssd',
                 persistent_volume_claim=V1PersistentVolumeClaimVolumeSource(
-                    claim_name=pvc_name),
-            ))
+                    claim_name=pvc_name
+                ),
+            )
+        )
     pod = V1Pod(
         metadata=V1ObjectMeta(name=name, namespace=namespace, labels=labels),
         spec=V1PodSpec(
@@ -409,12 +414,13 @@ def _build_canary_pod(
     # tolerance ordering/duplicates and admission additions are immaterial.
     assert pod.spec is not None and pod.metadata is not None
     spec: dict[str, object] = dict(pod.spec.to_dict())
-    spec['tolerations'] = sorted({
-        json.dumps(_toleration_key(t)) for t in sched.tolerations
-    })
+    spec['tolerations'] = sorted(
+        {json.dumps(_toleration_key(t)) for t in sched.tolerations}
+    )
     pod.metadata.annotations = {
         _CANARY_SPEC_HASH_ANNOTATION: hashlib.sha256(
-            json.dumps(spec, sort_keys=True).encode()).hexdigest()[:32]
+            json.dumps(spec, sort_keys=True).encode()
+        ).hexdigest()[:32]
     }
     return pod
 
@@ -435,8 +441,7 @@ def _build_canary_pvc(
             # same CSI binding path the real daemon would.
             access_modes=['ReadWriteOnce'],
             storage_class_name=storage_class,
-            resources=V1ResourceRequirements(
-                requests={'storage': storage_size}),
+            resources=V1ResourceRequirements(requests={'storage': storage_size}),
         ),
     )
 
@@ -449,8 +454,7 @@ def _pvc_requested_size(pvc: V1PersistentVolumeClaim) -> Optional[str]:
     return spec.resources.requests.get('storage')
 
 
-def _pvc_is_reusable(
-    pvc: V1PersistentVolumeClaim, requested_size: str) -> bool:
+def _pvc_is_reusable(pvc: V1PersistentVolumeClaim, requested_size: str) -> bool:
     """A leftover canary PVC is safe to reuse only when it is NOT Terminating
     and its requested size matches exactly. PVC size is immutable, so a
     same-tier leftover bound at an OLD size must NOT be accepted as a valid
@@ -468,6 +472,7 @@ class _CanaryRunner:
     Stateless beyond the injected manager; all k8s sync calls go through
     ``asyncio.to_thread`` to match the manager's threading discipline.
     """
+
     def __init__(self, manager: K8sPoolWorkerManager) -> None:
         self._manager = manager
         self._core = manager.core_v1_api
@@ -504,12 +509,15 @@ class _CanaryRunner:
                     label_selector=selector,
                 ),
             )
-            for pod in (pods.items or []):
+            for pod in pods.items or []:
                 if pod.metadata and pod.metadata.name:
                     await self._delete_pod(pod.metadata.name)
         except ApiException as exc:
-            log.warning('canary reconcile: listing leftover pods failed '
-                        '(status=%s); continuing', exc.status)
+            log.warning(
+                'canary reconcile: listing leftover pods failed '
+                '(status=%s); continuing',
+                exc.status,
+            )
         try:
             pvcs = cast(
                 V1PersistentVolumeClaimList,
@@ -519,12 +527,15 @@ class _CanaryRunner:
                     label_selector=selector,
                 ),
             )
-            for pvc in (pvcs.items or []):
+            for pvc in pvcs.items or []:
                 if pvc.metadata and pvc.metadata.name:
                     await self._delete_pvc(pvc.metadata.name)
         except ApiException as exc:
-            log.warning('canary reconcile: listing leftover PVCs failed '
-                        '(status=%s); continuing', exc.status)
+            log.warning(
+                'canary reconcile: listing leftover PVCs failed '
+                '(status=%s); continuing',
+                exc.status,
+            )
 
         # Poll until no canary pods AND no canary PVCs remain, so leftovers
         # are actually gone before fresh canaries are created. Bounded so a
@@ -534,17 +545,22 @@ class _CanaryRunner:
         remaining_pvcs: List[str] = []
         while time.monotonic() < deadline:
             remaining_pods = await self._list_leftover_names(
-                self._core.list_namespaced_pod, selector)
+                self._core.list_namespaced_pod, selector
+            )
             remaining_pvcs = await self._list_leftover_names(
-                self._core.list_namespaced_persistent_volume_claim, selector)
+                self._core.list_namespaced_persistent_volume_claim, selector
+            )
             if not remaining_pods and not remaining_pvcs:
                 return
             await asyncio.sleep(_CANARY_POLL_INTERVAL_SECS)
         log.warning(
             'canary reconcile: leftover canary resources still present after '
             '%.0fs (pods=%s, pvcs=%s); continuing — create path will harden '
-            'against any survivor', _RECONCILE_WAIT_SECS, remaining_pods,
-            remaining_pvcs)
+            'against any survivor',
+            _RECONCILE_WAIT_SECS,
+            remaining_pods,
+            remaining_pvcs,
+        )
 
     async def _list_leftover_names(self, list_fn, selector: str) -> List[str]:
         """Names of canary resources still matching ``selector`` (best-effort:
@@ -552,13 +568,18 @@ class _CanaryRunner:
         transient API error)."""
         try:
             result = await asyncio.to_thread(
-                list_fn, namespace=self._namespace, label_selector=selector)
+                list_fn, namespace=self._namespace, label_selector=selector
+            )
         except ApiException as exc:
-            log.warning('canary reconcile: re-listing leftovers failed '
-                        '(status=%s); treating as none remaining', exc.status)
+            log.warning(
+                'canary reconcile: re-listing leftovers failed '
+                '(status=%s); treating as none remaining',
+                exc.status,
+            )
             return []
         return [
-            item.metadata.name for item in (result.items or [])
+            item.metadata.name
+            for item in (result.items or [])
             if item.metadata and item.metadata.name
         ]
 
@@ -572,8 +593,7 @@ class _CanaryRunner:
             )
         except ApiException as exc:
             if exc.status != 404:
-                log.warning('canary: delete pod %s returned %s', name,
-                            exc.status)
+                log.warning('canary: delete pod %s returned %s', name, exc.status)
 
     async def _delete_pvc(self, name: str) -> None:
         try:
@@ -584,8 +604,7 @@ class _CanaryRunner:
             )
         except ApiException as exc:
             if exc.status != 404:
-                log.warning('canary: delete PVC %s returned %s', name,
-                            exc.status)
+                log.warning('canary: delete PVC %s returned %s', name, exc.status)
 
     async def _read_pod(self, name: str) -> Optional[V1Pod]:
         try:
@@ -689,7 +708,8 @@ class _CanaryRunner:
                     image=self._image,
                     pvc_name=pvc_name,
                     gpu_count=gpu_count,
-                ))
+                )
+            )
 
             await self._wait_for_ready(
                 pool=pool,
@@ -720,8 +740,11 @@ class _CanaryRunner:
                     if not await self._wait_for_gone(self._read_pod, pod_name):
                         log.warning(
                             'canary[%s] cleanup: pod %s still present after '
-                            '%.0fs; deleting PVC anyway (best-effort)', pool,
-                            pod_name, _RECONCILE_WAIT_SECS)
+                            '%.0fs; deleting PVC anyway (best-effort)',
+                            pool,
+                            pod_name,
+                            _RECONCILE_WAIT_SECS,
+                        )
                     await self._delete_pvc(pvc_name)
                     # Wait for the PVC to actually be GONE: until then CSI
                     # can still hold capacity, so exiting/retrying with the
@@ -730,20 +753,26 @@ class _CanaryRunner:
                         log.warning(
                             'canary[%s] cleanup: PVC %s still present after '
                             '%.0fs; continuing — its capacity is released '
-                            'once the deletion finalizes', pool, pvc_name,
-                            _RECONCILE_WAIT_SECS)
+                            'once the deletion finalizes',
+                            pool,
+                            pvc_name,
+                            _RECONCILE_WAIT_SECS,
+                        )
             except Exception:  # noqa: BLE001 — best-effort cleanup
                 log.warning(
                     'canary[%s] cleanup encountered an error; ignoring so the '
-                    'validation result is not masked', pool, exc_info=True)
+                    'validation result is not masked',
+                    pool,
+                    exc_info=True,
+                )
 
     async def _create_pod(self, pod: V1Pod) -> None:
         assert pod.metadata is not None and pod.metadata.name is not None
         name = pod.metadata.name
         try:
             await asyncio.to_thread(
-                self._core.create_namespaced_pod,
-                namespace=self._namespace, body=pod)
+                self._core.create_namespaced_pod, namespace=self._namespace, body=pod
+            )
             return
         except ApiException as exc:
             if exc.status != 409:
@@ -756,31 +785,35 @@ class _CanaryRunner:
         if existing is None:
             # Raced away between create and read — recreate.
             await asyncio.to_thread(
-                self._core.create_namespaced_pod,
-                namespace=self._namespace, body=pod)
+                self._core.create_namespaced_pod, namespace=self._namespace, body=pod
+            )
             return
         meta = existing.metadata
         terminating = meta is not None and meta.deletion_timestamp is not None
         expected_hash = (pod.metadata.annotations or {}).get(
-            _CANARY_SPEC_HASH_ANNOTATION)
-        actual_hash = ((meta.annotations or {}).get(_CANARY_SPEC_HASH_ANNOTATION)
-                       if meta else None)
+            _CANARY_SPEC_HASH_ANNOTATION
+        )
+        actual_hash = (
+            (meta.annotations or {}).get(_CANARY_SPEC_HASH_ANNOTATION) if meta else None
+        )
         if not terminating and expected_hash and actual_hash == expected_hash:
             log.info('canary pod %s already has the current spec; reusing', name)
             return
         reason = 'Terminating' if terminating else 'using an outdated spec'
-        log.info('canary pod %s is %s; waiting for deletion then recreating',
-                 name, reason)
+        log.info(
+            'canary pod %s is %s; waiting for deletion then recreating', name, reason
+        )
         if not terminating:
             await self._delete_pod(name)
         if not await self._wait_for_gone(self._read_pod, name):
             raise InitCanaryValidationError(
                 f'canary pod {name!r} still {reason} after '
                 f'{_RECONCILE_WAIT_SECS:.0f}s; cannot create a fresh '
-                'canary — refusing to validate with a stale pod')
+                'canary — refusing to validate with a stale pod'
+            )
         await asyncio.to_thread(
-            self._core.create_namespaced_pod,
-            namespace=self._namespace, body=pod)
+            self._core.create_namespaced_pod, namespace=self._namespace, body=pod
+        )
 
     async def _create_pvc(
         self,
@@ -793,7 +826,9 @@ class _CanaryRunner:
         try:
             await asyncio.to_thread(
                 self._core.create_namespaced_persistent_volume_claim,
-                namespace=self._namespace, body=pvc)
+                namespace=self._namespace,
+                body=pvc,
+            )
             return
         except ApiException as exc:
             if exc.status != 409:
@@ -808,15 +843,25 @@ class _CanaryRunner:
         if existing is None:
             await asyncio.to_thread(
                 self._core.create_namespaced_persistent_volume_claim,
-                namespace=self._namespace, body=pvc)
+                namespace=self._namespace,
+                body=pvc,
+            )
             return
         if _pvc_is_reusable(existing, storage_size):
-            log.info('canary PVC %s already exists at the requested size '
-                     '%s and is not Terminating; reusing', name, storage_size)
+            log.info(
+                'canary PVC %s already exists at the requested size '
+                '%s and is not Terminating; reusing',
+                name,
+                storage_size,
+            )
             return
-        log.info('canary PVC %s is a STALE leftover (Terminating or a '
-                 'different requested size than %s); deleting and recreating '
-                 'so we validate the correct size', name, storage_size)
+        log.info(
+            'canary PVC %s is a STALE leftover (Terminating or a '
+            'different requested size than %s); deleting and recreating '
+            'so we validate the correct size',
+            name,
+            storage_size,
+        )
         await self._delete_pvc(name)
         if not await self._wait_for_gone(self._read_pvc, name):
             raise InitCanaryValidationError(
@@ -824,10 +869,13 @@ class _CanaryRunner:
                 f'{_RECONCILE_WAIT_SECS:.0f}s after delete; cannot create a '
                 f'fresh PVC at the requested size {storage_size} — refusing '
                 f'to proceed (failing validation rather than recording a '
-                f'false success for an unvalidated size)')
+                f'false success for an unvalidated size)'
+            )
         await asyncio.to_thread(
             self._core.create_namespaced_persistent_volume_claim,
-            namespace=self._namespace, body=pvc)
+            namespace=self._namespace,
+            body=pvc,
+        )
 
     async def _wait_for_ready(
         self,
@@ -844,8 +892,9 @@ class _CanaryRunner:
         while time.monotonic() < deadline:
             pod = await self._read_pod(pod_name)
             if pod is not None:
-                last_phase = (pod.status.phase
-                              if pod.status and pod.status.phase else 'Pending')
+                last_phase = (
+                    pod.status.phase if pod.status and pod.status.phase else 'Pending'
+                )
                 last_unsched = _unschedulable_reason(pod)
                 if last_phase in ('Running', 'Succeeded'):
                     # Pod placed on a node — only NOW can a
@@ -856,16 +905,22 @@ class _CanaryRunner:
                         last_pvc_phase = await self._read_pvc_phase(pvc_name)
                     if pvc_name is None or last_pvc_phase == 'Bound':
                         log.info(
-                            'canary[%s] OK: pod=%s phase=%s%s', pool, pod_name,
+                            'canary[%s] OK: pod=%s phase=%s%s',
+                            pool,
+                            pod_name,
                             last_phase,
-                            f' pvc={last_pvc_phase}' if pvc_name else '')
+                            f' pvc={last_pvc_phase}' if pvc_name else '',
+                        )
                         return
                 # Within grace, Pending / Unschedulable / PVC-Pending is
                 # expected (node still provisioning) — log progress.
                 log.info(
-                    'canary[%s] waiting: phase=%s%s%s', pool, last_phase,
+                    'canary[%s] waiting: phase=%s%s%s',
+                    pool,
+                    last_phase,
                     f' pvc={last_pvc_phase}' if pvc_name else '',
-                    f' scheduler="{last_unsched}"' if last_unsched else '')
+                    f' scheduler="{last_unsched}"' if last_unsched else '',
+                )
             await asyncio.sleep(_CANARY_POLL_INTERVAL_SECS)
 
         raise InitCanaryValidationError(
@@ -876,7 +931,8 @@ class _CanaryRunner:
                 last_unsched=last_unsched,
                 pvc_name=pvc_name,
                 last_pvc_phase=last_pvc_phase,
-            ))
+            )
+        )
 
     def _classify_failure(
         self,
@@ -900,8 +956,10 @@ class _CanaryRunner:
         # text below distinguishes "no schedulable node" (misconfig) from
         # "node came up but the image was still pulling" (cold-pull, NOT a
         # pool fault), so the head must not pre-judge it as undeliverable.
-        head = (f'Diskgraph pool init canary FAILED for pool {pool!r} after '
-                f'{CANARY_GRACE_SECS}s. Expected: {expectation}.')
+        head = (
+            f'Diskgraph pool init canary FAILED for pool {pool!r} after '
+            f'{CANARY_GRACE_SECS}s. Expected: {expectation}.'
+        )
         msg = (last_unsched or '').lower()
 
         # Classify the ROOT cause. An Unschedulable pod (PodScheduled=False)
@@ -910,62 +968,79 @@ class _CanaryRunner:
         # for GPU / label-or-taint signals BEFORE concluding disk. Only when
         # the pod actually scheduled (no Unschedulable condition) but the PVC
         # still didn't bind is it a genuine CSI/storage failure.
-        gpu_miss = ('insufficient nvidia.com/gpu' in msg
-                    or 'insufficient gpu' in msg)
-        label_miss = (("didn't match" in msg
-                       and ('affinity' in msg or 'selector' in msg))
-                      or 'untolerated taint' in msg or 'had taint' in msg)
+        gpu_miss = 'insufficient nvidia.com/gpu' in msg or 'insufficient gpu' in msg
+        label_miss = (
+            ("didn't match" in msg and ('affinity' in msg or 'selector' in msg))
+            or 'untolerated taint' in msg
+            or 'had taint' in msg
+        )
         if gpu_miss:
-            cause = ('INSUFFICIENT GPU — nodes matched the selector/taint but '
-                     'none advertise nvidia.com/gpu (NVIDIA device plugin '
-                     'missing / not Ready, or non-GPU instance type)')
+            cause = (
+                'INSUFFICIENT GPU — nodes matched the selector/taint but '
+                'none advertise nvidia.com/gpu (NVIDIA device plugin '
+                'missing / not Ready, or non-GPU instance type)'
+            )
         elif label_miss:
-            cause = ('NO NODE matches the required label / taint — the cache '
-                     'or ephemeral NodePool is missing, mislabelled, or its '
-                     'dedicated taint differs from what the controller '
-                     'tolerates (LABEL / POOL MISCONFIG)')
+            cause = (
+                'NO NODE matches the required label / taint — the cache '
+                'or ephemeral NodePool is missing, mislabelled, or its '
+                'dedicated taint differs from what the controller '
+                'tolerates (LABEL / POOL MISCONFIG)'
+            )
         elif last_phase == 'unknown':
             # The pod read returned None on EVERY poll: it was never observed
             # via the API. This is NOT a node / disk problem (no node was ever
             # asked for) — the create likely failed silently, the pod was
             # deleted out-of-band, or we hit API eventual-consistency.
-            cause = ('the canary pod was NEVER observed via the API '
-                     '(creation failed silently, the pod was deleted '
-                     'out-of-band, or API eventual-consistency) — this is NOT '
-                     'a node / disk problem; check controller RBAC (pods '
-                     'get/create) and API server health')
+            cause = (
+                'the canary pod was NEVER observed via the API '
+                '(creation failed silently, the pod was deleted '
+                'out-of-band, or API eventual-consistency) — this is NOT '
+                'a node / disk problem; check controller RBAC (pods '
+                'get/create) and API server health'
+            )
         elif last_phase == 'Failed':
             # Pod scheduled onto a node but the container did not stay
             # Running — crashed / OOMKilled / bad image entrypoint. The node
             # delivered; the canary container itself failed.
-            cause = ('the canary container did NOT stay Running on a '
-                     'scheduled node (crashed / OOMKilled / bad image '
-                     'entrypoint) — the node scheduled but the container '
-                     'failed; check the canary image and resource requests')
+            cause = (
+                'the canary container did NOT stay Running on a '
+                'scheduled node (crashed / OOMKilled / bad image '
+                'entrypoint) — the node scheduled but the container '
+                'failed; check the canary image and resource requests'
+            )
         elif pvc_name is not None and last_pvc_phase != 'Bound':
             # Pod was NOT reported Unschedulable for GPU/label reasons, yet
             # the PVC never bound → disk capacity / StorageClass.
             if 'insufficient' in msg and ('storage' in msg or 'topolvm' in msg):
-                cause = ('PVC unbound: CSI reports INSUFFICIENT STORAGE for '
-                         'the requested cache volume size')
+                cause = (
+                    'PVC unbound: CSI reports INSUFFICIENT STORAGE for '
+                    'the requested cache volume size'
+                )
             else:
-                cause = (f'PVC {pvc_name!r} never reached Bound '
-                         f'(last phase: {last_pvc_phase}) — the WFFC '
-                         f'StorageClass lacks compatible topology/capacity, '
-                         f'or its CSI provisioner is misconfigured')
+                cause = (
+                    f'PVC {pvc_name!r} never reached Bound '
+                    f'(last phase: {last_pvc_phase}) — the WFFC '
+                    f'StorageClass lacks compatible topology/capacity, '
+                    f'or its CSI provisioner is misconfigured'
+                )
         elif last_unsched:
-            cause = (f'pod is Unschedulable ({last_phase}) — scheduler could '
-                     f'not place it on any node')
+            cause = (
+                f'pod is Unschedulable ({last_phase}) — scheduler could '
+                f'not place it on any node'
+            )
         else:
-            cause = (f'pod SCHEDULED (no PodScheduled=False condition) but '
-                     f'never reached Running (last phase: {last_phase}) — a '
-                     f'node WAS delivered, so this is NOT a pool/label/taint '
-                     f'misconfig. Most likely the ~16GB daemon image is still '
-                     f'being pulled onto the fresh node and did not finish '
-                     f'within the {CANARY_GRACE_SECS}s grace (cold image pull), '
-                     f'or the node is still finishing provisioning. Raise '
-                     f'POOL_CANARY_GRACE_SECS for clusters with slow cold '
-                     f'image pulls before suspecting the node pool')
+            cause = (
+                f'pod SCHEDULED (no PodScheduled=False condition) but '
+                f'never reached Running (last phase: {last_phase}) — a '
+                f'node WAS delivered, so this is NOT a pool/label/taint '
+                f'misconfig. Most likely the ~16GB daemon image is still '
+                f'being pulled onto the fresh node and did not finish '
+                f'within the {CANARY_GRACE_SECS}s grace (cold image pull), '
+                f'or the node is still finishing provisioning. Raise '
+                f'POOL_CANARY_GRACE_SECS for clusters with slow cold '
+                f'image pulls before suspecting the node pool'
+            )
         msg_out = f'{head} Cause: {cause}. Scheduler said: {last_unsched!r}.'
         if pool == 'ephemeral':
             # The ephemeral tier is ENABLED by default, so this failure is
@@ -979,7 +1054,8 @@ class _CanaryRunner:
                 'single-GPU deployment that never uses the ephemeral overflow '
                 'tier), opt OUT by setting POOL_INIT_EPHEMERAL_CANARY_ENABLED='
                 'false - this skips the ephemeral init canary AND disables '
-                'runtime overflow to the ephemeral tier (kumo-ai/kumo#29865).')
+                'runtime overflow to the ephemeral tier (kumo-ai/kumo#29865).'
+            )
         return msg_out
 
 
@@ -996,8 +1072,7 @@ def _parse_result_annotation(value: str) -> Optional[tuple[str, float]]:
         return None
 
 
-async def _read_cached_result(
-    runner: _CanaryRunner) -> Optional[tuple[str, float]]:
+async def _read_cached_result(runner: _CanaryRunner) -> Optional[tuple[str, float]]:
     """Read ``(config_hash, validated_at_epoch)`` from the controller
     Deployment's validation annotation, or None if absent / unreadable /
     malformed (best-effort; failure to read just forces re-validation)."""
@@ -1015,10 +1090,11 @@ async def _read_cached_result(
             log.warning(
                 'canary: reading controller Deployment %r for cached result '
                 'failed (status=%s); will re-validate',
-                CONTROLLER_DEPLOYMENT_NAME, exc.status)
+                CONTROLLER_DEPLOYMENT_NAME,
+                exc.status,
+            )
         return None
-    annotations = ((dep.metadata.annotations or {})
-                   if dep.metadata else {})
+    annotations = (dep.metadata.annotations or {}) if dep.metadata else {}
     value = annotations.get(RESULT_ANNOTATION_KEY)
     if not value:
         return None
@@ -1042,7 +1118,9 @@ async def _record_success(runner: _CanaryRunner, config_hash: str) -> None:
         log.warning(
             'canary: recording success on controller Deployment %r failed '
             '(status=%s); next start will re-validate',
-            CONTROLLER_DEPLOYMENT_NAME, exc.status)
+            CONTROLLER_DEPLOYMENT_NAME,
+            exc.status,
+        )
 
 
 async def run_init_canary(
@@ -1096,16 +1174,15 @@ async def run_init_canary(
     tier_specs_by_key = {
         (spec.size_gib, spec.gpu_count): spec for spec in cache_tier_specs
     }
-    tier_specs = [
-        tier_specs_by_key[key] for key in sorted(tier_specs_by_key)
-    ]
+    tier_specs = [tier_specs_by_key[key] for key in sorted(tier_specs_by_key)]
     all_cache_tiers = frozenset(tier_specs_by_key)
     if not CANARY_ENABLED:
         log.info(
             'Diskgraph pool init canary: DISABLED via '
             'POOL_INIT_CANARY_ENABLED; controller readiness is decoupled '
             'from pool provisioning. Pool misconfig will only surface at '
-            'first job.')
+            'first job.'
+        )
         return InitCanaryResult(
             available_cache_tiers=all_cache_tiers,
             ephemeral_available=EPH_CANARY_ENABLED,
@@ -1114,11 +1191,10 @@ async def run_init_canary(
         raise InitCanaryValidationError(
             'Diskgraph pool init canary: no cache tiers configured '
             '(pool_diskgraph_node_types is empty) — cannot validate the '
-            'cache pool.')
+            'cache pool.'
+        )
     tiers = sorted({spec.size_gib for spec in tier_specs})
-    tier_keys = [
-        f'{spec.size_gib}Gi/{spec.gpu_count}gpu' for spec in tier_specs
-    ]
+    tier_keys = [f'{spec.size_gib}Gi/{spec.gpu_count}gpu' for spec in tier_specs]
     storage_class = manager.storage_class
     runner = _CanaryRunner(manager)
 
@@ -1127,7 +1203,8 @@ async def run_init_canary(
     # VALUES the canary tolerates.
     eph_sched = manager.eph_canary_scheduling()
     cache_sched0 = manager.cache_canary_scheduling(
-        tier_specs[0].size_gib, tier_specs[0].gpu_count)
+        tier_specs[0].size_gib, tier_specs[0].gpu_count
+    )
 
     security = _runtime_container_security_context()
     config_hash = pool_config_hash(
@@ -1158,23 +1235,32 @@ async def run_init_canary(
         if cached_hash == config_hash and 0 <= age < CANARY_RESULT_TTL_SECS:
             log.info(
                 'Diskgraph pool init canary: SKIP — fresh matching result '
-                '(config_hash=%s, age=%.0fs < TTL %ds).', config_hash, age,
-                CANARY_RESULT_TTL_SECS)
+                '(config_hash=%s, age=%.0fs < TTL %ds).',
+                config_hash,
+                age,
+                CANARY_RESULT_TTL_SECS,
+            )
             return InitCanaryResult(
                 available_cache_tiers=all_cache_tiers,
                 ephemeral_available=EPH_CANARY_ENABLED,
             )
         log.info(
             'Diskgraph pool init canary: cached result stale/mismatched '
-            '(cached_hash=%s vs %s, age=%.0fs); re-validating.', cached_hash,
-            config_hash, age)
+            '(cached_hash=%s vs %s, age=%.0fs); re-validating.',
+            cached_hash,
+            config_hash,
+            age,
+        )
 
     log.info(
         'Diskgraph pool init canary: validating %d cache tier(s) %s%s '
-        '(grace=%ds each, storage_class=%s).', len(tier_specs),
+        '(grace=%ds each, storage_class=%s).',
+        len(tier_specs),
         tier_keys,
         ' + eph pool' if EPH_CANARY_ENABLED else '',
-        CANARY_GRACE_SECS, storage_class)
+        CANARY_GRACE_SECS,
+        storage_class,
+    )
 
     # Reconcile leftovers from any crashed prior validation before launching.
     await runner.reconcile_leftovers()
@@ -1211,7 +1297,8 @@ async def run_init_canary(
             f'{DISKGRAPH_GPU_COUNT_LABEL}={gpu_count}, tolerating taint '
             f'{[_taint_str(t) for t in sched.tolerations]}, with '
             f'nvidia.com/gpu>={gpu_count} and a {pvc_size} PVC bindable on '
-            f'StorageClass {storage_class!r}')
+            f'StorageClass {storage_class!r}'
+        )
         try:
             await runner.run_one(
                 pool=f'cache-{tier_gib}-gpu{gpu_count}',
@@ -1225,7 +1312,10 @@ async def run_init_canary(
             cache_failures.append(str(exc))
             log.error(
                 'Diskgraph pool init canary: cache tier %s is unavailable; '
-                'new placements will not use it. %s', tier_key, exc)
+                'new placements will not use it. %s',
+                tier_key,
+                exc,
+            )
         else:
             available_cache_tiers.add(tier_key)
             actively_validated_cache_tiers.add(tier_key)
@@ -1234,7 +1324,8 @@ async def run_init_canary(
         detail = ' | '.join(cache_failures) or 'no tier produced usable proof'
         raise InitCanaryValidationError(
             'Diskgraph pool init canary: no cache tier is available; refusing '
-            f'to start without durable placement capacity. {detail}')
+            f'to start without durable placement capacity. {detail}'
+        )
 
     # Ephemeral canary — label + taint + GPU + scheduling only. Eph disk is
     # ephemeral-storage sized per-snapshot at runtime, so the disk dimension
@@ -1253,7 +1344,8 @@ async def run_init_canary(
             f'tolerating taints {[_taint_str(t) for t in eph_sched.tolerations]}, '
             f'with nvidia.com/gpu>=1 (eph disk is '
             f'ephemeral-storage sized per-job at runtime, validated at job '
-            f'time)')
+            f'time)'
+        )
         try:
             await runner.run_one(
                 pool='ephemeral',
@@ -1265,7 +1357,9 @@ async def run_init_canary(
         except InitCanaryValidationError as exc:
             log.error(
                 'Diskgraph pool init canary: ephemeral capacity is unavailable; '
-                'runtime overflow will be disabled. %s', exc)
+                'runtime overflow will be disabled. %s',
+                exc,
+            )
         else:
             ephemeral_available = True
     else:
@@ -1274,13 +1368,18 @@ async def run_init_canary(
             'POOL_INIT_EPHEMERAL_CANARY_ENABLED=false, so controller readiness '
             'is not gated on a dedicated ephemeral GPU node (single-GPU / '
             'no-ephemeral-nodepool escape hatch). Unset the flag or set it true '
-            'to validate the ephemeral pool at init.')
+            'to validate the ephemeral pool at init.'
+        )
 
-    if (actively_validated_cache_tiers == set(all_cache_tiers)
-            and (not EPH_CANARY_ENABLED or ephemeral_available)):
+    if actively_validated_cache_tiers == set(all_cache_tiers) and (
+        not EPH_CANARY_ENABLED or ephemeral_available
+    ):
         await _record_success(runner, config_hash)
-        log.info('Diskgraph pool init canary: all pools validated; recorded '
-                 'success (config_hash=%s).', config_hash)
+        log.info(
+            'Diskgraph pool init canary: all pools validated; recorded '
+            'success (config_hash=%s).',
+            config_hash,
+        )
 
     return InitCanaryResult(
         available_cache_tiers=frozenset(available_cache_tiers),

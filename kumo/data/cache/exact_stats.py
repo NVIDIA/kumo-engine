@@ -18,15 +18,15 @@ logger = logging.getLogger(__name__)
 
 
 def parse_table_stat_from_key(key: str) -> Tuple[Optional[TableStatType], bool]:
-    if len(key.split("__")) < 2:
+    if len(key.split('__')) < 2:
         raise ValueError(f"Table stat key needs one '__' but got {key}")
-    parts = key.rsplit("__", 1)
+    parts = key.rsplit('__', 1)
 
     # Fix backward incompatibility where DROPPED_ROWS is a ColStat and is no
     # longer a TableStat. This change is in v2.14.
     # Any ingestion performed with a release version <= v2.13 will have
     # DROPPED_ROWS as a TableStat.
-    if parts[0] == "DROPPED_ROWS":
+    if parts[0] == 'DROPPED_ROWS':
         return None, True
     stat = TableStatType(parts[0])
     approx = parts[1] == 'True'
@@ -34,28 +34,28 @@ def parse_table_stat_from_key(key: str) -> Tuple[Optional[TableStatType], bool]:
 
 
 def parse_col_stat_from_key(key: str) -> Tuple[str, ColStatType, bool]:
-    if len(key.split("__")) == 3:
+    if len(key.split('__')) == 3:
         # No 'stype' in the column statistic:
-        parts = key.rsplit("__", 2)
+        parts = key.rsplit('__', 2)
         col = parts[0]
         stat = ColStatType(parts[1])
         approx = parts[2] == 'True'
-    elif len(key.split("__")) >= 4:
+    elif len(key.split('__')) >= 4:
         # Yes 'stype' in the column statistic (parts[1]). Note that this is a
         # '>' and not '==' since some columns may have '__' in their name,
         # which needs to be handled:
-        parts = key.rsplit("__", 3)
+        parts = key.rsplit('__', 3)
         try:
             # If parts[1] is an stype, then the key is well-formed. If it is
             # not an stype, then the key is not well-formed (parts[1] is just
             # a part of the column name), and so we need to split by 2 __,
             # not 3:
-            _ = Stype(parts[1].split(".")[-1])  # convert kumo.X to X
+            _ = Stype(parts[1].split('.')[-1])  # convert kumo.X to X
             col = parts[0]
             stat = ColStatType(parts[2])
             approx = parts[3] == 'True'
         except ValueError:
-            parts = key.rsplit("__", 2)
+            parts = key.rsplit('__', 2)
             col = parts[0]
             stat = ColStatType(parts[1])
             approx = parts[2] == 'True'
@@ -70,14 +70,15 @@ class NoExactStatsFound(RuntimeError):
 
 @dataclass(frozen=True)
 class ExactStats:
-    """All exact stats that are related to a single table.
-    """
+    """All exact stats that are related to a single table."""
+
     table_stats: Dict[TableStatType, StatsConfig]
     col_stats: Dict[str, Dict[ColStatType, StatsConfig]]
 
     @staticmethod
-    def parse(table_id: str, table_json: bytes,
-              col_json: Optional[bytes]) -> 'ExactStats':
+    def parse(
+        table_id: str, table_json: bytes, col_json: Optional[bytes]
+    ) -> 'ExactStats':
         """Parse exact stats from the given JSON files. Raise exception if
         exact stats are missing or failed to be parsed, for either table_json
         or col_json (both must be valid to succeed).
@@ -93,8 +94,7 @@ class ExactStats:
                 continue
             table_stats[stat_type] = stat
         if len(table_stats) == 0:
-            raise NoExactStatsFound(
-                "No exact stats could be found in the table_json")
+            raise NoExactStatsFound('No exact stats could be found in the table_json')
         if col_json is None:
             return ExactStats(table_stats, {})
 
@@ -112,16 +112,17 @@ class ExactStats:
                 # failing the whole parse function
                 logger.exception(
                     'Unable to parse table %s key %s from exact stats, %s',
-                    table_id, key, e)
+                    table_id,
+                    key,
+                    e,
+                )
         if len(col_stats) == 0:
-            raise NoExactStatsFound(
-                "No exact stats could be found in the col_json")
+            raise NoExactStatsFound('No exact stats could be found in the col_json')
 
         return ExactStats(table_stats, col_stats)
 
     def get_table_stat(self, typ: TableStatType, default: float) -> float:
-        """Get the given stat and cast to float. Return default if failing.
-        """
+        """Get the given stat and cast to float. Return default if failing."""
         if typ not in self.table_stats:
             return default
         stat = self.table_stats[typ]

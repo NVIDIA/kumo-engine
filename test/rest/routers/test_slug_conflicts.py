@@ -24,8 +24,9 @@ from statedb.utils.errors import ResourceSlugConflictError
 def _app_with_public_error_handler() -> FastAPI:
     app = FastAPI()
 
-    async def handle_public_error(_request: Request,
-                                  error: PublicException) -> JSONResponse:
+    async def handle_public_error(
+        _request: Request, error: PublicException
+    ) -> JSONResponse:
         return JSONResponse(
             status_code=error.http_code,
             content={
@@ -56,8 +57,11 @@ def _assert_safe_slug_conflict(response, resource: str, slug: str) -> None:
 def test_project_create_slug_conflict_is_safe_http_409() -> None:
     slug = 'shared-project'
     driver = MagicMock(spec=ProjectsDriver)
-    driver.create_project = AsyncMock(side_effect=ResourceSlugConflictError(
-        f"Project slug '{slug}' is already in use."))
+    driver.create_project = AsyncMock(
+        side_effect=ResourceSlugConflictError(
+            f"Project slug '{slug}' is already in use."
+        )
+    )
     app = _app_with_public_error_handler()
     app.include_router(
         PublicProjectsRouter(lambda: None, driver, _auth()).router,
@@ -66,11 +70,13 @@ def test_project_create_slug_conflict_is_safe_http_409() -> None:
 
     with TestClient(app) as client:
         response = client.post(
-            '/v1/projects', json={
+            '/v1/projects',
+            json={
                 'name': 'Shared Project',
                 'slug': slug,
                 'group_id': str(GroupID.generate()),
-            })
+            },
+        )
 
     _assert_safe_slug_conflict(response, 'Project', slug)
 
@@ -79,29 +85,34 @@ def test_group_create_slug_conflict_is_safe_http_409() -> None:
     slug = 'shared-group'
     driver = MagicMock(spec=GroupsDriver)
     driver._create_kumo_groups = AsyncMock(
-        side_effect=ResourceSlugConflictError(
-            f"Group slug '{slug}' is already in use."))
+        side_effect=ResourceSlugConflictError(f"Group slug '{slug}' is already in use.")
+    )
     app = _app_with_public_error_handler()
     app.include_router(GroupsRouter(_auth(), driver).router)
 
     with TestClient(app) as client:
         response = client.post(
-            '/v0/groups', json={
+            '/v0/groups',
+            json={
                 'display_name': 'Shared Group',
                 'slug': slug,
-            })
+            },
+        )
 
     _assert_safe_slug_conflict(response, 'Group', slug)
 
 
 def test_identity_create_slug_conflict_is_safe_http_409() -> None:
     slug = 'shared-identity'
-    service = SimpleNamespace(create=AsyncMock(
-        side_effect=ResourceSlugConflictError(
-            f"Identity slug '{slug}' is already in use.")))
+    service = SimpleNamespace(
+        create=AsyncMock(
+            side_effect=ResourceSlugConflictError(
+                f"Identity slug '{slug}' is already in use."
+            )
+        )
+    )
     driver = MagicMock(spec=ConnectorApiDriver)
-    driver._require_state_services.return_value = SimpleNamespace(
-        identities=service)
+    driver._require_state_services.return_value = SimpleNamespace(identities=service)
     app = _app_with_public_error_handler()
 
     @app.middleware('http')
@@ -113,20 +124,19 @@ def test_identity_create_slug_conflict_is_safe_http_409() -> None:
 
     with TestClient(app) as client:
         response = client.post(
-            '/v0/identities/', json={
+            '/v0/identities/',
+            json={
                 'display_name': 'Shared Identity',
                 'slug': slug,
                 'config': {
                     'type': 's3',
                     'authentication': {
-                        'mode':
-                        'assume_role',
-                        'partition':
-                        'aws',
-                        'role_arn':
-                        ('arn:aws:iam::123456789012:role/shared-identity'),
+                        'mode': 'assume_role',
+                        'partition': 'aws',
+                        'role_arn': ('arn:aws:iam::123456789012:role/shared-identity'),
                     },
                 },
-            })
+            },
+        )
 
     _assert_safe_slug_conflict(response, 'Identity', slug)

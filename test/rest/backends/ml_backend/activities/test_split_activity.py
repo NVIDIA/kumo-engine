@@ -28,6 +28,7 @@ def _patched_common(monkeypatch, *, calls, manifest):
     ``calls`` is mutated to record which load/save paths fired so each test can
     assert on the control flow.
     """
+
     class _FakeHomeDirManager:
         materialized_train_table_config_path = '/tmp/fake-config.json'
 
@@ -35,15 +36,17 @@ def _patched_common(monkeypatch, *, calls, manifest):
             pass
 
     monkeypatch.setattr(split_mod, 'HomeDirManager', _FakeHomeDirManager)
-    monkeypatch.setattr(split_mod, 'load_json',
-                        lambda *a, **k: SimpleNamespace())
+    monkeypatch.setattr(split_mod, 'load_json', lambda *a, **k: SimpleNamespace())
 
     def _save_data(path):
         calls['save'] = path
 
     fake_train_table = SimpleNamespace(save_data=_save_data)
-    monkeypatch.setattr(split_mod.TrainingTable, 'from_config',
-                        classmethod(lambda cls, cfg: fake_train_table))
+    monkeypatch.setattr(
+        split_mod.TrainingTable,
+        'from_config',
+        classmethod(lambda cls, cfg: fake_train_table),
+    )
 
     def _validate(manifest_path):
         calls['validate'] = manifest_path
@@ -113,19 +116,17 @@ def test_ttng_split_failure_returns_failed(monkeypatch):
 
 def test_validate_native_split_manifest_extracts_payload(monkeypatch):
     manifest = {
-        'split': {
-            'authoritative': True
-        },
-        'parsed_split': {
-            'row_count': 3,
-            'stage_ids': b'\x00\x01\x02'
-        },
+        'split': {'authoritative': True},
+        'parsed_split': {'row_count': 3, 'stage_ids': b'\x00\x01\x02'},
     }
     monkeypatch.setattr(
-        split_mod, 'get_service',
-        lambda: SimpleNamespace(validate_manifest=lambda p: manifest))
+        split_mod,
+        'get_service',
+        lambda: SimpleNamespace(validate_manifest=lambda p: manifest),
+    )
     out_manifest, parsed, row_count, stage_ids = (
-        split_mod._validate_native_split_manifest('/tmp/manifest.json'))
+        split_mod._validate_native_split_manifest('/tmp/manifest.json')
+    )
     assert out_manifest is manifest
     assert parsed == manifest['parsed_split']
     assert row_count == 3
@@ -134,16 +135,13 @@ def test_validate_native_split_manifest_extracts_payload(monkeypatch):
 
 def test_validate_native_split_manifest_rejects_non_authoritative(monkeypatch):
     manifest = {
-        'split': {
-            'authoritative': False
-        },
-        'parsed_split': {
-            'row_count': 0,
-            'stage_ids': b''
-        },
+        'split': {'authoritative': False},
+        'parsed_split': {'row_count': 0, 'stage_ids': b''},
     }
     monkeypatch.setattr(
-        split_mod, 'get_service',
-        lambda: SimpleNamespace(validate_manifest=lambda p: manifest))
+        split_mod,
+        'get_service',
+        lambda: SimpleNamespace(validate_manifest=lambda p: manifest),
+    )
     with pytest.raises(RuntimeError, match='non-authoritative'):
         split_mod._validate_native_split_manifest('/tmp/manifest.json')

@@ -30,8 +30,7 @@ class Routed:
 
     scalars: List[Scalar] = field(default_factory=list)
     tags: Dict[str, str] = field(default_factory=dict)
-    charts: Dict[str, Tuple[Tuple[int, float], ...]] = field(
-        default_factory=dict)
+    charts: Dict[str, Tuple[Tuple[int, float], ...]] = field(default_factory=dict)
     tables: List[Table] = field(default_factory=list)
     card: List[Summary] = field(default_factory=list)
     datasets: List[Dataset] = field(default_factory=list)
@@ -51,8 +50,9 @@ def route(summaries: Sequence[Summary]) -> Routed:
             routed.charts[summary.name] = summary.points
         elif isinstance(summary, Series):
             parent, _, column = summary.name.rpartition('/')
-            _, columns = series.setdefault(parent or summary.name,
-                                           (summary.x_label, {}))
+            _, columns = series.setdefault(
+                parent or summary.name, (summary.x_label, {})
+            )
             columns[column] = dict(summary.points)
         elif isinstance(summary, Histogram):
             name = summary.name.rpartition('/')[0] or summary.name
@@ -62,32 +62,44 @@ def route(summaries: Sequence[Summary]) -> Routed:
             histograms.setdefault(name, []).append(summary)
         elif isinstance(summary, Dataset):
             routed.datasets.append(summary)
-        elif isinstance(summary, Note) or (isinstance(summary, Table)
-                                           and summary.brief):
+        elif isinstance(summary, Note) or (
+            isinstance(summary, Table) and summary.brief
+        ):
             routed.card.append(summary)
         elif isinstance(summary, Confusion):
             tables.append(confusion_table(summary))
         elif isinstance(summary, Table):
             tables.append(summary)
     routed.tables = [
-        *(_series_table(name, x_label, columns)
-          for name, (x_label, columns) in series.items()),
-        *(_histogram_table(name, group)
-          for name, group in histograms.items()), *tables]
+        *(
+            _series_table(name, x_label, columns)
+            for name, (x_label, columns) in series.items()
+        ),
+        *(_histogram_table(name, group) for name, group in histograms.items()),
+        *tables,
+    ]
     return routed
 
 
 def confusion_table(summary: Confusion) -> Table:
-    return Table(summary.name, ('actual', *summary.labels), tuple(
-        (label, *row) for label, row in zip(summary.labels, summary.counts)))
+    return Table(
+        summary.name,
+        ('actual', *summary.labels),
+        tuple((label, *row) for label, row in zip(summary.labels, summary.counts)),
+    )
 
 
-def _series_table(name: str, x_label: str,
-                  columns: Mapping[str, Mapping[int, float]]) -> Table:
+def _series_table(
+    name: str, x_label: str, columns: Mapping[str, Mapping[int, float]]
+) -> Table:
     steps = sorted({step for points in columns.values() for step in points})
-    return Table(name, (x_label, *columns), tuple(
-        (step, *(points.get(step) for points in columns.values()))
-        for step in steps))
+    return Table(
+        name,
+        (x_label, *columns),
+        tuple(
+            (step, *(points.get(step) for points in columns.values())) for step in steps
+        ),
+    )
 
 
 def _histogram_table(name: str, histograms: Sequence[Histogram]) -> Table:
@@ -99,24 +111,41 @@ def _histogram_table(name: str, histograms: Sequence[Histogram]) -> Table:
     shares = []
     for histogram in histograms:
         total = sum(histogram.counts)
-        shares.append([running / total if total else None
-                       for running in accumulate(histogram.counts)])
-    return Table(name, (
-        'from', 'to', *columns,
-        *(f'{column} cumulative share' for column in columns)), tuple(
-            (low, high, *(h.counts[i] for h in histograms),
-             *(share[i] for share in shares))
-            for i, (low, high) in enumerate(zip((first, *edges),
-                                                (*edges, last)))
-            if any(h.counts[i] for h in histograms)))
+        shares.append(
+            [
+                running / total if total else None
+                for running in accumulate(histogram.counts)
+            ]
+        )
+    return Table(
+        name,
+        ('from', 'to', *columns, *(f'{column} cumulative share' for column in columns)),
+        tuple(
+            (
+                low,
+                high,
+                *(h.counts[i] for h in histograms),
+                *(share[i] for share in shares),
+            )
+            for i, (low, high) in enumerate(zip((first, *edges), (*edges, last)))
+            if any(h.counts[i] for h in histograms)
+        ),
+    )
 
 
 def table_json(table: Table) -> str:
     r"""Table JSON for tracker table views."""
     digits = [10 if column in _DEFINITIONS else 6 for column in table.columns]
-    return json.dumps({'columns': list(table.columns), 'data': [
-        [_rounded(value, places) for value, places in zip(row, digits)]
-        for row in table.rows]}, default=str)
+    return json.dumps(
+        {
+            'columns': list(table.columns),
+            'data': [
+                [_rounded(value, places) for value, places in zip(row, digits)]
+                for row in table.rows
+            ],
+        },
+        default=str,
+    )
 
 
 def _rounded(value: Any, digits: int) -> Any:

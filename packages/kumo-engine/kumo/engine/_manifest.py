@@ -59,8 +59,7 @@ class Artifact:
 class Record:
     """A JSON object that keeps unknown keys in ``extra``."""
 
-    extra: Mapping[str, Any] = field(default_factory=dict, repr=False,
-                                     compare=False)
+    extra: Mapping[str, Any] = field(default_factory=dict, repr=False, compare=False)
 
     def as_artifact(self, key: str) -> Optional[Artifact]:
         return None
@@ -69,8 +68,9 @@ class Record:
         data = dict(self.extra)
         for item in fields(self):
             value = getattr(self, item.name)
-            if item.name != 'extra' and not (value is None
-                                             and item.metadata.get(_OMIT_NONE)):
+            if item.name != 'extra' and not (
+                value is None and item.metadata.get(_OMIT_NONE)
+            ):
                 data[item.name] = _plain(value)
         return data
 
@@ -78,19 +78,15 @@ class Record:
     def from_dict(cls: Type[R], data: Mapping[str, Any]) -> R:
         hints = get_type_hints(cls)
         names = {item.name for item in fields(cls)} - {'extra'}
-        nullable = {
-            item.name
-            for item in fields(cls) if item.metadata.get(_OMIT_NONE)
-        }
+        nullable = {item.name for item in fields(cls) if item.metadata.get(_OMIT_NONE)}
         return cls(
-            **{
-                name: _typed(hints[name], data[name])
-                for name in names if name in data
-            }, extra={
+            **{name: _typed(hints[name], data[name]) for name in names if name in data},
+            extra={
                 key: value
                 for key, value in data.items()
                 if key not in names or (key in nullable and value is None)
-            })
+            },
+        )
 
 
 def _plain(value: Any) -> Any:
@@ -145,9 +141,15 @@ class SourceTableEntry(Record):
     namespace: Optional[List[Any]] = omit_none()
 
     def as_artifact(self, key: str) -> Artifact:
-        return Artifact('source_table', key, self.location, True,
-                        connector=self.connector, version=self.version,
-                        version_kind=self.version_kind)
+        return Artifact(
+            'source_table',
+            key,
+            self.location,
+            True,
+            connector=self.connector,
+            version=self.version,
+            version_kind=self.version_kind,
+        )
 
 
 KINDS = ('snapshot', 'training_table', 'model', 'prediction')
@@ -171,13 +173,21 @@ class Manifest(Record):
     @property
     def title(self) -> str:
         short = self.created_at and (
-            f"{self.created_at[:10]}-{re.split('[@-]', self.id)[-1][:6]}")
-        return f"{self.NOUN or self.kind.replace('_', ' ')} {short or self.id}"
+            f'{self.created_at[:10]}-{re.split("[@-]", self.id)[-1][:6]}'
+        )
+        return f'{self.NOUN or self.kind.replace("_", " ")} {short or self.id}'
 
     def as_artifact(self, key: str) -> Artifact:
-        return Artifact(self.kind, self.id, self.location, self.IS_DATASET,
-                        self.URI_TAG, version=self.id, version_kind='exact',
-                        label=self.title)
+        return Artifact(
+            self.kind,
+            self.id,
+            self.location,
+            self.IS_DATASET,
+            self.URI_TAG,
+            version=self.id,
+            version_kind='exact',
+            label=self.title,
+        )
 
     def lineage(self) -> List[Note]:
         return []
@@ -195,8 +205,7 @@ def _walk(value: Any, key: str, root: Manifest) -> Iterator[Artifact]:
         artifact = value.as_artifact(key)
         if artifact is not None:
             yield artifact
-        if isinstance(value, Manifest) and not value.IS_DATASET and \
-                value is not root:
+        if isinstance(value, Manifest) and not value.IS_DATASET and value is not root:
             return
         for item in fields(value):
             yield from _walk(getattr(value, item.name), item.name, root)
@@ -213,20 +222,23 @@ _SCHEMES = {
     'gs': 'GCS',
     'abfss': 'ADLS',
     'file': 'LOCAL_FILE',
-    '': 'LOCAL_FILE'
+    '': 'LOCAL_FILE',
 }
 
 Details = Mapping[str, Tuple[Mapping[str, Any], Mapping[str, Any]]]
 
 
-FIT_ROLES = {'snapshot': 'graph context', 'training_table':
-             'training examples', 'source_table': 'source table'}
-SCORING_ROLES = {'snapshot': 'scoring graph',
-                 'source_table': 'scoring source table'}
+FIT_ROLES = {
+    'snapshot': 'graph context',
+    'training_table': 'training examples',
+    'source_table': 'source table',
+}
+SCORING_ROLES = {'snapshot': 'scoring graph', 'source_table': 'scoring source table'}
 
 
-def artifact_summaries(manifest: Manifest, roles: Mapping[str, str],
-                       details: Optional[Details] = None) -> List[Summary]:
+def artifact_summaries(
+    manifest: Manifest, roles: Mapping[str, str], details: Optional[Details] = None
+) -> List[Summary]:
     r"""Location tags, the locations table and datasets of a manifest."""
     located = [item for item in artifacts(manifest) if item.location]
     tags: Dict[str, str] = {}
@@ -235,22 +247,45 @@ def artifact_summaries(manifest: Manifest, roles: Mapping[str, str],
             tags.setdefault(item.tag, str(item.location))
     summaries: List[Summary] = [
         *(Tag(name, value) for name, value in tags.items()),
-        *([Table('locations', ('kind', 'id', 'location'), tuple(
-            (item.kind, item.id, str(item.location)) for item in located),
-                 brief=True)] if located else []),
+        *(
+            [
+                Table(
+                    'locations',
+                    ('kind', 'id', 'location'),
+                    tuple((item.kind, item.id, str(item.location)) for item in located),
+                    brief=True,
+                )
+            ]
+            if located
+            else []
+        ),
     ]
-    for item in sorted(located, key=lambda item: (_DATASET_ORDER.get(
-            item.kind, len(_DATASET_ORDER)), item.label or item.id)):
+    for item in sorted(
+        located,
+        key=lambda item: (
+            _DATASET_ORDER.get(item.kind, len(_DATASET_ORDER)),
+            item.label or item.id,
+        ),
+    ):
         if not item.is_dataset:
             continue
         location = str(item.location)
-        source = {'connector': item.connector or _connector(location),
-                  'location': location, 'version': item.version,
-                  'version_kind': item.version_kind}
+        source = {
+            'connector': item.connector or _connector(location),
+            'location': location,
+            'version': item.version,
+            'version_kind': item.version_kind,
+        }
         schema, profile = (details or {}).get(item.id, ({}, {}))
-        summaries.append(Dataset(
-            item.label or item.id, source, schema, profile, item.context
-            or roles.get(item.kind, item.kind.replace('_', ' '))))
+        summaries.append(
+            Dataset(
+                item.label or item.id,
+                source,
+                schema,
+                profile,
+                item.context or roles.get(item.kind, item.kind.replace('_', ' ')),
+            )
+        )
     return [*summaries, *manifest.lineage()]
 
 
@@ -260,8 +295,7 @@ _DATASET_ORDER = {'training_table': 0, 'snapshot': 1, 'source_table': 2}
 def _connector(location: str) -> Optional[str]:
     from urllib.parse import urlparse
 
-    return None if location.startswith('@') else _SCHEMES.get(
-        urlparse(location).scheme)
+    return None if location.startswith('@') else _SCHEMES.get(urlparse(location).scheme)
 
 
 def stamp() -> Dict[str, Any]:
@@ -269,11 +303,13 @@ def stamp() -> Dict[str, Any]:
 
     return dict(
         created_at=datetime.now(timezone.utc).isoformat(timespec='seconds'),
-        environment=environment())
+        environment=environment(),
+    )
 
 
-RECONSTRUCTED: Dict[str, Any] = dict(created_at=None, environment=None,
-                                     reconstructed=True)
+RECONSTRUCTED: Dict[str, Any] = dict(
+    created_at=None, environment=None, reconstructed=True
+)
 
 
 def _kinds() -> Dict[str, Type['Manifest']]:
@@ -281,8 +317,9 @@ def _kinds() -> Dict[str, Type['Manifest']]:
     pending = list(Manifest.__subclasses__())
     while pending:
         cls = pending.pop()
-        found[next(str(item.default) for item in fields(cls)
-                   if item.name == 'kind')] = cls
+        found[
+            next(str(item.default) for item in fields(cls) if item.name == 'kind')
+        ] = cls
         pending.extend(cls.__subclasses__())
     return found
 
@@ -292,10 +329,7 @@ def stub(kind: str, id: str) -> 'Manifest':
 
 
 def embedded(manifest: M) -> M:
-    return replace(manifest, **{
-        name: None
-        for name in manifest.EMBED_OMITS
-    })
+    return replace(manifest, **{name: None for name in manifest.EMBED_OMITS})
 
 
 def _parent(hint: Type[M], value: Any) -> M:
@@ -303,8 +337,11 @@ def _parent(hint: Type[M], value: Any) -> M:
         return hint.from_dict(value)
     except (AttributeError, TypeError, ValueError, KeyError) as error:
         identifier = value.get('id') if isinstance(value, AbcMapping) else None
-        warnings.warn(f"Reading an unreadable parent manifest as a stub: "
-                      f"{error}", UserWarning, stacklevel=2)
+        warnings.warn(
+            f'Reading an unreadable parent manifest as a stub: {error}',
+            UserWarning,
+            stacklevel=2,
+        )
         return hint(id=str(identifier), reconstructed=True)
 
 
@@ -381,12 +418,13 @@ class TrackingRef(Record):
 
     def _repr_html_(self) -> str:
         name = html.escape(self.run_name or self.run_id)
-        where = (f' in {html.escape(self.experiment)}'
-                 if self.experiment else '')
+        where = f' in {html.escape(self.experiment)}' if self.experiment else ''
         if self.url is None:
             return f'{html.escape(self.platform)} run <code>{name}</code>{where}'
-        return (f'<a href="{html.escape(self.url)}" target="_blank" '
-                f'rel="noopener">{name}</a>{where}')
+        return (
+            f'<a href="{html.escape(self.url)}" target="_blank" '
+            f'rel="noopener">{name}</a>{where}'
+        )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -405,9 +443,18 @@ class Dependency(Record):
 
     def as_artifact(self, key: str) -> Optional[Artifact]:
         kind = _kinds().get(self.kind)
-        return None if kind is None else Artifact(
-            self.kind, str(self.sha256), self.location, kind.IS_DATASET,
-            version=self.sha256, version_kind='exact')
+        return (
+            None
+            if kind is None
+            else Artifact(
+                self.kind,
+                str(self.sha256),
+                self.location,
+                kind.IS_DATASET,
+                version=self.sha256,
+                version_kind='exact',
+            )
+        )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -437,13 +484,26 @@ class ModelManifest(Manifest):
         table, graph = _fit_data(self)
         if table is None or graph is None:
             return []
-        return [Note('lineage/model', ' → '.join(filter(None, [
-            ', '.join(_tables(graph, located=True)), graph.title,
-            table.title])))]
+        return [
+            Note(
+                'lineage/model',
+                ' → '.join(
+                    filter(
+                        None,
+                        [
+                            ', '.join(_tables(graph, located=True)),
+                            graph.title,
+                            table.title,
+                        ],
+                    )
+                ),
+            )
+        ]
 
 
-def _fit_data(model: ModelManifest) -> Tuple[
-        Optional[TrainingTableManifest], Optional[SnapshotManifest]]:
+def _fit_data(
+    model: ModelManifest,
+) -> Tuple[Optional[TrainingTableManifest], Optional[SnapshotManifest]]:
     table = model.parents and model.parents.training_table
     return table, table and table.parents and table.parents.snapshot
 
@@ -454,21 +514,25 @@ def _sources(graph: SnapshotManifest) -> Dict[str, SourceTableEntry]:
 
 def _tables(graph: SnapshotManifest, located: bool) -> List[str]:
     return [
-        f'`{name}`' + (f' v{entry.version}' if entry.version else '') +
-        (f' (`{entry.location}`)' if located and entry.location else '')
-        for name, entry in _sources(graph).items()]
+        f'`{name}`'
+        + (f' v{entry.version}' if entry.version else '')
+        + (f' (`{entry.location}`)' if located and entry.location else '')
+        for name, entry in _sources(graph).items()
+    ]
 
 
 def _changed(trained: SnapshotManifest, scored: SnapshotManifest) -> str:
-    before = {name: entry.version
-              for name, entry in _sources(trained).items()}
-    newer = [f'`{name}` (v{before[name]} → v{entry.version})'
-             if before.get(name) else f'`{name}`'
-             for name, entry in _sources(scored).items()
-             if entry.version != before.get(name)]
-    return ('Scored on a different snapshot than the model was trained on'
-            + (f"; newer: {', '.join(newer)}." if newer
-               else ', with the same table versions.'))
+    before = {name: entry.version for name, entry in _sources(trained).items()}
+    newer = [
+        f'`{name}` (v{before[name]} → v{entry.version})'
+        if before.get(name)
+        else f'`{name}`'
+        for name, entry in _sources(scored).items()
+        if entry.version != before.get(name)
+    ]
+    return 'Scored on a different snapshot than the model was trained on' + (
+        f'; newer: {", ".join(newer)}.' if newer else ', with the same table versions.'
+    )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -515,13 +579,17 @@ class PredictionOutput(Record):
     destination: OutputDestination
 
     def as_artifact(self, key: str) -> Artifact:
-        connector, location = (self.destination.connector,
-                               self.destination.location)
-        file = connector in PATH_CONNECTORS or (
-            location or '').startswith(('/', '@'))
-        return Artifact('prediction_output', self.artifact, location, True,
-                        'kumo.output_uri' if file else 'kumo.output_table',
-                        connector=connector, context='output')
+        connector, location = (self.destination.connector, self.destination.location)
+        file = connector in PATH_CONNECTORS or (location or '').startswith(('/', '@'))
+        return Artifact(
+            'prediction_output',
+            self.artifact,
+            location,
+            True,
+            'kumo.output_uri' if file else 'kumo.output_table',
+            connector=connector,
+            context='output',
+        )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -554,12 +622,36 @@ class PredictionManifest(Manifest):
     def lineage(self) -> List[Note]:
         table, trained = _fit_data(self.parents.model)
         scored = self.parents.snapshot
-        notes = [] if table is None or trained is None else [Note(
-            'lineage/model', ' ← '.join(filter(None, [
-                table.title, trained.title,
-                ', '.join(_tables(trained, located=False))])))]
-        notes.append(Note('lineage', 'Scored: ' + ' ← '.join(filter(None, [
-            scored.title, ', '.join(_tables(scored, located=True))]))))
+        notes = (
+            []
+            if table is None or trained is None
+            else [
+                Note(
+                    'lineage/model',
+                    ' ← '.join(
+                        filter(
+                            None,
+                            [
+                                table.title,
+                                trained.title,
+                                ', '.join(_tables(trained, located=False)),
+                            ],
+                        )
+                    ),
+                )
+            ]
+        )
+        notes.append(
+            Note(
+                'lineage',
+                'Scored: '
+                + ' ← '.join(
+                    filter(
+                        None, [scored.title, ', '.join(_tables(scored, located=True))]
+                    )
+                ),
+            )
+        )
         if trained is not None and trained.id != scored.id:
             notes.append(Note('lineage', _changed(trained, scored)))
         return notes
@@ -578,8 +670,9 @@ class AssetManifest(Manifest):
 
 
 def manifest_bytes(manifest: Manifest) -> bytes:
-    return (json.dumps(manifest.to_dict(), indent=2, sort_keys=True) +
-            '\n').encode('utf-8')
+    return (json.dumps(manifest.to_dict(), indent=2, sort_keys=True) + '\n').encode(
+        'utf-8'
+    )
 
 
 def write_manifest(path: Path, manifest: Manifest) -> None:
@@ -589,12 +682,11 @@ def write_manifest(path: Path, manifest: Manifest) -> None:
 def read_manifest(path: Path, kind: Type[M]) -> Optional[M]:
     try:
         manifest = json.loads(path.read_text(encoding='utf-8'))
-        version = (manifest.get('schema_version')
-                   if isinstance(manifest, dict) else None)
+        version = manifest.get('schema_version') if isinstance(manifest, dict) else None
         if type(version) is not int or not 1 <= version <= SCHEMA_VERSION:
             warnings.warn(
-                f"Ignoring {path}: manifest schema_version {version!r} is not "
-                f"supported by this kumo-engine (up to {SCHEMA_VERSION}).",
+                f'Ignoring {path}: manifest schema_version {version!r} is not '
+                f'supported by this kumo-engine (up to {SCHEMA_VERSION}).',
                 UserWarning,
                 stacklevel=3,
             )
@@ -603,6 +695,7 @@ def read_manifest(path: Path, kind: Type[M]) -> Optional[M]:
     except FileNotFoundError:
         return None
     except (OSError, ValueError, AttributeError, TypeError) as error:
-        warnings.warn(f"Ignoring unreadable manifest {path}: {error}",
-                      UserWarning, stacklevel=3)
+        warnings.warn(
+            f'Ignoring unreadable manifest {path}: {error}', UserWarning, stacklevel=3
+        )
         return None

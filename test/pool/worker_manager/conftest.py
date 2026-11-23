@@ -13,11 +13,13 @@ def _clear_pod_service_account(monkeypatch):  # pyright: ignore[reportUnusedFunc
     monkeypatch.delenv('POD_SERVICE_ACCOUNT', raising=False)
 
 
-@pytest.fixture(params=[(None, None), (1000, 1000), (1000710000, 0),
-                        (1000, None), (None, 1000)])
+@pytest.fixture(
+    params=[(None, None), (1000, 1000), (1000710000, 0), (1000, None), (None, 1000)]
+)
 def worker_identity(request, monkeypatch):
-    for name, value in zip(('POOL_WORKER_RUN_AS_USER', 'POOL_WORKER_RUN_AS_GROUP'),
-                           request.param):
+    for name, value in zip(
+        ('POOL_WORKER_RUN_AS_USER', 'POOL_WORKER_RUN_AS_GROUP'), request.param
+    ):
         if value is None:
             monkeypatch.delenv(name, raising=False)
         else:

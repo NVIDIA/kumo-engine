@@ -45,23 +45,32 @@ def get_task_type_from_target_column(
         query_type=QueryType.STATIC,
     )
     if target_col.dtype == Dtype.bool:
-        reason = ('The target clause is a column in your graph '
-                  'and it has a data type of Boolean.')
+        reason = (
+            'The target clause is a column in your graph '
+            'and it has a data type of Boolean.'
+        )
     elif target_col.stype == Stype.numerical:
-        reason = ('The target clause is a column in your graph '
-                  'and it has a Numerical semantic type.')
+        reason = (
+            'The target clause is a column in your graph '
+            'and it has a Numerical semantic type.'
+        )
     elif target_col.stype == Stype.categorical:
-        reason = ('The target clause is a column in your graph '
-                  'and it has a Categorical semantic type.')
+        reason = (
+            'The target clause is a column in your graph '
+            'and it has a Categorical semantic type.'
+        )
     elif target_col.stype == Stype.multicategorical:
-        problem = ('RANK'
-                   if task_type == TaskType.MULTILABEL_RANKING else 'CLASSIFY')
-        reason = ('The target clause is a column in your graph, '
-                  'it has a semantic type of Multicategorical, '
-                  f'and the {problem} problem was selected.')
+        problem = 'RANK' if task_type == TaskType.MULTILABEL_RANKING else 'CLASSIFY'
+        reason = (
+            'The target clause is a column in your graph, '
+            'it has a semantic type of Multicategorical, '
+            f'and the {problem} problem was selected.'
+        )
     else:
-        reason = ('The target clause is a column in your graph, and '
-                  'your target has ID semantic type. ')
+        reason = (
+            'The target clause is a column in your graph, and '
+            'your target has ID semantic type. '
+        )
     return TaskTypeWithReason(task_type=task_type, reason=reason)
 
 
@@ -91,63 +100,73 @@ def get_task_type_from_aggr(
         aggregation_type=aggr.aggr,
         aggregation_target_dtype=aggregation_target_dtype,
         aggregation_is_wildcard=aggregation_is_wildcard,
-        aggregation_target_is_foreign_key=isinstance(aggregated_col,
-                                                     ForeignKey),
-        rhs_node_type=(aggregated_col.dst_table if isinstance(
-            aggregated_col, ForeignKey) else None),
+        aggregation_target_is_foreign_key=isinstance(aggregated_col, ForeignKey),
+        rhs_node_type=(
+            aggregated_col.dst_table if isinstance(aggregated_col, ForeignKey) else None
+        ),
     )
     if aggregation_is_wildcard:
         reason = (
             'The target clause is a COUNT aggregation with a wildcard column '
             'and a forecast length was specified.'
-            if task_type == TaskType.FORECASTING else
-            'The target clause is a numerical COUNT aggregation.')
-    elif (aggr.aggr == AggregationType.LIST_DISTINCT
-          and isinstance(aggregated_col, ForeignKey)):
+            if task_type == TaskType.FORECASTING
+            else 'The target clause is a numerical COUNT aggregation.'
+        )
+    elif aggr.aggr == AggregationType.LIST_DISTINCT and isinstance(
+        aggregated_col, ForeignKey
+    ):
         if task_type == TaskType.MULTILABEL_CLASSIFICATION:
             reason = (
                 'The target clause is a LIST_DISTINCT aggregation on a '
                 'column that acts as a foreign key and the CLASSIFY problem '
-                'type was selected.')
+                'type was selected.'
+            )
         elif task_type == TaskType.TEMPORAL_LINK_PREDICTION:
             reason = (
                 'The target clause is a LIST_DISTINCT aggregation on a '
                 'column that acts as a foreign key and the RANK problem type '
-                'was selected.')
+                'was selected.'
+            )
         else:
             reason = (
                 'The target clause is a LIST_DISTINCT aggregation on a '
                 'column that acts as a foreign key without a time window and '
-                'the RANK problem type was selected.')
+                'the RANK problem type was selected.'
+            )
     elif query.target_stype in [Stype.categorical, Stype.ID]:
-        reason = ('The target clause is an aggregation on '
-                  'a column with a Categorical or ID type.')
+        reason = (
+            'The target clause is an aggregation on '
+            'a column with a Categorical or ID type.'
+        )
     elif query.target_stype == Stype.multicategorical:
-        problem = ('RANK'
-                   if task_type == TaskType.MULTILABEL_RANKING else 'CLASSIFY')
-        reason = ('The target clause is an aggregation on a column with a '
-                  f'Multicategorical type and the {problem} problem type was '
-                  'selected.')
+        problem = 'RANK' if task_type == TaskType.MULTILABEL_RANKING else 'CLASSIFY'
+        reason = (
+            'The target clause is an aggregation on a column with a '
+            f'Multicategorical type and the {problem} problem type was '
+            'selected.'
+        )
     elif aggregated_col.dtype == Dtype.bool:
         if aggr.aggr in [
-                AggregationType.COUNT,
-                AggregationType.COUNT_DISTINCT,
-                AggregationType.SUM,
-                AggregationType.AVG,
+            AggregationType.COUNT,
+            AggregationType.COUNT_DISTINCT,
+            AggregationType.SUM,
+            AggregationType.AVG,
         ]:
-            suffix = (' and a forecast length was specified.'
-                      if task_type == TaskType.FORECASTING else '.')
-            reason = (f'The target clause is a {aggr.aggr.value} aggregation'
-                      f'{suffix}')
+            suffix = (
+                ' and a forecast length was specified.'
+                if task_type == TaskType.FORECASTING
+                else '.'
+            )
+            reason = f'The target clause is a {aggr.aggr.value} aggregation{suffix}'
         else:
-            reason = ('The target clause is an aggregation on '
-                      'a boolean column.')
+            reason = 'The target clause is an aggregation on a boolean column.'
     elif task_type == TaskType.FORECASTING:
-        reason = ('The target clause is a numerical aggregation '
-                  'and a forecast length was specified.')
-    else:
         reason = (
-            'The target clause is a numerical aggregation (SUM, COUNT, etc).')
+            'The target clause is a numerical aggregation '
+            'and a forecast length was specified.'
+        )
+    else:
+        reason = 'The target clause is a numerical aggregation (SUM, COUNT, etc).'
     return TaskTypeWithReason(task_type=task_type, reason=reason)
 
 
@@ -164,8 +183,10 @@ def get_task_type(
         Stype.unsupported,
     ]
     # Top node is condition or logical operation
-    if (query.target_dtype == Dtype.bool
-            and query.target_stype in [Stype.categorical, Stype.ID]):
+    if query.target_dtype == Dtype.bool and query.target_stype in [
+        Stype.categorical,
+        Stype.ID,
+    ]:
         task_type, _ = resolve_task_type(
             target_is_column=False,
             target_dtype=query.target_dtype,
@@ -173,8 +194,10 @@ def get_task_type(
             problem_type=query.problem_type,
             query_type=query.query_type,
         )
-        reason = ('The target clause is a condition or logical operation, '
-                  'and is an ID or Categorical Boolean')
+        reason = (
+            'The target clause is a condition or logical operation, '
+            'and is an ID or Categorical Boolean'
+        )
         return TaskTypeWithReason(task_type=task_type, reason=reason)
 
     # The label can now only come from an aggregation or a column.
@@ -195,19 +218,21 @@ def get_default_target_time_range(
     graph: Graph, query: ValidatedPredictiveQuery
 ) -> Tuple[pd.Timestamp, pd.Timestamp, Optional[pd.Timedelta]]:
     r"""Determine the total time range that can be used to generate
-        targets. Unless overriden with `train_start_offset` or
-        `train_end_offset`, target data will be taken from this range.
+    targets. Unless overriden with `train_start_offset` or
+    `train_end_offset`, target data will be taken from this range.
 
-        Returns:
-            Tuple[pd.Timestamp, pd.Timestamp, Optional[pd.Timedelta]]: A tuple
-                of min date, max date, and time delta caused by filter buffer,
-                (:obj:`None` if not used or 0) respectively.
-        """
+    Returns:
+        Tuple[pd.Timestamp, pd.Timestamp, Optional[pd.Timedelta]]: A tuple
+            of min date, max date, and time delta caused by filter buffer,
+            (:obj:`None` if not used or 0) respectively.
+    """
     target_aggrs = query.get_all_target_aggregations()
     if len(target_aggrs) == 0:
         # Should not happen
-        raise ValueError('Cannot compute target time range because target '
-                         'does not have any aggregations.')
+        raise ValueError(
+            'Cannot compute target time range because target '
+            'does not have any aggregations.'
+        )
     # Of all aggregations that appear in the label computation, we take the
     # latest min date and latest max date. For example, if the query is
     # COUNT(sessions.*, 0, 7) > 10 AND SUM(transactions.value, 2, 5) > 20,
@@ -233,17 +258,18 @@ def get_default_target_time_range(
         _max = stats[ColStatType.MAX]
         assert _min is not None
         assert _max is not None
-        if (is_missing_stat_value(_min.value)
-                or is_missing_stat_value(_max.value)):
+        if is_missing_stat_value(_min.value) or is_missing_stat_value(_max.value):
             # Either the table is fully empty or there was an error in exact
             # stats computation.
             raise TrainingTableGenerationError(
-                title="Failed to compute target time range",
-                message=("There was an error getting the time ranges for the "
-                         f"{time_col.name} column in the {target_table_name} "
-                         "table. Check that the table is not empty, the time "
-                         "column has non-null values, and column stats are "
-                         "available."),
+                title='Failed to compute target time range',
+                message=(
+                    'There was an error getting the time ranges for the '
+                    f'{time_col.name} column in the {target_table_name} '
+                    'table. Check that the table is not empty, the time '
+                    'column has non-null values, and column stats are '
+                    'available.'
+                ),
             )
         _min = _time_stat_to_timestamp(_min.value)
         _max = _time_stat_to_timestamp(_max.value)

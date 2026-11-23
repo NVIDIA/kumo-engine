@@ -17,10 +17,8 @@ from kumo_core.training.table import (
     TrainTableRequest,
     apply_reference_resolution,
 )
-from kumo_core.training.table import \
-    build_split_spec as build_native_split_spec
-from kumo_core.training.table import \
-    generate_train_table as generate_native_train_table
+from kumo_core.training.table import build_split_spec as build_native_split_spec
+from kumo_core.training.table import generate_train_table as generate_native_train_table
 from kumo_core.training.timestamps import forecast_offsets
 from kumoapi.pquery.validated_predictive_query import ValidatedPredictiveQuery
 
@@ -70,8 +68,7 @@ _BUNDLE_POINTER_FILENAME = '_current.json'
 _IMMUTABLE_BUNDLES_DIRNAME = '_bundles'
 _BUNDLE_RESTORE_SOURCE_FILENAME = '_restored_from.json'
 _TT_INGEST_SPEC_V3 = 'diskgraph.tt_ingest_spec.v3'
-_STAGE_ARTIFACT_INVENTORY_V1 = \
-    'diskgraph.tt_stage_artifact_inventory.v1'
+_STAGE_ARTIFACT_INVENTORY_V1 = 'diskgraph.tt_stage_artifact_inventory.v1'
 
 
 def ttng_bundle_dir_for_train_table(train_table_path: str) -> str:
@@ -85,7 +82,8 @@ def ttng_bundle_dir_for_train_table(train_table_path: str) -> str:
     if osp.basename(normalized) != TT_PARQUET_FILENAME:
         raise TTNGBundleError(
             'TT-NG: train_table_path must select the physical '
-            f'{TT_PARQUET_FILENAME!r} artifact; got {train_table_path!r}.')
+            f'{TT_PARQUET_FILENAME!r} artifact; got {train_table_path!r}.'
+        )
     return osp.dirname(normalized)
 
 
@@ -97,20 +95,21 @@ def _assert_local_bundle_root(staging_dir: str) -> None:
         root_stat = os.lstat(staging_dir)
     except FileNotFoundError as error:
         raise TTNGBundleError(
-            f'TT-NG: durable staging bundle is missing at '
-            f'{staging_dir!r}.') from error
+            f'TT-NG: durable staging bundle is missing at {staging_dir!r}.'
+        ) from error
     except OSError as error:
         raise TTNGBundleError(
-            f'TT-NG: staging root {staging_dir!r} cannot be inspected.') \
-            from error
+            f'TT-NG: staging root {staging_dir!r} cannot be inspected.'
+        ) from error
     if stat.S_ISLNK(root_stat.st_mode) or not stat.S_ISDIR(root_stat.st_mode):
         raise TTNGBundleError(
-            f'TT-NG: staging root {staging_dir!r} must be a non-symlink '
-            'directory.')
+            f'TT-NG: staging root {staging_dir!r} must be a non-symlink directory.'
+        )
 
 
-def _assert_local_bundle_path(staging_dir: str, relative_path: str,
-                              *, leaf_is_file: bool) -> None:
+def _assert_local_bundle_path(
+    staging_dir: str, relative_path: str, *, leaf_is_file: bool
+) -> None:
     """Require a typed leaf beneath only real directory components."""
     if not fsutil.is_local(staging_dir):
         # Object-store entries have no symlink or POSIX special-file type. The
@@ -124,32 +123,32 @@ def _assert_local_bundle_path(staging_dir: str, relative_path: str,
             path_stat = os.lstat(current)
         except OSError as error:
             raise TTNGBundleError(
-                f'TT-NG: bundle artifact {relative_path!r} cannot be '
-                'inspected.') from error
+                f'TT-NG: bundle artifact {relative_path!r} cannot be inspected.'
+            ) from error
         is_leaf = index == len(components) - 1
         if stat.S_ISLNK(path_stat.st_mode):
             raise TTNGBundleError(
-                f'TT-NG: bundle artifact {relative_path!r} traverses a '
-                'symlink.')
+                f'TT-NG: bundle artifact {relative_path!r} traverses a symlink.'
+            )
         expected_type = (
             stat.S_ISREG(path_stat.st_mode)
-            if is_leaf and leaf_is_file else stat.S_ISDIR(path_stat.st_mode))
+            if is_leaf and leaf_is_file
+            else stat.S_ISDIR(path_stat.st_mode)
+        )
         if not expected_type:
             kind = 'regular file' if is_leaf and leaf_is_file else 'directory'
             raise TTNGBundleError(
                 f'TT-NG: bundle artifact {relative_path!r} requires a '
-                f'{kind} at {current!r}.')
+                f'{kind} at {current!r}.'
+            )
 
 
 def _assert_local_bundle_file(staging_dir: str, relative_path: str) -> None:
-    _assert_local_bundle_path(
-        staging_dir, relative_path, leaf_is_file=True)
+    _assert_local_bundle_path(staging_dir, relative_path, leaf_is_file=True)
 
 
-def _assert_local_bundle_directory(staging_dir: str,
-                                   relative_path: str) -> None:
-    _assert_local_bundle_path(
-        staging_dir, relative_path, leaf_is_file=False)
+def _assert_local_bundle_directory(staging_dir: str, relative_path: str) -> None:
+    _assert_local_bundle_path(staging_dir, relative_path, leaf_is_file=False)
 
 
 def _load_durable_ttng_pointer(staging_dir: str) -> Optional[str]:
@@ -163,12 +162,16 @@ def _load_durable_ttng_pointer(staging_dir: str) -> Optional[str]:
             f'TT-NG: durable bundle pointer at {pointer_path!r} is invalid.'
         ) from error
     bundle_id = pointer.get('bundle_id') if isinstance(pointer, dict) else None
-    if (not isinstance(bundle_id, str) or not bundle_id
-            or bundle_id in {'.', '..'}
-            or osp.basename(bundle_id) != bundle_id):
+    if (
+        not isinstance(bundle_id, str)
+        or not bundle_id
+        or bundle_id in {'.', '..'}
+        or osp.basename(bundle_id) != bundle_id
+    ):
         raise TTNGBundleError(
             f'TT-NG: durable bundle pointer at {pointer_path!r} has an '
-            'invalid bundle_id.')
+            'invalid bundle_id.'
+        )
 
     return bundle_id
 
@@ -203,20 +206,22 @@ def read_tt_id_from_staging_bundle(staging_dir: str) -> str:
         raise TTNGBundleError(
             f'TT-NG: durable staging bundle at {staging_dir!r} is missing '
             f'{TT_INGEST_SPEC_FILENAME}; cannot resolve tt_id. The gen job '
-            'must persist the bundle before consumers run.')
+            'must persist the bundle before consumers run.'
+        )
     spec = json.loads(fsutil.read_binary(spec_path))
     if not isinstance(spec, dict):
         raise TTNGBundleError(
-            f'TT-NG: ingest spec at {spec_path!r} must be a JSON object.')
+            f'TT-NG: ingest spec at {spec_path!r} must be a JSON object.'
+        )
     if spec.get('schema_version') != _TT_INGEST_SPEC_V3:
         raise TTNGBundleError(
-            f'TT-NG: ingest spec at {spec_path!r} must use '
-            f'{_TT_INGEST_SPEC_V3!r}.')
+            f'TT-NG: ingest spec at {spec_path!r} must use {_TT_INGEST_SPEC_V3!r}.'
+        )
     tt_id = spec.get('tt_id')
     if not isinstance(tt_id, str) or not tt_id:
         raise TTNGBundleError(
-            f'TT-NG: {spec_path!r} has no usable "tt_id" field '
-            f'(got {tt_id!r}).')
+            f'TT-NG: {spec_path!r} has no usable "tt_id" field (got {tt_id!r}).'
+        )
     return tt_id
 
 
@@ -261,8 +266,9 @@ def _bundle_relative_file_inventory(staging_dir: str) -> set[str]:
             if not entry.path.startswith(root_prefix):
                 raise TTNGBundleError(
                     f'TT-NG: bundle listing returned path {entry.path!r} '
-                    f'outside {staging_dir!r}.')
-            relative_files.add(entry.path[len(root_prefix):])
+                    f'outside {staging_dir!r}.'
+                )
+            relative_files.add(entry.path[len(root_prefix) :])
 
     return relative_files
 
@@ -296,8 +302,9 @@ def _assert_ttng_bundle_complete(
     unresolved_staging_dir = staging_dir
     _assert_local_bundle_root(unresolved_staging_dir)
     staging_dir = resolve_durable_ttng_bundle(unresolved_staging_dir)
-    if (staging_dir != unresolved_staging_dir
-            and fsutil.is_local(unresolved_staging_dir)):
+    if staging_dir != unresolved_staging_dir and fsutil.is_local(
+        unresolved_staging_dir
+    ):
         _assert_local_bundle_directory(
             unresolved_staging_dir,
             osp.relpath(staging_dir, unresolved_staging_dir),
@@ -306,30 +313,31 @@ def _assert_ttng_bundle_complete(
     spec_path = osp.join(staging_dir, TT_INGEST_SPEC_FILENAME)
     relative_files = _bundle_relative_file_inventory(staging_dir)
     required_top_level = (TT_INGEST_SPEC_FILENAME, 'manifest.json')
-    missing = [
-        name for name in required_top_level if name not in relative_files
-    ]
+    missing = [name for name in required_top_level if name not in relative_files]
     if missing:
         raise TTNGBundleError(
-            f'TT-NG: durable staging bundle is missing {missing} at '
-            f'{staging_dir!r}.')
+            f'TT-NG: durable staging bundle is missing {missing} at {staging_dir!r}.'
+        )
     _assert_local_bundle_file(staging_dir, TT_INGEST_SPEC_FILENAME)
     spec = json.loads(fsutil.read_binary(spec_path))
     if not isinstance(spec, dict):
         raise TTNGBundleError(
-            f'TT-NG: ingest spec at {spec_path!r} must be a JSON object.')
+            f'TT-NG: ingest spec at {spec_path!r} must be a JSON object.'
+        )
     spec_version = spec.get('schema_version')
     if spec_version != _TT_INGEST_SPEC_V3:
         raise TTNGBundleError(
             f'TT-NG: durable staging bundle has unsupported ingest spec '
-            f'version {spec_version!r}.')
+            f'version {spec_version!r}.'
+        )
 
     train_table_path = osp.join(staging_dir, TT_PARQUET_FILENAME)
     if not fsutil.isdir(train_table_path):
         raise TTNGBundleError(
             f'TT-NG: v3 durable staging bundle requires a '
             f'{TT_PARQUET_FILENAME!r} dataset directory at '
-            f'{staging_dir!r}.')
+            f'{staging_dir!r}.'
+        )
     _assert_local_bundle_directory(staging_dir, TT_PARQUET_FILENAME)
 
     manifest_path = osp.join(staging_dir, 'manifest.json')
@@ -337,7 +345,8 @@ def _assert_ttng_bundle_complete(
         raise TTNGBundleError(
             f'TT-NG: {spec_version} durable staging bundle at '
             f'{staging_dir!r} is '
-            'missing manifest.json.')
+            'missing manifest.json.'
+        )
     _assert_local_bundle_file(staging_dir, 'manifest.json')
     if validate_manifest:
         try:
@@ -351,34 +360,41 @@ def _assert_ttng_bundle_complete(
     # split path each stage declares relative ``parts`` under the staging dir.
     stages = spec.get('split_stages') or []
     if not isinstance(stages, list) or any(
-            not isinstance(stage, dict) for stage in stages):
+        not isinstance(stage, dict) for stage in stages
+    ):
         raise TTNGBundleError(
-            f'TT-NG: split_stages in {spec_path!r} must be a list of '
-            'objects.')
+            f'TT-NG: split_stages in {spec_path!r} must be a list of objects.'
+        )
     declared_parts = []
     for stage in stages:
         parts = stage.get('parts') or []
         if not isinstance(parts, list):
-            raise TTNGBundleError(
-                'TT-NG: split stage parts must be a list.')
+            raise TTNGBundleError('TT-NG: split stage parts must be a list.')
         for part in parts:
             normalized = osp.normpath(part) if isinstance(part, str) else None
-            if (not isinstance(part, str) or not part or osp.isabs(part)
-                    or normalized != part or part == '..'
-                    or part.startswith(f'..{osp.sep}')):
+            if (
+                not isinstance(part, str)
+                or not part
+                or osp.isabs(part)
+                or normalized != part
+                or part == '..'
+                or part.startswith(f'..{osp.sep}')
+            ):
                 raise TTNGBundleError(
-                    f'TT-NG: split stage has unsafe part path {part!r}.')
+                    f'TT-NG: split stage has unsafe part path {part!r}.'
+                )
         declared_parts.extend(parts)
     if len(declared_parts) != len(set(declared_parts)):
-        raise TTNGBundleError(
-            'TT-NG: split stages contain duplicate part paths.')
-    missing_parts = [part for part in declared_parts
-                     if osp.normpath(part) not in relative_files]
+        raise TTNGBundleError('TT-NG: split stages contain duplicate part paths.')
+    missing_parts = [
+        part for part in declared_parts if osp.normpath(part) not in relative_files
+    ]
     if missing_parts:
         raise TTNGBundleError(
             f'TT-NG: durable staging bundle at {staging_dir!r} is missing '
             f'declared stage part file(s) {missing_parts}; the gen→ingest '
-            'handoff did not fully persist.')
+            'handoff did not fully persist.'
+        )
     for part in declared_parts:
         _assert_local_bundle_file(staging_dir, part)
 
@@ -390,61 +406,73 @@ def _assert_ttng_bundle_complete(
         stage_key = stage.get('key')
         parts = stage.get('parts')
         row_count = stage.get('row_count')
-        if (not isinstance(stage_key, str) or not stage_key
-                or not isinstance(parts, list) or not parts
-                or isinstance(row_count, bool)
-                or not isinstance(row_count, int) or row_count < 0):
+        if (
+            not isinstance(stage_key, str)
+            or not stage_key
+            or not isinstance(parts, list)
+            or not parts
+            or isinstance(row_count, bool)
+            or not isinstance(row_count, int)
+            or row_count < 0
+        ):
             raise TTNGBundleError(
-                f'TT-NG: split stage declaration is invalid: {stage!r}.')
+                f'TT-NG: split stage declaration is invalid: {stage!r}.'
+            )
         inventory = stage.get('artifact_inventory')
         if not isinstance(inventory, dict):
             raise TTNGBundleError(
-                f'TT-NG: split stage {stage_key!r} is missing its '
-                'artifact inventory.')
-        if (inventory.get('schema_version') !=
-                _STAGE_ARTIFACT_INVENTORY_V1
-                or not isinstance(inventory.get('parts'), list)
-                or len(inventory['parts']) != len(parts)):
+                f'TT-NG: split stage {stage_key!r} is missing its artifact inventory.'
+            )
+        if (
+            inventory.get('schema_version') != _STAGE_ARTIFACT_INVENTORY_V1
+            or not isinstance(inventory.get('parts'), list)
+            or len(inventory['parts']) != len(parts)
+        ):
             raise TTNGBundleError(
-                f'TT-NG: split stage {stage_key!r} has an invalid '
-                'artifact inventory.')
+                f'TT-NG: split stage {stage_key!r} has an invalid artifact inventory.'
+            )
         declared_artifacts = inventory['parts']
 
         observed_rows = 0
         for part_index, part in enumerate(parts):
             artifact_path = osp.join(staging_dir, part)
             try:
-                actual_size, actual_rows = _inspect_parquet_artifact(
-                    artifact_path)
+                actual_size, actual_rows = _inspect_parquet_artifact(artifact_path)
             except Exception as error:
                 raise TTNGBundleError(
                     f'TT-NG: split stage {stage_key!r} part {part!r} has '
-                    'invalid parquet metadata.') from error
+                    'invalid parquet metadata.'
+                ) from error
             declared = declared_artifacts[part_index]
-            if (not isinstance(declared, dict)
-                    or declared.get('path') != part
-                    or isinstance(declared.get('size_bytes'), bool)
-                    or not isinstance(declared.get('size_bytes'), int)
-                    or declared['size_bytes'] <= 0
-                    or isinstance(declared.get('row_count'), bool)
-                    or not isinstance(declared.get('row_count'), int)
-                    or declared['row_count'] < 0):
+            if (
+                not isinstance(declared, dict)
+                or declared.get('path') != part
+                or isinstance(declared.get('size_bytes'), bool)
+                or not isinstance(declared.get('size_bytes'), int)
+                or declared['size_bytes'] <= 0
+                or isinstance(declared.get('row_count'), bool)
+                or not isinstance(declared.get('row_count'), int)
+                or declared['row_count'] < 0
+            ):
                 raise TTNGBundleError(
                     f'TT-NG: split stage {stage_key!r} has invalid '
-                    f'metadata for part {part!r}.')
+                    f'metadata for part {part!r}.'
+                )
             if actual_size != declared['size_bytes']:
                 raise TTNGBundleError(
-                    f'TT-NG: split stage {stage_key!r} part {part!r} '
-                    'size mismatch.')
+                    f'TT-NG: split stage {stage_key!r} part {part!r} size mismatch.'
+                )
             if actual_rows != declared['row_count']:
                 raise TTNGBundleError(
                     f'TT-NG: split stage {stage_key!r} part {part!r} '
-                    'row_count mismatch.')
+                    'row_count mismatch.'
+                )
             observed_rows += actual_rows
         if observed_rows != row_count:
             raise TTNGBundleError(
                 f'TT-NG: split stage {stage_key!r} row_count mismatch: '
-                f'expected={row_count} actual={observed_rows}.')
+                f'expected={row_count} actual={observed_rows}.'
+            )
 
 
 def restore_durable_ttng_bundle(
@@ -457,7 +485,9 @@ def restore_durable_ttng_bundle(
         assert_ttng_bundle_complete(local_staging_dir)
         restored_from = json.loads(
             fsutil.read_text(
-                osp.join(local_staging_dir, _BUNDLE_RESTORE_SOURCE_FILENAME)))
+                osp.join(local_staging_dir, _BUNDLE_RESTORE_SOURCE_FILENAME)
+            )
+        )
         if restored_from == {'source': durable_bundle}:
             return local_staging_dir
     except Exception:
@@ -503,11 +533,13 @@ def _validate_ttng_bundle_for_publish(
     tt_id = spec.get('tt_id') if isinstance(spec, dict) else None
     if not isinstance(tt_id, str) or not tt_id:
         raise TTNGBundleError(
-            f'TT-NG: {spec_path!r} has no usable tt_id for publication.')
+            f'TT-NG: {spec_path!r} has no usable tt_id for publication.'
+        )
     if expected_tt_id is not None and tt_id != expected_tt_id:
         raise TTNGBundleError(
             f'TT-NG: bundle attempt mismatch: expected {expected_tt_id!r}, '
-            f'got {tt_id!r}.')
+            f'got {tt_id!r}.'
+        )
 
     try:
         manifest = validate_artifact_bundle(manifest_path)
@@ -521,14 +553,16 @@ def _validate_ttng_bundle_for_publish(
     if osp.normpath(train_table['path']) != osp.normpath(expected_path):
         raise TTNGBundleError(
             'TT-NG: manifest train_table.path is not bound to its bundle: '
-            f'{train_table["path"]!r}.')
+            f'{train_table["path"]!r}.'
+        )
     size_bytes = int(train_table['size_bytes'])
     observed_size = sum(
-        artifact_file_size(part['path'])
-        for part in train_table['parts'])
+        artifact_file_size(part['path']) for part in train_table['parts']
+    )
     if observed_size != size_bytes:
         raise TTNGBundleError(
-            'TT-NG: bundle train-table size changed after validation.')
+            'TT-NG: bundle train-table size changed after validation.'
+        )
     return tt_id, size_bytes
 
 
@@ -538,7 +572,8 @@ def _write_durable_ttng_pointer(durable_dst: str, bundle_id: str) -> None:
     if fsutil.is_local(pointer_path):
         fsutil.makedirs(durable_dst, exist_ok=True)
         temporary_pointer = osp.join(
-            durable_dst, f'.{_BUNDLE_POINTER_FILENAME}.{bundle_id}.tmp')
+            durable_dst, f'.{_BUNDLE_POINTER_FILENAME}.{bundle_id}.tmp'
+        )
         fsutil.write_text(temporary_pointer, pointer_json)
         os.replace(temporary_pointer, pointer_path)
     elif fsutil.is_adls(pointer_path):
@@ -558,12 +593,14 @@ def persist_ttng_bundle(
     _assert_ttng_bundle_complete(ephemeral_src, validate_manifest=False)
     if expected_tt_id is None:
         source_basename = osp.basename(ephemeral_src.rstrip('/'))
-        if not (source_basename.startswith('.')
-                and source_basename.endswith('.staging')):
+        if not (
+            source_basename.startswith('.') and source_basename.endswith('.staging')
+        ):
             raise TTNGBundleError(
                 'TT-NG: producer bundle name is not attempt-scoped: '
-                f'{source_basename!r}.')
-        expected_tt_id = source_basename[1:-len('.staging')]
+                f'{source_basename!r}.'
+            )
+        expected_tt_id = source_basename[1 : -len('.staging')]
     elif not expected_tt_id:
         raise TTNGBundleError('TT-NG: expected bundle tt_id is empty.')
     source_tt_id, source_size = _validate_ttng_bundle_for_publish(
@@ -580,7 +617,8 @@ def persist_ttng_bundle(
     )
     if destination_tt_id != source_tt_id or destination_size != source_size:
         raise TTNGBundleError(
-            'TT-NG: durable copy does not match the source bundle binding.')
+            'TT-NG: durable copy does not match the source bundle binding.'
+        )
     return bundle_dir
 
 
@@ -701,7 +739,8 @@ def _build_split_spec(
     split_spec_cls: Any,
 ) -> Optional[Any]:
     split_config, split_family_hint = resolve_split_config(
-        split_config, split_family_hint)
+        split_config, split_family_hint
+    )
     return build_native_split_spec(
         split_config,
         split_family_hint,
@@ -746,12 +785,12 @@ def generate_train_table_via_diskgraph(
         ) from e
 
     if split_config is None:
-        raise RuntimeError(
-            'diskgraph strict artifact path requires split_config')
+        raise RuntimeError('diskgraph strict artifact path requires split_config')
 
     if not index_path:
         raise RuntimeError(
-            'diskgraph train-table generation requires diskgraph index path')
+            'diskgraph train-table generation requires diskgraph index path'
+        )
     if not fsutil.exists(index_path):
         raise RuntimeError(f'diskgraph index path does not exist: {index_path}')
 
@@ -767,8 +806,7 @@ def generate_train_table_via_diskgraph(
     lp_rhs_entity_table: Optional[str] = None
     if graph is not None and task_type.lower() in _LP_TASK_TYPES:
         lp_rhs_entity_table = get_rhs_lp_table(query, graph, no_connector=True)
-        logger.info("[DG] Orphan filter: lp_rhs_entity_table=%s",
-                    lp_rhs_entity_table)
+        logger.info('[DG] Orphan filter: lp_rhs_entity_table=%s', lp_rhs_entity_table)
 
     # Forecasting needs explicit lag/yoy offsets passed to the compiler.
     lag_offsets_secs = None
@@ -818,8 +856,7 @@ def generate_train_table_via_diskgraph(
             'target_col': 'TARGET',
             'time_col': time_col_name,
             'task_type': task_type,
-            'list_distinct_target_is_array':
-            bool(list_distinct_target_is_array),
+            'list_distinct_target_is_array': bool(list_distinct_target_is_array),
         },
         train_table_edges_config=train_table_edges_config,
     )
@@ -829,7 +866,7 @@ def generate_train_table_via_diskgraph(
     manifest_path = producer_result['manifest_path']
 
     logger.info(
-        "Diskgraph producer materialized train-table bundle (rows=%s, output=%s, manifest=%s, split_family=%s, authoritative=%s, split_counts=%s)",
+        'Diskgraph producer materialized train-table bundle (rows=%s, output=%s, manifest=%s, split_family=%s, authoritative=%s, split_counts=%s)',
         producer_result.get('row_count'),
         output_path,
         manifest_path,
@@ -875,7 +912,8 @@ def generate_train_table_via_diskgraph_ttng(
     is_link_pred = task_type.lower() in _LP_TASK_TYPES
     if not index_path:
         raise RuntimeError(
-            'diskgraph train-table generation requires diskgraph index path')
+            'diskgraph train-table generation requires diskgraph index path'
+        )
     if not fsutil.exists(index_path):
         raise RuntimeError(f'diskgraph index path does not exist: {index_path}')
     lp_rhs_entity_table: Optional[str] = None
@@ -893,20 +931,24 @@ def generate_train_table_via_diskgraph_ttng(
         # consistent and fail loud rather than silently mis-batch.
         try:
             rhs_table = graph[lp_rhs_entity_table]
-            lp_rhs_is_temporal = bool(rhs_table.has_time_col()
-                                      or rhs_table.has_end_time_col())
+            lp_rhs_is_temporal = bool(
+                rhs_table.has_time_col() or rhs_table.has_end_time_col()
+            )
         except Exception:
             lp_rhs_is_temporal = False
         logger.info(
-            "[DG] Orphan filter: lp_rhs_entity_table=%s rhs_is_temporal=%s",
-            lp_rhs_entity_table, lp_rhs_is_temporal)
+            '[DG] Orphan filter: lp_rhs_entity_table=%s rhs_is_temporal=%s',
+            lp_rhs_entity_table,
+            lp_rhs_is_temporal,
+        )
     resolved_split_config, resolved_split_family = resolve_split_config(
-        split_config, split_family)
+        split_config, split_family
+    )
     entity_node_type = table_name(query.entity_column)
     if graph is None:
-        entity_primary_key = ""
+        entity_primary_key = ''
     else:
-        entity_primary_key = graph[entity_node_type].pkey_name or ""
+        entity_primary_key = graph[entity_node_type].pkey_name or ''
     result = generate_native_train_table(
         TrainTableRequest(
             query=query,
@@ -929,12 +971,17 @@ def generate_train_table_via_diskgraph_ttng(
             rhs_node_type=lp_rhs_entity_table,
             rhs_is_temporal=lp_rhs_is_temporal,
             downsampling=downsampling,
-            compiler_options=(_ttng_forecasting_offset_kwargs(
-                query, forecast_length, lag_timesteps, year_over_year)
-                              if task_type.lower() == 'forecasting' else None),
+            compiler_options=(
+                _ttng_forecasting_offset_kwargs(
+                    query, forecast_length, lag_timesteps, year_over_year
+                )
+                if task_type.lower() == 'forecasting'
+                else None
+            ),
             index_path_verified=True,
             start_time=start_time,
-        ))
+        )
+    )
     return result.train_table_path, result.manifest_path
 
 

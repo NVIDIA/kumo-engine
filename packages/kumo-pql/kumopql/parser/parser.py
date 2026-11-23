@@ -18,6 +18,7 @@ from kumoapi.pquery.AST import (
     LogicalOperation,
 )
 from kumoapi.typing import ProblemType
+
 from kumopql.grammar.PQLGrammarLexer import PQLGrammarLexer
 from kumopql.grammar.PQLGrammarParser import PQLGrammarParser
 from kumopql.parser.error_translator import Antlr4SyntaxError, ErrorTranslator
@@ -67,6 +68,7 @@ class Delegate(ErrorListener):
     This is the most basic implementation that collects all errors instead of
     printing them out (the default).
     """
+
     def __init__(self) -> None:
         super().__init__()
         self.errors: list[Antlr4SyntaxError] = []
@@ -95,8 +97,9 @@ class Delegate(ErrorListener):
         lineage = []
         if isinstance(recognizer, PQLGrammarParser):
             currCtx = recognizer._ctx
-            while (currCtx is not None
-                   and not isinstance(currCtx, PQLGrammarParser.ProgContext)):
+            while currCtx is not None and not isinstance(
+                currCtx, PQLGrammarParser.ProgContext
+            ):
                 lineage.append(state_from_pql_ctx(type(currCtx)))
                 currCtx = currCtx.parentCtx
             lineage.append(state_from_pql_ctx(type(currCtx)))
@@ -111,14 +114,16 @@ class Delegate(ErrorListener):
                 e=e,
                 state=recognizer.state,
                 lineage=lineage,
-            ))
+            )
+        )
 
 
 class PQLParser:
     r"""Parses the input string according to the PQLGrammar.g4 grammar file."""
+
     def parse_tree(
-            self,
-            query: str) -> tuple[antlr4.ParserRuleContext, PQLGrammarParser]:
+        self, query: str
+    ) -> tuple[antlr4.ParserRuleContext, PQLGrammarParser]:
         r"""Parses the input query and returns the ANTLR4 tree.
 
         Args:
@@ -131,8 +136,9 @@ class PQLParser:
         if response.ok:
             return tree, parser
         else:
-            raise ValueError("Encountered the following issues during "
-                             f"parsing: {response.message()}")
+            raise ValueError(
+                f'Encountered the following issues during parsing: {response.message()}'
+            )
 
     def validate(self, query: str) -> ValidationResponse:
         r"""Validates syntactic correctness of the query. Does not check for
@@ -231,27 +237,29 @@ class PQLParser:
         assert isinstance(target_ast, ASTNode)
         whatif_ast: ASTNode | None = None
         if 'whatif' in ast_dict:
-            assert isinstance(ast_dict['whatif'], Condition) or isinstance(
-                ast_dict['whatif'],
-                LogicalOperation) or ast_dict['whatif'] is None
+            assert (
+                isinstance(ast_dict['whatif'], Condition)
+                or isinstance(ast_dict['whatif'], LogicalOperation)
+                or ast_dict['whatif'] is None
+            )
             whatif_ast = ast_dict['whatif']
         top_k: int | None = None
         if 'top_k' in ast_dict:
-            assert isinstance(ast_dict['top_k'],
-                              int) or ast_dict['top_k'] is None
+            assert isinstance(ast_dict['top_k'], int) or ast_dict['top_k'] is None
             top_k = ast_dict['top_k']
         num_forecasts: int = 1
         has_forecast_clause = False
         if 'forecast' in ast_dict:
-            assert isinstance(ast_dict['forecast'],
-                              int) or ast_dict['forecast'] is None
+            assert isinstance(ast_dict['forecast'], int) or ast_dict['forecast'] is None
             if ast_dict['forecast'] is not None:
                 num_forecasts = ast_dict['forecast']
                 has_forecast_clause = True
         problem_type: ProblemType | str | None = None
         if 'problem_type' in ast_dict:
-            assert isinstance(ast_dict['problem_type'],
-                              str) or ast_dict['problem_type'] is None
+            assert (
+                isinstance(ast_dict['problem_type'], str)
+                or ast_dict['problem_type'] is None
+            )
             problem_type = ast_dict['problem_type']
         if has_forecast_clause and problem_type is None:
             problem_type = ProblemType.FORECAST

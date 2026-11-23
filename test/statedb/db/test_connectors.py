@@ -27,11 +27,11 @@ from statedb.rest.connector_db import (
 from statedb.rest.project import ProjectDBEntry
 from statedb.utils.errors import ConnectorDoesNotExistError
 
-PROJECT_A = ProjectID("project_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-PROJECT_B = ProjectID("project_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
-CONNECTOR_A = ConnectorID("connector_0000000000000000000000000000000a")
-CONNECTOR_B = ConnectorID("connector_0000000000000000000000000000000b")
-CONNECTOR_C = ConnectorID("connector_0000000000000000000000000000000c")
+PROJECT_A = ProjectID('project_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
+PROJECT_B = ProjectID('project_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')
+CONNECTOR_A = ConnectorID('connector_0000000000000000000000000000000a')
+CONNECTOR_B = ConnectorID('connector_0000000000000000000000000000000b')
+CONNECTOR_C = ConnectorID('connector_0000000000000000000000000000000c')
 
 
 def _timestamps() -> ResourceTimestamps:
@@ -77,7 +77,7 @@ async def _seed_projects(db: StateDB) -> None:
                 ProjectDBEntry(
                     id=project_id,
                     group_id=GroupID('group_' + 'a' * 32),
-                    slug=f"project-{str(project_id)[-8:]}",
+                    slug=f'project-{str(project_id)[-8:]}',
                     display_name=str(project_id),
                     normalized_display_name=str(project_id),
                     timestamps=_timestamps(),
@@ -86,8 +86,9 @@ async def _seed_projects(db: StateDB) -> None:
 
 
 def test_legacy_flat_cloud_targets_hydrate_as_rooted_targets():
-    gcs = GCSConnectorResourceConfig(name='gcs', bucket='customer-data',
-                                     prefix='tables')
+    gcs = GCSConnectorResourceConfig(
+        name='gcs', bucket='customer-data', prefix='tables'
+    )
     adls = ADLSConnectorResourceConfig(
         name='adls',
         storage_account='account',
@@ -96,8 +97,9 @@ def test_legacy_flat_cloud_targets_hydrate_as_rooted_targets():
         endpoint_suffix='dfs.core.usgovcloudapi.net',
     )
 
-    assert gcs.target == api.GCSRootedConnectorTarget(bucket='customer-data',
-                                                      prefix='tables')
+    assert gcs.target == api.GCSRootedConnectorTarget(
+        bucket='customer-data', prefix='tables'
+    )
     assert adls.target == api.ADLSRootedConnectorTarget(
         storage_account='account',
         filesystem='filesystem',
@@ -108,20 +110,19 @@ def test_legacy_flat_cloud_targets_hydrate_as_rooted_targets():
 
 @pytest.mark.asyncio
 async def test_connector_repository_create_get_list_and_delete(tmp_path):
-    db = await StateDB.open_sqlite(str(tmp_path / "state.db"))
+    db = await StateDB.open_sqlite(str(tmp_path / 'state.db'))
     await _seed_projects(db)
     repo = StateDBConnectorRepository()
     connector = _connector(
         CONNECTOR_A,
-        FileConnectorResourceConfig(name="uploads", root_dir="/tmp/csv"),
+        FileConnectorResourceConfig(name='uploads', root_dir='/tmp/csv'),
     )
 
     async with db.write_tx() as tx:
         await repo.create(tx, connector)
 
     async with db.read_tx() as tx:
-        _assert_connector_equal(await repo.get_required(tx, CONNECTOR_A),
-                                connector)
+        _assert_connector_equal(await repo.get_required(tx, CONNECTOR_A), connector)
         project_connectors = await repo.list(tx, project_id=PROJECT_A)
         assert len(project_connectors) == 1
         _assert_connector_equal(project_connectors[0], connector)
@@ -141,24 +142,22 @@ async def test_connector_repository_create_get_list_and_delete(tmp_path):
 
 @pytest.mark.asyncio
 async def test_connector_repository_filters_exact_project(tmp_path):
-    db = await StateDB.open_sqlite(str(tmp_path / "state.db"))
+    db = await StateDB.open_sqlite(str(tmp_path / 'state.db'))
     await _seed_projects(db)
     repo = StateDBConnectorRepository()
     entries = [
         _connector(
             CONNECTOR_A,
-            FileConnectorResourceConfig(name="csv", root_dir="/tmp/csv"),
+            FileConnectorResourceConfig(name='csv', root_dir='/tmp/csv'),
         ),
         _connector(
             CONNECTOR_B,
-            FileConnectorResourceConfig(name="parquet",
-                                        root_dir="/tmp/parquet"),
+            FileConnectorResourceConfig(name='parquet', root_dir='/tmp/parquet'),
             PROJECT_B,
         ),
         _connector(
             CONNECTOR_C,
-            FileConnectorResourceConfig(name="files",
-                                        root_dir="s3://bucket/root"),
+            FileConnectorResourceConfig(name='files', root_dir='s3://bucket/root'),
         ),
     ]
     async with db.write_tx() as tx:
@@ -172,24 +171,23 @@ async def test_connector_repository_filters_exact_project(tmp_path):
         }
         assert await repo.list_ids(tx, project_id=PROJECT_B) == [CONNECTOR_B]
         assert [
-            entry.id
-            for entry in await repo.list(tx, root_dir="s3://bucket/root")
+            entry.id for entry in await repo.list(tx, root_dir='s3://bucket/root')
         ] == [CONNECTOR_C]
     await db.close()
 
 
 @pytest.mark.asyncio
 async def test_connector_repository_upsert_preserves_immutable_target(tmp_path):
-    db = await StateDB.open_sqlite(str(tmp_path / "state.db"))
+    db = await StateDB.open_sqlite(str(tmp_path / 'state.db'))
     await _seed_projects(db)
     repo = StateDBConnectorRepository()
     old = _connector(
         CONNECTOR_A,
-        FileConnectorResourceConfig(name="uploads", root_dir="/tmp/old"),
+        FileConnectorResourceConfig(name='uploads', root_dir='/tmp/old'),
     )
     invalid_target_change = _connector(
         CONNECTOR_A,
-        FileConnectorResourceConfig(name="uploads", root_dir="/tmp/new"),
+        FileConnectorResourceConfig(name='uploads', root_dir='/tmp/new'),
     )
     async with db.write_tx() as tx:
         await repo.create(tx, old)
@@ -222,11 +220,13 @@ async def test_connector_repository_rejects_missing_project(tmp_path):
     [
         GCSConnectorResourceConfig(
             name=str(CONNECTOR_A),
-            target=api.GCSRootedConnectorTarget(bucket='customer-data',
-                                                prefix='tables'),
+            target=api.GCSRootedConnectorTarget(
+                bucket='customer-data', prefix='tables'
+            ),
         ),
-        GCSConnectorResourceConfig(name=str(CONNECTOR_A),
-                                   target=api.GCSAnyURIConnectorTarget()),
+        GCSConnectorResourceConfig(
+            name=str(CONNECTOR_A), target=api.GCSAnyURIConnectorTarget()
+        ),
         ADLSConnectorResourceConfig(
             name=str(CONNECTOR_A),
             target=api.ADLSRootedConnectorTarget(
@@ -236,8 +236,9 @@ async def test_connector_repository_rejects_missing_project(tmp_path):
                 endpoint_suffix='dfs.core.usgovcloudapi.net',
             ),
         ),
-        ADLSConnectorResourceConfig(name=str(CONNECTOR_A),
-                                    target=api.ADLSAnyURIConnectorTarget()),
+        ADLSConnectorResourceConfig(
+            name=str(CONNECTOR_A), target=api.ADLSAnyURIConnectorTarget()
+        ),
     ],
     ids=['gcs-rooted', 'gcs-any-uri', 'adls-rooted', 'adls-any-uri'],
 )

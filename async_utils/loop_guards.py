@@ -17,6 +17,7 @@ Bundling them behind one call means every asyncio entry point gets both, and a
 new main needs only this single line — there is no second place to forget.
 Both installers are idempotent, so this is safe to call more than once.
 """
+
 from async_utils.blockbuster_guard import activate_blockbuster_guard
 from async_utils.event_loop_watchdog import start_global_watchdog
 

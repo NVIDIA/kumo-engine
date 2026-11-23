@@ -12,7 +12,7 @@ from kumo.config import PredictiveQueryV2Config
 from kumo.pquery.batch_pred_table_generator import PredictionTableGeneratorV2
 
 logger = logging.getLogger(__name__)
-TARGET_FILE_NAME = "targets"
+TARGET_FILE_NAME = 'targets'
 
 
 def generate_current_pred_table_generic(
@@ -55,12 +55,15 @@ def generate_current_pred_table_generic(
         TrainingTableGenerationError,
     )
 
-    table_details = [(table.table_name, table.data_version)
-                     for table in predictive_query_config.graph.tables]
+    table_details = [
+        (table.table_name, table.data_version)
+        for table in predictive_query_config.graph.tables
+    ]
     logger.info(f'Table Name and versions : {table_details}')
 
     predictive_query: PredictiveQuery = PredictiveQueryV2.from_config(
-        predictive_query_config)
+        predictive_query_config
+    )
     table_generator = predictive_query.get_batch_pred_table_generator()
 
     # Track validation errors and warnings in train table generation due to
@@ -85,7 +88,8 @@ def generate_current_pred_table_generic(
             diskgraph_index_path=diskgraph_index_path,
             target_file_path=target_file_path,
             list_distinct_target_is_array=(
-                predictive_query.list_distinct_target_is_array),
+                predictive_query.list_distinct_target_is_array
+            ),
             lp_bp_layout=predictive_query.lp_bp_layout,
             output_path=output_file_path if diskgraph_index_path else None,
             destination=destination,
@@ -95,7 +99,10 @@ def generate_current_pred_table_generic(
         response.errors.append(e.as_error())
     finally:
         response.merge(table_generator.get_validate_train_table_response())
-        logger.info(f"Save generate pred table validation responses to "
-                    f"{pred_table_validation_response_path}.")
-        response.save(pred_table_validation_response_path,
-                      PRED_TABLE_VALIDATION_RESPONSE_NAME)
+        logger.info(
+            f'Save generate pred table validation responses to '
+            f'{pred_table_validation_response_path}.'
+        )
+        response.save(
+            pred_table_validation_response_path, PRED_TABLE_VALIDATION_RESPONSE_NAME
+        )

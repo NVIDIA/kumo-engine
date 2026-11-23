@@ -17,13 +17,14 @@ logger = logging.getLogger(__name__)
 
 
 def get_partition_offsets_and_lengths(
-        pred_table_path: str) -> Tuple[List[int], List[int]]:
+    pred_table_path: str,
+) -> Tuple[List[int], List[int]]:
     """
     Get offsets and lengths for each partition based on row counts.
     Returns two lists: offsets and lengths.
     """
     pred_partition_info = get_pred_table_partition_info(pred_table_path)
-    logger.info("Get row counts for each partition in the prediction table")
+    logger.info('Get row counts for each partition in the prediction table')
     num_partitions = pred_partition_info.num_partitions
 
     row_counts = []
@@ -35,7 +36,7 @@ def get_partition_offsets_and_lengths(
         row_counts.append(partition_metadata.num_rows)
 
     logger.info(
-        f"Total rows: {sum(row_counts)}, Row counts per partition: {row_counts}"
+        f'Total rows: {sum(row_counts)}, Row counts per partition: {row_counts}'
     )
     offsets = []
     lengths = []
@@ -50,10 +51,13 @@ def get_partition_offsets_and_lengths(
 
 
 def get_pred_table_connector(
-    pred_config: PredictionConfig, ) -> ParquetConnector:
+    pred_config: PredictionConfig,
+) -> ParquetConnector:
     """
     Returns the ParquetConnector for the pred table.
     """
     pred_table_path = pred_config.pred_table_path
-    return ParquetConnector(name=train_table_source_name(pred_table_path),
-                            root_dir=osp.dirname(pred_table_path))
+    return ParquetConnector(
+        name=train_table_source_name(pred_table_path),
+        root_dir=osp.dirname(pred_table_path),
+    )

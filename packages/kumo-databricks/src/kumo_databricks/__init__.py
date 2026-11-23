@@ -29,14 +29,14 @@ from kumo_databricks.source import DatabricksSourceReader
 #: Where each lazily exported name is defined. The plugin's modules, and only
 #: those: everything eager above is reachable on the platform's install.
 _LAZY_EXPORTS = {
-    "DatabricksSession": "session",
-    "DatabricksSinkBackend": "sink",
-    "DatabricksSourceBackend": "backend",
-    "probe": "session",
+    'DatabricksSession': 'session',
+    'DatabricksSinkBackend': 'sink',
+    'DatabricksSourceBackend': 'backend',
+    'probe': 'session',
 }
 
 __all__ = [
-    "DatabricksSourceReader",
+    'DatabricksSourceReader',
     *sorted(_LAZY_EXPORTS),
 ]
 

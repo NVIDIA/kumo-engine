@@ -152,8 +152,7 @@ from statedb.utils.errors import PredictiveQueryDoesNotExistError
 log = logging.getLogger(__name__)
 
 _INVALID_MODEL_PLAN_TITLE = 'Invalid model plan'
-_INVALID_MODEL_PLAN_MESSAGE = (
-    'Check its field names, values, and expression syntax.')
+_INVALID_MODEL_PLAN_MESSAGE = 'Check its field names, values, and expression syntax.'
 
 
 @connector_activity_registry.connector_authorized_activity
@@ -181,17 +180,16 @@ def validate_predictive_query_activity(
             graph.validate(raise_on_error=True, ignore_encoders=True)
         config: PredictiveQueryV2Config | None = None
         try:
-            train_options, train_options_provided = (
-                resolve_train_table_options(args.model_plan,
-                                            args.train_table_options))
+            train_options, train_options_provided = resolve_train_table_options(
+                args.model_plan, args.train_table_options
+            )
             config = make_predictive_config_with_graph(
                 name=args.name or '',
                 query_yaml=args.query_string,
                 train_options=train_options,
                 train_options_provided=train_options_provided,
                 graph=graph,
-                list_distinct_target_is_array=(
-                    args.list_distinct_target_is_array),
+                list_distinct_target_is_array=(args.list_distinct_target_is_array),
                 lp_bp_layout=args.lp_bp_layout,
             )
         except ModelPlanValidationError:
@@ -248,7 +246,7 @@ class PQueryLogic:
         project_id: ProjectID,
     ):
         if state_services is None:
-            raise RuntimeError("PQueryLogic requires StateServices")
+            raise RuntimeError('PQueryLogic requires StateServices')
         self._data_backend_ctx = data_backend_ctx
         self._state_services = state_services
         self._project_id = project_id
@@ -275,8 +273,7 @@ class PQueryLogic:
         return self._effective_ml_job_service
 
     async def _pquery_exists(self, id: PredictiveQueryID) -> bool:
-        return await self._require_pquery_service().get_definition_by_id(
-            id) is not None
+        return await self._require_pquery_service().get_definition_by_id(id) is not None
 
     async def _get_pquery_definition_by_id(
         self,
@@ -292,7 +289,8 @@ class PQueryLogic:
         if graph_fpid is None:
             return None
         return await self._graph_service.get_graph_definition(
-            self._project_id, graph_fpid)
+            self._project_id, graph_fpid
+        )
 
     def _new_graph_logic(self):
         return graph_logic.GraphLogic(
@@ -305,8 +303,7 @@ class PQueryLogic:
         self,
         graph_def: GraphDefinition,
     ) -> Graph:
-        return await self._new_graph_logic()._make_graph_from_graph_def_v2(
-            graph_def)
+        return await self._new_graph_logic()._make_graph_from_graph_def_v2(graph_def)
 
     async def _create_full_graph_def_v2(
         self,
@@ -318,20 +315,21 @@ class PQueryLogic:
         _, graph_fpid = GraphIDv2.parse(graph_id)
         if graph_fpid is None:
             return False
-        return await self._require_graph_service(
-        ).decrement_or_delete_graph_definition(self._project_id, graph_fpid)
+        return await self._require_graph_service().decrement_or_delete_graph_definition(
+            self._project_id, graph_fpid
+        )
 
     @staticmethod
     def _real_connector_ids_from_graph_definition(
-        graph_def: GraphDefinition, ) -> Set[ConnectorID]:
+        graph_def: GraphDefinition,
+    ) -> Set[ConnectorID]:
         return {table.get_connector_id() for table in graph_def.tables.values()}
 
     @staticmethod
-    def _real_connector_ids_from_graph_config(graph, ) -> Set[ConnectorID]:
-        return {
-            ConnectorID(connector_id)
-            for connector_id in graph.data_source_dict
-        }
+    def _real_connector_ids_from_graph_config(
+        graph,
+    ) -> Set[ConnectorID]:
+        return {ConnectorID(connector_id) for connector_id in graph.data_source_dict}
 
     @trace(TraceOptions(trace_params=True))
     async def parse_predictive_query_v2(
@@ -371,7 +369,8 @@ class PQueryLogic:
         if args.train_table_options is not None:
             raise ValueError(
                 'parse_predictive_query_v2 cannot apply pre-built '
-                'train_table_options; pass model-plan YAML instead')
+                'train_table_options; pass model-plan YAML instead'
+            )
 
         if validated_snapshot is None:
             validated_snapshot = await self._validate_predictive_query_args(
@@ -385,25 +384,23 @@ class PQueryLogic:
             auto_trainer_options = model_plan_from_yaml(args.model_plan or '')
 
         # Create PQ object
-        pquery: PredictiveQuery = (await
-                                   self._create_pq_object_from_args_and_config(
-                                       config, pquery_settings,
-                                       skip_validation=skip_validation,
-                                       validated_snapshot=validated_snapshot))
+        pquery: PredictiveQuery = await self._create_pq_object_from_args_and_config(
+            config,
+            pquery_settings,
+            skip_validation=skip_validation,
+            validated_snapshot=validated_snapshot,
+        )
         validation_response = pquery.get_validate_response()
         if len(validation_response.errors) != 0:
-            raise ValidationException(
-                message=validation_response.error_message())
+            raise ValidationException(message=validation_response.error_message())
 
         task_type = pquery.get_task_type()
         query_type: QueryType = pquery.query_type
 
         is_temporal_query = query_type == QueryType.TEMPORAL
-        has_train_table_time_col = (await
-                                    pquery.has_train_table_time_col.coroutine())
-        has_train_table_time_col = (is_temporal_query
-                                    or has_train_table_time_col)
-        model_planner_yaml = ""
+        has_train_table_time_col = await pquery.has_train_table_time_col.coroutine()
+        has_train_table_time_col = is_temporal_query or has_train_table_time_col
+        model_planner_yaml = ''
         if args.model_plan is not None and args.model_plan != '':
             model_planner_yaml = args.model_plan
 
@@ -418,11 +415,14 @@ class PQueryLogic:
                     entity_table_names=pquery.entity_table_names,
                     target_to_entity_paths=pquery.target_to_entity_paths,
                     has_train_table_weight_col=has_train_table_weight_col,
-                ), model_planner_yaml)
+                ),
+                model_planner_yaml,
+            )
 
             if config.forecast_length is not None:
                 auto_trainer_options.training_table_generation.forecast_length = (
-                    config.forecast_length)
+                    config.forecast_length
+                )
 
             _, warnings = auto_trainer_options.validate(
                 task_type=task_type,
@@ -438,21 +438,23 @@ class PQueryLogic:
 
             if config.forecast_length is not None:
                 auto_trainer_options.training_table_generation.forecast_length = (
-                    config.forecast_length)
+                    config.forecast_length
+                )
         else:
             auto_trainer_options.validate()
 
         # Update predictive query config with model planner train table
         # generation parameters
-        config = to_predictive_query_kwargs(
-            auto_trainer_options).apply_overrides(config)
+        config = to_predictive_query_kwargs(auto_trainer_options).apply_overrides(
+            config
+        )
 
-        pquery = (await self._create_pq_object_from_args_and_config(
+        pquery = await self._create_pq_object_from_args_and_config(
             config,
             pquery_settings,
             skip_validation=skip_validation,
             validated_snapshot=validated_snapshot,
-        ))
+        )
 
         # Get the split configuration from the pquery object. At this point,
         # _create_pq_object_from_args_and_config has applied any split
@@ -463,14 +465,11 @@ class PQueryLogic:
 
         validation_response = pquery.get_validate_response()
         if len(validation_response.errors) != 0:
-            raise ValidationException(
-                message=validation_response.error_message())
+            raise ValidationException(message=validation_response.error_message())
 
         is_temporal_query = query_type == QueryType.TEMPORAL
-        has_train_table_time_col = (await
-                                    pquery.has_train_table_time_col.coroutine())
-        has_train_table_time_col = (is_temporal_query
-                                    or has_train_table_time_col)
+        has_train_table_time_col = await pquery.has_train_table_time_col.coroutine()
+        has_train_table_time_col = is_temporal_query or has_train_table_time_col
 
         pq_def_fpid = args.fpid or compute_pquery_fpid(
             pquery_name=args.name or None,
@@ -531,8 +530,8 @@ class PQueryLogic:
             pq_id = PredictiveQueryID(args.name)
             if await self._pquery_exists(pq_id):
                 raise ValidationException(
-                    title="Predictive query already exists",
-                    message=f"Predictive query with name={pq_id} already exists",
+                    title='Predictive query already exists',
+                    message=f'Predictive query with name={pq_id} already exists',
                 )
 
         validation = ValidationResponse()
@@ -544,22 +543,25 @@ class PQueryLogic:
                 pquery_settings=pquery_settings,
             )
         except Exception as e:
-            return ValidationResponse(errors=[
-                ValidationError(
-                    title=PREDICTIVE_QUERY_CREATION_ERROR_TITLE,
-                    message=PREDICTIVE_QUERY_CREATION_ERROR_MESSAGE.format(
-                        str(e)),
-                )
-            ])
+            return ValidationResponse(
+                errors=[
+                    ValidationError(
+                        title=PREDICTIVE_QUERY_CREATION_ERROR_TITLE,
+                        message=PREDICTIVE_QUERY_CREATION_ERROR_MESSAGE.format(str(e)),
+                    )
+                ]
+            )
         if not val.ok:
             return val
         validation.merge(val)
 
-        val = (await self.make_v2_query_with_overrides_v2(
-            args=args,
-            override_args=filter_override_args,
-            graph=parsed_pq.predictive_query.graph,
-        ))[1]
+        val = (
+            await self.make_v2_query_with_overrides_v2(
+                args=args,
+                override_args=filter_override_args,
+                graph=parsed_pq.predictive_query.graph,
+            )
+        )[1]
         validation.merge(val)
         return validation
 
@@ -578,37 +580,47 @@ class PQueryLogic:
         validation = ValidationResponse()
         parser = PQLParser()
         validator = PredictiveQueryValidator(
-            **validator_kwargs(graph, query_string=args.query_string))
+            **validator_kwargs(graph, query_string=args.query_string)
+        )
 
         # Validate the original query
         try:
             parsed_query = parser.to_parsed_predictive_query(args.query_string)
         except (ValidationException, ValueError) as e:
             validation.merge(
-                ValidationResponse(errors=[
-                    ValidationError(
-                        title=PREDICTIVE_QUERY_CREATION_ERROR_TITLE,
-                        message=PREDICTIVE_QUERY_CREATION_ERROR_MESSAGE.format(
-                            str(e)),
-                    )
-                ]))
+                ValidationResponse(
+                    errors=[
+                        ValidationError(
+                            title=PREDICTIVE_QUERY_CREATION_ERROR_TITLE,
+                            message=PREDICTIVE_QUERY_CREATION_ERROR_MESSAGE.format(
+                                str(e)
+                            ),
+                        )
+                    ]
+                )
+            )
             return None, validation
-        predictive_query, response = validator.validate_predictive_query(
-            parsed_query)
+        predictive_query, response = validator.validate_predictive_query(parsed_query)
         if predictive_query is None:
             validation.merge(response)
             return None, validation
 
         new_query_args = deepcopy(args)
         if override_args:
-            if (override_args.temporal_entity_filter_override is not None
-                    and len(override_args.temporal_entity_filter_override) > 0):
+            if (
+                override_args.temporal_entity_filter_override is not None
+                and len(override_args.temporal_entity_filter_override) > 0
+            ):
                 validation.merge(
-                    ValidationResponse(errors=[
-                        ValidationError(
-                            title=DEPRECATED_TEMPORAL_FILTER_OVERRIDE_TITLE,
-                            message=DEPRECATED_TEMPORAL_FILTER_OVERRIDE_MESSAGE)
-                    ]))
+                    ValidationResponse(
+                        errors=[
+                            ValidationError(
+                                title=DEPRECATED_TEMPORAL_FILTER_OVERRIDE_TITLE,
+                                message=DEPRECATED_TEMPORAL_FILTER_OVERRIDE_MESSAGE,
+                            )
+                        ]
+                    )
+                )
                 return None, validation
             graph_def = map_to_api_graph_definition(graph)
             transformer = BPFilterTransformer()
@@ -616,34 +628,45 @@ class PQueryLogic:
                 predictive_query,
                 (get_task_type(graph, predictive_query)).task_type,
                 graph_def,
-                original_query_text="",
+                original_query_text='',
             )
             user_changes = {}
             for field in editable_query.editable_fields:
-                if (field.field_name == 'Entity filter'
-                        and override_args.entity_filter_override is not None):
-                    user_changes[
-                        field.field_name] = override_args.entity_filter_override
-                if (field.field_name == 'Target filter'
-                        and override_args.target_filter_override is not None):
-                    user_changes[
-                        field.field_name] = override_args.target_filter_override
+                if (
+                    field.field_name == 'Entity filter'
+                    and override_args.entity_filter_override is not None
+                ):
+                    user_changes[field.field_name] = (
+                        override_args.entity_filter_override
+                    )
+                if (
+                    field.field_name == 'Target filter'
+                    and override_args.target_filter_override is not None
+                ):
+                    user_changes[field.field_name] = (
+                        override_args.target_filter_override
+                    )
 
-            if (override_args.target_filter_override
-                    and 'Target filter' not in [
-                        f.field_name for f in editable_query.editable_fields
-                    ]):
+            if override_args.target_filter_override and 'Target filter' not in [
+                f.field_name for f in editable_query.editable_fields
+            ]:
                 validation.merge(
-                    ValidationResponse(errors=[
-                        ValidationError(
-                            title=NON_EDITABLE_TARGET_FILTER_TITLE,
-                            message=NON_EDITABLE_TARGET_FILTER_MESSAGE)
-                    ]))
+                    ValidationResponse(
+                        errors=[
+                            ValidationError(
+                                title=NON_EDITABLE_TARGET_FILTER_TITLE,
+                                message=NON_EDITABLE_TARGET_FILTER_MESSAGE,
+                            )
+                        ]
+                    )
+                )
             editable_query_user_response = EditableQueryResponse(
-                editable_query, user_changes)
+                editable_query, user_changes
+            )
             task_type = get_task_type(graph, predictive_query).task_type
             editable_query_w_overrides = transformer.insert_filter_overrides(
-                editable_query_user_response, graph_def, task_type)[0]
+                editable_query_user_response, graph_def, task_type
+            )[0]
             validation.merge(editable_query_w_overrides.validation_response)
             query_string = editable_query_w_overrides.text
             new_query_args.query_string = query_string
@@ -656,16 +679,20 @@ class PQueryLogic:
         # Validate the query again after applying overrides
         try:
             parsed_query = parser.to_parsed_predictive_query(
-                new_query_args.query_string)
+                new_query_args.query_string
+            )
         except (ValidationException, ValueError) as e:
             validation.merge(
-                ValidationResponse(errors=[
-                    ValidationError(title='Error in creating Predictive Query',
-                                    message=str(e))
-                ]))
+                ValidationResponse(
+                    errors=[
+                        ValidationError(
+                            title='Error in creating Predictive Query', message=str(e)
+                        )
+                    ]
+                )
+            )
             return None, validation
-        predictive_query, response = validator.validate_predictive_query(
-            parsed_query)
+        predictive_query, response = validator.validate_predictive_query(parsed_query)
         if predictive_query is None:
             validation.merge(response)
             return None, validation
@@ -686,8 +713,11 @@ class PQueryLogic:
             query = await self._get_pquery_definition_by_id(id)
             if query is None:
                 raise ValidationException(
-                    message=(f"The supplied pq id {id} is invalid. "
-                             "Please make sure to pass a valid pq id."), )
+                    message=(
+                        f'The supplied pq id {id} is invalid. '
+                        'Please make sure to pass a valid pq id.'
+                    ),
+                )
 
         if not query:
             return None
@@ -696,17 +726,19 @@ class PQueryLogic:
         graph_def = await self._get_graph_def(graph_id)
         if graph_def is None:
             raise ValidationException(
-                message=(f"Graph definition with graph fpid "
-                         f"{query.graph_fpid}. Please check the graph "
-                         f"fpid associated with the query {id}."))
+                message=(
+                    f'Graph definition with graph fpid '
+                    f'{query.graph_fpid}. Please check the graph '
+                    f'fpid associated with the query {id}.'
+                )
+            )
         args = PQueryValidationArgs(
             query_string=query.query_str,
             graph=graph_def,
-            name=query.pquery_name if query.pquery_name is not None else "",
-            model_plan="",
+            name=query.pquery_name if query.pquery_name is not None else '',
+            model_plan='',
             runtime_options=pquery_runtime_options_or_none(
-                list_distinct_target_is_array=(
-                    query.list_distinct_target_is_array),
+                list_distinct_target_is_array=(query.list_distinct_target_is_array),
                 lp_bp_layout=query.lp_bp_layout,
             ),
         )
@@ -722,13 +754,13 @@ class PQueryLogic:
         if infer_encoders:
             if not isinstance(auto_trainer_options, ModelPlan):
                 encoder_overrides: Dict[str, Encoder] = (
-                    auto_trainer_options.get_parsed_encoder_overrides())
+                    auto_trainer_options.get_parsed_encoder_overrides()
+                )
                 pquery.graph.apply_encoder_overrides(encoder_overrides)
             await pquery.graph.infer_encoders.coroutine()
         return pquery
 
-    async def _training_job_ids_for_pquery(self,
-                                           fpid: FPID) -> List[TrainingJobID]:
+    async def _training_job_ids_for_pquery(self, fpid: FPID) -> List[TrainingJobID]:
         """Training job ids tagged to a pquery, ordered oldest to newest.
 
         v2 pqueries have no cached `current_training_job_id`; the pquery ->
@@ -740,16 +772,18 @@ class PQueryLogic:
             filters,
         )
         rows = await self._require_ml_job_service().list_training_job_rows(
-            job_ids={TrainingJobID(job_id)
-                     for job_id in tagged_jobs},
+            job_ids={TrainingJobID(job_id) for job_id in tagged_jobs},
             project_ids={self._project_id},
-            sort_created_at="asc",
+            sort_created_at='asc',
         )
         return [row.id for row in rows]
 
     async def _cancel_inflight_training_jobs(
-            self, ctx: RequestContext, training_job_ids: List[TrainingJobID],
-            ml_job_backend: MLJobBackend) -> bool:
+        self,
+        ctx: RequestContext,
+        training_job_ids: List[TrainingJobID],
+        ml_job_backend: MLJobBackend,
+    ) -> bool:
         """Cancel every queued/running job among `training_job_ids` so they
         don't count towards our global concurrency limit.
 
@@ -758,18 +792,15 @@ class PQueryLogic:
         """
         all_cancelled = True
         for training_job_id in training_job_ids:
-            training_job = await ml_job_backend.get_training_job(
-                ctx, training_job_id)
-            if (training_job is not None
-                    and training_job.execution.status.is_submitted):
-                cancelled = await ml_job_backend.cancel_training_job(
-                    training_job_id)
+            training_job = await ml_job_backend.get_training_job(ctx, training_job_id)
+            if training_job is not None and training_job.execution.status.is_submitted:
+                cancelled = await ml_job_backend.cancel_training_job(training_job_id)
                 all_cancelled = all_cancelled and cancelled
         return all_cancelled
 
-    async def delete_predictive_query(self, ctx: RequestContext,
-                                      id: PredictiveQueryID,
-                                      ml_job_backend: MLJobBackend) -> bool:
+    async def delete_predictive_query(
+        self, ctx: RequestContext, id: PredictiveQueryID, ml_job_backend: MLJobBackend
+    ) -> bool:
         pq_def = await self._get_pquery_definition_by_id(id)
         if pq_def is None:
             return False
@@ -777,14 +808,12 @@ class PQueryLogic:
         # Cancel any in-flight training jobs tagged to this pquery so they
         # don't count towards our global concurrency limit.
         await self._cancel_inflight_training_jobs(
-            ctx, await self._training_job_ids_for_pquery(pq_def.fpid),
-            ml_job_backend)
+            ctx, await self._training_job_ids_for_pquery(pq_def.fpid), ml_job_backend
+        )
 
-        await self._delete_full_graph_def_v2(
-            GraphIDv2.compose(fpid=pq_def.graph_fpid))
+        await self._delete_full_graph_def_v2(GraphIDv2.compose(fpid=pq_def.graph_fpid))
         if pq_def.pquery_name is not None:
-            await self._require_pquery_service().delete_alias(pq_def.pquery_name
-                                                              )
+            await self._require_pquery_service().delete_alias(pq_def.pquery_name)
         await self._require_pquery_service().delete_definition(pq_def.fpid)
         return True
 
@@ -811,7 +840,8 @@ class PQueryLogic:
         """
 
         train_options, train_options_provided = resolve_train_table_options(
-            args.model_plan, args.train_table_options)
+            args.model_plan, args.train_table_options
+        )
 
         if not graph:
             graph = await self._make_graph_from_graph_def_v2(args.graph)
@@ -821,7 +851,7 @@ class PQueryLogic:
         # feature-flag default (predictive_query.py), so the FK-free LP
         # resolution mode still activates without collapsing the sentinel here.
         return await make_predictive_config_with_graph.coroutine(
-            name=args.name if args.name else "",
+            name=args.name if args.name else '',
             query_yaml=args.query_string,
             train_options=train_options,
             train_options_provided=train_options_provided,
@@ -840,12 +870,13 @@ class PQueryLogic:
         validated_snapshot: Optional[ValidatedPredictiveQuerySnapshot] = None,
     ) -> PredictiveQueryV2:
         if validated_snapshot is None:
-            raise RuntimeError('Request-side PQuery reconstruction requires '
-                               'an activity-validated snapshot')
+            raise RuntimeError(
+                'Request-side PQuery reconstruction requires '
+                'an activity-validated snapshot'
+            )
 
         expected_tables = {
-            table.name: str(table.data_source)
-            for table in config.graph.tables
+            table.name: str(table.data_source) for table in config.graph.tables
         }
         validated_tables = {
             table.name: str(table.data_source)
@@ -853,12 +884,12 @@ class PQueryLogic:
         }
         if validated_tables != expected_tables:
             raise RuntimeError(
-                'Predictive query validation returned unexpected graph tables')
+                'Predictive query validation returned unexpected graph tables'
+            )
 
         request_config = deepcopy(config)
         request_config.graph = deepcopy(validated_snapshot.config.graph)
-        request_config.graph.data_source_dict = deepcopy(
-            config.graph.data_source_dict)
+        request_config.graph.data_source_dict = deepcopy(config.graph.data_source_dict)
 
         validated_versions = {
             table.name: TableDataVersion(table.data_version)
@@ -889,20 +920,22 @@ class PQueryLogic:
         if graph is None:
             graph = await self._make_graph_from_graph_def_v2(args.graph)
         request_graph_config = credential_free_graph_config_for_activity(graph)
-        connector_ids = self._real_connector_ids_from_graph_definition(
-            args.graph)
+        connector_ids = self._real_connector_ids_from_graph_definition(args.graph)
         connector_service = self._state_services.connectors
         principal = _current_user_ctx.get()
         references_list = await asyncio.gather(
-            *(connector_service.execution_ref_for_project(
-                principal,
-                self._project_id,
-                connector_id,
-                connector_authorization.CONNECTOR_PQUERY_VALIDATION_ACTIONS,
-            ) for connector_id in sorted(connector_ids)))
+            *(
+                connector_service.execution_ref_for_project(
+                    principal,
+                    self._project_id,
+                    connector_id,
+                    connector_authorization.CONNECTOR_PQUERY_VALIDATION_ACTIONS,
+                )
+                for connector_id in sorted(connector_ids)
+            )
+        )
         references: Dict[ConnectorID, ConnectorExecutionRef] = {
-            reference.connector_id: reference
-            for reference in references_list
+            reference.connector_id: reference for reference in references_list
         }
         workflow_graph_config = bind_graph_config_to_execution_refs(
             request_graph_config,
@@ -921,24 +954,24 @@ class PQueryLogic:
             f'validate-pquery:{self._project_id}',
         )
         if not isinstance(snapshot, ValidatedPredictiveQuerySnapshot):
-            raise TypeError('Predictive query validation returned an invalid '
-                            'snapshot')
+            raise TypeError('Predictive query validation returned an invalid snapshot')
         if snapshot.config.graph.data_source_dict:
             raise RuntimeError(
-                'Predictive query validation returned connector configurations')
+                'Predictive query validation returned connector configurations'
+            )
         expected_tables = {
-            table.name: str(table.data_source)
-            for table in request_graph_config.tables
+            table.name: str(table.data_source) for table in request_graph_config.tables
         }
         validated_tables = {
-            table.name: str(table.data_source)
-            for table in snapshot.config.graph.tables
+            table.name: str(table.data_source) for table in snapshot.config.graph.tables
         }
         if validated_tables != expected_tables:
             raise RuntimeError(
-                'Predictive query validation returned unexpected graph tables')
+                'Predictive query validation returned unexpected graph tables'
+            )
         snapshot.config.graph.data_source_dict = deepcopy(
-            request_graph_config.data_source_dict)
+            request_graph_config.data_source_dict
+        )
         return snapshot
 
     async def infer_task_type_pqlv2(
@@ -964,13 +997,13 @@ class PQueryLogic:
         parsed_pq = parser.to_parsed_predictive_query(query)
 
         validator = PredictiveQueryValidator(
-            **validator_kwargs(graph, query_string=query))
-        predictive_query, response = validator.validate_predictive_query(
-            parsed_pq)
+            **validator_kwargs(graph, query_string=query)
+        )
+        predictive_query, response = validator.validate_predictive_query(parsed_pq)
 
         if not response.ok:
             raise ValidationException(
-                title="Invalid predictive query",
+                title='Invalid predictive query',
                 message=response.message(),
             )
 
@@ -978,16 +1011,21 @@ class PQueryLogic:
         return get_task_type(graph, predictive_query)
 
     def _set_table_version_in_pq_config(
-            self, pq_config: PredictiveQueryV2Config,
-            graph_version_info: GraphDataVersionInfo):
+        self,
+        pq_config: PredictiveQueryV2Config,
+        graph_version_info: GraphDataVersionInfo,
+    ):
         for table in pq_config.graph.tables:
             assert isinstance(table, TableConfig)
             old_version = table.data_version
-            new_version = (graph_version_info.table_data_versions[TableName(
-                table.table_name)])
+            new_version = graph_version_info.table_data_versions[
+                TableName(table.table_name)
+            ]
             table.data_version = new_version
-            log.info(f"Set table data version for {table.table_name} to "
-                     f"{new_version} from {old_version}.")
+            log.info(
+                f'Set table data version for {table.table_name} to '
+                f'{new_version} from {old_version}.'
+            )
         return pq_config
 
     async def _make_training_spec_v2(
@@ -1003,12 +1041,13 @@ class PQueryLogic:
         val_args = PQueryValidationArgs(
             query_string=pq_resource.query_string,
             graph=pq_resource.graph,
-            name=pq_resource.name or "NA",
-            desc=pq_resource.desc or "",
+            name=pq_resource.name or 'NA',
+            desc=pq_resource.desc or '',
             fpid=pq_def_fpid,
             runtime_options=pquery_runtime_options_or_none(
                 list_distinct_target_is_array=(
-                    pq_resource.list_distinct_target_is_array),
+                    pq_resource.list_distinct_target_is_array
+                ),
                 lp_bp_layout=pq_resource.lp_bp_layout,
             ),
         )
@@ -1024,12 +1063,13 @@ class PQueryLogic:
 
         if graph_version_info:
             pq_config = self._set_table_version_in_pq_config(
-                pq_config, graph_version_info)
+                pq_config, graph_version_info
+            )
         else:
-            log.warning('Creating training job spec without a graph version '
-                        'info object')
-        pq_config.weight_col = (
-            auto_trainer_options.training_table_generation.weight_col)
+            log.warning(
+                'Creating training job spec without a graph version info object'
+            )
+        pq_config.weight_col = auto_trainer_options.training_table_generation.weight_col
 
         pq_id = PredictiveQueryID.compose(fpid=pq_def_fpid)
         return TrainingSpec(
@@ -1042,8 +1082,7 @@ class PQueryLogic:
         ), parsed_pq
 
     async def _require_successful_training_job(
-        self, ctx: RequestContext, id: PredictiveQueryID,
-        ml_job_backend: MLJobBackend
+        self, ctx: RequestContext, id: PredictiveQueryID, ml_job_backend: MLJobBackend
     ) -> Tuple[TrainingJobResponse, HomeDirManager]:
         """Returns the home dir of the most recent successful training job, or
         a value error if none exists.
@@ -1059,27 +1098,31 @@ class PQueryLogic:
         if not job_ids:
             raise ValidationException(
                 message=(
-                    "This predictive query has needs to be trained, before "
-                    "you can perform this operation."), )
+                    'This predictive query has needs to be trained, before '
+                    'you can perform this operation.'
+                ),
+            )
         curr_training_job_id = job_ids[-1]
 
-        existing_job = await ml_job_backend.get_training_job(
-            ctx, curr_training_job_id)
+        existing_job = await ml_job_backend.get_training_job(ctx, curr_training_job_id)
         if not existing_job:
             # Return runtime error as this is due to a kumo bug, not user input
             # error.
             raise RuntimeError(
-                f"Training job {curr_training_job_id} is missing from the "
-                f"ML backend. Please check for database corruption, or "
-                f"retrain the predictive query.")
+                f'Training job {curr_training_job_id} is missing from the '
+                f'ML backend. Please check for database corruption, or '
+                f'retrain the predictive query.'
+            )
 
         if existing_job.execution.status != JobStatus.DONE:
             raise ValidationException(
                 message=(
-                    "This predictive query needs to be trained successfully "
-                    "before you can perform this operation. However, the last "
-                    f"training job for this pquery has status = "
-                    f"{existing_job.execution.status}."), )
+                    'This predictive query needs to be trained successfully '
+                    'before you can perform this operation. However, the last '
+                    f'training job for this pquery has status = '
+                    f'{existing_job.execution.status}.'
+                ),
+            )
 
         home_dir = await ml_job_backend.get_job_home_dir(curr_training_job_id)
         return (existing_job, HomeDirManager(home_dir))
@@ -1096,35 +1139,40 @@ class PQueryLogic:
         resp = XAIResponse()
         task_name = home_mgr.first_task_name()
         if task_name is None or not fsutil.exists(
-                home_mgr.get_best_trainer_config_path(task_name)):
-            log.warning('Best trainer config is not available, please '
-                        'make sure automl training is completed successfully')
+            home_mgr.get_best_trainer_config_path(task_name)
+        ):
+            log.warning(
+                'Best trainer config is not available, please '
+                'make sure automl training is completed successfully'
+            )
             return resp
-        best_trainer_dir = await home_mgr.get_best_trainer_dir.coroutine(
-            task_name)
+        best_trainer_dir = await home_mgr.get_best_trainer_dir.coroutine(task_name)
         trainer_config = await load_json_async(
-            os.path.join(best_trainer_dir, 'config.json'), TrainerConfig)
+            os.path.join(best_trainer_dir, 'config.json'), TrainerConfig
+        )
         if trainer_config and trainer_config.refit_cfg.refitted_trainval:
             best_trainer_dir = best_trainer_dir.rstrip('/') + '_refit_trainval'
         column_file_path = os.path.join(
-            best_trainer_dir,
-            f'column_analysis/{stage.value}/column_analysis.json')
-        log.info(f"column_file_path: {column_file_path}")
+            best_trainer_dir, f'column_analysis/{stage.value}/column_analysis.json'
+        )
+        log.info(f'column_file_path: {column_file_path}')
         if not fsutil.exists(column_file_path):
             log.warning(
-                f"Column analysis stats could not be found on S3 at "
+                f'Column analysis stats could not be found on S3 at '
                 f"path '{column_file_path}'. It's possible that the query was "
-                f"trained before migrating column analysis to explainer or "
-                f"before renaming cohort analysis to column analysis.")
+                f'trained before migrating column analysis to explainer or '
+                f'before renaming cohort analysis to column analysis.'
+            )
             column_file_path = os.path.join(
-                best_trainer_dir,
-                f'cohort_analysis/{stage.value}/cohort_analysis.json')
+                best_trainer_dir, f'cohort_analysis/{stage.value}/cohort_analysis.json'
+            )
             if not fsutil.exists(column_file_path):
                 log.warning(
-                    f"Cohort analysis stats could not be found on S3 at "
+                    f'Cohort analysis stats could not be found on S3 at '
                     f"path '{column_file_path}'. It's possible that the query "
-                    f"was trained before migrating cohort analysis to "
-                    f"explainer.")
+                    f'was trained before migrating cohort analysis to '
+                    f'explainer.'
+                )
                 return resp
 
         job_results = job.execution.results
@@ -1132,9 +1180,14 @@ class PQueryLogic:
 
         # Load all XAI data in parallel.
         column_analysis, explanation = await asyncio.gather(
-            json.load_json_async(column_file_path, ColumnAnalysisOutput,
-                                 default=None, raise_on_missing=False),
-            job_results.load_test_explain.coroutine())
+            json.load_json_async(
+                column_file_path,
+                ColumnAnalysisOutput,
+                default=None,
+                raise_on_missing=False,
+            ),
+            job_results.load_test_explain.coroutine(),
+        )
 
         root_table_id = None
         navigation_tree: Dict[str, List[str]] = defaultdict(list)
@@ -1143,11 +1196,11 @@ class PQueryLogic:
             table_id = to_table_id(table.name)
             resp.tables[table_id] = {}
             # Populate the root_table if we've found the entity table
-            if f"{table_id.table_name}.{table.pkey_name}" == entity:
+            if f'{table_id.table_name}.{table.pkey_name}' == entity:
                 root_table_id = table_id
 
             for col in table.cols:
-                navigation_tree[table_id].append(f"{table_id}.{col.name}")
+                navigation_tree[table_id].append(f'{table_id}.{col.name}')
                 col_stypes[str(ColumnID(table_id, col.name))] = col.stype
 
         assert root_table_id is not None
@@ -1155,27 +1208,23 @@ class PQueryLogic:
         # Merge BFS tree to navigation.
         for table_id, adj_table_ids in bfs_tree.items():
             navigation_tree[table_id].extend(adj_table_ids)
-        resp.navigation = NavigationInfo(root_table_name=root_table_id,
-                                         navigation_tree=navigation_tree)
+        resp.navigation = NavigationInfo(
+            root_table_name=root_table_id, navigation_tree=navigation_tree
+        )
 
         # Populate gradient scores as column_id -> score.
         name_to_table = {
-            **{
-                table.table_name: table
-                for table in tables
-            },
+            **{table.table_name: table for table in tables},
             # Backwards compatibility:
-            **{
-                table.name: table
-                for table in tables
-            }
+            **{table.name: table for table in tables},
         }
         gradient_scores: Dict[str, float] = {}
         scores = explanation.contribution_summary.global_column_contributions
         for col_contrib in scores:
             table_id = to_table_id(name_to_table[col_contrib.table_name].name)
-            gradient_scores[str(ColumnID(
-                table_id, col_contrib.col_name))] = col_contrib.contribution
+            gradient_scores[str(ColumnID(table_id, col_contrib.col_name))] = (
+                col_contrib.contribution
+            )
 
         # Populate variance score and column analysis in response.
         for col_cohort in column_analysis.cohorts:
@@ -1236,41 +1285,48 @@ class PQueryLogic:
         if len(set(table.name for table in tables)) < len(tables):
             raise ValidationException(
                 message=(
-                    "Unable to parse XAI data due to duplicate table names. "
-                    "Please go to the Predictive Query training page "
-                    "to access XAI for this query."), )
+                    'Unable to parse XAI data due to duplicate table names. '
+                    'Please go to the Predictive Query training page '
+                    'to access XAI for this query.'
+                ),
+            )
 
         resp = XAIResponse()
         task_name = home_mgr.first_task_name()
         if task_name is None or not fsutil.exists(
-                home_mgr.get_best_trainer_config_path(task_name)):
-            log.warning('Best trainer config is not available, please '
-                        'make sure automl training is completed successfully')
+            home_mgr.get_best_trainer_config_path(task_name)
+        ):
+            log.warning(
+                'Best trainer config is not available, please '
+                'make sure automl training is completed successfully'
+            )
             return resp
-        best_trainer_dir = await home_mgr.get_best_trainer_dir.coroutine(
-            task_name)
+        best_trainer_dir = await home_mgr.get_best_trainer_dir.coroutine(task_name)
         trainer_config = await load_json_async(
-            os.path.join(best_trainer_dir, 'config.json'), TrainerConfig)
+            os.path.join(best_trainer_dir, 'config.json'), TrainerConfig
+        )
         if trainer_config and trainer_config.refit_cfg.refitted_trainval:
             best_trainer_dir = best_trainer_dir.rstrip('/') + '_refit_trainval'
         column_file_path = os.path.join(
-            best_trainer_dir,
-            f'column_analysis/{stage.value}/column_analysis.json')
+            best_trainer_dir, f'column_analysis/{stage.value}/column_analysis.json'
+        )
         if not fsutil.exists(column_file_path):
             log.warning(
-                f"Column analysis stats could not be found on S3 at "
+                f'Column analysis stats could not be found on S3 at '
                 f"path '{column_file_path}'. It's possible that the query was "
-                f"trained before migrating column analysis to explainer or "
-                f"before renaming cohort analysis to column analysis.")
+                f'trained before migrating column analysis to explainer or '
+                f'before renaming cohort analysis to column analysis.'
+            )
             column_file_path = os.path.join(
-                best_trainer_dir,
-                f'cohort_analysis/{stage.value}/cohort_analysis.json')
+                best_trainer_dir, f'cohort_analysis/{stage.value}/cohort_analysis.json'
+            )
             if not fsutil.exists(column_file_path):
                 log.warning(
-                    f"Cohort analysis stats could not be found on S3 at "
+                    f'Cohort analysis stats could not be found on S3 at '
                     f"path '{column_file_path}'. It's possible that the query "
-                    f"was trained before migrating cohort analysis to "
-                    f"explainer.")
+                    f'was trained before migrating cohort analysis to '
+                    f'explainer.'
+                )
                 return resp
 
         job_results = job.execution.results
@@ -1278,9 +1334,14 @@ class PQueryLogic:
 
         # Load all XAI data in parallel.
         column_analysis, explanation = await asyncio.gather(
-            json.load_json_async(column_file_path, ColumnAnalysisOutput,
-                                 default=None, raise_on_missing=False),
-            job_results.load_test_explain.coroutine())
+            json.load_json_async(
+                column_file_path,
+                ColumnAnalysisOutput,
+                default=None,
+                raise_on_missing=False,
+            ),
+            job_results.load_test_explain.coroutine(),
+        )
 
         root_table_name = None
         navigation_tree: Dict[str, List[str]] = defaultdict(list)
@@ -1289,47 +1350,41 @@ class PQueryLogic:
             table_name = to_table_id(table.name).table_name
             resp.tables[table_name] = {}
             # Populate the root_table if we've found the entity table
-            if f"{table_name}.{table.pkey_name}" == entity:
+            if f'{table_name}.{table.pkey_name}' == entity:
                 root_table_name = table_name
 
             for col in table.cols:
-                navigation_tree[table_name].append(f"{table_name}.{col.name}")
-                col_stypes[f"{table_name}.{col.name}"] = col.stype
+                navigation_tree[table_name].append(f'{table_name}.{col.name}')
+                col_stypes[f'{table_name}.{col.name}'] = col.stype
 
         assert root_table_name is not None
 
         # Merge BFS tree to navigation.
         for table_id, adj_table_ids in bfs_tree.items():
-            adj_table_names = [
-                table_id.table_name for table_id in adj_table_ids
-            ]
+            adj_table_names = [table_id.table_name for table_id in adj_table_ids]
             navigation_tree[table_id.table_name].extend(adj_table_names)
-        resp.navigation = NavigationInfo(root_table_name=root_table_name,
-                                         navigation_tree=navigation_tree)
+        resp.navigation = NavigationInfo(
+            root_table_name=root_table_name, navigation_tree=navigation_tree
+        )
 
         # Populate gradient scores as column_id -> score.
         name_to_table = {
-            **{
-                table.table_name: table
-                for table in tables
-            },
+            **{table.table_name: table for table in tables},
             # Backwards compatibility:
-            **{
-                table.name: table
-                for table in tables
-            }
+            **{table.name: table for table in tables},
         }
         gradient_scores: Dict[str, float] = {}
         scores = explanation.contribution_summary.global_column_contributions
         for col_contrib in scores:
             table_name = name_to_table[col_contrib.table_name].table_name
-            gradient_scores[f"{table_name}.{col_contrib.col_name}"] = (
-                col_contrib.contribution)
+            gradient_scores[f'{table_name}.{col_contrib.col_name}'] = (
+                col_contrib.contribution
+            )
 
         # Populate variance score and column analysis in response.
         for col_cohort in column_analysis.cohorts:
             table_name = name_to_table[col_cohort.table_name].table_name
-            col_id = f"{table_name}.{col_cohort.col_name}"
+            col_id = f'{table_name}.{col_cohort.col_name}'
             if col_cohort.hop == 'all':
                 hop_info = 'all hops'
             elif col_cohort.hop == 0:
@@ -1337,16 +1392,15 @@ class PQueryLogic:
             else:
                 hop_info = f'{col_cohort.hop} hop'
             col_name_with_hop = f'{col_cohort.col_name} ({hop_info})'
-            resp.tables[table_name][col_name_with_hop] = (
-                ColumnExplanation(
-                    col_id=col_id,
-                    stype=col_stypes.get(col_id),
-                    variance_score=col_cohort.prediction_score,
-                    gradient_score=gradient_scores.get(col_id),
-                    # TODO (Siyang) This potentially overwrites Cohorts for
-                    # tables that appear at multiple hops.
-                    cohort=column_cohorts_to_cube(col_cohort),
-                ))
+            resp.tables[table_name][col_name_with_hop] = ColumnExplanation(
+                col_id=col_id,
+                stype=col_stypes.get(col_id),
+                variance_score=col_cohort.prediction_score,
+                gradient_score=gradient_scores.get(col_id),
+                # TODO (Siyang) This potentially overwrites Cohorts for
+                # tables that appear at multiple hops.
+                cohort=column_cohorts_to_cube(col_cohort),
+            )
 
         return resp
 
@@ -1359,31 +1413,37 @@ class PQueryLogic:
         empty_mappings = StrategyMappings()
 
         if task_name is None or not fsutil.exists(
-                home_mgr.get_best_trainer_config_path(task_name)):
-            log.warning('Best trainer config is not available, please '
-                        'make sure automl training is completed successfully')
+            home_mgr.get_best_trainer_config_path(task_name)
+        ):
+            log.warning(
+                'Best trainer config is not available, please '
+                'make sure automl training is completed successfully'
+            )
             return empty_mappings
 
-        best_trainer_dir = await home_mgr.get_best_trainer_dir.coroutine(
-            task_name)
+        best_trainer_dir = await home_mgr.get_best_trainer_dir.coroutine(task_name)
 
-        mappings_file_path = home_mgr.subgraph_mappings_path(
-            stage, best_trainer_dir)
+        mappings_file_path = home_mgr.subgraph_mappings_path(stage, best_trainer_dir)
         refitted_mappings_file_path = home_mgr.subgraph_mappings_path(
-            stage,
-            best_trainer_dir.rstrip('/') + '_refit_trainval')
+            stage, best_trainer_dir.rstrip('/') + '_refit_trainval'
+        )
 
         # speculatively load both possible StrategyMappings objects while
         # waiting for TrainerConfig
         mappings_task = asyncio.create_task(
-            load_json_async(mappings_file_path, StrategyMappings,
-                            default=empty_mappings))
+            load_json_async(
+                mappings_file_path, StrategyMappings, default=empty_mappings
+            )
+        )
         refitted_mappings_task = asyncio.create_task(
-            load_json_async(refitted_mappings_file_path, StrategyMappings,
-                            default=empty_mappings))
+            load_json_async(
+                refitted_mappings_file_path, StrategyMappings, default=empty_mappings
+            )
+        )
 
         trainer_config = await load_json_async(
-            os.path.join(best_trainer_dir, 'config.json'), TrainerConfig)
+            os.path.join(best_trainer_dir, 'config.json'), TrainerConfig
+        )
 
         if trainer_config and trainer_config.refit_cfg.refitted_trainval:
             selected_mappings_task = refitted_mappings_task
@@ -1398,9 +1458,11 @@ class PQueryLogic:
         await selected_mappings_task
 
         if (res := selected_mappings_task.result()) is empty_mappings:
-            log.warning("Strategy mappings could not be found on S3 at path "
-                        f"'{selected_mappings_file_path}'. Return empty "
-                        "mappings instead.")
+            log.warning(
+                'Strategy mappings could not be found on S3 at path '
+                f"'{selected_mappings_file_path}'. Return empty "
+                'mappings instead.'
+            )
 
         return res
 
@@ -1412,25 +1474,31 @@ class PQueryLogic:
     ) -> OldSubgraph:
         task_name = home_mgr.first_task_name()
         if task_name is None or not fsutil.exists(
-                home_mgr.get_best_trainer_config_path(task_name)):
-            log.warning('Best trainer config is not available, please '
-                        'make sure automl training is completed successfully')
+            home_mgr.get_best_trainer_config_path(task_name)
+        ):
+            log.warning(
+                'Best trainer config is not available, please '
+                'make sure automl training is completed successfully'
+            )
             return OldSubgraph(id=entity_id, table_name=None, task_type=None)
-        best_trainer_dir = await home_mgr.get_best_trainer_dir.coroutine(
-            task_name)
+        best_trainer_dir = await home_mgr.get_best_trainer_dir.coroutine(task_name)
         trainer_config = await load_json_async(
-            os.path.join(best_trainer_dir, 'config.json'), TrainerConfig)
+            os.path.join(best_trainer_dir, 'config.json'), TrainerConfig
+        )
         if trainer_config and trainer_config.refit_cfg.refitted_trainval:
             best_trainer_dir = best_trainer_dir.rstrip('/') + '_refit_trainval'
         subgraph_file_path = home_mgr.subgraph_json_path(
-            stage, entity_id, best_trainer_dir, old=True)
-        subgraph = await load_json_async(subgraph_file_path, OldSubgraph,
-                                         default=None, raise_on_missing=False)
+            stage, entity_id, best_trainer_dir, old=True
+        )
+        subgraph = await load_json_async(
+            subgraph_file_path, OldSubgraph, default=None, raise_on_missing=False
+        )
         if subgraph is None:
             log.warning(
-                f"Entity {entity_id} subgraph could not be found on S3 at "
+                f'Entity {entity_id} subgraph could not be found on S3 at '
                 f"path '{subgraph_file_path}'. Returning an empty subgraph "
-                f"instead.")
+                f'instead.'
+            )
             return OldSubgraph(id=entity_id, table_name=None, task_type=None)
         return subgraph
 
@@ -1442,26 +1510,32 @@ class PQueryLogic:
     ) -> Subgraph:
         task_name = home_mgr.first_task_name()
         if task_name is None or not fsutil.exists(
-                home_mgr.get_best_trainer_config_path(task_name)):
-            log.warning('Best trainer config is not available, please '
-                        'make sure automl training is completed successfully')
+            home_mgr.get_best_trainer_config_path(task_name)
+        ):
+            log.warning(
+                'Best trainer config is not available, please '
+                'make sure automl training is completed successfully'
+            )
             return Subgraph()
-        best_trainer_dir = await home_mgr.get_best_trainer_dir.coroutine(
-            task_name)
+        best_trainer_dir = await home_mgr.get_best_trainer_dir.coroutine(task_name)
         trainer_config = await load_json_async(
-            os.path.join(best_trainer_dir, 'config.json'), TrainerConfig)
+            os.path.join(best_trainer_dir, 'config.json'), TrainerConfig
+        )
         if trainer_config and trainer_config.refit_cfg.refitted_trainval:
             best_trainer_dir = best_trainer_dir.rstrip('/') + '_refit_trainval'
         subgraph_file_path = home_mgr.subgraph_json_path(
-            stage, entity_id, best_trainer_dir, old=False)
+            stage, entity_id, best_trainer_dir, old=False
+        )
 
-        subgraph = await load_json_async(subgraph_file_path, Subgraph,
-                                         default=None, raise_on_missing=False)
+        subgraph = await load_json_async(
+            subgraph_file_path, Subgraph, default=None, raise_on_missing=False
+        )
         if subgraph is None:
             log.warning(
-                f"Entity {entity_id} subgraph could not be found on S3 at "
+                f'Entity {entity_id} subgraph could not be found on S3 at '
                 f"path '{subgraph_file_path}'. Returning an empty subgraph "
-                f"instead.")
+                f'instead.'
+            )
             return Subgraph()
         return subgraph
 
@@ -1473,23 +1547,29 @@ class PQueryLogic:
     ) -> NodePredRFM:
         task_name = home_mgr.first_task_name()
         if task_name is None or not fsutil.exists(
-                home_mgr.get_best_trainer_config_path(task_name)):
-            log.warning('Best trainer config is not available, please '
-                        'make sure automl training is completed successfully')
+            home_mgr.get_best_trainer_config_path(task_name)
+        ):
+            log.warning(
+                'Best trainer config is not available, please '
+                'make sure automl training is completed successfully'
+            )
             return NodePredRFM()
-        best_trainer_dir = await home_mgr.get_best_trainer_dir.coroutine(
-            task_name)
+        best_trainer_dir = await home_mgr.get_best_trainer_dir.coroutine(task_name)
         trainer_config = await load_json_async(
-            os.path.join(best_trainer_dir, 'config.json'), TrainerConfig)
+            os.path.join(best_trainer_dir, 'config.json'), TrainerConfig
+        )
         if trainer_config and trainer_config.refit_cfg.refitted_trainval:
             best_trainer_dir = best_trainer_dir.rstrip('/') + '_refit_trainval'
         rfm_file_path = home_mgr.rfm_path(stage, entity_id, best_trainer_dir)
-        rfm = await load_json_async(rfm_file_path, NodePredRFM, default=None,
-                                    raise_on_missing=False)
+        rfm = await load_json_async(
+            rfm_file_path, NodePredRFM, default=None, raise_on_missing=False
+        )
         if rfm is None:
-            log.warning(f"Entity {entity_id} RFM could not be found on S3 at "
-                        f"path '{rfm_file_path}'. Returning an empty rfm "
-                        f"instead.")
+            log.warning(
+                f'Entity {entity_id} RFM could not be found on S3 at '
+                f"path '{rfm_file_path}'. Returning an empty rfm "
+                f'instead.'
+            )
             return NodePredRFM()
         return rfm
 
@@ -1501,26 +1581,33 @@ class PQueryLogic:
     ) -> NodePredRFM:
         task_name = home_mgr.first_task_name()
         if task_name is None or not fsutil.exists(
-                home_mgr.get_best_trainer_config_path(task_name)):
-            log.warning('Best trainer config is not available, please '
-                        'make sure automl training is completed successfully')
+            home_mgr.get_best_trainer_config_path(task_name)
+        ):
+            log.warning(
+                'Best trainer config is not available, please '
+                'make sure automl training is completed successfully'
+            )
             return NodePredRFM()
-        best_trainer_dir = await home_mgr.get_best_trainer_dir.coroutine(
-            task_name)
+        best_trainer_dir = await home_mgr.get_best_trainer_dir.coroutine(task_name)
         trainer_config = await load_json_async(
-            os.path.join(best_trainer_dir, 'config.json'), TrainerConfig)
+            os.path.join(best_trainer_dir, 'config.json'), TrainerConfig
+        )
         if trainer_config and trainer_config.refit_cfg.refitted_trainval:
             best_trainer_dir = best_trainer_dir.rstrip('/') + '_refit_trainval'
         subgraph_collector_dir = home_mgr.subgraph_collector_dir(
-            stage, best_trainer_dir)
+            stage, best_trainer_dir
+        )
         cat_rfm_dir = osp.join(subgraph_collector_dir, CATEGORY_RFM_DIR)
         rfm_file_path = osp.join(cat_rfm_dir, f'{category}.json')
-        rfm = await load_json_async(rfm_file_path, NodePredRFM, default=None,
-                                    raise_on_missing=False)
+        rfm = await load_json_async(
+            rfm_file_path, NodePredRFM, default=None, raise_on_missing=False
+        )
         if rfm is None:
-            log.error(f"Category {category} node prediction RFM could not be "
-                      f"found on S3 at path '{rfm_file_path}'. Returning an "
-                      f"empty rfm instead.")
+            log.error(
+                f'Category {category} node prediction RFM could not be '
+                f"found on S3 at path '{rfm_file_path}'. Returning an "
+                f'empty rfm instead.'
+            )
             return NodePredRFM()
         return rfm
 
@@ -1532,26 +1619,33 @@ class PQueryLogic:
     ) -> LinkPredRFM:
         task_name = home_mgr.first_task_name()
         if task_name is None or not fsutil.exists(
-                home_mgr.get_best_trainer_config_path(task_name)):
-            log.warning('Best trainer config is not available, please '
-                        'make sure automl training is completed successfully')
+            home_mgr.get_best_trainer_config_path(task_name)
+        ):
+            log.warning(
+                'Best trainer config is not available, please '
+                'make sure automl training is completed successfully'
+            )
             return LinkPredRFM()
-        best_trainer_dir = await home_mgr.get_best_trainer_dir.coroutine(
-            task_name)
+        best_trainer_dir = await home_mgr.get_best_trainer_dir.coroutine(task_name)
         trainer_config = await load_json_async(
-            os.path.join(best_trainer_dir, 'config.json'), TrainerConfig)
+            os.path.join(best_trainer_dir, 'config.json'), TrainerConfig
+        )
         if trainer_config and trainer_config.refit_cfg.refitted_trainval:
             best_trainer_dir = best_trainer_dir.rstrip('/') + '_refit_trainval'
         subgraph_collector_dir = home_mgr.subgraph_collector_dir(
-            stage, best_trainer_dir)
+            stage, best_trainer_dir
+        )
         cat_rfm_dir = osp.join(subgraph_collector_dir, CATEGORY_RFM_DIR)
         rfm_file_path = osp.join(cat_rfm_dir, f'{category}.json')
-        rfm = await load_json_async(rfm_file_path, LinkPredRFM, default=None,
-                                    raise_on_missing=False)
+        rfm = await load_json_async(
+            rfm_file_path, LinkPredRFM, default=None, raise_on_missing=False
+        )
         if rfm is None:
-            log.error(f"Link prediction RFM for {category} could not be "
-                      f"found on S3 at path '{rfm_file_path}'. Returning an "
-                      f"empty rfm instead.")
+            log.error(
+                f'Link prediction RFM for {category} could not be '
+                f"found on S3 at path '{rfm_file_path}'. Returning an "
+                f'empty rfm instead.'
+            )
             return LinkPredRFM()
         return rfm
 
@@ -1563,23 +1657,29 @@ class PQueryLogic:
     ) -> LinkPredRFM:
         task_name = home_mgr.first_task_name()
         if task_name is None or not fsutil.exists(
-                home_mgr.get_best_trainer_config_path(task_name)):
-            log.warning('Best trainer config is not available, please '
-                        'make sure automl training is completed successfully')
+            home_mgr.get_best_trainer_config_path(task_name)
+        ):
+            log.warning(
+                'Best trainer config is not available, please '
+                'make sure automl training is completed successfully'
+            )
             return LinkPredRFM()
-        best_trainer_dir = await home_mgr.get_best_trainer_dir.coroutine(
-            task_name)
+        best_trainer_dir = await home_mgr.get_best_trainer_dir.coroutine(task_name)
         trainer_config = await load_json_async(
-            os.path.join(best_trainer_dir, 'config.json'), TrainerConfig)
+            os.path.join(best_trainer_dir, 'config.json'), TrainerConfig
+        )
         if trainer_config and trainer_config.refit_cfg.refitted_trainval:
             best_trainer_dir = best_trainer_dir.rstrip('/') + '_refit_trainval'
         rfm_file_path = home_mgr.rfm_path(stage, entity_id, best_trainer_dir)
-        rfm = await load_json_async(rfm_file_path, LinkPredRFM, default=None,
-                                    raise_on_missing=False)
+        rfm = await load_json_async(
+            rfm_file_path, LinkPredRFM, default=None, raise_on_missing=False
+        )
         if rfm is None:
-            log.warning(f"Entity {entity_id} link prediction RFM could not be "
-                        f"found on S3 at path '{rfm_file_path}'. Returning an "
-                        f"empty rfm instead.")
+            log.warning(
+                f'Entity {entity_id} link prediction RFM could not be '
+                f"found on S3 at path '{rfm_file_path}'. Returning an "
+                f'empty rfm instead.'
+            )
             return LinkPredRFM()
         return rfm
 
@@ -1609,9 +1709,11 @@ class PQueryLogic:
         """
         subgraph = await self.get_subgraph(home_mgr, entity_id, stage)
         if subgraph.feature_store is None:
-            log.warning(f"Entity {entity_id} subgraph could not be found or"
-                        f"the feature store is empty. Returning an empty list "
-                        f"instead.")
+            log.warning(
+                f'Entity {entity_id} subgraph could not be found or'
+                f'the feature store is empty. Returning an empty list '
+                f'instead.'
+            )
             return []
         return group_merge_topk_feats(subgraph, topk)
 
@@ -1643,14 +1745,17 @@ class PQueryLogic:
         subgraph = await self.get_subgraph(home_mgr, entity_id, stage)
         if subgraph.feature_store is None:
             log.warning(
-                f"Entity {entity_id} subgraph could not be found or"
-                f"the feature store is empty. Returning an empty feature "
-                f"instead.")
+                f'Entity {entity_id} subgraph could not be found or'
+                f'the feature store is empty. Returning an empty feature '
+                f'instead.'
+            )
             return Feature()
         table_nodes = subgraph.subgraph_store.get_table_node_ids(table_name)
         if len(table_nodes) == 0:
-            log.warning(f"Table {table_name} not found in subgraph. "
-                        f"Returning an empty feature instead.")
+            log.warning(
+                f'Table {table_name} not found in subgraph. '
+                f'Returning an empty feature instead.'
+            )
             return Feature()
         feat_store: SubgraphFeatureStore = subgraph.feature_store
         feats = [feat_store.features[node][column_name] for node in table_nodes]
@@ -1685,32 +1790,38 @@ class PQueryLogic:
         if op in {'most_frequent', 'mean'} and category == 'random':
             task_name = home_mgr.first_task_name()
             if task_name is None or not fsutil.exists(
-                    home_mgr.get_best_trainer_config_path(task_name)):
-                log.error('Best trainer config is not available, please '
-                          'make sure automl training is completed successfully')
+                home_mgr.get_best_trainer_config_path(task_name)
+            ):
+                log.error(
+                    'Best trainer config is not available, please '
+                    'make sure automl training is completed successfully'
+                )
                 return Feature()
-            best_trainer_dir = await home_mgr.get_best_trainer_dir.coroutine(
-                task_name)
+            best_trainer_dir = await home_mgr.get_best_trainer_dir.coroutine(task_name)
             trainer_config = await load_json_async(
-                os.path.join(best_trainer_dir, 'config.json'), TrainerConfig)
+                os.path.join(best_trainer_dir, 'config.json'), TrainerConfig
+            )
             if trainer_config and trainer_config.refit_cfg.refitted_trainval:
-                best_trainer_dir = best_trainer_dir.rstrip(
-                    '/') + '_refit_trainval'
+                best_trainer_dir = best_trainer_dir.rstrip('/') + '_refit_trainval'
             subgraph_collector_dir = home_mgr.subgraph_collector_dir(
-                stage, best_trainer_dir)
-            global_aggr_feat_dir = osp.join(subgraph_collector_dir,
-                                            GLOBAL_AGGR_FEATURE_DIR)
+                stage, best_trainer_dir
+            )
+            global_aggr_feat_dir = osp.join(
+                subgraph_collector_dir, GLOBAL_AGGR_FEATURE_DIR
+            )
             category_aggr_feat_dir = osp.join(global_aggr_feat_dir, category)
             table_dir = osp.join(category_aggr_feat_dir, table_name)
             col_dir = osp.join(table_dir, column_name)
             op_dir = osp.join(col_dir, op)
-            aggr_feat_file_path = osp.join(op_dir,
-                                           f"{AGGR_FEATURE_FILE_NAME}.json")
-            feat = await load_json_async(aggr_feat_file_path, Feature,
-                                         default=None, raise_on_missing=False)
+            aggr_feat_file_path = osp.join(op_dir, f'{AGGR_FEATURE_FILE_NAME}.json')
+            feat = await load_json_async(
+                aggr_feat_file_path, Feature, default=None, raise_on_missing=False
+            )
             if feat is None:
-                log.error(f"No aggregated feature found for "
-                          f"{table_name}.{column_name} with op {op}")
+                log.error(
+                    f'No aggregated feature found for '
+                    f'{table_name}.{column_name} with op {op}'
+                )
                 return Feature()
             return feat
 
@@ -1723,11 +1834,15 @@ class PQueryLogic:
             return Feature()
         entity_ids = mappings.mappings[category][:10]
         feats: list[Feature] = await asyncio.gather(
-            *(self.get_aggr_feature(home_mgr, entity_id, table_name,
-                                    column_name, op, stage)
-              for entity_id in entity_ids))
+            *(
+                self.get_aggr_feature(
+                    home_mgr, entity_id, table_name, column_name, op, stage
+                )
+                for entity_id in entity_ids
+            )
+        )
         if len(feats) == 0:
-            log.warning(f"No features found for category {category}")
+            log.warning(f'No features found for category {category}')
             return Feature()
         return aggr_list_features(feats, op)
 
@@ -1739,25 +1854,31 @@ class PQueryLogic:
     ) -> EntityOutput:
         task_name = home_mgr.first_task_name()
         if task_name is None or not fsutil.exists(
-                home_mgr.get_best_trainer_config_path(task_name)):
-            log.warning('Best trainer config is not available, please '
-                        'make sure automl training is completed successfully')
+            home_mgr.get_best_trainer_config_path(task_name)
+        ):
+            log.warning(
+                'Best trainer config is not available, please '
+                'make sure automl training is completed successfully'
+            )
             return EntityOutput(task_type=None)
-        best_trainer_dir = await home_mgr.get_best_trainer_dir.coroutine(
-            task_name)
+        best_trainer_dir = await home_mgr.get_best_trainer_dir.coroutine(task_name)
         trainer_config = await load_json_async(
-            os.path.join(best_trainer_dir, 'config.json'), TrainerConfig)
+            os.path.join(best_trainer_dir, 'config.json'), TrainerConfig
+        )
         if trainer_config and trainer_config.refit_cfg.refitted_trainval:
             best_trainer_dir = best_trainer_dir.rstrip('/') + '_refit_trainval'
         output_file_path = home_mgr.subgraph_output_path(
-            stage, entity_id, best_trainer_dir)
-        output = await load_json_async(output_file_path, EntityOutput,
-                                       default=None, raise_on_missing=False)
+            stage, entity_id, best_trainer_dir
+        )
+        output = await load_json_async(
+            output_file_path, EntityOutput, default=None, raise_on_missing=False
+        )
         if output is None:
             log.warning(
-                f"Entity {entity_id} output could not be found on S3 at "
+                f'Entity {entity_id} output could not be found on S3 at '
                 f"path '{output_file_path}'. Returning an empty entity output "
-                f"instead.")
+                f'instead.'
+            )
             return EntityOutput(task_type=None)
         return output
 
@@ -1769,25 +1890,31 @@ class PQueryLogic:
     ) -> HistoricalItems:
         task_name = home_mgr.first_task_name()
         if task_name is None or not fsutil.exists(
-                home_mgr.get_best_trainer_config_path(task_name)):
-            log.warning('Best trainer config is not available, please '
-                        'make sure automl training is completed successfully')
+            home_mgr.get_best_trainer_config_path(task_name)
+        ):
+            log.warning(
+                'Best trainer config is not available, please '
+                'make sure automl training is completed successfully'
+            )
             return HistoricalItems()
-        best_trainer_dir = await home_mgr.get_best_trainer_dir.coroutine(
-            task_name)
+        best_trainer_dir = await home_mgr.get_best_trainer_dir.coroutine(task_name)
         trainer_config = await load_json_async(
-            os.path.join(best_trainer_dir, 'config.json'), TrainerConfig)
+            os.path.join(best_trainer_dir, 'config.json'), TrainerConfig
+        )
         if trainer_config and trainer_config.refit_cfg.refitted_trainval:
             best_trainer_dir = best_trainer_dir.rstrip('/') + '_refit_trainval'
         items_file_path = home_mgr.subgraph_historical_items_path(
-            stage, entity_id, best_trainer_dir)
-        items = await load_json_async(items_file_path, HistoricalItems,
-                                      default=None, raise_on_missing=False)
+            stage, entity_id, best_trainer_dir
+        )
+        items = await load_json_async(
+            items_file_path, HistoricalItems, default=None, raise_on_missing=False
+        )
         if items is None:
             log.warning(
-                f"Entity {entity_id} historical items could not be found on "
+                f'Entity {entity_id} historical items could not be found on '
                 f"S3 at path '{items_file_path}'. Return empty historical "
-                f"items instead.")
+                f'items instead.'
+            )
             return HistoricalItems()
         return items
 
@@ -1795,9 +1922,12 @@ class PQueryLogic:
         self,
         home_dir_mgr: HomeDirManager,
     ) -> AllTargetRegressionStats:
-        stats = json.load_json(home_dir_mgr.all_target_regression_stats,
-                               AllTargetRegressionStats, default=None,
-                               raise_on_missing=False)
+        stats = json.load_json(
+            home_dir_mgr.all_target_regression_stats,
+            AllTargetRegressionStats,
+            default=None,
+            raise_on_missing=False,
+        )
 
         # It is normal for regression histogram to be missing for queries prior
         # to v1.19, so don't throw an exception if the file is not found.
@@ -1818,32 +1948,42 @@ class PQueryLogic:
         if task_name is not None:
             train_heatmap = await load_json_async(
                 await home_dir_mgr.get_regression_heatmap_path.coroutine(
-                    TrainingStage.TRAIN, task_name), TargetPredictionHeatMap,
-                default=None, raise_on_missing=False)
+                    TrainingStage.TRAIN, task_name
+                ),
+                TargetPredictionHeatMap,
+                default=None,
+                raise_on_missing=False,
+            )
             val_heatmap = await load_json_async(
                 await home_dir_mgr.get_regression_heatmap_path.coroutine(
-                    TrainingStage.VAL, task_name), TargetPredictionHeatMap,
-                default=None, raise_on_missing=False)
+                    TrainingStage.VAL, task_name
+                ),
+                TargetPredictionHeatMap,
+                default=None,
+                raise_on_missing=False,
+            )
             test_heatmap = await load_json_async(
                 await home_dir_mgr.get_regression_heatmap_path.coroutine(
-                    TrainingStage.TEST, task_name), TargetPredictionHeatMap,
-                default=None, raise_on_missing=False)
+                    TrainingStage.TEST, task_name
+                ),
+                TargetPredictionHeatMap,
+                default=None,
+                raise_on_missing=False,
+            )
 
         residuals = {}
         if train_heatmap is not None:
-            residuals[
-                TrainingStage.
-                TRAIN] = RegressionResiduals.from_target_prediction_heatmap(
-                    train_heatmap)
+            residuals[TrainingStage.TRAIN] = (
+                RegressionResiduals.from_target_prediction_heatmap(train_heatmap)
+            )
         if val_heatmap is not None:
-            residuals[TrainingStage.
-                      VAL] = RegressionResiduals.from_target_prediction_heatmap(
-                          val_heatmap)
+            residuals[TrainingStage.VAL] = (
+                RegressionResiduals.from_target_prediction_heatmap(val_heatmap)
+            )
         if test_heatmap is not None:
-            residuals[
-                TrainingStage.
-                TEST] = RegressionResiduals.from_target_prediction_heatmap(
-                    test_heatmap)
+            residuals[TrainingStage.TEST] = (
+                RegressionResiduals.from_target_prediction_heatmap(test_heatmap)
+            )
 
         return RegressionHeatmapResponse(residuals_chart=residuals)
 
@@ -1862,12 +2002,16 @@ class PQueryLogic:
         graph_def = await self._get_graph_def(graph_id)
         if graph_def is None:
             raise ValidationException(
-                message=(f"Graph definition for graph_id {graph_id} not "
-                         "found. Please check the graph id associated with "
-                         "the query."))
+                message=(
+                    f'Graph definition for graph_id {graph_id} not '
+                    'found. Please check the graph id associated with '
+                    'the query.'
+                )
+            )
         default_model_plan_request.graph_def = graph_def
         return await self.get_model_plan_info_with_graph_def(
-            default_model_plan_request, pquery_settings)
+            default_model_plan_request, pquery_settings
+        )
 
     async def get_model_plan_info_with_graph_def(
         self,
@@ -1900,13 +2044,15 @@ class PQueryLogic:
         """
         # Convert request to valdation args
         from kumo_core.training.options import allow_array_targets
+
         args = PQueryValidationArgs(
             query_string=default_model_plan_request.query_string,
             graph=default_model_plan_request.graph_def,
-            name="default",
-            model_plan="",
+            name='default',
+            model_plan='',
             runtime_options=PQueryRuntimeOptions(
-                list_distinct_target_is_array=allow_array_targets()),
+                list_distinct_target_is_array=allow_array_targets()
+            ),
         )
 
         assert default_model_plan_request.graph_def is not None
@@ -1916,8 +2062,7 @@ class PQueryLogic:
             config=None,
             auto_trainer_options=None,
             pquery_settings=pquery_settings,
-            has_train_table_weight_col=default_model_plan_request.
-            has_train_table_weight_col,
+            has_train_table_weight_col=default_model_plan_request.has_train_table_weight_col,
         )
         pquery = parsed_pq.predictive_query
 
@@ -1929,12 +2074,11 @@ class PQueryLogic:
             graph=pquery.graph.config(),
             entity_table_names=pquery.entity_table_names,
             target_to_entity_paths=pquery.target_to_entity_paths,
-            has_train_table_weight_col=default_model_plan_request.
-            has_train_table_weight_col,
+            has_train_table_weight_col=default_model_plan_request.has_train_table_weight_col,
             split=construct_object_string_from_config(
-                await pquery.get_default_split_async()),
-            forecast_length=(pquery.forecast_length
-                             if pquery.is_forecasting else None),
+                await pquery.get_default_split_async()
+            ),
+            forecast_length=(pquery.forecast_length if pquery.is_forecasting else None),
             top_k=pquery.validated_predictive_query.top_k,
         )
 
@@ -1942,8 +2086,7 @@ class PQueryLogic:
             model_plan,
             parsed_pq.task_type,
             parsed_pq.query_type,
-            has_train_table_weight_col=default_model_plan_request.
-            has_train_table_weight_col,
+            has_train_table_weight_col=default_model_plan_request.has_train_table_weight_col,
         )
 
     async def build_pquery_def_v2(
@@ -1960,18 +2103,22 @@ class PQueryLogic:
         # fpid that was never saved. Idempotent, and a no-op for a graph with no
         # Custom SQL tables (and for an already-canonical one).
         graph_def = await graph_logic.canonicalize_graph_custom_sql_tables(
-            pquery_resource.graph, self._project_id, self._state_services,
-            _current_user_ctx.get())
+            pquery_resource.graph,
+            self._project_id,
+            self._state_services,
+            _current_user_ctx.get(),
+        )
         if graph is None:
             graph = await self._make_graph_from_graph_def_v2(graph_def)
-        name = pquery_resource.name if pquery_resource.name else ""
+        name = pquery_resource.name if pquery_resource.name else ''
         args = PQueryValidationArgs(
             query_string=pquery_resource.query_string,
             graph=graph_def,
             name=name,
             runtime_options=pquery_runtime_options_or_none(
                 list_distinct_target_is_array=(
-                    pquery_resource.list_distinct_target_is_array),
+                    pquery_resource.list_distinct_target_is_array
+                ),
                 lp_bp_layout=pquery_resource.lp_bp_layout,
             ),
         )
@@ -1996,14 +2143,16 @@ class PQueryLogic:
                 'Validated pquery config lp_bp_layout does not match runtime '
                 'pquery lp_bp_layout: '
                 f'config={validated_lp_bp_layout!r}, '
-                f'pquery={pquery.lp_bp_layout!r}')
+                f'pquery={pquery.lp_bp_layout!r}'
+            )
         pq_def = PQueryDefinition(
             get_current_timestamps(),
             pquery_name=pquery_resource.name,
             query_str=pquery_resource.query_string,
             graph_fpid=graph_def.fpid,
             list_distinct_target_is_array=(
-                pquery_resource.list_distinct_target_is_array),
+                pquery_resource.list_distinct_target_is_array
+            ),
             task_type=pquery.get_task_type(),
             query_type=pquery.query_type,
             lp_bp_layout=validated_lp_bp_layout,
@@ -2011,8 +2160,9 @@ class PQueryLogic:
         return pq_def
 
     async def create_full_pquery_def_v2(
-        self, pquery_resource: PQueryResource,
-        pquery_settings: Optional[PredictiveQuerySettings] = None
+        self,
+        pquery_resource: PQueryResource,
+        pquery_settings: Optional[PredictiveQuerySettings] = None,
     ) -> PQueryDefinition:
         graph_def = pquery_resource.graph
         graph = await self._create_full_graph_def_v2(graph_def)
@@ -2035,12 +2185,11 @@ def column_cohorts_to_cube(cohorts: ColumnCohorts) -> DataCube:
         'Target Average Score': cohorts.targets,
         'Predicted Average Score': cohorts.predictions,
     }
-    dimensions = [
-        DimensionSpec(name='Data Field', all_values=list(data.keys()))
-    ]
+    dimensions = [DimensionSpec(name='Data Field', all_values=list(data.keys()))]
     # cohorts.targets is None for batch prediction
-    if isinstance(cohorts.predictions, list) and \
-        (isinstance(cohorts.targets, list) or cohorts.targets is None):
+    if isinstance(cohorts.predictions, list) and (
+        isinstance(cohorts.targets, list) or cohorts.targets is None
+    ):
         return DataCube(data, dimensions)
 
     assert isinstance(cohorts.targets, dict) or cohorts.targets is None
@@ -2052,7 +2201,6 @@ def column_cohorts_to_cube(cohorts: ColumnCohorts) -> DataCube:
         data['Predicted Average Score'] = cohorts.predictions[cls_label]
         multiclass_data[cls_label] = copy(data)
     dimensions.insert(
-        0,
-        DimensionSpec(name='Class Label',
-                      all_values=list(multiclass_data.keys())))
+        0, DimensionSpec(name='Class Label', all_values=list(multiclass_data.keys()))
+    )
     return DataCube(multiclass_data, dimensions)

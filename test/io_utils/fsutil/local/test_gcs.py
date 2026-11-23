@@ -22,7 +22,8 @@ from kumo.testing.gcs import withMockedGCSFilesystem
 def test_get_signing_credentials_uses_wif_service_account(monkeypatch):
     class FederatedCredentials:
         service_account_email = (
-            'gha-kumo-gcp-tests@example-project.iam.gserviceaccount.com')
+            'gha-kumo-gcp-tests@example-project.iam.gserviceaccount.com'
+        )
 
         def refresh(self, request):
             self.request = request
@@ -32,14 +33,14 @@ def test_get_signing_credentials_uses_wif_service_account(monkeypatch):
     create_signer = mock.Mock(return_value=signing_credentials)
     load_credentials = mock.Mock(return_value=(credentials, 'example-project'))
     monkeypatch.setattr(impl_gcs, 'auth_default', load_credentials)
-    monkeypatch.setattr(impl_gcs.impersonated_credentials, 'Credentials',
-                        create_signer)
+    monkeypatch.setattr(impl_gcs.impersonated_credentials, 'Credentials', create_signer)
 
     result = impl_gcs._get_signing_credentials()
 
     assert result is signing_credentials
     load_credentials.assert_called_once_with(
-        scopes=['https://www.googleapis.com/auth/devstorage.read_only'])
+        scopes=['https://www.googleapis.com/auth/devstorage.read_only']
+    )
     create_signer.assert_called_once_with(
         source_credentials=credentials,
         target_principal=credentials.service_account_email,
@@ -89,15 +90,18 @@ def test_parse_gcs_uri():
     assert uri.path == ''
 
 
-@pytest.mark.parametrize(('error', 'expected'), [
-    (gcs_exceptions.TooManyRequests('quota'), True),
-    (gcs_exceptions.ServiceUnavailable('down'), True),
-    (gcs_exceptions.GatewayTimeout('timeout'), True),
-    (TimeoutError('transport'), True),
-    (gcs_exceptions.Unauthorized('auth'), False),
-    (gcs_exceptions.BadRequest('bad request'), False),
-    (gcs_exceptions.NotFound('missing'), False),
-])
+@pytest.mark.parametrize(
+    ('error', 'expected'),
+    [
+        (gcs_exceptions.TooManyRequests('quota'), True),
+        (gcs_exceptions.ServiceUnavailable('down'), True),
+        (gcs_exceptions.GatewayTimeout('timeout'), True),
+        (TimeoutError('transport'), True),
+        (gcs_exceptions.Unauthorized('auth'), False),
+        (gcs_exceptions.BadRequest('bad request'), False),
+        (gcs_exceptions.NotFound('missing'), False),
+    ],
+)
 def test_gcs_retry_classification(error, expected):
     assert impl_gcs.is_retryable_gcs_error(error) is expected
 
@@ -155,8 +159,7 @@ def test_gcs_safe_read_retries_but_non_idempotent_write_does_not(monkeypatch):
     assert [entry.args[0] for entry in sleep.call_args_list] == [0.5, 1.0]
 
     sleep.reset_mock()
-    blob.upload_from_file.side_effect = gcs_exceptions.ServiceUnavailable(
-        'transient')
+    blob.upload_from_file.side_effect = gcs_exceptions.ServiceUnavailable('transient')
     with pytest.raises(gcs_exceptions.ServiceUnavailable):
         impl_gcs.write_binary(uri, io.BytesIO(b'payload'), compression=False)
     blob.upload_from_file.assert_called_once()
@@ -214,7 +217,8 @@ def test_gcs_copy_file_upload_retries_transient_error(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize(('binary', 'mode'), [(False, 'r'), (True, 'rb')])
 def test_gcs_handles_bill_requester_project_on_bucket_request(
-        monkeypatch, binary, mode):
+    monkeypatch, binary, mode
+):
     raw_client = mock.Mock()
     raw_client._credentials = object()
     bucket = mock.Mock()
@@ -234,14 +238,20 @@ def test_gcs_handles_bill_requester_project_on_bucket_request(
             'provider': 'gcs',
             'credential': object(),
             'requester_pays_project': 'billing-project',
-        }, require_explicit=True):
-        handle = (fsutil.get_binary_handle(uri.as_gs(), mode)
-                  if binary else fsutil.get_handle(uri.as_gs(), mode))
+        },
+        require_explicit=True,
+    ):
+        handle = (
+            fsutil.get_binary_handle(uri.as_gs(), mode)
+            if binary
+            else fsutil.get_handle(uri.as_gs(), mode)
+        )
         with handle:
             pass
 
-    raw_client.bucket.assert_called_once_with('requester-pays-bucket',
-                                              user_project='billing-project')
+    raw_client.bucket.assert_called_once_with(
+        'requester-pays-bucket', user_project='billing-project'
+    )
 
 
 @withMockedGCSFilesystem
@@ -263,8 +273,7 @@ def test_gcs_copydir(gcs_client):
     assert fsutil.exists('gs://copydir-bucket/dst_dir/a.txt')
     assert fsutil.exists('gs://copydir-bucket/dst_dir/sub/b.txt')
     assert fsutil.read_binary('gs://copydir-bucket/dst_dir/a.txt') == b'hello'
-    assert fsutil.read_binary(
-        'gs://copydir-bucket/dst_dir/sub/b.txt') == b'world'
+    assert fsutil.read_binary('gs://copydir-bucket/dst_dir/sub/b.txt') == b'world'
 
     # Source must remain (copy, not move).
     assert fsutil.exists('gs://copydir-bucket/src_dir/a.txt')
@@ -288,24 +297,24 @@ def test_gcs_copy_file_server_side(gcs_client):
 @withMockedGCSFilesystem
 def test_gcs_contains_subdir_bucket_root(gcs_client):
     bucket = gcs_client.create_bucket('test_bucket')
-    bucket.blob("root_dir/file.txt").upload_from_string("data")
-    bucket.blob("root_file.txt").upload_from_string("data")
+    bucket.blob('root_dir/file.txt').upload_from_string('data')
+    bucket.blob('root_file.txt').upload_from_string('data')
 
-    assert fsutil.contains_subdir("gs://test_bucket")
-    assert fsutil.contains_subdir("gs://test_bucket/")
+    assert fsutil.contains_subdir('gs://test_bucket')
+    assert fsutil.contains_subdir('gs://test_bucket/')
 
 
 @withMockedGCSFilesystem
 def test_gcs_listdir_includes_prefixes(gcs_client):
     bucket = gcs_client.create_bucket('test_bucket')
-    bucket.blob("dir_a/file.txt").upload_from_string("data")
-    bucket.blob("dir_b/file.txt").upload_from_string("data")
-    bucket.blob("root.txt").upload_from_string("data")
+    bucket.blob('dir_a/file.txt').upload_from_string('data')
+    bucket.blob('dir_b/file.txt').upload_from_string('data')
+    bucket.blob('root.txt').upload_from_string('data')
 
-    entries = fsutil.listdir("gs://test_bucket")
-    assert "gs://test_bucket/dir_a" in entries
-    assert "gs://test_bucket/dir_b" in entries
-    assert "gs://test_bucket/root.txt" in entries
+    entries = fsutil.listdir('gs://test_bucket')
+    assert 'gs://test_bucket/dir_a' in entries
+    assert 'gs://test_bucket/dir_b' in entries
+    assert 'gs://test_bucket/root.txt' in entries
 
 
 class _ListingPage(list):
@@ -316,16 +325,17 @@ class _ListingPage(list):
 
 def test_gcs_listdir_detail_paginates_and_preserves_provider_types(monkeypatch):
     bucket = mock.Mock()
-    bucket.list_blobs.return_value = SimpleNamespace(pages=[
-        _ListingPage(
-            [SimpleNamespace(name='events/part.parquet')],
-            ['events/year=2026/'],
-        ),
-    ])
+    bucket.list_blobs.return_value = SimpleNamespace(
+        pages=[
+            _ListingPage(
+                [SimpleNamespace(name='events/part.parquet')],
+                ['events/year=2026/'],
+            ),
+        ]
+    )
     monkeypatch.setattr(impl_gcs, '_get_bucket', lambda _uri: bucket)
 
-    details = impl_gcs._listdir_details(
-        GCSURI(bucket='customer-data', path='events'))
+    details = impl_gcs._listdir_details(GCSURI(bucket='customer-data', path='events'))
 
     assert [(entry.path, entry.is_directory) for entry in details] == [
         ('gs://customer-data/events/part.parquet', False),
@@ -345,8 +355,10 @@ def test_gcs_zip_directory_supports_lifecycle_archive_path(gcs_client):
     bucket.blob('outputs/part-1.csv').upload_from_string(b'one')
     archive = 'gs://archive-bucket/tmp_archives/job.zip'
 
-    assert fsutil.zip_directory('gs://archive-bucket/outputs',
-                                output_path=archive) == archive
+    assert (
+        fsutil.zip_directory('gs://archive-bucket/outputs', output_path=archive)
+        == archive
+    )
     assert fsutil.exists(archive)
     assert not fsutil.exists('gs://archive-bucket/outputs.zip')
 
@@ -358,14 +370,16 @@ def test_copy_still_exposes_its_async_form():
     assert hasattr(fsutil.copy, 'coroutine')
 
 
-@pytest.mark.parametrize('error,attempts', [
-    (ConnectionError('transport unavailable'), 3),
-    (FileNotFoundError('missing'), 1),
-    (PermissionError('denied'), 1),
-    (OSError(errno.ENOSPC, 'full'), 1),
-])
-def test_download_retains_outer_retry_budget(monkeypatch, tmp_path, error,
-                                             attempts):
+@pytest.mark.parametrize(
+    'error,attempts',
+    [
+        (ConnectionError('transport unavailable'), 3),
+        (FileNotFoundError('missing'), 1),
+        (PermissionError('denied'), 1),
+        (OSError(errno.ENOSPC, 'full'), 1),
+    ],
+)
+def test_download_retains_outer_retry_budget(monkeypatch, tmp_path, error, attempts):
     client = mock.Mock()
     client.download.side_effect = error
     monkeypatch.setattr(impl_gcs, '_download_client', lambda: client)

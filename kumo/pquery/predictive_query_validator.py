@@ -21,8 +21,7 @@ def _set_pq_credentials(
     # This could potentially break with multi-hop if we hop through a
     # table that does not appear in the query by name (depends on future
     # syntax choices)
-    all_tables = set(
-        table_name(fqn_col) for fqn_col in parsed_query.all_query_columns)
+    all_tables = set(table_name(fqn_col) for fqn_col in parsed_query.all_query_columns)
     all_connectors = [graph.table(t_name).connector for t_name in all_tables]
     # Filter duplicates:
     all_connectors = list({c.name: c for c in all_connectors}.values())

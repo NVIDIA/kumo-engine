@@ -70,15 +70,17 @@ def _decimal_dtype(precision: Optional[int], scale: Optional[int]) -> Dtype:
     A fractional decimal is read as ``float64``, not ``float``: ``float`` is
     32-bit, and a ``NUMERIC`` at its default scale of 9 does not survive it.
     """
-    if (precision is not None and scale is None
-            and precision <= _INT64_SAFE_PRECISION):
+    if precision is not None and scale is None and precision <= _INT64_SAFE_PRECISION:
         return Dtype.int64
     return Dtype.float64
 
 
-def dtype_for(field_type: str, mode: Optional[str] = None,
-              precision: Optional[int] = None,
-              scale: Optional[int] = None) -> Dtype:
+def dtype_for(
+    field_type: str,
+    mode: Optional[str] = None,
+    precision: Optional[int] = None,
+    scale: Optional[int] = None,
+) -> Dtype:
     r"""``mode`` separates a list from a single value of the same element
     type -- the one thing the type name alone does not say. ``precision`` and
     ``scale`` are read only for the exact-numeric types, whose Kumo dtype
@@ -91,8 +93,8 @@ def dtype_for(field_type: str, mode: Optional[str] = None,
             # Whether a list of strings is representable is the engine's
             # decision, since it is how a list-distinct target is stored.
             from kumo_core.training.options import allow_array_targets
-            return (Dtype.stringlist
-                    if allow_array_targets() else Dtype.unsupported)
+
+            return Dtype.stringlist if allow_array_targets() else Dtype.unsupported
         return _DTYPE_BY_REPEATED_BIGQUERY_TYPE.get(name, Dtype.unsupported)
     if name in _DECIMAL_TYPES:
         return _decimal_dtype(precision, scale)
@@ -100,6 +102,10 @@ def dtype_for(field_type: str, mode: Optional[str] = None,
 
 
 def schema_columns(schema: Iterable[Any]) -> list[tuple[str, Dtype]]:
-    return [(field.name,
-             dtype_for(field.field_type, field.mode, field.precision,
-                       field.scale)) for field in schema]
+    return [
+        (
+            field.name,
+            dtype_for(field.field_type, field.mode, field.precision, field.scale),
+        )
+        for field in schema
+    ]

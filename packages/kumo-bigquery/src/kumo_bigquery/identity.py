@@ -12,8 +12,8 @@ from kumo_core.sources.identity import (
     hour_version,
 )
 
-LOGICAL_VIEW = "VIEW"
-UNDATED_VERSION = "-1"
+LOGICAL_VIEW = 'VIEW'
+UNDATED_VERSION = '-1'
 
 
 def is_logical_view(table: Any) -> bool:
@@ -28,7 +28,7 @@ def stamp(table: Any) -> str:
         return hour_version()
     if table.modified is None:
         return SourceVersion(UNDATED_VERSION)
-    return SourceVersion(epoch_second(table.modified), "timestamp")
+    return SourceVersion(epoch_second(table.modified), 'timestamp')
 
 
 def data_version(client: Any, fqn: str) -> str:

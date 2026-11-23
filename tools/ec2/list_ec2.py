@@ -25,7 +25,7 @@ def list_instances(session, region):
         for reservation in response['Reservations']:
             for instance in reservation['Instances']:
                 # Get instance name from tags, if it exists
-                name = "-"
+                name = '-'
                 if 'Tags' in instance:
                     for tag in instance['Tags']:
                         if tag['Key'] == 'Name':
@@ -49,31 +49,37 @@ def list_instances(session, region):
                     'State': instance['State']['Name'],
                     'PrivateIP': private_ip,
                     'PublicIP': public_ip,
-                    'LaunchTime': launch_time
+                    'LaunchTime': launch_time,
                 }
                 instances.append(instance_data)
 
         return instances
 
     except ec2_client.exceptions.ClientError as e:
-        print(f"Error listing instances: {e}")
+        print(f'Error listing instances: {e}')
         return []
 
 
 def display_instances(instances):
     """Display instances in a tabular format"""
     if not instances:
-        print("No instances found")
+        print('No instances found')
         return
 
     # Prepare table data
     table_data = []
     for instance in instances:
-        table_data.append([
-            instance['InstanceID'], instance['Name'], instance['Type'],
-            instance['State'], instance['PrivateIP'], instance['PublicIP'],
-            instance['LaunchTime']
-        ])
+        table_data.append(
+            [
+                instance['InstanceID'],
+                instance['Name'],
+                instance['Type'],
+                instance['State'],
+                instance['PrivateIP'],
+                instance['PublicIP'],
+                instance['LaunchTime'],
+            ]
+        )
         print(table_data[-1])
 
     state_counts = {}
@@ -81,53 +87,66 @@ def display_instances(instances):
         state = instance['State']
         state_counts[state] = state_counts.get(state, 0) + 1
 
-    print("\nInstance count by state:")
+    print('\nInstance count by state:')
     for state, count in state_counts.items():
-        print(f"  {state}: {count}")
+        print(f'  {state}: {count}')
 
-    print(f"\nTotal instances: {len(instances)}")
+    print(f'\nTotal instances: {len(instances)}')
 
 
 def main():
     parser = argparse.ArgumentParser(description='List AWS EC2 instances.')
     parser.add_argument(
-        '--customer-role-arn', required=False,
+        '--customer-role-arn',
+        required=False,
         default='arn:aws:iam::786169356362:role/odin/kumo-external-access-role',
-        help='Customer\'s IAM role ARN')
+        help="Customer's IAM role ARN",
+    )
     parser.add_argument(
-        '--region', required=False, default='us-east-1',
-        help='AWS region to list instances from (default: us-east-1)')
-    parser.add_argument('--output', choices=['table', 'json'], default='table',
-                        help='Output format (table or json, default: table)')
+        '--region',
+        required=False,
+        default='us-east-1',
+        help='AWS region to list instances from (default: us-east-1)',
+    )
     parser.add_argument(
-        '--role-session-name', default='CustomerRoleSession',
-        help='Session name when assuming role (default: CustomerRoleSession)')
+        '--output',
+        choices=['table', 'json'],
+        default='table',
+        help='Output format (table or json, default: table)',
+    )
     parser.add_argument(
-        '--filter', required=False,
-        help='Filter instances by state (e.g., running, stopped)')
+        '--role-session-name',
+        default='CustomerRoleSession',
+        help='Session name when assuming role (default: CustomerRoleSession)',
+    )
+    parser.add_argument(
+        '--filter',
+        required=False,
+        help='Filter instances by state (e.g., running, stopped)',
+    )
 
     args = parser.parse_args()
 
     # Use STS to assume the customer's role
     sts_client = boto3.client('sts')
-    response = sts_client.assume_role(RoleArn=args.customer_role_arn,
-                                      RoleSessionName=args.role_session_name)
+    response = sts_client.assume_role(
+        RoleArn=args.customer_role_arn, RoleSessionName=args.role_session_name
+    )
 
     credentials = response['Credentials']
 
     customer_session = boto3.Session(
         aws_access_key_id=credentials['AccessKeyId'],
         aws_secret_access_key=credentials['SecretAccessKey'],
-        aws_session_token=credentials['SessionToken'])
+        aws_session_token=credentials['SessionToken'],
+    )
 
     # List instances
     instances = list_instances(customer_session, args.region)
 
     # Apply filter if specified
     if args.filter:
-        instances = [
-            i for i in instances if i['State'].lower() == args.filter.lower()
-        ]
+        instances = [i for i in instances if i['State'].lower() == args.filter.lower()]
 
     # Display output
     if args.output == 'json':
@@ -136,5 +155,5 @@ def main():
         display_instances(instances)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

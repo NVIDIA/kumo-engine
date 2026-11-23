@@ -42,6 +42,7 @@ from statedb.rest.credentials import (
     EncryptedGoogleServiceAccountKeyCredentials,
     EncryptedS3AccessKeyCredentials,
 )
+
 # isort: on
 from statedb.rest.group import ExternalIdentityProviderID
 
@@ -81,16 +82,18 @@ class CredentialsHolder:
 def test_credentials_union_serde(monkeypatch: pytest.MonkeyPatch):
     GlobalEncryptor._instance = None
 
-    username_pw = UsernamePassword(username=SecretStr('kumo-dev'),
-                                   password=SecretStr('ramen'))
-    databricks = DatabricksCredentials(client_id=SecretStr('client'),
-                                       client_secret=SecretStr('secret'),
-                                       pat=SecretStr('pat'))
+    username_pw = UsernamePassword(
+        username=SecretStr('kumo-dev'), password=SecretStr('ramen')
+    )
+    databricks = DatabricksCredentials(
+        client_id=SecretStr('client'),
+        client_secret=SecretStr('secret'),
+        pat=SecretStr('pat'),
+    )
     creds = CredentialsHolder(
-        credentials=username_pw, credentials_dict={
-            'user': username_pw,
-            'db': databricks
-        })
+        credentials=username_pw,
+        credentials_dict={'user': username_pw, 'db': databricks},
+    )
 
     creds_json = to_json_dict(creds)
     # Verify fields in json dict.
@@ -132,8 +135,9 @@ def test_credentials_union_serde(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_encrypted_str():
-    username_pw = UsernamePassword(username=SecretStr('kumo-dev'),
-                                   password=SecretStr('ramen'))
+    username_pw = UsernamePassword(
+        username=SecretStr('kumo-dev'), password=SecretStr('ramen')
+    )
 
     print(f'username type is : {type(username_pw.username)}')
 
@@ -156,8 +160,7 @@ def test_encrypted_str():
     assert from_secure2.password.get_secret_value() == 'ramen'
 
 
-def test_encrypted_str_revalidation_and_masking(
-        monkeypatch: pytest.MonkeyPatch):
+def test_encrypted_str_revalidation_and_masking(monkeypatch: pytest.MonkeyPatch):
     GlobalEncryptor._instance = None
 
     # Construction from a raw str, an EncryptedStr instance, and a parent
@@ -167,14 +170,16 @@ def test_encrypted_str_revalidation_and_masking(
     holder = NewUsernamePassword(username='kumo-dev', password='ramen')
     assert holder.username.get_secret_value() == 'kumo-dev'
 
-    from_secret = NewUsernamePassword(username=SecretStr('alice'),
-                                      password=EncryptedStr('bob'))
+    from_secret = NewUsernamePassword(
+        username=SecretStr('alice'), password=EncryptedStr('bob')
+    )
     assert from_secret.username.get_secret_value() == 'alice'
     assert from_secret.password.get_secret_value() == 'bob'
 
     # Model-from-model re-validation preserves the secret value.
-    revalidated = NewUsernamePassword(username=holder.username,
-                                      password=holder.password)
+    revalidated = NewUsernamePassword(
+        username=holder.username, password=holder.password
+    )
     assert revalidated.username.get_secret_value() == 'kumo-dev'
     assert revalidated.password.get_secret_value() == 'ramen'
 
@@ -192,8 +197,7 @@ def test_encryption_default_key():
     encrypted = encryptor.encrypt_identity_credentials(password)
     assert encryptor.decrypt_identity_credentials(encrypted) == password
     # make sure Singleton works
-    assert CredentialsEncryptor().decrypt_identity_credentials(
-        encrypted) == password
+    assert CredentialsEncryptor().decrypt_identity_credentials(encrypted) == password
 
     key_pair = SnowflakeKeyPairCredentials(
         private_key=SecretStr('my_key'),
@@ -202,12 +206,12 @@ def test_encryption_default_key():
     encrypted = encryptor.encrypt_identity_credentials(key_pair)
     assert encryptor.decrypt_identity_credentials(encrypted) == key_pair
     # make sure Singleton works
-    assert CredentialsEncryptor().decrypt_identity_credentials(
-        encrypted) == key_pair
+    assert CredentialsEncryptor().decrypt_identity_credentials(encrypted) == key_pair
 
 
 def test_no_arg_encryptor_matches_rest_seeded_encryptor(
-        monkeypatch: pytest.MonkeyPatch):
+    monkeypatch: pytest.MonkeyPatch,
+):
     """A no-arg CredentialsEncryptor (worker/StateDB seeding) must resolve
     the same key as explicit REST-style construction from deploy_env()."""
     monkeypatch.setenv('DEPLOY_STAGE', 'dev_local')
@@ -270,12 +274,9 @@ def test_idp_group_lookup_digest_is_provider_keyed_and_domain_separated():
 
     digest = _keyed_lookup_digest(value, key_a, _IDP_GROUP_LOOKUP_DOMAIN)
 
-    assert digest == _keyed_lookup_digest(value, key_a,
-                                          _IDP_GROUP_LOOKUP_DOMAIN)
-    assert digest != _keyed_lookup_digest(value, key_b,
-                                          _IDP_GROUP_LOOKUP_DOMAIN)
-    assert digest != _keyed_lookup_digest(value, key_a,
-                                          b'kumo:other-lookup-domain:v1')
+    assert digest == _keyed_lookup_digest(value, key_a, _IDP_GROUP_LOOKUP_DOMAIN)
+    assert digest != _keyed_lookup_digest(value, key_b, _IDP_GROUP_LOOKUP_DOMAIN)
+    assert digest != _keyed_lookup_digest(value, key_a, b'kumo:other-lookup-domain:v1')
     assert digest != sha256(value.encode()).hexdigest()
 
 
@@ -284,19 +285,23 @@ def test_idp_group_lookup_hash_is_deterministic_and_group_scoped():
     CredentialsEncryptor()
     try:
         engineering = hash_idp_group_id(
-            ExternalIdentityProviderID.DIRECT_CONNECT, 'engineering')
+            ExternalIdentityProviderID.DIRECT_CONNECT, 'engineering'
+        )
         assert engineering == hash_idp_group_id(
-            ExternalIdentityProviderID.DIRECT_CONNECT, 'engineering')
+            ExternalIdentityProviderID.DIRECT_CONNECT, 'engineering'
+        )
         assert engineering != hash_idp_group_id(
-            ExternalIdentityProviderID.DIRECT_CONNECT, 'data-science')
+            ExternalIdentityProviderID.DIRECT_CONNECT, 'data-science'
+        )
     finally:
         CredentialsEncryptor.clear()
 
 
 def test_idp_group_lookup_hash_rejects_ambiguous_nul_input():
     with pytest.raises(ValueError, match='NUL'):
-        hash_idp_group_id(ExternalIdentityProviderID.DIRECT_CONNECT,
-                          'engineering\0privileged')
+        hash_idp_group_id(
+            ExternalIdentityProviderID.DIRECT_CONNECT, 'engineering\0privileged'
+        )
 
 
 def test_encryption_aws_sm_key(monkeypatch: pytest.MonkeyPatch):

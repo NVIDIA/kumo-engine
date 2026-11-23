@@ -20,12 +20,13 @@ class PandasConnector(Connector):
             :class:`pandas.DataFrame` objects with their respective names.
             (default: :obj:`None`)
     """
+
     def __init__(self, df_dict: Optional[Dict[str, pd.DataFrame]] = None):
         super().__init__(name='pandas')
         self.df_dict = df_dict or {}
 
     def _get_connector_type(self) -> str:
-        return "pandas"
+        return 'pandas'
 
     def add_df(self, table_name: str, df: pd.DataFrame) -> 'PandasConnector':
         self.df_dict[table_name] = df
@@ -60,7 +61,7 @@ class PandasConnector(Connector):
         cols: Optional[List[BaseColumnConfig]] = None,
     ) -> pd.DataFrame:
         df = get_df(self.df_dict[table_name], pkey, cols)
-        return df[offset:offset + num_rows]
+        return df[offset : offset + num_rows]
 
     def _read_table_sample(
         self,
@@ -87,9 +88,9 @@ class PandasConnector(Connector):
         skip_cache: bool = False,
         skip_inferral: bool = False,
     ) -> Optional[TableMetadataConfig]:
-        metadata = TableMetadataConfig(table_name=table_name,
-                                       source_name=table_name,
-                                       data_source=self._name)
+        metadata = TableMetadataConfig(
+            table_name=table_name, source_name=table_name, data_source=self._name
+        )
 
         df = self.df_dict[table_name]
 
@@ -97,12 +98,11 @@ class PandasConnector(Connector):
         # So converting everything to a string which will be converted to a
         # categorical feature based on cardinality.
         category_cols: List[tuple] = list(
-            filter(lambda val: val[1] == 'category', zip(df.columns,
-                                                         df.dtypes)))
+            filter(lambda val: val[1] == 'category', zip(df.columns, df.dtypes))
+        )
         if len(category_cols) != 0:
             cols_to_convert: Dict[str, str] = {
-                category_col[0]: 'string'
-                for category_col in category_cols
+                category_col[0]: 'string' for category_col in category_cols
             }
             df = df.astype(cols_to_convert)
         dtypes = {name: to_dtype(dtype) for name, dtype in df.dtypes.items()}
@@ -116,12 +116,14 @@ class PandasConnector(Connector):
 
     # Data statistics #########################################################
 
-    def _get_table_num_rows(self, table_name: str,
-                            data_version: str | None = None) -> int:
+    def _get_table_num_rows(
+        self, table_name: str, data_version: str | None = None
+    ) -> int:
         return len(self.df_dict[table_name].index)
 
-    def _get_table_source_size(self, table_name: str,
-                               data_version: str | None = None) -> int:
+    def _get_table_source_size(
+        self, table_name: str, data_version: str | None = None
+    ) -> int:
         return self.df_dict[table_name].memory_usage().sum()
 
     # Python built-ins #######################################################

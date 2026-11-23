@@ -21,6 +21,7 @@ Covers three pieces of plumbing added for the
      branch itself is small enough that we test it via direct kwarg
      handling rather than driving the full ``_train`` body.
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -33,10 +34,10 @@ from kumo.task.task import Task
 
 class _TestRuntime:
     def default_home_dir(self) -> str:
-        return "/fake/home_dir"
+        return '/fake/home_dir'
 
     def metrics_job_name(self) -> str:
-        return "test"
+        return 'test'
 
     def collect_encoders(self, task: Any) -> Any:
         return None
@@ -71,13 +72,14 @@ def test_init_stores_bundle_dir_when_provided() -> None:
     # heavy AutoTrainer.__init__ surface.
     inst = AutoTrainer.__new__(AutoTrainer)
     kwargs: dict[str, Any] = {
-        "diskgraph_task_dataset_bundle_dir": "/mnt/localssd/foo/bundle",
+        'diskgraph_task_dataset_bundle_dir': '/mnt/localssd/foo/bundle',
     }
     inst.diskgraph_task_dataset_bundle_dir = kwargs.pop(  # type: ignore[attr-defined]
-        "diskgraph_task_dataset_bundle_dir", None)
-    assert inst.diskgraph_task_dataset_bundle_dir == "/mnt/localssd/foo/bundle"
+        'diskgraph_task_dataset_bundle_dir', None
+    )
+    assert inst.diskgraph_task_dataset_bundle_dir == '/mnt/localssd/foo/bundle'
     # kwarg was consumed (not re-passed to parent).
-    assert "diskgraph_task_dataset_bundle_dir" not in kwargs
+    assert 'diskgraph_task_dataset_bundle_dir' not in kwargs
 
 
 def test_init_defaults_bundle_dir_to_none() -> None:
@@ -88,7 +90,8 @@ def test_init_defaults_bundle_dir_to_none() -> None:
     inst = AutoTrainer.__new__(AutoTrainer)
     kwargs: dict[str, Any] = {}
     inst.diskgraph_task_dataset_bundle_dir = kwargs.pop(  # type: ignore[attr-defined]
-        "diskgraph_task_dataset_bundle_dir", None)
+        'diskgraph_task_dataset_bundle_dir', None
+    )
     assert inst.diskgraph_task_dataset_bundle_dir is None
 
 
@@ -98,7 +101,8 @@ def test_init_defaults_bundle_dir_to_none() -> None:
 
 
 def test_from_job_config_threads_bundle_dir(
-    monkeypatch: pytest.MonkeyPatch, ) -> None:
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """TT-NG: when JobConfig.diskgraph_task_dataset_bundle_dir is set,
     ``from_job_config`` loads the task (config-only) and threads bundle_dir
     into the AutoTrainer."""
@@ -107,23 +111,23 @@ def test_from_job_config_threads_bundle_dir(
     captured: dict[str, Any] = {}
 
     def _fake_task_load(task_name: str, home_dir: str) -> Any:
-        captured["task_name"] = task_name
-        captured["home_dir"] = home_dir
+        captured['task_name'] = task_name
+        captured['home_dir'] = home_dir
 
         class _FakeTask:
             name = task_name
 
         return _FakeTask()
 
-    monkeypatch.setattr(Task, "load", _fake_task_load)
+    monkeypatch.setattr(Task, 'load', _fake_task_load)
 
     # Stub the rest of from_job_config so it returns early after the
     # task.load call. The simplest way is to patch the constructor at
     # the end so we don't have to build a real space.
     class _FakeJobConfig:
-        task_name = "fake_task"
-        home_dir = "/fake/home_dir"
-        diskgraph_task_dataset_bundle_dir = "/mnt/localssd/foo/bundle"
+        task_name = 'fake_task'
+        home_dir = '/fake/home_dir'
+        diskgraph_task_dataset_bundle_dir = '/mnt/localssd/foo/bundle'
         warm_start_trainer_dir = None
         base_trainer_dir = None
 
@@ -131,9 +135,9 @@ def test_from_job_config_threads_bundle_dir(
             return object()  # opaque space; we patch the constructor below
 
     def _fake_init(self: Any, **kwargs: Any) -> None:
-        captured["init_kwargs"] = kwargs
+        captured['init_kwargs'] = kwargs
 
-    monkeypatch.setattr(AutoTrainer, "__init__", _fake_init)
+    monkeypatch.setattr(AutoTrainer, '__init__', _fake_init)
 
     AutoTrainer.from_job_config(
         _FakeJobConfig(),  # type: ignore[arg-type]
@@ -142,8 +146,10 @@ def test_from_job_config_threads_bundle_dir(
     )
 
     # The bundle_dir was threaded into the AutoTrainer kwargs.
-    assert (captured["init_kwargs"]["diskgraph_task_dataset_bundle_dir"] ==
-            "/mnt/localssd/foo/bundle")
+    assert (
+        captured['init_kwargs']['diskgraph_task_dataset_bundle_dir']
+        == '/mnt/localssd/foo/bundle'
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -155,7 +161,8 @@ def test_from_job_config_threads_bundle_dir(
 
 
 def _select_nested_trainer_cls(
-    auto_trainer_self: Any, ) -> tuple[type, dict[str, Any]]:
+    auto_trainer_self: Any,
+) -> tuple[type, dict[str, Any]]:
     """Mirror of the class-selection branch in
     ``AutoTrainer._train`` immediately before ``DiskgraphNestedTrainer(...)``.
 
@@ -168,9 +175,11 @@ def _select_nested_trainer_cls(
     extra_kwargs: dict[str, Any] = {}
     assert auto_trainer_self.diskgraph_task_dataset_bundle_dir is not None
     from kumo_core.train.diskgraph_nested_trainer import DiskgraphNestedTrainer
+
     cls: type = DiskgraphNestedTrainer
-    extra_kwargs["diskgraph_task_dataset_bundle_dir"] = (
-        auto_trainer_self.diskgraph_task_dataset_bundle_dir)
+    extra_kwargs['diskgraph_task_dataset_bundle_dir'] = (
+        auto_trainer_self.diskgraph_task_dataset_bundle_dir
+    )
     return cls, extra_kwargs
 
 
@@ -180,18 +189,19 @@ def test_dispatch_picks_diskgraph_nested_trainer_when_bundle_dir_set() -> None:
     from kumo_core.train.diskgraph_nested_trainer import DiskgraphNestedTrainer
 
     class _FakeAutoTrainer:
-        diskgraph_task_dataset_bundle_dir = "/mnt/localssd/foo/bundle"
+        diskgraph_task_dataset_bundle_dir = '/mnt/localssd/foo/bundle'
 
     cls, extra = _select_nested_trainer_cls(_FakeAutoTrainer())
     assert cls is DiskgraphNestedTrainer
     assert extra == {
-        "diskgraph_task_dataset_bundle_dir": "/mnt/localssd/foo/bundle",
+        'diskgraph_task_dataset_bundle_dir': '/mnt/localssd/foo/bundle',
     }
 
 
 def test_dispatch_asserts_when_bundle_dir_none() -> None:
     """TT-NG only: bundle_dir is always set; the collapsed branch
     asserts if it is somehow None."""
+
     class _FakeAutoTrainer:
         diskgraph_task_dataset_bundle_dir = None
 
@@ -207,7 +217,8 @@ def test_dispatch_asserts_when_bundle_dir_none() -> None:
 
 
 def test_get_best_trainer_dispatches_to_diskgraph_nested_trainer_in_ttng_mode(
-    monkeypatch: pytest.MonkeyPatch, ) -> None:
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """TT-NG: when self.diskgraph_task_dataset_bundle_dir is set,
     ``get_best_trainer`` loads via ``DiskgraphNestedTrainer.load(...)``
     and threads the bundle dir through."""
@@ -217,59 +228,61 @@ def test_get_best_trainer_dispatches_to_diskgraph_nested_trainer_in_ttng_mode(
 
     captured: dict[str, Any] = {}
 
-    def _fake_dg_load(cls: type, task: Any, root_dir: str, version: int,
-                      **kwargs: Any) -> Any:
-        captured["dg_load_called"] = True
-        captured["kwargs"] = kwargs
-        captured["version"] = version
-        captured["root_dir"] = root_dir
+    def _fake_dg_load(
+        cls: type, task: Any, root_dir: str, version: int, **kwargs: Any
+    ) -> Any:
+        captured['dg_load_called'] = True
+        captured['kwargs'] = kwargs
+        captured['version'] = version
+        captured['root_dir'] = root_dir
         return object()
 
     monkeypatch.setattr(
         dg_nt_mod.DiskgraphNestedTrainer,
-        "load",
+        'load',
         classmethod(_fake_dg_load),
     )
 
     # Guard: base Trainer.load must NOT be invoked in TT-NG mode.
     def _fake_nested_load(*args: Any, **kwargs: Any) -> Any:
-        captured["nested_load_called"] = True
+        captured['nested_load_called'] = True
         return object()
 
     monkeypatch.setattr(
-        Trainer, "load",
-        classmethod(lambda cls, *a, **kw: _fake_nested_load(*a, **kw)))
+        Trainer, 'load', classmethod(lambda cls, *a, **kw: _fake_nested_load(*a, **kw))
+    )
 
     # Build a minimal AutoTrainer stub.
     inst = AutoTrainer.__new__(AutoTrainer)
     inst.runtime = _TestRuntime()
-    inst.diskgraph_task_dataset_bundle_dir = "/mnt/localssd/foo/bundle"
-    inst._encoders = {"e": 1}  # encoders is a property; set backing attr
+    inst.diskgraph_task_dataset_bundle_dir = '/mnt/localssd/foo/bundle'
+    inst._encoders = {'e': 1}  # encoders is a property; set backing attr
 
     class _FakeTask:
         def to_task_config(self) -> str:
-            return "fake_task_config"
+            return 'fake_task_config'
 
     inst.task = _FakeTask()
 
     class _FakeTrial:
-        name = "version_7"
+        name = 'version_7'
 
     # log_dir is a property derived from root_dir + task.name — override.
-    monkeypatch.setattr(AutoTrainer, "log_dir",
-                        property(lambda self: "/tmp/logs"))
-    monkeypatch.setattr(AutoTrainer, "get_best_trial",
-                        lambda self: _FakeTrial())
+    monkeypatch.setattr(AutoTrainer, 'log_dir', property(lambda self: '/tmp/logs'))
+    monkeypatch.setattr(AutoTrainer, 'get_best_trial', lambda self: _FakeTrial())
     AutoTrainer.get_best_trainer(inst, should_init=False)
 
-    assert captured.get("dg_load_called") is True
-    assert "nested_load_called" not in captured, (
-        "TT-NG dispatch must not fall through to base Trainer.load")
-    assert captured["version"] == 7
-    assert captured["root_dir"] == "/tmp/logs"
-    assert (captured["kwargs"]["diskgraph_task_dataset_bundle_dir"] ==
-            "/mnt/localssd/foo/bundle")
-    assert captured["kwargs"]["encoders"] == {"e": 1}
+    assert captured.get('dg_load_called') is True
+    assert 'nested_load_called' not in captured, (
+        'TT-NG dispatch must not fall through to base Trainer.load'
+    )
+    assert captured['version'] == 7
+    assert captured['root_dir'] == '/tmp/logs'
+    assert (
+        captured['kwargs']['diskgraph_task_dataset_bundle_dir']
+        == '/mnt/localssd/foo/bundle'
+    )
+    assert captured['kwargs']['encoders'] == {'e': 1}
 
 
 # ---------------------------------------------------------------------------
@@ -290,9 +303,11 @@ def _should_run_val_test_mask_subsampling(auto_trainer_self: Any) -> bool:
     task.train_table.data.val_mask``)."""
     from kumo_core.types import TaskType
 
-    return (not auto_trainer_self.task.task_type.is_link_pred
-            and auto_trainer_self.task.task_type != TaskType.FORECASTING
-            and auto_trainer_self.diskgraph_task_dataset_bundle_dir is None)
+    return (
+        not auto_trainer_self.task.task_type.is_link_pred
+        and auto_trainer_self.task.task_type != TaskType.FORECASTING
+        and auto_trainer_self.diskgraph_task_dataset_bundle_dir is None
+    )
 
 
 def test_val_test_mask_subsampling_skipped_in_ttng_mode() -> None:
@@ -303,7 +318,7 @@ def test_val_test_mask_subsampling_skipped_in_ttng_mode() -> None:
     from kumo_core.types import TaskType
 
     class _FakeAutoTrainer:
-        diskgraph_task_dataset_bundle_dir = "/mnt/localssd/foo/bundle"
+        diskgraph_task_dataset_bundle_dir = '/mnt/localssd/foo/bundle'
 
         class _Task:
             task_type = TaskType.BINARY_CLASSIFICATION
@@ -336,7 +351,7 @@ def test_init_seeds_feature_store_and_graph_store_none_in_ttng_mode() -> None:
     from kumo_core.automl.auto_trainer import AutoTrainer
 
     inst = AutoTrainer.__new__(AutoTrainer)
-    inst.diskgraph_task_dataset_bundle_dir = "/mnt/localssd/foo/bundle"
+    inst.diskgraph_task_dataset_bundle_dir = '/mnt/localssd/foo/bundle'
     # Mirror of the unconditional seed in AutoTrainer.__init__.
     inst.feature_store = None
     inst.graph_store = None

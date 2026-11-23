@@ -15,6 +15,7 @@ class S3SinkBackend(S3Sessions, ObjectStoreSinkBackend):
     """Write through the connector's filesystem. Cross-account destinations need
     bucket policy or BucketOwnerEnforced ownership; PyArrow sets no object ACL.
     """
+
     source_type = DataSourceType.S3
 
     def __repr__(self) -> str:

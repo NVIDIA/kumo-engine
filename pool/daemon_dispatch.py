@@ -8,6 +8,7 @@
 module only for local L1 eviction: schedule the existing
 ``SnapshotActivities.delete_snapshot`` activity on the target daemon queue.
 """
+
 from datetime import timedelta
 from typing import Awaitable, Callable, Optional
 
@@ -24,11 +25,8 @@ DELETE_SNAPSHOT_WORKFLOW_ID_PREFIX = 'diskgraph-delete-snapshot'
 DELETE_SNAPSHOT_EXECUTION_TIMEOUT = timedelta(minutes=15)
 
 
-def delete_snapshot_workflow_id(snapshot_id: str,
-                                pool_worker_uid: str) -> str:
-    return (
-        f'{DELETE_SNAPSHOT_WORKFLOW_ID_PREFIX}-'
-        f'{snapshot_id}-{pool_worker_uid}')
+def delete_snapshot_workflow_id(snapshot_id: str, pool_worker_uid: str) -> str:
+    return f'{DELETE_SNAPSHOT_WORKFLOW_ID_PREFIX}-{snapshot_id}-{pool_worker_uid}'
 
 
 def _task_queue_for_config(config: DeployEnvConfig) -> Callable[[str], str]:

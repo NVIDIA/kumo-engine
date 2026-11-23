@@ -54,28 +54,27 @@ ERROR_TO_HTTP_STATUS = {
 }
 
 ERROR_TO_CUSTOM_FORMAT = {
-    TimeoutError:
-    ("{0}. Please try again, or contact Kumo for further assistance if the "
-     "problem persists."),
-    OptimisticLockError:
-    ("{0}. The resource was modified by another request. Please retry your "
-     "operation."),
+    TimeoutError: (
+        '{0}. Please try again, or contact Kumo for further assistance if the '
+        'problem persists.'
+    ),
+    OptimisticLockError: (
+        '{0}. The resource was modified by another request. Please retry your '
+        'operation.'
+    ),
 }
 
-ERROR_NAME_TO_CUSTOM_FORMAT = {
-    k.__name__: v
-    for k, v in ERROR_TO_CUSTOM_FORMAT.items()
-}
+ERROR_NAME_TO_CUSTOM_FORMAT = {k.__name__: v for k, v in ERROR_TO_CUSTOM_FORMAT.items()}
 
 ERROR_NAME_TO_HTTP_STATUS = {
-    "ProjectForbiddenError": HTTPStatus.FORBIDDEN,
-    "ExternalMembershipUnavailableError": HTTPStatus.SERVICE_UNAVAILABLE,
+    'ProjectForbiddenError': HTTPStatus.FORBIDDEN,
+    'ExternalMembershipUnavailableError': HTTPStatus.SERVICE_UNAVAILABLE,
 }
 
 
 @contextmanager
 def wrap_rpc_error(
-    custom_error_to_status: Optional[Dict[Type[Exception], HTTPStatus]] = None
+    custom_error_to_status: Optional[Dict[Type[Exception], HTTPStatus]] = None,
 ) -> Generator[None, None, None]:
     """Catches all RpcError, and wraps them with HTTPExceptions.
 
@@ -92,11 +91,11 @@ def wrap_rpc_error(
         log.error(f'RpcError occured: {rpc_err}')
         http_status = error_name_to_status.get(
             rpc_err.error_type,
-            ERROR_NAME_TO_HTTP_STATUS.get(rpc_err.error_type,
-                                          HTTPStatus.INTERNAL_SERVER_ERROR),
+            ERROR_NAME_TO_HTTP_STATUS.get(
+                rpc_err.error_type, HTTPStatus.INTERNAL_SERVER_ERROR
+            ),
         )
-        custom_format = ERROR_NAME_TO_CUSTOM_FORMAT.get(rpc_err.error_type,
-                                                        None)
+        custom_format = ERROR_NAME_TO_CUSTOM_FORMAT.get(rpc_err.error_type, None)
         message = rpc_err.message
         if custom_format:
             message = custom_format.format(message)
@@ -105,7 +104,7 @@ def wrap_rpc_error(
 
 @contextmanager
 def wrap_driver_errors(
-    custom_error_to_status: Optional[Dict[Type[Exception], HTTPStatus]] = None
+    custom_error_to_status: Optional[Dict[Type[Exception], HTTPStatus]] = None,
 ) -> Generator[None, None, None]:
     """Map in-process driver errors to HTTPExceptions.
 
@@ -129,11 +128,11 @@ def wrap_driver_errors(
         log.error(f'RpcError occured: {rpc_err}')
         http_status = error_name_to_status.get(
             rpc_err.error_type,
-            ERROR_NAME_TO_HTTP_STATUS.get(rpc_err.error_type,
-                                          HTTPStatus.INTERNAL_SERVER_ERROR),
+            ERROR_NAME_TO_HTTP_STATUS.get(
+                rpc_err.error_type, HTTPStatus.INTERNAL_SERVER_ERROR
+            ),
         )
-        custom_format = ERROR_NAME_TO_CUSTOM_FORMAT.get(rpc_err.error_type,
-                                                        None)
+        custom_format = ERROR_NAME_TO_CUSTOM_FORMAT.get(rpc_err.error_type, None)
         message = rpc_err.message
         if custom_format:
             message = custom_format.format(message)
@@ -182,13 +181,15 @@ def wrap_driver_errors(
                 http_status = ERROR_NAME_TO_HTTP_STATUS[base.__name__]
                 matched_type = base
                 break
-        custom_format = (ERROR_TO_CUSTOM_FORMAT.get(matched_type)
-                         if matched_type is not None else None)
+        custom_format = (
+            ERROR_TO_CUSTOM_FORMAT.get(matched_type)
+            if matched_type is not None
+            else None
+        )
         message = str(native_err)
         if custom_format:
             message = custom_format.format(message)
-        log.error('Driver error occured: '
-                  f'{type(native_err).__name__}: {message}')
+        log.error(f'Driver error occured: {type(native_err).__name__}: {message}')
         raise HTTPException(http_status, message) from native_err
 
 
@@ -202,8 +203,7 @@ def presign_parquet_table_data(path: str) -> List[str]:
             for entry in fsutil.listdir(pending.pop(), max_items=201):
                 num_entries += 1
                 if num_entries > 200:
-                    raise ValueError(
-                        'Prediction-table readback exceeds 200 entries')
+                    raise ValueError('Prediction-table readback exceeds 200 entries')
                 if fsutil.isdir(entry):
                     pending.append(entry)
                 elif entry.casefold().endswith('.parquet'):

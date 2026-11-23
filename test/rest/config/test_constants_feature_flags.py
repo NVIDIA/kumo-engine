@@ -30,7 +30,8 @@ def _stable_deployment(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_gcp_workload_exchange_flag_defaults_off(
-        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.delenv('KUMO_GCP_WORKLOAD_EXCHANGE_ENABLED', raising=False)
 
     flags = constants.FeatureFlags.parse_from_env_vars()
@@ -39,7 +40,8 @@ def test_gcp_workload_exchange_flag_defaults_off(
 
 
 def test_gcp_workload_exchange_flag_reaches_safe_feature_flags(
-        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv('KUMO_GCP_WORKLOAD_EXCHANGE_ENABLED', 'true')
 
     flags = constants.FeatureFlags.parse_from_env_vars()
@@ -48,7 +50,8 @@ def test_gcp_workload_exchange_flag_reaches_safe_feature_flags(
 
 
 def test_devserver_google_user_adc_enables_ambient_product_flow(
-        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(
         constants.developer_credentials,
         'dev_gcp_user_credentials_enabled',

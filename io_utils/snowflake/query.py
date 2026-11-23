@@ -20,6 +20,7 @@ class SnowflakeField:
     Helper functions for constructing dataclass fields
     corresponding to snowflake datatypes
     """
+
     @staticmethod
     def _field(snowflake_type: str):
         type_code = FIELD_NAME_TO_ID[snowflake_type.upper()]
@@ -57,6 +58,7 @@ class SnowflakeQuery:
       and wraps the result into the above dataclass, using
       the methods inherited from this class
     """
+
     @staticmethod
     def _check_result_schema(
         metadata: list[ResultMetadata],
@@ -64,13 +66,16 @@ class SnowflakeQuery:
     ) -> None:
         """Validate query result headers against dataclass fields"""
         if len(metadata) != len(expected):
-            raise ValueError(f"expected {len(expected)} fields, "
-                             f"got {len(metadata)} "
-                             f"({metadata=} {expected=})")
+            raise ValueError(
+                f'expected {len(expected)} fields, '
+                f'got {len(metadata)} '
+                f'({metadata=} {expected=})'
+            )
         for res in metadata:
             if res.name not in expected:
-                raise ValueError(f"unexpected field name {res.name} "
-                                 f"({metadata=} {expected=})")
+                raise ValueError(
+                    f'unexpected field name {res.name} ({metadata=} {expected=})'
+                )
 
             # N.B. set by SnowflakeField. In v2 model_fields[name] IS the
             # FieldInfo and the type_code lives under json_schema_extra, which
@@ -82,10 +87,12 @@ class SnowflakeQuery:
             assert isinstance(type_code, int)
 
             if res.type_code != type_code:
-                raise ValueError(f"expected field type "
-                                 f"{FIELD_ID_TO_NAME[type_code]}, "
-                                 f"got {FIELD_ID_TO_NAME[res.type_code]} "
-                                 f"({metadata=} {expected=})")
+                raise ValueError(
+                    f'expected field type '
+                    f'{FIELD_ID_TO_NAME[type_code]}, '
+                    f'got {FIELD_ID_TO_NAME[res.type_code]} '
+                    f'({metadata=} {expected=})'
+                )
 
     @staticmethod
     def _get_result(
@@ -93,23 +100,27 @@ class SnowflakeQuery:
         dataclass: type[DataclassType],
     ) -> list[DataclassType]:
         # Use metadata from SnowflakeField to validate header schema
-        SnowflakeQuery._check_result_schema(cur.description,
-                                            dataclass.model_fields)
+        SnowflakeQuery._check_result_schema(cur.description, dataclass.model_fields)
 
         # Convert each individual row to an instance of dataclass
-        def _convert_one(description: list[ResultMetadata],
-                         row) -> DataclassType:
+        def _convert_one(description: list[ResultMetadata], row) -> DataclassType:
             try:
-                return dataclass(**dict([(m.name, v)
-                                         for m, v in zip(description, row)]))
+                return dataclass(
+                    **dict([(m.name, v) for m, v in zip(description, row)])
+                )
             except ValidationError:
-                result_types = sorted([(m.name, type(v).__name__)
-                                       for m, v in zip(description, row)])
-                expected_types = sorted([
-                    (n, f.annotation.__name__ if f.annotation else 'None')
-                    for n, f in dataclass.model_fields.items()
-                ])
-                raise ValueError(f"datatype mismatch despite metadata match "
-                                 f"{result_types=} {expected_types=}") from None
+                result_types = sorted(
+                    [(m.name, type(v).__name__) for m, v in zip(description, row)]
+                )
+                expected_types = sorted(
+                    [
+                        (n, f.annotation.__name__ if f.annotation else 'None')
+                        for n, f in dataclass.model_fields.items()
+                    ]
+                )
+                raise ValueError(
+                    f'datatype mismatch despite metadata match '
+                    f'{result_types=} {expected_types=}'
+                ) from None
 
         return [_convert_one(cur.description, row) for row in cur.fetchall()]

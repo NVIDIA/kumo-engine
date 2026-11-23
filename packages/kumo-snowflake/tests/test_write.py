@@ -35,27 +35,36 @@ class _Connection:
 def test_streamed_parquet_export_preserves_timestamp_logical_types() -> None:
     connection = _Connection()
 
-    write_artifacts_to_table(connection, "PREDICTIONS", "s3://bucket/run/",
-                             replace=True)
+    write_artifacts_to_table(
+        connection, 'PREDICTIONS', 's3://bucket/run/', replace=True
+    )
 
     create_format = next(
-        statement for statement in connection.statements
-        if statement.startswith("CREATE TEMPORARY FILE FORMAT"))
-    copy = next(statement for statement in connection.statements
-                if statement.startswith("COPY INTO"))
-    assert "TYPE = PARQUET USE_LOGICAL_TYPE = TRUE" in create_format
-    assert "FILE_FORMAT = (TYPE = PARQUET USE_LOGICAL_TYPE = TRUE)" in copy
+        statement
+        for statement in connection.statements
+        if statement.startswith('CREATE TEMPORARY FILE FORMAT')
+    )
+    copy = next(
+        statement
+        for statement in connection.statements
+        if statement.startswith('COPY INTO')
+    )
+    assert 'TYPE = PARQUET USE_LOGICAL_TYPE = TRUE' in create_format
+    assert 'FILE_FORMAT = (TYPE = PARQUET USE_LOGICAL_TYPE = TRUE)' in copy
 
 
 def test_overwrite_maps_staging_columns_by_destination_name() -> None:
     connection = _Connection()
     connection.table_exists = lambda _name: True
-    connection.table_columns = lambda name: (["SCORE", "ENTITY", "TIMESTAMP"]
-                                             if name == "PREDICTIONS" else
-                                             ["TIMESTAMP", "SCORE", "ENTITY"])
+    connection.table_columns = lambda name: (
+        ['SCORE', 'ENTITY', 'TIMESTAMP']
+        if name == 'PREDICTIONS'
+        else ['TIMESTAMP', 'SCORE', 'ENTITY']
+    )
 
-    overwrite_table(connection, "STAGING", "PREDICTIONS",
-                    quote=connection._qualified_table_name)
+    overwrite_table(
+        connection, 'STAGING', 'PREDICTIONS', quote=connection._qualified_table_name
+    )
 
     assert connection.statements == [
         'INSERT OVERWRITE INTO "DB"."PUBLIC"."PREDICTIONS" '
@@ -68,17 +77,19 @@ def test_overwrite_maps_staging_columns_by_destination_name() -> None:
 def test_overwrite_rejects_a_different_staging_schema() -> None:
     connection = _Connection()
     connection.table_exists = lambda _name: True
-    connection.table_columns = lambda name: (["SCORE", "ENTITY"] if name ==
-                                             "PREDICTIONS" else ["SCORE"])
+    connection.table_columns = lambda name: (
+        ['SCORE', 'ENTITY'] if name == 'PREDICTIONS' else ['SCORE']
+    )
 
-    with pytest.raises(ArtifactWriteError, match="different columns"):
-        overwrite_table(connection, "STAGING", "PREDICTIONS",
-                        quote=connection._qualified_table_name)
+    with pytest.raises(ArtifactWriteError, match='different columns'):
+        overwrite_table(
+            connection, 'STAGING', 'PREDICTIONS', quote=connection._qualified_table_name
+        )
 
 
 class _ExpiredTokenError(Exception):
     errno = 390114
-    sqlstate = "08001"
+    sqlstate = '08001'
 
 
 def test_artifact_write_preserves_expired_credential_classification() -> None:
@@ -86,8 +97,12 @@ def test_artifact_write_preserves_expired_credential_classification() -> None:
         raise _ExpiredTokenError()
 
     with pytest.raises(ArtifactWriteError) as error:
-        write_artifacts_to_table(_Connection(), "PREDICTIONS",
-                                 "/tmp/predictions.parquet", replace=True,
-                                 upload_local=upload)
+        write_artifacts_to_table(
+            _Connection(),
+            'PREDICTIONS',
+            '/tmp/predictions.parquet',
+            replace=True,
+            upload_local=upload,
+        )
 
     assert is_lapsed_credential(error.value)

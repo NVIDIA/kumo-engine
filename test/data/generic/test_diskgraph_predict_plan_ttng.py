@@ -12,19 +12,21 @@ FK-edge ingest).
 The diskgraph ``DiskGraphPlanCompiler`` is stubbed so the test exercises the
 kumo-side plan post-processing, not the compiler.
 """
+
 from __future__ import annotations
 
 import importlib
 import json
 import os
 import sys
-from test.data.generic.ttng_v3_test_bundle import write_v3_bundle
 from types import SimpleNamespace
 
 import pandas as pd
 import pytest
 from kumo_core.types import TaskType
 from kumoapi.pquery import QueryType
+
+from test.data.generic.ttng_v3_test_bundle import write_v3_bundle
 
 
 @pytest.fixture
@@ -41,9 +43,7 @@ def stub_compiler(monkeypatch):
         def compile(self, **kwargs):
             captured['kwargs'] = kwargs
             plan = {
-                'entity': {
-                    'table': 'users'
-                },
+                'entity': {'table': 'users'},
                 'task_type': kwargs.get('task_type'),
                 'is_prediction': kwargs.get('is_prediction'),
             }
@@ -55,16 +55,16 @@ def stub_compiler(monkeypatch):
     if diskgraph_mod is None:
         diskgraph_mod = SimpleNamespace()
         monkeypatch.setitem(sys.modules, 'diskgraph', diskgraph_mod)
-    monkeypatch.setattr(diskgraph_mod, 'DiskGraphPlanCompiler', _StubCompiler,
-                        raising=False)
+    monkeypatch.setattr(
+        diskgraph_mod, 'DiskGraphPlanCompiler', _StubCompiler, raising=False
+    )
     return captured
 
 
 def _build(task_type, *, list_array, stub_compiler):
     bp = importlib.import_module('kumo.data.generic.diskgraph_batch_pred')
     plan_json = bp.build_ttng_predict_plan(
-        SimpleNamespace(
-            entity_column='users.user_id'),  # only entity_column read
+        SimpleNamespace(entity_column='users.user_id'),  # only entity_column read
         index_path='/index',
         task_type=task_type,
         graph=SimpleNamespace(),
@@ -78,22 +78,26 @@ def _build(task_type, *, list_array, stub_compiler):
 
 
 def test_node_prediction_plan_has_entity_resolution(stub_compiler):
-    plan, kwargs = _build(TaskType.BINARY_CLASSIFICATION, list_array=False,
-                          stub_compiler=stub_compiler)
-    assert plan['lp_resolution'] == [{
-        'src_col': 'ENTITY1',
-        'dst_table': 'users',
-        'kind': 'scalar',
-        'node_id_col': 'entity_node_id',
-    }]
+    plan, kwargs = _build(
+        TaskType.BINARY_CLASSIFICATION, list_array=False, stub_compiler=stub_compiler
+    )
+    assert plan['lp_resolution'] == [
+        {
+            'src_col': 'ENTITY1',
+            'dst_table': 'users',
+            'kind': 'scalar',
+            'node_id_col': 'entity_node_id',
+        }
+    ]
     assert kwargs['is_prediction'] is True
     # Node prediction does not pass an LP prediction mode.
     assert 'lp_prediction_mode' not in kwargs
 
 
 def test_lp_plan_carries_entity_only_resolution(stub_compiler):
-    plan, kwargs = _build(TaskType.STATIC_LINK_PREDICTION, list_array=True,
-                          stub_compiler=stub_compiler)
+    plan, kwargs = _build(
+        TaskType.STATIC_LINK_PREDICTION, list_array=True, stub_compiler=stub_compiler
+    )
     assert kwargs['lp_prediction_mode'] == 'LHS'
     assert kwargs['list_distinct_target_is_array'] is True
 
@@ -109,8 +113,9 @@ def test_lp_plan_carries_entity_only_resolution(stub_compiler):
 
 
 def test_temporal_lp_plan_carries_entity_only_resolution(stub_compiler):
-    plan, _ = _build(TaskType.TEMPORAL_LINK_PREDICTION, list_array=True,
-                     stub_compiler=stub_compiler)
+    plan, _ = _build(
+        TaskType.TEMPORAL_LINK_PREDICTION, list_array=True, stub_compiler=stub_compiler
+    )
     res = plan['lp_resolution']
     assert [s['src_col'] for s in res] == ['ENTITY1']
 
@@ -119,8 +124,9 @@ def test_lp_plan_honors_array_flag_from_config(stub_compiler):
     """Array-mode is decided upstream by ``allow_array_targets()`` (always True
     under TT-NG) and threaded through as the config value, so the predict-plan
     builder simply honors it and threads it into the compiler + resolution."""
-    plan, kwargs = _build(TaskType.STATIC_LINK_PREDICTION, list_array=True,
-                          stub_compiler=stub_compiler)
+    plan, kwargs = _build(
+        TaskType.STATIC_LINK_PREDICTION, list_array=True, stub_compiler=stub_compiler
+    )
     assert kwargs['list_distinct_target_is_array'] is True
     res = plan['lp_resolution']
     assert [s['src_col'] for s in res] == ['ENTITY1']
@@ -132,8 +138,11 @@ def test_lp_predict_fails_loud_when_resolution_missing(stub_compiler):
     NOT silently emit a plan with no FK-free lp_resolution -- it must fail loud
     (the retained downstream guard for the removed fail-loud check)."""
     with pytest.raises(RuntimeError, match='requires array-target resolution'):
-        _build(TaskType.STATIC_LINK_PREDICTION, list_array=False,
-               stub_compiler=stub_compiler)
+        _build(
+            TaskType.STATIC_LINK_PREDICTION,
+            list_array=False,
+            stub_compiler=stub_compiler,
+        )
 
 
 def test_resolve_lp_bp_layout_normalizes_persisted_hstack_under_array():
@@ -146,8 +155,10 @@ def test_resolve_lp_bp_layout_normalizes_persisted_hstack_under_array():
     )
     assert resolved == bp.LP_BP_LAYOUT_SEPARATE_LHS_RHS
     # Non-array (legacy) still honors an explicit persisted hstack.
-    assert bp._resolve_lp_bp_layout(
-        False, bp.LP_BP_LAYOUT_HSTACK) == bp.LP_BP_LAYOUT_HSTACK
+    assert (
+        bp._resolve_lp_bp_layout(False, bp.LP_BP_LAYOUT_HSTACK)
+        == bp.LP_BP_LAYOUT_HSTACK
+    )
     # Invalid persisted value still rejected.
     with pytest.raises(ValueError, match='lp_bp_layout must be one of'):
         bp._resolve_lp_bp_layout(True, 'bogus')
@@ -191,6 +202,7 @@ def test_forecasting_ttng_prediction_uses_kept_staging(monkeypatch, tmp_path):
 
     def _read_tt_parquet_batches(path):
         import pyarrow.parquet as pq
+
         yield from pq.ParquetDataset(path).read().to_batches()
 
     diskgraph_mod = SimpleNamespace(
@@ -245,6 +257,7 @@ def test_forecasting_ttng_prediction_uses_kept_staging(monkeypatch, tmp_path):
     from kumo.data.generic.diskgraph_train_table import (
         resolve_durable_ttng_bundle,
     )
+
     assert os.path.isfile(os.path.join(durable, '_current.json'))
     durable = resolve_durable_ttng_bundle(durable)
     assert os.path.isdir(os.path.join(durable, 'tt.parquet'))

@@ -11,11 +11,12 @@ def test_deleting_an_object_deletes_only_that_key(monkeypatch):
     calls = []
     session = FakeSession(region_name='us-east-1')
     session.client = lambda service, endpoint_url=None: SimpleNamespace(
-        delete_object=lambda **kwargs: calls.append((service, endpoint_url,
-                                                     kwargs)))
+        delete_object=lambda **kwargs: calls.append((service, endpoint_url, kwargs))
+    )
     sink = S3SinkBackend()
-    monkeypatch.setattr(sink, '_resolved_session',
-                        lambda connector, bucket: (session, True, None))
+    monkeypatch.setattr(
+        sink, '_resolved_session', lambda connector, bucket: (session, True, None)
+    )
 
     sink.delete_file(None, 'bucket/root/.probe')
 

@@ -80,122 +80,120 @@ class BatchPredictionV1Resource:
         self._pquery_driver: PQueryApiDriver = data_driver.pquery_driver
         self._ml_job_backend = ml_job_backend
         self.router = APIRouter(
-            prefix="/v1/batch_prediction_jobs",
-            tags=["API v1 (Under Development): BatchPredictionJob"],
+            prefix='/v1/batch_prediction_jobs',
+            tags=['API v1 (Under Development): BatchPredictionJob'],
             dependencies=[Depends(auth.authenticate_request_header)],
-            responses={HTTPStatus.NOT_FOUND: {
-                "description": "Not found"
-            }},
+            responses={HTTPStatus.NOT_FOUND: {'description': 'Not found'}},
         )
 
         self.router.add_api_route(
-            "/",
+            '/',
             self.create_batch_prediction_job,
             response_model=IDResponse,
             methods=['POST'],
         )
 
         self.router.add_api_route(
-            "/output_schema",
+            '/output_schema',
             self.get_prediction_table_schema,
             response_model=List[ColumnArgs],
             methods=['POST'],
         )
 
         self.router.add_api_route(
-            "/{id}/prediction_table_schema",
+            '/{id}/prediction_table_schema',
             self.get_prediction_table_schema_by_pquery,
             response_model=List[ColumnArgs],
             methods=['GET'],
         )
 
         self.router.add_api_route(
-            "/samples_for_output_schema",
+            '/samples_for_output_schema',
             self.suggest_sample_predictive_table_schema,
             response_model=List[PredictionTableSchemaSampleColumn],
             methods=['POST'],
         )
 
         self.router.add_api_route(
-            "/{prediction_job_id}/sdk",
+            '/{prediction_job_id}/sdk',
             self.prediction_to_sdk,
             response_model=str,
             methods=['GET'],
         )
 
         self.router.add_api_route(
-            "/{id}",
+            '/{id}',
             self.get_batch_prediction_job,
             response_model=BatchPredictionJobResponse,
             methods=['GET'],
         )
 
         self.router.add_api_route(
-            "/{id}/cancel",
+            '/{id}/cancel',
             self.cancel,
             methods=['POST'],
-            description="Cancel a batch prediction job.",
+            description='Cancel a batch prediction job.',
             response_model=bool,
         )
 
         self.router.add_api_route(
-            "/{id}/prediction_anchor_time",
+            '/{id}/prediction_anchor_time',
             self.get_prediction_anchor_time,
             response_model=BatchPredictionJobAnchorTime,
             methods=['GET'],
         )
 
         self.router.add_api_route(
-            "/{id}/prediction_stats",
+            '/{id}/prediction_stats',
             self.get_prediction_stats,
             response_model=BatchPredictionJobStats,
             methods=['GET'],
         )
 
         self.router.add_api_route(
-            "/{id}/download_bp",
+            '/{id}/download_bp',
             self.generate_bp_presigned_url,
             response_model=OutputPresignedUrlResponse,
             methods=['GET'],
         )
 
         self.router.add_api_route(
-            "/get_warnings",
+            '/get_warnings',
             self.get_warnings,
             response_model=Dict[str, ErrWarnResponse],
             methods=['POST'],
         )
 
         self.router.add_api_route(
-            "/{id}/xai",
+            '/{id}/xai',
             self.get_xai,
             response_model=XAIResponse,
             methods=['GET'],
         )
 
         self.router.add_api_route(
-            "/{id}/available_xai_entities",
+            '/{id}/available_xai_entities',
             self.get_available_xai_entities,
             response_model=StrategyMappings,
             methods=['GET'],
         )
 
         self.router.add_api_route(
-            "/{id}/subgraph/{entity_id}",
+            '/{id}/subgraph/{entity_id}',
             self.get_entity_subgraph,
             response_model=Subgraph,
             methods=['GET'],
         )
 
         self.router.add_api_route(
-            "/{id}/entity_output/{entity_id}",
+            '/{id}/entity_output/{entity_id}',
             self.get_entity_output,
             response_model=EntityOutput,
             methods=['GET'],
         )
 
         self.router.add_api_route(
-            "/{id}/entity_historical_items/{entity_id}",
+            '/{id}/entity_historical_items/{entity_id}',
             self.get_entity_historical_items,
             response_model=HistoricalItems,
             methods=['GET'],
@@ -218,8 +216,11 @@ class BatchPredictionV1Resource:
         )
 
     async def cancel(
-        self, id: BatchPredictionJobID, project_id: str,
-        ctx: RequestContext = Depends(get_ctx)) -> bool:
+        self,
+        id: BatchPredictionJobID,
+        project_id: str,
+        ctx: RequestContext = Depends(get_ctx),
+    ) -> bool:
         project_id = require_project_id(project_id)
         require_requested_project_visible_for_user(
             project_id,
@@ -235,10 +236,10 @@ class BatchPredictionV1Resource:
         return await self._ml_job_backend.cancel_batch_prediction_job(id)
 
     async def get_warnings(
-            self,
-            args: ErrWarnArgs,
-            project_id: str,
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        args: ErrWarnArgs,
+        project_id: str,
+        ctx: RequestContext = Depends(get_ctx),
     ) -> Dict[str, ErrWarnResponse]:
         """Get all warnings and errors after validating the given Batch
            Prediction Job IDs.
@@ -252,8 +253,9 @@ class BatchPredictionV1Resource:
         """
         if DISABLE_UI_WARNINGS:
             return {
-                BatchPredictionJobID(id):
-                ErrWarnResponse(errors=[], warnings=[], info_items=[])
+                BatchPredictionJobID(id): ErrWarnResponse(
+                    errors=[], warnings=[], info_items=[]
+                )
                 for id in args.ids
             }
 
@@ -267,19 +269,22 @@ class BatchPredictionV1Resource:
         )
         for bp_id in args.ids:
             response = await self._pquery_driver.get_batch_prediction_job(
-                ctx, BatchPredictionJobID(bp_id))
+                ctx, BatchPredictionJobID(bp_id)
+            )
             self._authorize_batch_prediction_read(response, project_id, ctx)
 
         with wrap_validation_exceptions(
-                not_exists_error=BatchPredictionDoesNotExistError):
+            not_exists_error=BatchPredictionDoesNotExistError
+        ):
             return await self._pquery_driver.get_batch_prediction_warnings(
-                [BatchPredictionJobID(id) for id in args.ids], ctx)
+                [BatchPredictionJobID(id) for id in args.ids], ctx
+            )
 
     async def get_batch_prediction_job(
-            self,
-            id: BatchPredictionJobID,
-            project_id: str,
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        id: BatchPredictionJobID,
+        project_id: str,
+        ctx: RequestContext = Depends(get_ctx),
     ) -> BatchPredictionJobResponse:
         r"""Get the config, progress, and/or results for a batch prediction
         job.
@@ -312,10 +317,10 @@ class BatchPredictionV1Resource:
             ),
         )
         response = await self._pquery_driver.get_batch_prediction_job(ctx, id)
-        response = self._authorize_batch_prediction_read(
-            response, project_id, ctx)
+        response = self._authorize_batch_prediction_read(response, project_id, ctx)
         response.download_supported = (
-            await self._pquery_driver.supports_batch_prediction_download(id))
+            await self._pquery_driver.supports_batch_prediction_download(id)
+        )
         return response
 
     async def get_prediction_anchor_time(
@@ -345,11 +350,11 @@ class BatchPredictionV1Resource:
             ),
         )
         response = await self._pquery_driver.get_batch_prediction_job(ctx, id)
-        response = self._authorize_batch_prediction_read(
-            response, project_id, ctx)
+        response = self._authorize_batch_prediction_read(response, project_id, ctx)
         if response.config.prediction_time is not None:
             return BatchPredictionJobAnchorTime(
-                anchor_time=response.config.prediction_time)
+                anchor_time=response.config.prediction_time
+            )
 
         # First try to load from the job directory
         home_dir = await self._ml_job_backend.get_job_home_dir(id)
@@ -357,7 +362,8 @@ class BatchPredictionV1Resource:
             self._pquery_driver.get_prediction_anchor_time_from_per_job_dir(
                 id,
                 home_dir,
-            ))
+            )
+        )
         if anchor_time is not None:
             return anchor_time
 
@@ -365,10 +371,10 @@ class BatchPredictionV1Resource:
         return await self._pquery_driver.get_prediction_anchor_time(id, ctx)
 
     async def get_prediction_stats(
-            self,
-            id: BatchPredictionJobID,
-            project_id: str,
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        id: BatchPredictionJobID,
+        project_id: str,
+        ctx: RequestContext = Depends(get_ctx),
     ) -> BatchPredictionJobStats:
         """Returns the col stats for a batch prediction job if
         available.
@@ -382,15 +388,14 @@ class BatchPredictionV1Resource:
                 log.exception(e)
                 raise HTTPException(
                     HTTPStatus.UNPROCESSABLE_ENTITY,
-                    'This query is too old and does not have any '
-                    'statistics available',
+                    'This query is too old and does not have any statistics available',
                 )
 
     async def generate_bp_presigned_url(
-            self,
-            id: BatchPredictionJobID,
-            project_id: str,
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        id: BatchPredictionJobID,
+        project_id: str,
+        ctx: RequestContext = Depends(get_ctx),
     ) -> OutputPresignedUrlResponse:
         r"""Generate the batch prediction download url.
 
@@ -414,21 +419,24 @@ class BatchPredictionV1Resource:
                 ),
             )
             bp_job_response = await self._pquery_driver.get_batch_prediction_job(
-                ctx, id)
+                ctx, id
+            )
             bp_job_response = self._authorize_batch_prediction_read(
-                bp_job_response, project_id, ctx)
+                bp_job_response, project_id, ctx
+            )
             batch_prediction_job_id = bp_job_response.id
             response = await self._pquery_driver.generate_bp_presigned_url(
-                batch_prediction_job_id)
+                batch_prediction_job_id
+            )
             return response
         except (ValueError, KeyError, NotImplementedError) as err:
             raise ValidationHTTPException(str(err), err)
 
     async def get_xai(
-            self,
-            id: BatchPredictionJobID,
-            project_id: str,
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        id: BatchPredictionJobID,
+        project_id: str,
+        ctx: RequestContext = Depends(get_ctx),
     ) -> XAIResponse:
         r"""Get explanation for a batch prediction job.
         Args:
@@ -445,10 +453,10 @@ class BatchPredictionV1Resource:
             return await self._data_driver.get_bp_xai(ctx, pq_id, id)
 
     async def get_available_xai_entities(
-            self,
-            id: BatchPredictionJobID,
-            project_id: str,
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        id: BatchPredictionJobID,
+        project_id: str,
+        ctx: RequestContext = Depends(get_ctx),
     ) -> StrategyMappings:
         r"""Get preselection strategy mappings of prediction-level XAI
         for a batch prediction.
@@ -462,15 +470,14 @@ class BatchPredictionV1Resource:
         with wrap_validation_exceptions(BatchPredictionDoesNotExistError):
             job = await self._pquery_driver.get_batch_prediction_job(ctx, id)
             self._authorize_batch_prediction_read(job, project_id, ctx)
-            return await self._data_driver.get_bp_available_xai_entities(
-                ctx, id)
+            return await self._data_driver.get_bp_available_xai_entities(ctx, id)
 
     async def get_entity_subgraph(
-            self,
-            id: BatchPredictionJobID,
-            entity_id: str,
-            project_id: str,
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        id: BatchPredictionJobID,
+        entity_id: str,
+        project_id: str,
+        ctx: RequestContext = Depends(get_ctx),
     ) -> Subgraph:
         r"""Get XAI subgraph of an entity.
 
@@ -486,11 +493,11 @@ class BatchPredictionV1Resource:
             return await self._data_driver.get_bp_subgraph(ctx, id, entity_id)
 
     async def get_entity_output(
-            self,
-            id: BatchPredictionJobID,
-            entity_id: str,
-            project_id: str,
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        id: BatchPredictionJobID,
+        entity_id: str,
+        project_id: str,
+        ctx: RequestContext = Depends(get_ctx),
     ) -> EntityOutput:
         r"""Get XAI output of an entity.
 
@@ -503,15 +510,14 @@ class BatchPredictionV1Resource:
         with wrap_validation_exceptions(BatchPredictionDoesNotExistError):
             job = await self._pquery_driver.get_batch_prediction_job(ctx, id)
             self._authorize_batch_prediction_read(job, project_id, ctx)
-            return await self._data_driver.get_bp_entity_output(
-                ctx, id, entity_id)
+            return await self._data_driver.get_bp_entity_output(ctx, id, entity_id)
 
     async def get_entity_historical_items(
-            self,
-            id: BatchPredictionJobID,
-            entity_id: str,
-            project_id: str,
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        id: BatchPredictionJobID,
+        entity_id: str,
+        project_id: str,
+        ctx: RequestContext = Depends(get_ctx),
     ) -> HistoricalItems:
         r"""Get XAI historical items of an entity for link prediction tasks.
 
@@ -525,12 +531,13 @@ class BatchPredictionV1Resource:
             job = await self._pquery_driver.get_batch_prediction_job(ctx, id)
             self._authorize_batch_prediction_read(job, project_id, ctx)
             return await self._data_driver.get_bp_entity_historical_items(
-                ctx, id, entity_id)
+                ctx, id, entity_id
+            )
 
     async def create_batch_prediction_job(
-            self,
-            request: BatchPredictionInternalRequest,
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        request: BatchPredictionInternalRequest,
+        ctx: RequestContext = Depends(get_ctx),
     ) -> IDResponse:
         """
         Creates a batch prediction job in V1 APIs.
@@ -560,9 +567,9 @@ class BatchPredictionV1Resource:
             raise ValidationHTTPException(str(err), err)
 
     async def get_prediction_table_schema(
-            self,
-            request: PredictionTableSchemaRequest,
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        request: PredictionTableSchemaRequest,
+        ctx: RequestContext = Depends(get_ctx),
     ) -> List[ColumnArgs]:
         return get_bp_columns_by_task_type(
             task_type=request.task_type,
@@ -571,10 +578,10 @@ class BatchPredictionV1Resource:
         )
 
     async def get_prediction_table_schema_by_pquery(
-            self,
-            id: PredictiveQueryID,
-            project_id: str,
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        id: PredictiveQueryID,
+        project_id: str,
+        ctx: RequestContext = Depends(get_ctx),
     ) -> List[ColumnArgs]:
         """Prediction-table output schema resolved from a predictive query.
 
@@ -595,11 +602,10 @@ class BatchPredictionV1Resource:
             # (public fpid) id forms, unlike ``get_predictive_query`` which
             # asserts the id carries no fpid.
             (task_type, query_type), pq_object = await asyncio.gather(
-                self._pquery_driver.get_pquery_metadata(id,
-                                                        ProjectID(project_id)),
+                self._pquery_driver.get_pquery_metadata(id, ProjectID(project_id)),
                 self._pquery_driver.get_predictive_query_object(
-                    id, ProjectID(project_id),
-                    self._pquery_driver._pquery_settings),
+                    id, ProjectID(project_id), self._pquery_driver._pquery_settings
+                ),
             )
             if pq_object is None:
                 raise PredictiveQueryDoesNotExistError(id)
@@ -631,17 +637,19 @@ class BatchPredictionV1Resource:
             task type.
         """
         if not GenerateTrainTableJobID.is_valid_id(request.train_table_job_id):
-            raise ValueError(f'{request.train_table_job_id} is not a ' +
-                             'valid train table job ID.')
+            raise ValueError(
+                f'{request.train_table_job_id} is not a ' + 'valid train table job ID.'
+            )
         train_table_job_id = GenerateTrainTableJobID(request.train_table_job_id)
         return await self._driver.get_training_job_samples(
-            train_table_job_id, request.task_type)
+            train_table_job_id, request.task_type
+        )
 
     async def prediction_to_sdk(
-            self,
-            prediction_job_id: BatchPredictionJobID,
-            project_id: str,
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        prediction_job_id: BatchPredictionJobID,
+        project_id: str,
+        ctx: RequestContext = Depends(get_ctx),
     ) -> str:
         r"""
         Used to generate a fully executable Python SDK script to reproduce a prediction pipeline
@@ -673,6 +681,7 @@ class BatchPredictionV1Resource:
         """
         with wrap_validation_exceptions(BatchPredictionDoesNotExistError):
             job = await self._pquery_driver.get_batch_prediction_job(
-                ctx, prediction_job_id)
+                ctx, prediction_job_id
+            )
             self._authorize_batch_prediction_read(job, project_id, ctx)
             return await self._driver.prediction_to_sdk(prediction_job_id, ctx)

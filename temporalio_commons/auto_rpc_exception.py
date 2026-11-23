@@ -30,8 +30,9 @@ class RpcError(Exception):
     stack_trace: str
     non_retryable: bool
 
-    def __init__(self, rpc_service, rpc_method, error_type, message,
-                 stack_trace, non_retryable) -> None:
+    def __init__(
+        self, rpc_service, rpc_method, error_type, message, stack_trace, non_retryable
+    ) -> None:
         self.rpc_service = rpc_service
         self.rpc_method = rpc_method
         self.error_type = error_type
@@ -40,9 +41,11 @@ class RpcError(Exception):
         self.non_retryable = non_retryable
 
     def __str__(self):
-        return (f'RPC {self.rpc_service}.{self.rpc_method} failed '
-                f'due to {self.error_type}, message: {self.message}, \n'
-                f'stack trace:\n{self.stack_trace}')
+        return (
+            f'RPC {self.rpc_service}.{self.rpc_method} failed '
+            f'due to {self.error_type}, message: {self.message}, \n'
+            f'stack trace:\n{self.stack_trace}'
+        )
 
 
 class _AutoRpcNonRetriableError(Exception):
@@ -52,8 +55,9 @@ class _AutoRpcNonRetriableError(Exception):
 
 # AutoRPC client-side implementation to convert a workflow failure error to
 # AutoRPC's RPCError.
-def wf_failure_to_rpc_error(service: str, method: str,
-                            wf_failure: WorkflowFailureError):
+def wf_failure_to_rpc_error(
+    service: str, method: str, wf_failure: WorkflowFailureError
+):
     cause = wf_failure.cause
     error_type = type(cause).__name__
     message = str(cause)
@@ -80,17 +84,18 @@ def wf_failure_to_rpc_error(service: str, method: str,
         if cause.failure:
             stack_trace = cause.failure.stack_trace
 
-    raise RpcError(service, method, error_type, message, stack_trace,
-                   non_retryable) from cause
+    raise RpcError(
+        service, method, error_type, message, stack_trace, non_retryable
+    ) from cause
 
 
 # Categorize if an exception raised from RPC function (service side
 # implementation) could be retried.
 def is_retryable(ex: BaseException):
     # Temporalio-related errors that are retriable.
-    if (isinstance(ex, TimeoutError)
-            or (isinstance(ex, (ServerError, ApplicationError))
-                and not ex.non_retryable)):  # type: ignore
+    if isinstance(ex, TimeoutError) or (
+        isinstance(ex, (ServerError, ApplicationError)) and not ex.non_retryable
+    ):  # type: ignore
         return True
 
     # RuntimeError and Custom subclass of RetriableError are considered

@@ -10,8 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Mapping, Optional, Tuple
 
-from kumo_core.model_plan import \
-    TrainingTableGenerationPlan as CoreGenerationPlan
+from kumo_core.model_plan import TrainingTableGenerationPlan as CoreGenerationPlan
 from kumo_core.pquery import (
     TaskPlanPurpose,
     ValidatedNativeQuery,
@@ -87,10 +86,10 @@ class PredictionTable:
         cls,
         source_table: SourceTable,
         *,
-        pq: "PredictiveQuery",  # noqa: F821
+        pq: 'PredictiveQuery',  # noqa: F821
         snapshot: GraphSnapshot,
         plan: Optional[TrainingTableGenerationPlan] = None,
-    ) -> "PredictionTable":
+    ) -> 'PredictionTable':
         r"""Materialize caller-supplied entities and anchor times.
 
         The source must contain the query's standard ``ENTITY1`` column and,
@@ -111,12 +110,11 @@ class PredictionTable:
         from kumo.engine.pquery.predictive_query import PredictiveQuery
 
         if not isinstance(pq, PredictiveQuery):
-            raise TypeError("pq must be a kumo.engine PredictiveQuery")
+            raise TypeError('pq must be a kumo.engine PredictiveQuery')
         pq._require_matching_snapshot(snapshot)
         run_id = new_run_id()
         run_dir = prediction_table_scratch_dir(run_id)
-        rows_path, _ = stage_source_table(source_table,
-                                          run_dir / "source-table")
+        rows_path, _ = stage_source_table(source_table, run_dir / 'source-table')
         request, _ = _build_prediction_table_request(
             snapshot,
             pq._parsed,
@@ -136,8 +134,9 @@ class PredictionTable:
             request,
             PreparedCustomPredictionTable(str(rows_path)),
         )
-        skipped = skipped_entities(generated.row_failures, rows_path,
-                                   scored=generated.row_count)
+        skipped = skipped_entities(
+            generated.row_failures, rows_path, scored=generated.row_count
+        )
         return cls(
             query=pq.query,
             table_path=Path(generated.table_path),
@@ -148,8 +147,11 @@ class PredictionTable:
             required_stages=request.task_dataset.required_stages,
             compiler_options=request.compiler_options,
             source='custom',
-            skipped_dir=(Path(generated.skipped_rows_dir)
-                         if skipped and generated.skipped_rows_dir else None),
+            skipped_dir=(
+                Path(generated.skipped_rows_dir)
+                if skipped and generated.skipped_rows_dir
+                else None
+            ),
             **skipped,
         )
 
@@ -175,8 +177,7 @@ def _build_prediction_table_request(
             # Prediction does not need the future label window that bounds
             # training anchors. The latest target source defines the default
             # source clock, regardless of PQL aggregation order.
-            timestamps = (latest_temporal_timestamp(
-                parsed, str(snapshot.index_path)), )
+            timestamps = (latest_temporal_timestamp(parsed, str(snapshot.index_path)),)
     else:
         timestamps = prediction_timestamps(prediction_time)
         if parsed.query_type == 'static':
@@ -253,19 +254,28 @@ _SKIP_REASONS = {
 }
 
 
-def skipped_entities(report: Optional[Mapping[str, Any]], rows_path: Path,
-                     scored: int) -> Dict[str, Any]:
+def skipped_entities(
+    report: Optional[Mapping[str, Any]], rows_path: Path, scored: int
+) -> Dict[str, Any]:
     r"""Skipped-row fields; warns, or raises when no row can be scored."""
     skipped = int((report or {}).get('skipped_rows') or 0)
     if not skipped:
         return {}
     conditions = report.get('by_condition') or []
-    reasons = [(_SKIP_REASONS.get(entry.get('condition'),
-                                  str(entry.get('condition')).replace(
-                                      '_', ' ')), int(entry.get('count') or 0))
-               for entry in conditions]
-    reason = (reasons[0][0] if len(reasons) == 1 else '; '.join(
-        f'{name} ({count:,})' for name, count in reasons)) or None
+    reasons = [
+        (
+            _SKIP_REASONS.get(
+                entry.get('condition'), str(entry.get('condition')).replace('_', ' ')
+            ),
+            int(entry.get('count') or 0),
+        )
+        for entry in conditions
+    ]
+    reason = (
+        reasons[0][0]
+        if len(reasons) == 1
+        else '; '.join(f'{name} ({count:,})' for name, count in reasons)
+    ) or None
     requested = int(report.get('rows_read') or 0)
     sample = _sample_ids(conditions, rows_path)
     if not scored:
@@ -273,12 +283,15 @@ def skipped_entities(report: Optional[Mapping[str, Any]], rows_path: Path,
         shown = ', '.join(ids[:3]) + (', …' if len(ids) > 3 else '')
         raise ValueError(
             f'None of the {requested:,} requested entities can be scored'
-            f'{_FOUND}: {reason}' + (f' (sample: {shown})' if ids else ''))
+            f'{_FOUND}: {reason}' + (f' (sample: {shown})' if ids else '')
+        )
     warnings.warn(
         f'Prediction skipped {skipped:,} of {requested:,} requested entities '
         f'({skipped / requested if requested else 1:.1%}){_FOUND}: '
         f'{reason}',
-        UserWarning, stacklevel=3)
+        UserWarning,
+        stacklevel=3,
+    )
     return {
         'skipped_rows': skipped,
         'skipped_sample': sample,
@@ -295,8 +308,7 @@ def _sample_ids(conditions: Any, rows_path: Path) -> Tuple[Any, ...]:
             for location in entry.get('samples') or ():
                 if len(ids) >= SKIPPED_SAMPLE:
                     return tuple(ids)
-                found = re.fullmatch(r'(.+) row group (\d+) row (\d+)',
-                                     str(location))
+                found = re.fullmatch(r'(.+) row group (\d+) row (\d+)', str(location))
                 if found is None:
                     continue
                 part = Path(rows_path)
@@ -306,8 +318,9 @@ def _sample_ids(conditions: Any, rows_path: Path) -> Tuple[Any, ...]:
                 while row >= reader.metadata.row_group(group).num_rows:
                     row -= reader.metadata.row_group(group).num_rows
                     group += 1
-                column = reader.read_row_group(
-                    group, columns=[entry['column']]).column(0)
+                column = reader.read_row_group(group, columns=[entry['column']]).column(
+                    0
+                )
                 ids.append(column[row].as_py())
     except Exception:
         pass

@@ -18,9 +18,11 @@ def test_graph_gradient_score():
     assert score['TABLE_2'].total_score == 7.0
 
     df = score.normalize().to_pandas()
-    expected = pd.DataFrame({
-        'table': ['TABLE_2', 'TABLE_2', 'TABLE_1', 'TABLE_1'],
-        'column': ['COL_4', 'COL_3', 'COL_2', 'COL_1'],
-        'score': [0.4, 0.3, 0.2, 0.1],
-    })
+    expected = pd.DataFrame(
+        {
+            'table': ['TABLE_2', 'TABLE_2', 'TABLE_1', 'TABLE_1'],
+            'column': ['COL_4', 'COL_3', 'COL_2', 'COL_1'],
+            'score': [0.4, 0.3, 0.2, 0.1],
+        }
+    )
     pd.testing.assert_frame_equal(df, expected)

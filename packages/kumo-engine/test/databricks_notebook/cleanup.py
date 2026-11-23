@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Remove only resources admitted as absent for this notebook attempt."""
+
 import argparse
 import hashlib
 import json
@@ -12,8 +13,17 @@ from urllib.parse import quote, urlencode
 
 
 class AttemptResources:
-    def __init__(self, client, config, spec, root, *, lifecycle=False,
-                 resume=False, file_budget=None):
+    def __init__(
+        self,
+        client,
+        config,
+        spec,
+        root,
+        *,
+        lifecycle=False,
+        resume=False,
+        file_budget=None,
+    ):
         self.client, self.config, self.spec = client, config, spec
         self.root = Path(root)
         self.remote = None
@@ -22,42 +32,63 @@ class AttemptResources:
         if not re.fullmatch('[a-f0-9]{12}', attempt):
             raise ValueError('Invalid cleanup attempt')
         kind = 'lifecycle' if lifecycle else 'graph'
-        folder = ('/Shared/kumo_test_catalogue/KUMO_TEST/lifecycle'
-                  if lifecycle else config['workspace_dir'])
+        folder = (
+            '/Shared/kumo_test_catalogue/KUMO_TEST/lifecycle'
+            if lifecycle
+            else config['workspace_dir']
+        )
         if spec['notebook_path'] != folder + '/kumo-test-' + kind + '-' + attempt:
-            raise ValueError(
-                'Cleanup requires the exact generated notebook path')
-        output = config['volume'] + ('/lifecycle'
-                                     if lifecycle else '') + '/runs/' + attempt
+            raise ValueError('Cleanup requires the exact generated notebook path')
+        output = (
+            config['volume'] + ('/lifecycle' if lifecycle else '') + '/runs/' + attempt
+        )
         if spec['output'] != output + '/outputs':
             raise ValueError('Cleanup requires the exact attempt output prefix')
         self.prefixes = [output]
         if lifecycle:
-            self.prefixes.append(config['volume'].removesuffix('/notebook-ui') +
-                                 '/lifecycle/' + attempt)
-        self.experiment = (spec['experiment'] + '-' +
-                           attempt) if lifecycle else None
-        if self.experiment and self.experiment != folder + '/KUMO_TEST_MLOPS-' + attempt:
+            self.prefixes.append(
+                config['volume'].removesuffix('/notebook-ui') + '/lifecycle/' + attempt
+            )
+        self.experiment = (spec['experiment'] + '-' + attempt) if lifecycle else None
+        if (
+            self.experiment
+            and self.experiment != folder + '/KUMO_TEST_MLOPS-' + attempt
+        ):
             raise ValueError('Cleanup requires the exact attempt experiment')
-        self.model = ('kumo_test_catalogue.kumo_test.KUMO_TEST_MLOPS-' +
-                      attempt if lifecycle else None)
-        scope = dict(notebook=spec['notebook_path'], prefixes=self.prefixes,
-                     experiment=self.experiment, model=self.model,
-                     user=config.get('expected_user'))
-        scope_hash = hashlib.sha256(json.dumps(
-            scope, sort_keys=True).encode()).hexdigest()
+        self.model = (
+            'kumo_test_catalogue.kumo_test.KUMO_TEST_MLOPS-' + attempt
+            if lifecycle
+            else None
+        )
+        scope = dict(
+            notebook=spec['notebook_path'],
+            prefixes=self.prefixes,
+            experiment=self.experiment,
+            model=self.model,
+            user=config.get('expected_user'),
+        )
+        scope_hash = hashlib.sha256(
+            json.dumps(scope, sort_keys=True).encode()
+        ).hexdigest()
         if resume:
             self.ledger = json.loads((self.root / 'resources.json').read_text())
-            if self.ledger.get('scope_sha256') != scope_hash or self.ledger.get(
-                    'attempt') != attempt:
+            if (
+                self.ledger.get('scope_sha256') != scope_hash
+                or self.ledger.get('attempt') != attempt
+            ):
                 raise ValueError('Recovery ledger scope differs')
         else:
-            self.ledger = dict(attempt=attempt, notebook_created=False,
-                               scope_sha256=scope_hash, admitted=False,
-                               started_ms=int(time.time() * 1000))
+            self.ledger = dict(
+                attempt=attempt,
+                notebook_created=False,
+                scope_sha256=scope_hash,
+                admitted=False,
+                started_ms=int(time.time() * 1000),
+            )
             self.save()
         if resume and config.get('persistent_ledger'):
             from retention_ledger import ControlRecord
+
             self.remote = ControlRecord(client, config, spec, lifecycle)
             self.remote.bind(self.ledger, self.root)
 
@@ -83,20 +114,23 @@ class AttemptResources:
 
     def __enter__(self):
         for prefix in self.prefixes:
-            if not self.missing('/api/2.0/fs/directories' +
-                                quote(prefix, safe='/')):
+            if not self.missing('/api/2.0/fs/directories' + quote(prefix, safe='/')):
                 raise ValueError(
                     'Attempt storage already exists; no cleanup ownership acquired'
                 )
-        if self.model and not self.missing('/api/2.1/unity-catalog/models/' +
-                                           quote(self.model, safe='')):
+        if self.model and not self.missing(
+            '/api/2.1/unity-catalog/models/' + quote(self.model, safe='')
+        ):
             raise ValueError(
-                'Attempt model already exists; no cleanup ownership acquired')
+                'Attempt model already exists; no cleanup ownership acquired'
+            )
         admitted = dict(self.ledger, admitted=True)
         if self.config.get('persistent_ledger'):
             from retention_ledger import ControlRecord
-            remote = ControlRecord(self.client, self.config, self.spec,
-                                   self.experiment is not None)
+
+            remote = ControlRecord(
+                self.client, self.config, self.spec, self.experiment is not None
+            )
             remote.create(admitted, self.root)
             self.remote = remote
         self.ledger = admitted
@@ -107,18 +141,20 @@ class AttemptResources:
         if not self.experiment:
             return
         endpoint = '/api/2.0/mlflow/experiments/get-by-name?' + urlencode(
-            dict(experiment_name=self.experiment))
+            dict(experiment_name=self.experiment)
+        )
         if not self.missing(endpoint):
-            raise ValueError(
-                'Attempt experiment already exists; refusing ownership')
+            raise ValueError('Attempt experiment already exists; refusing ownership')
         self.ledger['experiment_pending'] = True
         self.save()
         response = self.client.api(
-            '/api/2.0/mlflow/experiments/create', 'POST',
+            '/api/2.0/mlflow/experiments/create',
+            'POST',
             dict(
-                name=self.experiment, tags=[
-                    dict(key='kumo.test.attempt', value=self.spec['attempt'])
-                ]))
+                name=self.experiment,
+                tags=[dict(key='kumo.test.attempt', value=self.spec['attempt'])],
+            ),
+        )
         self.ledger['experiment_id'] = str(response['experiment_id'])
         self.ledger['experiment_pending'] = False
         self.save()
@@ -148,11 +184,13 @@ class AttemptResources:
         entries, tokens, token = [], set(), None
         while True:
             try:
-                page = self.client.api(endpoint + '?' + urlencode(
-                    dict(page_size=1000,
-                         **({
-                             'page_token': token
-                         } if token else {}))))
+                page = self.client.api(
+                    endpoint
+                    + '?'
+                    + urlencode(
+                        dict(page_size=1000, **({'page_token': token} if token else {}))
+                    )
+                )
             except RuntimeError as error:
                 if str(error) == 'Databricks API HTTP 404':
                     return
@@ -170,10 +208,14 @@ class AttemptResources:
         for entry in entries:
             directory = entry.get('is_directory', False)
             path = entry['path'].removesuffix('/') if directory else entry['path']
-            if ('..' in PurePosixPath(path).parts or '//' in path
-                    or path.rsplit('/', 1)[0] != prefix):
+            if (
+                '..' in PurePosixPath(path).parts
+                or '//' in path
+                or path.rsplit('/', 1)[0] != prefix
+            ):
                 raise ValueError(
-                    'Directory listing escaped the admitted attempt prefix')
+                    'Directory listing escaped the admitted attempt prefix'
+                )
             owned.append((path, directory))
         for path, directory in owned:
             if directory:
@@ -182,38 +224,57 @@ class AttemptResources:
                 if budget[0] <= 0:
                     raise ValueError('Cleanup exceeded the file budget')
                 budget[0] -= 1
-                self.client.api('/api/2.0/fs/files' + quote(path, safe='/'),
-                                'DELETE')
+                self.client.api('/api/2.0/fs/files' + quote(path, safe='/'), 'DELETE')
         self.client.api(endpoint, 'DELETE')
 
     def model_identity(self, model):
-        if (not isinstance(model.get('id'), str) or not model['id']
-                or str(model.get('full_name', '')).casefold() != self.model.casefold()
-                or model.get('owner') != self.config['expected_user']
-                or type(model.get('created_at')) is not int
-                or model['created_at'] < self.ledger['started_ms'] - 2000):
+        if (
+            not isinstance(model.get('id'), str)
+            or not model['id']
+            or str(model.get('full_name', '')).casefold() != self.model.casefold()
+            or model.get('owner') != self.config['expected_user']
+            or type(model.get('created_at')) is not int
+            or model['created_at'] < self.ledger['started_ms'] - 2000
+        ):
             raise ValueError('Model ownership differs from the admitted attempt')
         return model['id'], model['created_at']
 
     def model_versions(self, endpoint, model):
         versions, tokens, token = {}, set(), None
         for _ in range(10):
-            page = self.client.api(endpoint + '/versions?' + urlencode(
-                dict(max_results=3, **({'page_token': token} if token else {}))))
+            page = self.client.api(
+                endpoint
+                + '/versions?'
+                + urlencode(
+                    dict(max_results=3, **({'page_token': token} if token else {}))
+                )
+            )
             for version in page.get('model_versions', []):
                 number = str(version.get('version'))
-                parent = '.'.join(str(version.get(key, '')) for key in
-                                  ('catalog_name', 'schema_name', 'model_name'))
-                if (number not in ('1', '2') or number in versions
-                        or parent.casefold() != model['full_name'].casefold()
-                        or version.get('created_by') != self.config['expected_user']
-                        or type(version.get('created_at')) is not int
-                        or version['created_at'] < model['created_at']
-                        or not isinstance(version.get('id'), str) or not version['id']
-                        or version.get('status') not in ('READY', 'FAILED_REGISTRATION')):
-                    raise ValueError('Model version differs from the owned test attempt')
-                versions[number] = (version['id'], version['created_at'],
-                                    version['created_by'], parent.casefold())
+                parent = '.'.join(
+                    str(version.get(key, ''))
+                    for key in ('catalog_name', 'schema_name', 'model_name')
+                )
+                if (
+                    number not in ('1', '2')
+                    or number in versions
+                    or parent.casefold() != model['full_name'].casefold()
+                    or version.get('created_by') != self.config['expected_user']
+                    or type(version.get('created_at')) is not int
+                    or version['created_at'] < model['created_at']
+                    or not isinstance(version.get('id'), str)
+                    or not version['id']
+                    or version.get('status') not in ('READY', 'FAILED_REGISTRATION')
+                ):
+                    raise ValueError(
+                        'Model version differs from the owned test attempt'
+                    )
+                versions[number] = (
+                    version['id'],
+                    version['created_at'],
+                    version['created_by'],
+                    parent.casefold(),
+                )
             token = page.get('next_page_token')
             if token is not None and not isinstance(token, str):
                 raise ValueError('Model version pagination is ambiguous')
@@ -251,22 +312,25 @@ class AttemptResources:
         errors = []
         result_path = self.root / 'cleanup.json'
         result_path.write_text(
-            json.dumps(dict(status='failed', failed_resources=['job_state'])) +
-            '\n')
+            json.dumps(dict(status='failed', failed_resources=['job_state'])) + '\n'
+        )
         submitted = self.root / 'submitted-run.json'
         if self.ledger.get('submission_pending') and not submitted.is_file():
             if failure and failure[0] is not None:
                 return False
             raise RuntimeError(
-                'Submission result unknown; resources preserved for inspection')
+                'Submission result unknown; resources preserved for inspection'
+            )
         if submitted.is_file():
             run_id = json.loads(submitted.read_text())['run_id']
             deadline = time.monotonic() + 180
             while True:
-                run = self.client.api('/api/2.2/jobs/runs/get?run_id=' +
-                                      str(run_id))
-                if run['state']['life_cycle_state'] in ('TERMINATED', 'SKIPPED',
-                                                        'INTERNAL_ERROR'):
+                run = self.client.api('/api/2.2/jobs/runs/get?run_id=' + str(run_id))
+                if run['state']['life_cycle_state'] in (
+                    'TERMINATED',
+                    'SKIPPED',
+                    'INTERNAL_ERROR',
+                ):
                     break
                 if time.monotonic() >= deadline:
                     raise RuntimeError(
@@ -277,36 +341,37 @@ class AttemptResources:
             errors.append('notebook_import_unknown')
         if self.ledger.get('experiment_pending'):
             errors.append('experiment')
-        if self.ledger.get('experiment_id') and not self.ledger.get('experiment_removed'):
+        if self.ledger.get('experiment_id') and not self.ledger.get(
+            'experiment_removed'
+        ):
             try:
                 experiment = self.client.api(
-                    '/api/2.0/mlflow/experiments/get?' +
-                    urlencode(dict(experiment_id=self.ledger['experiment_id']))
+                    '/api/2.0/mlflow/experiments/get?'
+                    + urlencode(dict(experiment_id=self.ledger['experiment_id']))
                 )['experiment']
-                tags = {
-                    tag['key']: tag['value']
-                    for tag in experiment.get('tags', [])
-                }
-                if (str(experiment.get('experiment_id'))
-                        != self.ledger['experiment_id']
-                        or experiment.get('name') != self.experiment
-                        or experiment.get('creation_time', 0)
-                        < self.ledger['started_ms'] - 2000 or
-                        tags.get('kumo.test.attempt') != self.spec['attempt']):
+                tags = {tag['key']: tag['value'] for tag in experiment.get('tags', [])}
+                if (
+                    str(experiment.get('experiment_id')) != self.ledger['experiment_id']
+                    or experiment.get('name') != self.experiment
+                    or experiment.get('creation_time', 0)
+                    < self.ledger['started_ms'] - 2000
+                    or tags.get('kumo.test.attempt') != self.spec['attempt']
+                ):
                     raise ValueError(
                         'Experiment ownership differs from the admitted attempt'
                     )
                 if experiment.get('lifecycle_stage') != 'deleted':
                     self.client.api(
-                        '/api/2.0/mlflow/experiments/delete', 'POST',
-                        dict(experiment_id=self.ledger['experiment_id']))
+                        '/api/2.0/mlflow/experiments/delete',
+                        'POST',
+                        dict(experiment_id=self.ledger['experiment_id']),
+                    )
                 self.removed('experiment_removed')
             except Exception:
                 errors.append('experiment')
         if self.model and not self.ledger.get('model_removed'):
             try:
-                endpoint = '/api/2.1/unity-catalog/models/' + quote(
-                    self.model, safe='')
+                endpoint = '/api/2.1/unity-catalog/models/' + quote(self.model, safe='')
                 if not self.missing(endpoint):
                     model = self.client.api(endpoint)
                     self.remove_model(model)
@@ -316,15 +381,19 @@ class AttemptResources:
         if self.ledger['notebook_created'] and not self.ledger.get('notebook_removed'):
             try:
                 self.client.api(
-                    '/api/2.0/workspace/delete', 'POST',
-                    dict(path=self.spec['notebook_path'], recursive=False))
+                    '/api/2.0/workspace/delete',
+                    'POST',
+                    dict(path=self.spec['notebook_path'], recursive=False),
+                )
                 self.removed('notebook_removed')
             except Exception:
                 errors.append('notebook')
         for prefix in self.prefixes:
             try:
-                self.clear_directory(prefix, self.file_budget if
-                                     self.file_budget is not None else [10000])
+                self.clear_directory(
+                    prefix,
+                    self.file_budget if self.file_budget is not None else [10000],
+                )
             except Exception:
                 errors.append('storage')
         control_directory_pending = False
@@ -333,15 +402,12 @@ class AttemptResources:
                 control_directory_pending = not self.remote.complete()
             except Exception:
                 errors.append('retention')
-        result = dict(status='failed' if errors else 'passed',
-                      failed_resources=errors)
+        result = dict(status='failed' if errors else 'passed', failed_resources=errors)
         if control_directory_pending:
             result['control_directory_cleanup'] = 'pending'
-        (self.root /
-         'cleanup.json').write_text(json.dumps(result, indent=2) + '\n')
+        (self.root / 'cleanup.json').write_text(json.dumps(result, indent=2) + '\n')
         if errors and not (failure and failure[0] is not None):
-            raise RuntimeError(
-                'Per-attempt cleanup failed; inspect cleanup.json')
+            raise RuntimeError('Per-attempt cleanup failed; inspect cleanup.json')
 
 
 def recover(root, client, config, *, file_budget=None):
@@ -349,30 +415,40 @@ def recover(root, client, config, *, file_budget=None):
     if not (root / 'resources.json').is_file():
         return
     result = root / 'cleanup.json'
-    if result.is_file() and json.loads(
-            result.read_text()).get('status') == 'passed':
+    if result.is_file() and json.loads(result.read_text()).get('status') == 'passed':
         return
     spec = json.loads((root / 'scenario.json').read_text())
     lifecycle = '/kumo-test-lifecycle-' in spec['notebook_path']
-    resources = AttemptResources(client, config, spec, root,
-                                 lifecycle=lifecycle, resume=True,
-                                 file_budget=file_budget)
+    resources = AttemptResources(
+        client,
+        config,
+        spec,
+        root,
+        lifecycle=lifecycle,
+        resume=True,
+        file_budget=file_budget,
+    )
     if not resources.ledger.get('admitted'):
         return
     submitted = root / 'submitted-run.json'
     if submitted.is_file():
         run_id = json.loads(submitted.read_text())['run_id']
         run = client.api('/api/2.2/jobs/runs/get?run_id=' + str(run_id))
-        if (run.get('run_id') != run_id or not config.get('expected_user')
-                or run.get('creator_user_name') != config['expected_user']
-                or run.get('run_name')
-                != 'kumo-test-notebook-ui-' + spec['attempt']
-                or len(run.get('tasks', [])) != 1
-                or run['tasks'][0].get('notebook_task', {}).get('notebook_path')
-                != spec['notebook_path']):
+        if (
+            run.get('run_id') != run_id
+            or not config.get('expected_user')
+            or run.get('creator_user_name') != config['expected_user']
+            or run.get('run_name') != 'kumo-test-notebook-ui-' + spec['attempt']
+            or len(run.get('tasks', [])) != 1
+            or run['tasks'][0].get('notebook_task', {}).get('notebook_path')
+            != spec['notebook_path']
+        ):
             raise ValueError('Recovery cannot prove submitted run ownership')
-        if run['state']['life_cycle_state'] not in ('TERMINATED', 'SKIPPED',
-                                                    'INTERNAL_ERROR'):
+        if run['state']['life_cycle_state'] not in (
+            'TERMINATED',
+            'SKIPPED',
+            'INTERNAL_ERROR',
+        ):
             client.api('/api/2.2/jobs/runs/cancel', 'POST', dict(run_id=run_id))
     resources.__exit__()
 
@@ -380,8 +456,7 @@ def recover(root, client, config, *, file_budget=None):
 def main():
     from client import Client, configuration
 
-    parser = argparse.ArgumentParser(
-        description='Recover an owned notebook attempt')
+    parser = argparse.ArgumentParser(description='Recover an owned notebook attempt')
     parser.add_argument('--output-dir', required=True, type=Path)
     args = parser.parse_args()
     config = configuration()

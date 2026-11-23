@@ -50,8 +50,7 @@ class GroupResolverProtocol(Protocol):
         self,
         user_id: str,
         auth_context: Optional[Dict[str, Any]],
-    ) -> ResolvedGroupMembership:
-        ...
+    ) -> ResolvedGroupMembership: ...
 
 
 AUTHORIZATION_DISABLED = '_AUTHORIZATION_DISABLED_'
@@ -60,7 +59,7 @@ AUTHORIZATION_API_KEY = '_AUTHORIZATION_API_KEY_'
 AUTHORIZATION_DIRECT_CONNECT = '_AUTHORIZATION_DIRECT_CONNECT_'
 DIRECT_CONNECT_SESSION_COOKIE = 'kumo_direct_connect_session'
 
-_CACHE_IDENTITY_KEYS = ("auth_source", )
+_CACHE_IDENTITY_KEYS = ('auth_source',)
 
 
 class _AuthorizationMode(Enum):
@@ -82,7 +81,7 @@ class UserAuthorization:
     # Resolved project IDs visible to this user for this request context.
     project_ids: Tuple[str, ...] = ()
     # Human-readable display name.
-    user_name: str = ""
+    user_name: str = ''
 
     # If there was an error logging in the user, it is listed here.
     error: Optional[str] = None
@@ -142,8 +141,8 @@ class UserAuthorization:
         (authentication failed).
         """
         return cls(
-            user_id=UserID(""),
-            access_token="",
+            user_id=UserID(''),
+            access_token='',
             permissions=[],
             error=error,
         )
@@ -188,7 +187,8 @@ class RequestContext:
 
 
 def visible_project_ids_or_none(
-    user_authorization: UserAuthorization, ) -> set[ProjectID] | None:
+    user_authorization: UserAuthorization,
+) -> set[ProjectID] | None:
     """Return the explicit StateDB project scope for a request principal.
 
     ``None`` is reserved for administrators and deliberately means global
@@ -201,8 +201,7 @@ def visible_project_ids_or_none(
 
 
 class Authentication:
-    def __init__(self, settings: AuthenticationSettings,
-                 is_unit_test: bool = False):
+    def __init__(self, settings: AuthenticationSettings, is_unit_test: bool = False):
         self._settings = settings
         self._is_unit_test = is_unit_test
 
@@ -214,22 +213,23 @@ class Authentication:
     ) -> None:
         user_authorization = get_user_authorization_from_request(request)
         if user_authorization.error:
-            raise HTTPException(HTTPStatus.UNAUTHORIZED,
-                                user_authorization.error)
+            raise HTTPException(HTTPStatus.UNAUTHORIZED, user_authorization.error)
         if admin and not user_authorization.is_admin:
-            raise HTTPException(HTTPStatus.FORBIDDEN,
-                                RestStatusCode.AUTH_NOT_ADMIN.value)
+            raise HTTPException(
+                HTTPStatus.FORBIDDEN, RestStatusCode.AUTH_NOT_ADMIN.value
+            )
 
     async def authenticate_request_header(
         self,
         request: Request,
     ) -> None:
-        user_authorization = getattr(request.state, "user_authorization", None)
-        if (user_authorization is not None
-                and user_authorization.access_token == AUTHORIZATION_API_KEY):
+        user_authorization = getattr(request.state, 'user_authorization', None)
+        if (
+            user_authorization is not None
+            and user_authorization.access_token == AUTHORIZATION_API_KEY
+        ):
             if user_authorization.error:
-                raise HTTPException(HTTPStatus.UNAUTHORIZED,
-                                    user_authorization.error)
+                raise HTTPException(HTTPStatus.UNAUTHORIZED, user_authorization.error)
             return
         self._require_direct_connect_request(request)
 
@@ -256,8 +256,9 @@ def get_secret_from_api_key(api_key: str):
     try:
         return ParsedAPIKey.parse(api_key).secret
     except ValueError as error:
-        raise ValueError('The API Key must be of the form '
-                         '<user_hash>:<name>:<secret_value>') from error
+        raise ValueError(
+            'The API Key must be of the form <user_hash>:<name>:<secret_value>'
+        ) from error
 
 
 @measure_blocking_code
@@ -334,8 +335,10 @@ async def _resolve_user_authorization_from_valid_api_key(
             AUTHORIZATION_DISABLED: auth_disabled and not auth_proxied,
             AUTHORIZATION_PROXIED: auth_proxied and not auth_disabled,
         }
-        if (identity.user_id in synthetic_owner_mode_matches
-                and not synthetic_owner_mode_matches[identity.user_id]):
+        if (
+            identity.user_id in synthetic_owner_mode_matches
+            and not synthetic_owner_mode_matches[identity.user_id]
+        ):
             raise HTTPException(
                 HTTPStatus.UNAUTHORIZED,
                 RestStatusCode.AUTH_INVALID_API_KEY.value,
@@ -359,8 +362,7 @@ async def _resolve_user_authorization_from_valid_api_key(
         raise
     except Exception as error:
         log.error(
-            'Failed to resolve owner authorization for API key auth '
-            '(error_type=%s)',
+            'Failed to resolve owner authorization for API key auth (error_type=%s)',
             type(error).__name__,
             exc_info=False,
         )
@@ -380,18 +382,18 @@ async def get_ctx(request: Request) -> RequestContext:
     user_authorization = get_user_authorization_from_request(request)
     auth_settings: AuthenticationSettings = request.state.auth_settings
 
-    if user_authorization.access_token in (AUTHORIZATION_API_KEY,
-                                           AUTHORIZATION_DIRECT_CONNECT):
-        return RequestContext(user_authorization=user_authorization,
-                              trace_id='')
+    if user_authorization.access_token in (
+        AUTHORIZATION_API_KEY,
+        AUTHORIZATION_DIRECT_CONNECT,
+    ):
+        return RequestContext(user_authorization=user_authorization, trace_id='')
     if auth_settings.disable and user_authorization.is_disabled:
-        return RequestContext(user_authorization=user_authorization,
-                              trace_id='')
+        return RequestContext(user_authorization=user_authorization, trace_id='')
     if auth_settings.proxy and user_authorization.is_proxied:
-        return RequestContext(user_authorization=user_authorization,
-                              trace_id='')
-    raise HTTPException(HTTPStatus.UNAUTHORIZED,
-                        RestStatusCode.AUTH_INVALID_TOKEN.value)
+        return RequestContext(user_authorization=user_authorization, trace_id='')
+    raise HTTPException(
+        HTTPStatus.UNAUTHORIZED, RestStatusCode.AUTH_INVALID_TOKEN.value
+    )
 
 
 def _build_auth_context(
@@ -449,11 +451,10 @@ async def _add_projects_to_authorization(
         return user_authorization
 
     try:
-        resolved_projects = await project_resolver.resolve_projects(
-            user_authorization)
+        resolved_projects = await project_resolver.resolve_projects(user_authorization)
     except Exception as exc:
         log.error(
-            "Project resolution failed for user_id=%s: %s",
+            'Project resolution failed for user_id=%s: %s',
             user_authorization.user_id,
             exc,
             exc_info=True,
@@ -499,7 +500,7 @@ async def _add_groups_to_authorization(
         )
     except Exception as exc:
         log.error(
-            "Group resolution failed for user_id=%s (error_type=%s)",
+            'Group resolution failed for user_id=%s (error_type=%s)',
             user_authorization.user_id,
             type(exc).__name__,
             exc_info=False,
@@ -513,7 +514,8 @@ async def _add_groups_to_authorization(
         user_authorization,
         kumo_group_ids=resolved_membership.group_ids,
         external_membership_unavailable=(
-            resolved_membership.external_membership_unavailable),
+            resolved_membership.external_membership_unavailable
+        ),
     )
 
 
@@ -579,12 +581,14 @@ async def authorization_middleware(
             user_authorization = UserAuthorization.not_authorized(e.detail)
         except Exception:
             log.exception(
-                "Unexpected error while resolving Product API key authorization"
+                'Unexpected error while resolving Product API key authorization'
             )
             user_authorization = UserAuthorization.not_authorized(
-                RestStatusCode.AUTH_INVALID_API_KEY.value)
-        return await _call_next_with_user_context(request, call_next,
-                                                  user_authorization)
+                RestStatusCode.AUTH_INVALID_API_KEY.value
+            )
+        return await _call_next_with_user_context(
+            request, call_next, user_authorization
+        )
 
     if auth_disabled:
         user_authorization = await _add_authorization_context(
@@ -595,8 +599,9 @@ async def authorization_middleware(
             auth_disabled=auth_disabled,
             auth_proxied=auth_proxied,
         )
-        return await _call_next_with_user_context(request, call_next,
-                                                  user_authorization)
+        return await _call_next_with_user_context(
+            request, call_next, user_authorization
+        )
     if auth_proxied:
         user_authorization = await _add_authorization_context(
             user_authorization=UserAuthorization.proxied(),
@@ -606,27 +611,32 @@ async def authorization_middleware(
             auth_disabled=auth_disabled,
             auth_proxied=auth_proxied,
         )
-        return await _call_next_with_user_context(request, call_next,
-                                                  user_authorization)
+        return await _call_next_with_user_context(
+            request, call_next, user_authorization
+        )
 
     try:
         if direct_connect_auth_store is None:
-            raise HTTPException(HTTPStatus.UNAUTHORIZED,
-                                RestStatusCode.AUTH_INVALID_TOKEN.value)
+            raise HTTPException(
+                HTTPStatus.UNAUTHORIZED, RestStatusCode.AUTH_INVALID_TOKEN.value
+            )
         session_id = request.cookies.get(DIRECT_CONNECT_SESSION_COOKIE)
         if not session_id:
-            raise HTTPException(HTTPStatus.UNAUTHORIZED,
-                                RestStatusCode.AUTH_INVALID_TOKEN.value)
+            raise HTTPException(
+                HTTPStatus.UNAUTHORIZED, RestStatusCode.AUTH_INVALID_TOKEN.value
+            )
         session = await direct_connect_auth_store.get_session(session_id)
         if session is None or session.expires_time <= now_utc():
             if session is not None:
                 await direct_connect_auth_store.delete_session(session_id)
-            raise HTTPException(HTTPStatus.UNAUTHORIZED,
-                                RestStatusCode.AUTH_INVALID_TOKEN.value)
+            raise HTTPException(
+                HTTPStatus.UNAUTHORIZED, RestStatusCode.AUTH_INVALID_TOKEN.value
+            )
         user = await direct_connect_auth_store.get_user(session.user_id)
         if user is None or user.disabled:
-            raise HTTPException(HTTPStatus.FORBIDDEN,
-                                RestStatusCode.INVALID_PERMISSIONS.value)
+            raise HTTPException(
+                HTTPStatus.FORBIDDEN, RestStatusCode.INVALID_PERMISSIONS.value
+            )
 
         user_authorization = UserAuthorization(
             user_id=UserID(session.user_id),
@@ -645,13 +655,12 @@ async def authorization_middleware(
     except HTTPException as e:
         user_authorization = UserAuthorization.not_authorized(e.detail)
     except Exception:
-        log.exception(
-            "Unexpected error while resolving Direct Connect authorization")
+        log.exception('Unexpected error while resolving Direct Connect authorization')
         user_authorization = UserAuthorization.not_authorized(
-            RestStatusCode.AUTH_INVALID_TOKEN.value)
+            RestStatusCode.AUTH_INVALID_TOKEN.value
+        )
 
-    return await _call_next_with_user_context(request, call_next,
-                                              user_authorization)
+    return await _call_next_with_user_context(request, call_next, user_authorization)
 
 
 async def authorization_middleware_public(
@@ -677,9 +686,11 @@ async def authorization_middleware_public(
     if authorization is None:
         if not auth_disabled:
             user_authorization = UserAuthorization.not_authorized(
-                RestStatusCode.AUTH_INVALID_API_KEY.value)
-            return await _call_next_with_user_context(request, call_next,
-                                                      user_authorization)
+                RestStatusCode.AUTH_INVALID_API_KEY.value
+            )
+            return await _call_next_with_user_context(
+                request, call_next, user_authorization
+            )
         user_authorization = await _add_authorization_context(
             user_authorization=UserAuthorization.disabled_request(),
             group_resolver=group_resolver,
@@ -688,8 +699,9 @@ async def authorization_middleware_public(
             auth_disabled=auth_disabled,
             auth_proxied=auth_proxied,
         )
-        return await _call_next_with_user_context(request, call_next,
-                                                  user_authorization)
+        return await _call_next_with_user_context(
+            request, call_next, user_authorization
+        )
 
     try:
         api_key = authorization
@@ -704,12 +716,12 @@ async def authorization_middleware_public(
     except HTTPException as e:
         user_authorization = UserAuthorization.not_authorized(e.detail)
     except Exception:
-        log.exception("Unexpected error while resolving API key authorization")
+        log.exception('Unexpected error while resolving API key authorization')
         user_authorization = UserAuthorization.not_authorized(
-            RestStatusCode.AUTH_INVALID_API_KEY.value)
+            RestStatusCode.AUTH_INVALID_API_KEY.value
+        )
 
-    return await _call_next_with_user_context(request, call_next,
-                                              user_authorization)
+    return await _call_next_with_user_context(request, call_next, user_authorization)
 
 
 async def resolve_api_key_user_authorization_context(

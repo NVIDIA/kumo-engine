@@ -17,6 +17,7 @@ prove the real FastAPI query-param constraint, which a direct handler call would
 bypass. The negative/zero cases fail against the pre-fix source (200 or 500, no
 ``limit`` validation error) and pass against the fix.
 """
+
 from http import HTTPStatus
 
 import pytest
@@ -26,10 +27,10 @@ from kumoapi.data_source import DEFAULT_PROJECT_ID
 # The four public job-list collection routes (mounted under /v1). Every one
 # accepts the same ``limit`` pagination param and must validate it identically.
 _JOB_LIST_PATHS = [
-    "/v1/training_jobs",
-    "/v1/gentraintable_jobs",
-    "/v1/genpredtable_jobs",
-    "/v1/prediction_jobs",
+    '/v1/training_jobs',
+    '/v1/gentraintable_jobs',
+    '/v1/genpredtable_jobs',
+    '/v1/prediction_jobs',
 ]
 
 
@@ -40,59 +41,61 @@ def _limit_validation_errors(response) -> list:
     """
     if response.status_code != HTTPStatus.UNPROCESSABLE_ENTITY:
         return []
-    detail = response.json().get("detail", [])
+    detail = response.json().get('detail', [])
     if not isinstance(detail, list):
         return []
-    return [d for d in detail if d.get("loc") == ["query", "limit"]]
+    return [d for d in detail if d.get('loc') == ['query', 'limit']]
 
 
-@pytest.mark.parametrize("path", _JOB_LIST_PATHS)
-@pytest.mark.parametrize("bad_limit", [-1, -5, 0])
+@pytest.mark.parametrize('path', _JOB_LIST_PATHS)
+@pytest.mark.parametrize('bad_limit', [-1, -5, 0])
 def test_job_list_rejects_non_positive_limit_with_422(
-        public_api_client: TestClient, path: str, bad_limit: int) -> None:
+    public_api_client: TestClient, path: str, bad_limit: int
+) -> None:
     response = public_api_client.get(
-        path, params={
-            "project_id": DEFAULT_PROJECT_ID,
-            "limit": bad_limit
-        })
+        path, params={'project_id': DEFAULT_PROJECT_ID, 'limit': bad_limit}
+    )
 
     # Fixed contract: a clean 422 (not a silent 200 slice, not a raw 500).
     assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY, (
-        f"{path}?limit={bad_limit} expected 422, got "
-        f"{response.status_code}: {response.text}")
+        f'{path}?limit={bad_limit} expected 422, got '
+        f'{response.status_code}: {response.text}'
+    )
 
     limit_errors = _limit_validation_errors(response)
     assert len(limit_errors) == 1, (
-        f"{path}?limit={bad_limit} expected exactly one limit-scoped "
-        f"validation error, got: {response.text}")
-    assert "greater than or equal to 1" in limit_errors[0]["msg"], (
-        f"{path}?limit={bad_limit} 422 message should name the >=1 "
-        f"constraint, got: {limit_errors[0]}")
+        f'{path}?limit={bad_limit} expected exactly one limit-scoped '
+        f'validation error, got: {response.text}'
+    )
+    assert 'greater than or equal to 1' in limit_errors[0]['msg'], (
+        f'{path}?limit={bad_limit} 422 message should name the >=1 '
+        f'constraint, got: {limit_errors[0]}'
+    )
 
 
-@pytest.mark.parametrize("path", _JOB_LIST_PATHS)
-def test_job_list_accepts_positive_limit(public_api_client: TestClient,
-                                         path: str) -> None:
+@pytest.mark.parametrize('path', _JOB_LIST_PATHS)
+def test_job_list_accepts_positive_limit(
+    public_api_client: TestClient, path: str
+) -> None:
     # limit=1 is the ge=1 boundary; larger values exercise the same validation
     # branch. The request must clear the constraint and succeed end to end.
     response = public_api_client.get(
-        path, params={
-            "project_id": DEFAULT_PROJECT_ID,
-            "limit": 1
-        })
+        path, params={'project_id': DEFAULT_PROJECT_ID, 'limit': 1}
+    )
 
     assert response.status_code == HTTPStatus.OK, (
-        f"{path}?limit=1 expected 200, got "
-        f"{response.status_code}: {response.text}")
+        f'{path}?limit=1 expected 200, got {response.status_code}: {response.text}'
+    )
 
 
-@pytest.mark.parametrize("path", _JOB_LIST_PATHS)
-def test_job_list_accepts_omitted_limit(public_api_client: TestClient,
-                                        path: str) -> None:
+@pytest.mark.parametrize('path', _JOB_LIST_PATHS)
+def test_job_list_accepts_omitted_limit(
+    public_api_client: TestClient, path: str
+) -> None:
     # Omitting ``limit`` entirely stays valid (default None -> return all).
-    response = public_api_client.get(path,
-                                     params={"project_id": DEFAULT_PROJECT_ID})
+    response = public_api_client.get(path, params={'project_id': DEFAULT_PROJECT_ID})
 
     assert response.status_code == HTTPStatus.OK, (
-        f"{path} with no limit expected 200, got "
-        f"{response.status_code}: {response.text}")
+        f'{path} with no limit expected 200, got '
+        f'{response.status_code}: {response.text}'
+    )

@@ -42,12 +42,11 @@ def _fake_published_bundle(root: Path, metrics: Optional[dict] = None) -> Path:
     (bundle / 'model').mkdir(parents=True)
     (bundle / 'model' / 'config.json').write_text('{}')
     (bundle / 'metrics.json').write_text(
-        json.dumps({'auc': 0.9} if metrics is None else metrics))
+        json.dumps({'auc': 0.9} if metrics is None else metrics)
+    )
     manifest = {
-        'schema_version':
-        1,
-        'policy':
-        'vital-training-artifacts-v1',
+        'schema_version': 1,
+        'policy': 'vital-training-artifacts-v1',
         'excluded_by_default': [],
         'artifacts': [
             {
@@ -57,14 +56,12 @@ def _fake_published_bundle(root: Path, metrics: Optional[dict] = None) -> Path:
                 'sha256': hashlib.sha256(b'{}').hexdigest(),
             },
             {
-                'role':
-                'metrics',
-                'relative_path':
-                'metrics.json',
+                'role': 'metrics',
+                'relative_path': 'metrics.json',
                 'size_bytes': (bundle / 'metrics.json').stat().st_size,
-                'sha256':
-                hashlib.sha256(
-                    (bundle / 'metrics.json').read_bytes()).hexdigest(),
+                'sha256': hashlib.sha256(
+                    (bundle / 'metrics.json').read_bytes()
+                ).hexdigest(),
             },
         ],
     }
@@ -76,6 +73,7 @@ class _FakeSink:
     r"""A minimal `ModelPublishingSink`/`ModelFetchingSink` stand-in: publish
     copies the bundle into an in-memory dict, fetch copies it back out.
     """
+
     def __init__(self) -> None:
         self.published: dict = {}
 
@@ -96,8 +94,9 @@ class _FakeSink:
         assert location is not None
         key = f'{location.model_name}@{location.version or "latest"}'
         self.published[key] = bundle_dir
-        return PublishedModel(name=location.model_name, version='V1',
-                              uri=f'fake://{key}')
+        return PublishedModel(
+            name=location.model_name, version='V1', uri=f'fake://{key}'
+        )
 
     def fetch_model(
         self,
@@ -111,8 +110,9 @@ class _FakeSink:
         assert location is not None
         key = f'{location.model_name}@{location.version or "latest"}'
         shutil.copytree(self.published[key], local_dir, dirs_exist_ok=True)
-        return PublishedModel(name=location.model_name, version='V1',
-                              uri=f'fake://{key}')
+        return PublishedModel(
+            name=location.model_name, version='V1', uri=f'fake://{key}'
+        )
 
 
 class _FakeConnector:
@@ -132,9 +132,13 @@ def test_write_then_read_training_spec_round_trips(tmp_path: Path) -> None:
     bundle = _fake_published_bundle(tmp_path)
     model_plan = ModelPlan()
 
-    write_training_spec(bundle, predictive_query='PREDICT COUNT(*)',
-                        model_plan=model_plan, snapshot_id='snap-123',
-                        training_table_generation=_generation_plan())
+    write_training_spec(
+        bundle,
+        predictive_query='PREDICT COUNT(*)',
+        model_plan=model_plan,
+        snapshot_id='snap-123',
+        training_table_generation=_generation_plan(),
+    )
 
     assert (bundle / 'training-spec.json').is_file()
     manifest = json.loads((bundle / MANIFEST_FILE).read_text())
@@ -143,7 +147,8 @@ def test_write_then_read_training_spec_round_trips(tmp_path: Path) -> None:
 
 
 def test_training_spec_manifest_update_is_atomic_and_retryable(
-        tmp_path: Path, monkeypatch) -> None:
+    tmp_path: Path, monkeypatch
+) -> None:
     import kumo_core.io.filesystem as fs_module
 
     bundle = _fake_published_bundle(tmp_path)
@@ -160,44 +165,55 @@ def test_training_spec_manifest_update_is_atomic_and_retryable(
 
     monkeypatch.setattr(fs_module.os, 'replace', fail_first_manifest_replace)
     with pytest.raises(OSError, match='interrupted manifest commit'):
-        write_training_spec(bundle, predictive_query='PREDICT COUNT(*)',
-                            model_plan=ModelPlan(), snapshot_id='snap-123',
-                            training_table_generation=_generation_plan())
+        write_training_spec(
+            bundle,
+            predictive_query='PREDICT COUNT(*)',
+            model_plan=ModelPlan(),
+            snapshot_id='snap-123',
+            training_table_generation=_generation_plan(),
+        )
 
     # Each destination is replaced as a complete file. A failed manifest
     # commit leaves the old valid manifest and no abandoned temporary file.
     assert (bundle / MANIFEST_FILE).read_bytes() == original_manifest
-    assert json.loads(
-        (bundle / SPEC_FILE).read_text())['snapshot_id'] == 'snap-123'
+    assert json.loads((bundle / SPEC_FILE).read_text())['snapshot_id'] == 'snap-123'
     assert not list(bundle.glob(f'.{MANIFEST_FILE}.*'))
     with pytest.raises(ValueError, match='integrity-covered'):
         Trainer.load(bundle)
 
-    write_training_spec(bundle, predictive_query='PREDICT COUNT(*)',
-                        model_plan=ModelPlan(), snapshot_id='snap-123',
-                        training_table_generation=_generation_plan())
+    write_training_spec(
+        bundle,
+        predictive_query='PREDICT COUNT(*)',
+        model_plan=ModelPlan(),
+        snapshot_id='snap-123',
+        training_table_generation=_generation_plan(),
+    )
     manifest = json.loads((bundle / MANIFEST_FILE).read_text())
     entries = [
-        entry for entry in manifest['artifacts']
-        if entry['relative_path'] == SPEC_FILE
+        entry for entry in manifest['artifacts'] if entry['relative_path'] == SPEC_FILE
     ]
     assert len(entries) == 1
     assert entries[0]['size_bytes'] == (bundle / SPEC_FILE).stat().st_size
-    assert entries[0]['sha256'] == hashlib.sha256(
-        (bundle / SPEC_FILE).read_bytes()).hexdigest()
+    assert (
+        entries[0]['sha256']
+        == hashlib.sha256((bundle / SPEC_FILE).read_bytes()).hexdigest()
+    )
     assert Trainer.load(bundle)._snapshot_id == 'snap-123'
 
 
 def test_load_rejects_unlisted_training_spec(tmp_path: Path) -> None:
     bundle = _fake_published_bundle(tmp_path)
-    write_training_spec(bundle, predictive_query='PREDICT COUNT(*)',
-                        model_plan=ModelPlan(), snapshot_id='snap-123',
-                        training_table_generation=_generation_plan())
+    write_training_spec(
+        bundle,
+        predictive_query='PREDICT COUNT(*)',
+        model_plan=ModelPlan(),
+        snapshot_id='snap-123',
+        training_table_generation=_generation_plan(),
+    )
     manifest_path = bundle / MANIFEST_FILE
     manifest = json.loads(manifest_path.read_text())
     manifest['artifacts'] = [
-        entry for entry in manifest['artifacts']
-        if entry['role'] != 'training_spec'
+        entry for entry in manifest['artifacts'] if entry['role'] != 'training_spec'
     ]
     manifest_path.write_text(json.dumps(manifest))
 
@@ -208,14 +224,19 @@ def test_load_rejects_unlisted_training_spec(tmp_path: Path) -> None:
 
 
 def test_finish_fit_persists_spec_without_export_before_exposing_state(
-        tmp_path: Path) -> None:
+    tmp_path: Path,
+) -> None:
     bundle = _fake_published_bundle(tmp_path)
     trainer = Trainer(ModelPlan())
-    result = TrainingResult({'auc': .9}, {}, bundle)
+    result = TrainingResult({'auc': 0.9}, {}, bundle)
 
     finished = trainer._finish_fit(
-        result, predictive_query='PREDICT COUNT(*)', snapshot_id='snap-123',
-        training_table_generation=_generation_plan(), export_config=None)
+        result,
+        predictive_query='PREDICT COUNT(*)',
+        snapshot_id='snap-123',
+        training_table_generation=_generation_plan(),
+        export_config=None,
+    )
 
     assert (bundle / SPEC_FILE).is_file()
     assert finished.bundle_id == Trainer.load(bundle).result.id
@@ -225,17 +246,24 @@ def test_finish_fit_persists_spec_without_export_before_exposing_state(
     assert result.published_model is None
 
 
-@pytest.mark.parametrize('path,location', [
-    ('models/churn/v1', None),
-    (None, ModelRegistryLocation('CHURN_GNN')),
-])
+@pytest.mark.parametrize(
+    'path,location',
+    [
+        ('models/churn/v1', None),
+        (None, ModelRegistryLocation('CHURN_GNN')),
+    ],
+)
 def test_finish_fit_forwards_publication_details_and_returns_assigned_version(
-        tmp_path, path, location):
+    tmp_path, path, location
+):
     bundle = _fake_published_bundle(tmp_path)
     trainer = Trainer(ModelPlan())
-    original = TrainingResult({'val_auroc': .9, 'test_auroc': .8}, {}, bundle)
-    published = PublishedModel(name='CHURN_GNN', version='assigned-v7',
-                               uri='provider://models/CHURN_GNN/assigned-v7')
+    original = TrainingResult({'val_auroc': 0.9, 'test_auroc': 0.8}, {}, bundle)
+    published = PublishedModel(
+        name='CHURN_GNN',
+        version='assigned-v7',
+        uri='provider://models/CHURN_GNN/assigned-v7',
+    )
     calls = []
 
     class Sink:
@@ -254,20 +282,30 @@ def test_finish_fit_forwards_publication_details_and_returns_assigned_version(
 
     connector = SimpleNamespace(sink_backend=Sink())
     result = trainer._finish_fit(
-        original, predictive_query='PREDICT COUNT(*)', snapshot_id='snap-123',
+        original,
+        predictive_query='PREDICT COUNT(*)',
+        snapshot_id='snap-123',
         training_table_generation=_generation_plan(),
-        export_config=SimpleNamespace(connector=connector, path=path,
-                                      location=location, serving_snapshot=None,
-                                      serving_options=None))
+        export_config=SimpleNamespace(
+            connector=connector,
+            path=path,
+            location=location,
+            serving_snapshot=None,
+            serving_options=None,
+        ),
+    )
 
     assert len(calls) == 1
     assert calls[0][0] is connector
     assert calls[0][1] == str(bundle)
     assert calls[0][2]['path'] == path
     assert calls[0][2]['location'] == location
-    assert calls[0][2]['metrics'] == {'test/auroc': .8}
-    assert {key: value for key, value in calls[0][2]['metadata'].items()
-            if key.startswith('kumo_')} == {'kumo_bundle_id': result.bundle_id}
+    assert calls[0][2]['metrics'] == {'test/auroc': 0.8}
+    assert {
+        key: value
+        for key, value in calls[0][2]['metadata'].items()
+        if key.startswith('kumo_')
+    } == {'kumo_bundle_id': result.bundle_id}
     assert result.published_model is published
     assert result.metrics == original.metrics
     assert result.bundle_dir == bundle
@@ -276,8 +314,9 @@ def test_finish_fit_forwards_publication_details_and_returns_assigned_version(
 
 
 @pytest.mark.parametrize('failure', ['metadata', 'export'])
-def test_finish_fit_failure_does_not_expose_state(tmp_path: Path, monkeypatch,
-                                                  failure: str) -> None:
+def test_finish_fit_failure_does_not_expose_state(
+    tmp_path: Path, monkeypatch, failure: str
+) -> None:
     import kumo.engine.trainer.trainer as trainer_module
 
     bundle = _fake_published_bundle(tmp_path)
@@ -286,8 +325,10 @@ def test_finish_fit_failure_does_not_expose_state(tmp_path: Path, monkeypatch,
     export_config = None
     if failure == 'metadata':
         monkeypatch.setattr(
-            trainer_module, 'write_training_spec', lambda *args, **kwargs:
-            (_ for _ in ()).throw(OSError('disk full')))
+            trainer_module,
+            'write_training_spec',
+            lambda *args, **kwargs: (_ for _ in ()).throw(OSError('disk full')),
+        )
     else:
 
         class FailingSink:
@@ -296,14 +337,21 @@ def test_finish_fit_failure_does_not_expose_state(tmp_path: Path, monkeypatch,
                 raise OSError('registry unavailable')
 
         export_config = SimpleNamespace(
-            connector=SimpleNamespace(sink_backend=FailingSink()), path='model',
-            location=None, serving_snapshot=None, serving_options=None)
+            connector=SimpleNamespace(sink_backend=FailingSink()),
+            path='model',
+            location=None,
+            serving_snapshot=None,
+            serving_options=None,
+        )
 
     with pytest.raises(OSError):
-        trainer._finish_fit(result, predictive_query='PREDICT COUNT(*)',
-                            snapshot_id='snap-123',
-                            training_table_generation=_generation_plan(),
-                            export_config=export_config)
+        trainer._finish_fit(
+            result,
+            predictive_query='PREDICT COUNT(*)',
+            snapshot_id='snap-123',
+            training_table_generation=_generation_plan(),
+            export_config=export_config,
+        )
     assert trainer._training_result is None
     assert trainer._snapshot_id is None
     assert trainer._training_query is None
@@ -311,12 +359,17 @@ def test_finish_fit_failure_does_not_expose_state(tmp_path: Path, monkeypatch,
 
 @pytest.mark.parametrize('accelerator', ['cpu', 'gpu', 'mps', 'auto'])
 def test_load_reconstructs_trainer_from_published_bundle(
-        tmp_path: Path, accelerator: str) -> None:
+    tmp_path: Path, accelerator: str
+) -> None:
     bundle = _fake_published_bundle(tmp_path)
     model_plan = ModelPlan()
-    write_training_spec(bundle, predictive_query='PREDICT COUNT(*)',
-                        model_plan=model_plan, snapshot_id='snap-123',
-                        training_table_generation=_generation_plan())
+    write_training_spec(
+        bundle,
+        predictive_query='PREDICT COUNT(*)',
+        model_plan=model_plan,
+        snapshot_id='snap-123',
+        training_table_generation=_generation_plan(),
+    )
 
     loaded = Trainer.load(bundle, accelerator=accelerator)
     assert loaded._accelerator == accelerator
@@ -325,8 +378,7 @@ def test_load_reconstructs_trainer_from_published_bundle(
     assert loaded._training_result is not None
     assert loaded._training_result.metrics == {'auc': 0.9}
     assert 'trainer_config' in loaded._training_result.artifact_paths
-    assert Path(
-        loaded._training_result.artifact_paths['trainer_config']).is_file()
+    assert Path(loaded._training_result.artifact_paths['trainer_config']).is_file()
     assert 'training_spec' not in loaded._training_result.artifact_paths
     assert loaded._training_result.bundle_dir == bundle.resolve()
     assert loaded.training_table_generation_plan == _generation_plan()
@@ -334,18 +386,23 @@ def test_load_reconstructs_trainer_from_published_bundle(
 
 @pytest.mark.parametrize('accelerator', ['cpu', 'gpu', 'mps', 'auto'])
 def test_load_from_connector_fetches_then_uses_local_loader(
-        tmp_path: Path, accelerator: str) -> None:
+    tmp_path: Path, accelerator: str
+) -> None:
     bundle = _fake_published_bundle(tmp_path / 'source')
-    write_training_spec(bundle, predictive_query='PREDICT COUNT(*)',
-                        model_plan=ModelPlan(), snapshot_id='snap-123',
-                        training_table_generation=_generation_plan())
+    write_training_spec(
+        bundle,
+        predictive_query='PREDICT COUNT(*)',
+        model_plan=ModelPlan(),
+        snapshot_id='snap-123',
+        training_table_generation=_generation_plan(),
+    )
     sink = _FakeSink()
     location = ModelRegistryLocation(model_name='CHURN_GNN')
     sink.publish_model(None, str(bundle), location=location)
 
-    loaded = Trainer.load_from_connector(_FakeConnector(sink),
-                                         location=location,
-                                         accelerator=accelerator)
+    loaded = Trainer.load_from_connector(
+        _FakeConnector(sink), location=location, accelerator=accelerator
+    )
     assert loaded._accelerator == accelerator
 
     assert loaded._snapshot_id == 'snap-123'
@@ -353,22 +410,39 @@ def test_load_from_connector_fetches_then_uses_local_loader(
     assert loaded._training_result.bundle_dir != bundle.resolve()
     assert loaded._training_result.bundle_dir.name == 'fetched-model'
     assert loaded.result.registered_model == PublishedModel(
-        name='CHURN_GNN', version='V1', uri='fake://CHURN_GNN@latest',
-        metrics={'auc': 0.9})
+        name='CHURN_GNN',
+        version='V1',
+        uri='fake://CHURN_GNN@latest',
+        metrics={'auc': 0.9},
+    )
     assert loaded.result.registered_alias is None
 
 
-@pytest.mark.parametrize('history', [None, {
-    'trial_progress': {'0': {'metrics': {
-        '0': {'train_metrics': {'train_loss': .8}},
-        '1': {'train_metrics': {'train_loss': .5}},
-    }}}
-}])
+@pytest.mark.parametrize(
+    'history',
+    [
+        None,
+        {
+            'trial_progress': {
+                '0': {
+                    'metrics': {
+                        '0': {'train_metrics': {'train_loss': 0.8}},
+                        '1': {'train_metrics': {'train_loss': 0.5}},
+                    }
+                }
+            }
+        },
+    ],
+)
 def test_local_bundle_reloads_in_a_fresh_process(tmp_path: Path, history) -> None:
     bundle = _fake_published_bundle(tmp_path)
-    write_training_spec(bundle, predictive_query='PREDICT COUNT(*)',
-                        model_plan=ModelPlan(), snapshot_id='snap-123',
-                        training_table_generation=_generation_plan())
+    write_training_spec(
+        bundle,
+        predictive_query='PREDICT COUNT(*)',
+        model_plan=ModelPlan(),
+        snapshot_id='snap-123',
+        training_table_generation=_generation_plan(),
+    )
     if history is not None:
         (bundle / 'metric-history.json').write_text(json.dumps(history))
         add_bundle_file(bundle, 'metric_history', 'metric-history.json')
@@ -389,16 +463,18 @@ print(json.dumps({
     env = dict(os.environ)
     env['PYTHONPATH'] = os.pathsep.join(str(item) for item in sys.path)
     completed = subprocess.run(
-        [sys.executable, '-c', code, str(bundle)], check=True,
-        capture_output=True, text=True, env=env)
+        [sys.executable, '-c', code, str(bundle)],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
     restored = json.loads(completed.stdout)
     assert restored == {
         'metric_history': history,
         'snapshot_id': 'snap-123',
         'query': 'PREDICT COUNT(*)',
-        'metrics': {
-            'auc': .9
-        },
+        'metrics': {'auc': 0.9},
         'bundle_dir': str(bundle.resolve()),
     }
 
@@ -409,8 +485,10 @@ def test_connector_load_requires_exactly_one_of_path_or_location() -> None:
         Trainer.load_from_connector(connector)
     with pytest.raises(ValueError, match='Exactly one'):
         Trainer.load_from_connector(
-            connector, path='s3://bucket/model',
-            location=ModelRegistryLocation(model_name='m'))
+            connector,
+            path='s3://bucket/model',
+            location=ModelRegistryLocation(model_name='m'),
+        )
 
 
 def test_load_refuses_a_connector_without_a_fetching_sink() -> None:
@@ -421,27 +499,34 @@ def test_load_refuses_a_connector_without_a_fetching_sink() -> None:
     connector = _FakeConnector(_WriteOnlySink())
     with pytest.raises(TypeError, match='ModelFetchingSink'):
         Trainer.load_from_connector(
-            connector, location=ModelRegistryLocation(model_name='m'))
+            connector, location=ModelRegistryLocation(model_name='m')
+        )
 
 
-@pytest.mark.parametrize('defect', [
-    'checkpoint_contents',
-    'declared_size',
-    'training_spec_contents',
-    'parent_path',
-    'absolute_path',
-    'artifact_symlink',
-    'spec_symlink',
-])
-def test_load_verifies_bundle_before_reading_spec(tmp_path, monkeypatch,
-                                                  defect):
+@pytest.mark.parametrize(
+    'defect',
+    [
+        'checkpoint_contents',
+        'declared_size',
+        'training_spec_contents',
+        'parent_path',
+        'absolute_path',
+        'artifact_symlink',
+        'spec_symlink',
+    ],
+)
+def test_load_verifies_bundle_before_reading_spec(tmp_path, monkeypatch, defect):
     import importlib
 
     trainer_module = importlib.import_module('kumo.engine.trainer.trainer')
     bundle = _fake_published_bundle(tmp_path)
-    write_training_spec(bundle, predictive_query='PREDICT COUNT(*)',
-                        model_plan=ModelPlan(), snapshot_id='snap-123',
-                        training_table_generation=_generation_plan())
+    write_training_spec(
+        bundle,
+        predictive_query='PREDICT COUNT(*)',
+        model_plan=ModelPlan(),
+        snapshot_id='snap-123',
+        training_table_generation=_generation_plan(),
+    )
     manifest_path = bundle / MANIFEST_FILE
     manifest = json.loads(manifest_path.read_text())
     entry = manifest['artifacts'][0]
@@ -473,49 +558,43 @@ def test_load_verifies_bundle_before_reading_spec(tmp_path, monkeypatch,
         def fetch_model(self, connector, local_dir, **kwargs):
             # Preserve symlinks so this also covers a fetching plugin which
             # has already materialized an escaping link.
-            shutil.copytree(bundle, local_dir, dirs_exist_ok=True,
-                            symlinks=True)
-            return PublishedModel(name='CHURN_GNN', version='V1',
-                                  uri='fake://CHURN_GNN@V1')
+            shutil.copytree(bundle, local_dir, dirs_exist_ok=True, symlinks=True)
+            return PublishedModel(
+                name='CHURN_GNN', version='V1', uri='fake://CHURN_GNN@V1'
+            )
 
     def must_not_parse(_bundle):
         pytest.fail('training spec must not be parsed before bundle validation')
 
     monkeypatch.setattr(trainer_module, 'read_training_spec', must_not_parse)
-    with pytest.raises(ValueError,
-                       match=('digest|size|absolute path|below the bundle')):
+    with pytest.raises(
+        ValueError, match=('digest|size|absolute path|below the bundle')
+    ):
         Trainer.load_from_connector(
             _FakeConnector(ExistingBundleSink()),
-            location=ModelRegistryLocation(model_name='CHURN_GNN'))
+            location=ModelRegistryLocation(model_name='CHURN_GNN'),
+        )
 
 
 @pytest.fixture
 def snapshot(tmp_path: Path) -> GraphSnapshot:
     config = {
-        'tables': [{
-            'table_name':
-            'users',
-            'source_table_name':
-            'db.schema.users',
-            'pkey': {
-                'name': 'id',
-                'dtype': 'int64',
-                'stype': 'ID'
-            },
-            'cols': [{
-                'name': 'label',
-                'dtype': 'bool',
-                'stype': 'categorical'
-            }],
-            'fkeys': [],
-        }]
+        'tables': [
+            {
+                'table_name': 'users',
+                'source_table_name': 'db.schema.users',
+                'pkey': {'name': 'id', 'dtype': 'int64', 'stype': 'ID'},
+                'cols': [{'name': 'label', 'dtype': 'bool', 'stype': 'categorical'}],
+                'fkeys': [],
+            }
+        ]
     }
     return GraphSnapshot('snap-123', tmp_path / 'index', config)
 
 
-def test_predict_works_after_load_without_refitting(snapshot: GraphSnapshot,
-                                                    tmp_path: Path,
-                                                    monkeypatch) -> None:
+def test_predict_works_after_load_without_refitting(
+    snapshot: GraphSnapshot, tmp_path: Path, monkeypatch
+) -> None:
     r"""The scenario `Trainer.load` exists for: publish, restart the
     process (a fresh `Trainer.load(...)` call, no `_training_query` carried
     over from an in-memory `fit()`), then `predict()` -- without another
@@ -534,12 +613,15 @@ def test_predict_works_after_load_without_refitting(snapshot: GraphSnapshot,
 
     query = 'PREDICT users.label FOR EACH users.id'
     bundle = _fake_published_bundle(tmp_path / 'src')
-    write_training_spec(bundle, predictive_query=query, model_plan=ModelPlan(),
-                        snapshot_id=snapshot.id,
-                        training_table_generation=_generation_plan())
+    write_training_spec(
+        bundle,
+        predictive_query=query,
+        model_plan=ModelPlan(),
+        snapshot_id=snapshot.id,
+        training_table_generation=_generation_plan(),
+    )
     trainer = Trainer.load(bundle)
-    monkeypatch.setattr(type(trainer), 'scratch_dir',
-                        property(lambda _: tmp_path))
+    monkeypatch.setattr(type(trainer), 'scratch_dir', property(lambda _: tmp_path))
 
     @dataclass(frozen=True)
     class _TaskDataset:
@@ -552,23 +634,32 @@ def test_predict_works_after_load_without_refitting(snapshot: GraphSnapshot,
         lambda **_: _TaskDataset(),
     )
     out_sink = SimpleNamespace(write_files=lambda *a, **k: None)
-    output = PredictionOutputConfig(SimpleNamespace(sink_backend=out_sink),
-                                    ApiType.PREDICTIONS, 'out')
+    output = PredictionOutputConfig(
+        SimpleNamespace(sink_backend=out_sink), ApiType.PREDICTIONS, 'out'
+    )
     monkeypatch.setattr(
-        'kumo_core.prediction.materialize_prediction_task', lambda *a, **k:
-        SimpleNamespace(manifest_path='task', bundle_dir='bundle'))
-    monkeypatch.setattr('kumo.engine.trainer.trainer._stage_model_bundle',
-                        lambda *a: tmp_path)
-    monkeypatch.setattr('kumo.engine.trainer.trainer.bundle_task_options',
-                        lambda *a: {'lag_timesteps': 0})
+        'kumo_core.prediction.materialize_prediction_task',
+        lambda *a, **k: SimpleNamespace(manifest_path='task', bundle_dir='bundle'),
+    )
+    monkeypatch.setattr(
+        'kumo.engine.trainer.trainer._stage_model_bundle', lambda *a: tmp_path
+    )
+    monkeypatch.setattr(
+        'kumo.engine.trainer.trainer.bundle_task_options',
+        lambda *a: {'lag_timesteps': 0},
+    )
     (tmp_path / 'config.json').write_text('{}')
     monkeypatch.setattr(
-        DiskgraphTaskManifest, 'load', lambda *a: SimpleNamespace(
-            task_type='binary_classification', stage_counts={'predict': 1}))
-    monkeypatch.setattr(ResolvedNumericalTask, 'from_manifest',
-                        lambda *a, **k: None)
-    monkeypatch.setattr('kumo_core.train.diskgraph_nested_trainer.load_encoders',
-                        lambda *a: None)
+        DiskgraphTaskManifest,
+        'load',
+        lambda *a: SimpleNamespace(
+            task_type='binary_classification', stage_counts={'predict': 1}
+        ),
+    )
+    monkeypatch.setattr(ResolvedNumericalTask, 'from_manifest', lambda *a, **k: None)
+    monkeypatch.setattr(
+        'kumo_core.train.diskgraph_nested_trainer.load_encoders', lambda *a: None
+    )
 
     def fake_predict(**kwargs) -> None:
         from kumo_core.train.io import StreamingFrameWriter
@@ -577,8 +668,10 @@ def test_predict_works_after_load_without_refitting(snapshot: GraphSnapshot,
         worker = kwargs['partition_id']
         writer = StreamingFrameWriter(
             str(
-                Path(kwargs['output_dir']) / kind.output_file_name /
-                f'part-{worker:05d}'),
+                Path(kwargs['output_dir'])
+                / kind.output_file_name
+                / f'part-{worker:05d}'
+            ),
             max_file_size=1 << 20,
             max_buffer_size=1 << 20,
             index=False,
@@ -586,42 +679,66 @@ def test_predict_works_after_load_without_refitting(snapshot: GraphSnapshot,
         )
         with writer:
             writer.write(
-                pd.DataFrame({
-                    'True_PROB': [.8],
-                    'TARGET_PRED': [True],
-                }))
-        kwargs['artifact_stats_collector'].add_partition(
-            worker, {kind: writer.stats})
+                pd.DataFrame(
+                    {
+                        'True_PROB': [0.8],
+                        'TARGET_PRED': [True],
+                    }
+                )
+            )
+        kwargs['artifact_stats_collector'].add_partition(worker, {kind: writer.stats})
 
-    monkeypatch.setattr(DiskgraphNestedTrainer, 'load',
-                        lambda task, *a, **k: SimpleNamespace(task=task, predict=fake_predict))
+    monkeypatch.setattr(
+        DiskgraphNestedTrainer,
+        'load',
+        lambda task, *a, **k: SimpleNamespace(task=task, predict=fake_predict),
+    )
 
-    result = trainer.predict(table, snapshot=snapshot, output_config=output,
-                             binary_classification_threshold=.5)
+    result = trainer.predict(
+        table,
+        snapshot=snapshot,
+        output_config=output,
+        binary_classification_threshold=0.5,
+    )
 
     assert result.frame['TARGET_PRED'].tolist() == [True]
 
 
 def _export(sink, bundle, location):
     return Trainer(ModelPlan())._finish_fit(
-        TrainingResult({}, {}, bundle), predictive_query='PREDICT COUNT(*)',
-        snapshot_id='snap-123', training_table_generation=_generation_plan(),
+        TrainingResult({}, {}, bundle),
+        predictive_query='PREDICT COUNT(*)',
+        snapshot_id='snap-123',
+        training_table_generation=_generation_plan(),
         export_config=SimpleNamespace(
-            connector=SimpleNamespace(sink_backend=sink), path=None,
-            location=location, serving_snapshot=None, serving_options=None))
+            connector=SimpleNamespace(sink_backend=sink),
+            path=None,
+            location=location,
+            serving_snapshot=None,
+            serving_options=None,
+        ),
+    )
 
 
 def _specced_bundle(tmp_path: Path, metrics: Optional[dict] = None) -> Path:
     bundle = _fake_published_bundle(tmp_path, metrics)
-    write_training_spec(bundle, predictive_query='PREDICT COUNT(*)',
-                        model_plan=ModelPlan(), snapshot_id='snap-123',
-                        training_table_generation=_generation_plan())
+    write_training_spec(
+        bundle,
+        predictive_query='PREDICT COUNT(*)',
+        model_plan=ModelPlan(),
+        snapshot_id='snap-123',
+        training_table_generation=_generation_plan(),
+    )
     return bundle
 
 
 class _AliasingSink(_FakeSink):
-    def __init__(self, recorded: Optional[str] = None, fail: bool = False,
-                 metrics: Optional[dict] = None) -> None:
+    def __init__(
+        self,
+        recorded: Optional[str] = None,
+        fail: bool = False,
+        metrics: Optional[dict] = None,
+    ) -> None:
         super().__init__()
         self.recorded = recorded
         self.fail = fail
@@ -634,26 +751,38 @@ class _AliasingSink(_FakeSink):
         self.aliases[alias] = location.version
 
     def fetch_model(self, connector, local_dir, **kwargs) -> PublishedModel:
-        shutil.copytree(self.published['CHURN_GNN@latest'], local_dir,
-                        dirs_exist_ok=True)
-        return PublishedModel(name='CHURN_GNN', version='V1', uri='fake://',
-                              metadata={'kumo_bundle_id': self.recorded},
-                              metrics=self.metrics)
+        shutil.copytree(
+            self.published['CHURN_GNN@latest'], local_dir, dirs_exist_ok=True
+        )
+        return PublishedModel(
+            name='CHURN_GNN',
+            version='V1',
+            uri='fake://',
+            metadata={'kumo_bundle_id': self.recorded},
+            metrics=self.metrics,
+        )
 
 
-@pytest.mark.parametrize('sink,warning', [
-    (_AliasingSink(), None),
-    (_AliasingSink(fail=True), 'registry unavailable'),
-    (_FakeSink(), 'cannot set model aliases'),
-])
+@pytest.mark.parametrize(
+    'sink,warning',
+    [
+        (_AliasingSink(), None),
+        (_AliasingSink(fail=True), 'registry unavailable'),
+        (_FakeSink(), 'cannot set model aliases'),
+    ],
+)
 def test_export_with_alias_publishes_then_sets_it_best_effort(
-        tmp_path: Path, sink, warning) -> None:
+    tmp_path: Path, sink, warning
+) -> None:
     import warnings
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter('always')
-        result = _export(sink, _fake_published_bundle(tmp_path),
-                         ModelRegistryLocation('CHURN_GNN', alias='prod'))
+        result = _export(
+            sink,
+            _fake_published_bundle(tmp_path),
+            ModelRegistryLocation('CHURN_GNN', alias='prod'),
+        )
     assert result.published_model.version == 'V1'
     assert list(sink.published) == ['CHURN_GNN@latest']
     messages = [str(w.message) for w in caught if 'alias' in str(w.message)]
@@ -663,40 +792,41 @@ def test_export_with_alias_publishes_then_sets_it_best_effort(
         assert len(messages) == 1 and warning in messages[0]
 
 
-def test_load_by_alias_warns_on_recorded_bundle_mismatch(
-        tmp_path: Path) -> None:
+def test_load_by_alias_warns_on_recorded_bundle_mismatch(tmp_path: Path) -> None:
     bundle = _specced_bundle(tmp_path)
     sink = _AliasingSink('other')
-    sink.publish_model(None, str(bundle),
-                       location=ModelRegistryLocation('CHURN_GNN'))
+    sink.publish_model(None, str(bundle), location=ModelRegistryLocation('CHURN_GNN'))
     with pytest.warns(UserWarning, match='registry records bundle other'):
         loaded = Trainer.load_from_connector(
             _FakeConnector(sink),
-            location=ModelRegistryLocation('CHURN_GNN', alias='prod'))
+            location=ModelRegistryLocation('CHURN_GNN', alias='prod'),
+        )
     assert loaded.result.id == Trainer.load(bundle).result.id
 
 
-def test_a_model_loaded_by_alias_reports_its_registered_metrics(
-        tmp_path: Path) -> None:
-    raw = {'test_auroc': .7, 'test_refit_auroc': .8}
+def test_a_model_loaded_by_alias_reports_its_registered_metrics(tmp_path: Path) -> None:
+    raw = {'test_auroc': 0.7, 'test_refit_auroc': 0.8}
     bundle = _specced_bundle(tmp_path, raw)
     sink = _AliasingSink(metrics=raw)
-    sink.publish_model(None, str(bundle),
-                       location=ModelRegistryLocation('CHURN_GNN'))
+    sink.publish_model(None, str(bundle), location=ModelRegistryLocation('CHURN_GNN'))
     loaded = Trainer.load_from_connector(
-        _FakeConnector(sink),
-        location=ModelRegistryLocation('CHURN_GNN', alias='prod'))
+        _FakeConnector(sink), location=ModelRegistryLocation('CHURN_GNN', alias='prod')
+    )
     assert loaded.result.registered_model.metrics == {
-        'test/auroc': .8, 'before_refit/auroc': .7}
+        'test/auroc': 0.8,
+        'before_refit/auroc': 0.7,
+    }
 
 
 def test_training_result_exports_like_its_trainer(tmp_path: Path) -> None:
     bundle = _specced_bundle(tmp_path)
     sink = _AliasingSink()
     published = TrainingResult({}, {}, bundle).export(
-        ModelOutputConfig(_FakeConnector(sink),
-                          location=ModelRegistryLocation('CHURN_GNN',
-                                                         alias='prod')))
+        ModelOutputConfig(
+            _FakeConnector(sink),
+            location=ModelRegistryLocation('CHURN_GNN', alias='prod'),
+        )
+    )
     assert published.version == 'V1' and sink.aliases == {'prod': 'V1'}
     assert list(sink.published) == ['CHURN_GNN@latest']
 
@@ -705,23 +835,25 @@ def test_alias_needs_an_aliasing_sink() -> None:
     connector = _FakeConnector(_FakeSink())
     with pytest.raises(NotImplementedError, match='alias'):
         Trainer.load_from_connector(
-            connector, location=ModelRegistryLocation('m', alias='prod'))
+            connector, location=ModelRegistryLocation('m', alias='prod')
+        )
     for kwargs in (dict(alias='prod', version='3'), dict(alias='')):
         with pytest.raises(ValueError, match='alias'):
             ModelRegistryLocation('m', **kwargs)
 
 
-def test_invalid_export_alias_is_rejected_before_publishing(
-        tmp_path: Path) -> None:
+def test_invalid_export_alias_is_rejected_before_publishing(tmp_path: Path) -> None:
     sink = _AliasingSink()
     trainer = Trainer(ModelPlan())
-    trainer._training_result = TrainingResult({}, {},
-                                              _fake_published_bundle(tmp_path))
+    trainer._training_result = TrainingResult({}, {}, _fake_published_bundle(tmp_path))
     with pytest.raises(ValueError, match='model alias'):
         trainer.export(
             SimpleNamespace(
-                connector=SimpleNamespace(sink_backend=sink), path=None,
-                location=ModelRegistryLocation('CHURN_GNN', alias='LATEST')))
+                connector=SimpleNamespace(sink_backend=sink),
+                path=None,
+                location=ModelRegistryLocation('CHURN_GNN', alias='LATEST'),
+            )
+        )
     assert sink.published == {}
 
 
@@ -739,21 +871,31 @@ class _RegistryTracker:
         pass
 
 
-@pytest.mark.parametrize('sink,registered', [
-    (_AliasingSink(), 'V1'),
-    (SimpleNamespace(write_table=lambda *a: None,
-                     publish_model=lambda *a, **k: 1 / 0), None),
-])
-def test_mlops_registry_registers_after_the_fit(tmp_path: Path, monkeypatch,
-                                                sink, registered) -> None:
+@pytest.mark.parametrize(
+    'sink,registered',
+    [
+        (_AliasingSink(), 'V1'),
+        (
+            SimpleNamespace(
+                write_table=lambda *a: None, publish_model=lambda *a, **k: 1 / 0
+            ),
+            None,
+        ),
+    ],
+)
+def test_mlops_registry_registers_after_the_fit(
+    tmp_path: Path, monkeypatch, sink, registered
+) -> None:
     import warnings
 
     import kumo.engine as kumo
 
     bundle = _specced_bundle(tmp_path)
     monkeypatch.setattr(
-        Trainer, '_fit', lambda self, *a, **k: TrainingResult(
-            {}, {}, bundle, bundle_id='b1'))
+        Trainer,
+        '_fit',
+        lambda self, *a, **k: TrainingResult({}, {}, bundle, bundle_id='b1'),
+    )
     tracker = _RegistryTracker(sink)
     registry = ModelRegistryLocation('CHURN_GNN', alias='prod')
     trainer = Trainer(ModelPlan())
@@ -762,8 +904,10 @@ def test_mlops_registry_registers_after_the_fit(tmp_path: Path, monkeypatch,
         result = trainer.fit(
             SimpleNamespace(query='PREDICT COUNT(*)'),
             snapshot=SimpleNamespace(id='s'),
-            mlops=kumo.MLOps(str(tmp_path / 'root'), tracking=tracker,
-                             registry=registry, store=False))
+            mlops=kumo.MLOps(
+                str(tmp_path / 'root'), tracking=tracker, registry=registry, store=False
+            ),
+        )
     failures = [w for w in caught if 'Could not register' in str(w.message)]
     assert getattr(result.registered_model, 'version', None) == registered
     assert result.published_model is None
@@ -777,21 +921,31 @@ def test_mlops_registry_registers_after_the_fit(tmp_path: Path, monkeypatch,
             trainer.fit(
                 SimpleNamespace(query='PREDICT COUNT(*)'),
                 snapshot=SimpleNamespace(id='s'),
-                mlops=kumo.MLOps(str(tmp_path / 'root'), tracking=tracker,
-                                 registry=registry, store=False,
-                                 on_error='raise'))
+                mlops=kumo.MLOps(
+                    str(tmp_path / 'root'),
+                    tracking=tracker,
+                    registry=registry,
+                    store=False,
+                    on_error='raise',
+                ),
+            )
         assert isinstance(raised.value.__cause__, ZeroDivisionError)
 
 
-def test_mlops_registry_alias_is_checked_before_the_fit(tmp_path: Path,
-                                                        monkeypatch) -> None:
+def test_mlops_registry_alias_is_checked_before_the_fit(
+    tmp_path: Path, monkeypatch
+) -> None:
     import kumo.engine as kumo
 
     monkeypatch.setattr(Trainer, '_fit', lambda *a, **k: 1 / 0)
     with pytest.raises(ValueError, match='model alias'):
         Trainer(ModelPlan()).fit(
-            SimpleNamespace(query='q'), snapshot=SimpleNamespace(id='s'),
+            SimpleNamespace(query='q'),
+            snapshot=SimpleNamespace(id='s'),
             mlops=kumo.MLOps(
-                str(tmp_path), tracking=_RegistryTracker(_AliasingSink()),
+                str(tmp_path),
+                tracking=_RegistryTracker(_AliasingSink()),
                 registry=ModelRegistryLocation('CHURN_GNN', alias='LATEST'),
-                store=False))
+                store=False,
+            ),
+        )

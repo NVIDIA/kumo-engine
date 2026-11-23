@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Bind retained notebook outputs to their actual submitted execution."""
+
 import hashlib
 import json
 import re
@@ -16,13 +17,18 @@ def digest(content):
 
 def save(path, value):
     Path(path).write_text(
-        json.dumps(value, indent=2, allow_nan=False,
-                   default=lambda v: v.isoformat()) + '\n')
+        json.dumps(value, indent=2, allow_nan=False, default=lambda v: v.isoformat())
+        + '\n'
+    )
 
 
 def save_probe_cell():
-    return dict(cell_type='markdown', id='studio-save-probe', metadata={},
-                source=['Studio save probe.'])
+    return dict(
+        cell_type='markdown',
+        id='studio-save-probe',
+        metadata={},
+        source=['Studio save probe.'],
+    )
 
 
 def receipt(executed, submitted, spec):
@@ -42,7 +48,7 @@ def receipt(executed, submitted, spec):
             if output.get('output_type') == 'stream':
                 for line in ''.join(output.get('text', '')).splitlines():
                     if line.startswith(MARKER):
-                        found.append(json.loads(line[len(MARKER):]))
+                        found.append(json.loads(line[len(MARKER) :]))
     if len(found) != 1:
         raise ValueError('Expected one actual notebook execution receipt')
     record = found[0]
@@ -55,9 +61,11 @@ def receipt(executed, submitted, spec):
     if not isinstance(files, dict) or 'result.json' not in files:
         raise ValueError('Missing notebook evidence inventory')
     for name, sha in files.items():
-        if (not re.fullmatch('[A-Za-z0-9_.-]+', name)
-                or not isinstance(sha, str)
-                or not re.fullmatch('[a-f0-9]{64}', sha)):
+        if (
+            not re.fullmatch('[A-Za-z0-9_.-]+', name)
+            or not isinstance(sha, str)
+            or not re.fullmatch('[a-f0-9]{64}', sha)
+        ):
             raise ValueError('Unsafe evidence inventory')
     return record
 
@@ -67,8 +75,9 @@ def collect(s3, bucket, executed, submitted, spec, directory):
     destination = Path(directory) / 'outputs'
     destination.mkdir()
     for name, expected in record['files'].items():
-        body = s3.get_object(Bucket=bucket,
-                             Key=spec['output_prefix'] + '/' + name)['Body']
+        body = s3.get_object(Bucket=bucket, Key=spec['output_prefix'] + '/' + name)[
+            'Body'
+        ]
         try:
             content = body.read()
         finally:
@@ -79,11 +88,12 @@ def collect(s3, bucket, executed, submitted, spec, directory):
     report = json.loads((destination / 'result.json').read_text())
     for key in ('attempt', 'source_commit', 'wheel_sha256', 'output_prefix'):
         if report.get(key) != spec[key]:
-            raise ValueError('Stored report identifies another execution: ' +
-                             key)
-    if (report.get('execution_id') != record['execution_id']
-            or report.get('test_sources') != spec['test_sources']
-            or report.get('payload') != spec['assets']):
+            raise ValueError('Stored report identifies another execution: ' + key)
+    if (
+        report.get('execution_id') != record['execution_id']
+        or report.get('test_sources') != spec['test_sources']
+        or report.get('payload') != spec['assets']
+    ):
         raise ValueError('Stored report differs from executed source/payload')
     save(Path(directory) / 'receipt.json', record)
     return report
@@ -95,17 +105,20 @@ def validate_explanations(report, spec, directory, record):
     destination = directory / 'outputs'
     if spec.get('scenario') in ('graph', 'all'):
         import sys
+
         sys.path.append(str(Path(__file__).resolve().parents[1] / 'snowflake_notebook'))
         from explanation import FILES, validate_exports
+
         if not set(FILES) <= set(record['files']):
             raise ValueError(
-                'Missing explanation artifacts in executed notebook evidence')
+                'Missing explanation artifacts in executed notebook evidence'
+            )
         graph = json.loads((destination / 'graph-result.json').read_text())
         if graph != report.get('graph'):
             raise ValueError('Stored graph differs from notebook report')
         validate_exports(graph.get('explanations', {}), record['files'])
-        if json.loads(
-            (destination /
-             'explanation-result.json').read_text()) != graph['explanations']:
-            raise ValueError(
-                'Stored explanation receipt differs from graph result')
+        if (
+            json.loads((destination / 'explanation-result.json').read_text())
+            != graph['explanations']
+        ):
+            raise ValueError('Stored explanation receipt differs from graph result')

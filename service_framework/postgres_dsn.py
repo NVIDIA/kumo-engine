@@ -10,6 +10,7 @@ StateDB resolver without pulling in heavier dependencies.
 The flow is: parse a secret mapping into a structured :class:`PostgresConn`,
 then format it for the runtime driver. TLS is expressed as URL query params.
 """
+
 from dataclasses import dataclass
 from typing import Mapping, Optional
 from urllib.parse import quote, urlencode
@@ -18,7 +19,8 @@ _SUPPORTED_SSLMODES = {'verify-ca', 'verify-full'}
 _STRUCTURED_SECRET_EXAMPLE = (
     '{"username":"kumo","password":"...","host":"postgres.example.com",'
     '"port":"5432","database":"kumo","tls":{"sslmode":"verify-full",'
-    '"sslrootcert":"/path/to/ca.pem"}}')
+    '"sslrootcert":"/path/to/ca.pem"}}'
+)
 
 
 @dataclass(frozen=True)
@@ -28,6 +30,7 @@ class PostgresConn:
     Plain stdlib dataclass (not ``kumo_dataclass``) to keep this module a
     dependency leaf.
     """
+
     username: str
     password: Optional[str]
     host: str
@@ -42,8 +45,9 @@ def _value(secret: Mapping[str, object], key: str) -> Optional[str]:
     return str(value) if value else None
 
 
-def _parse_tls(secret: Mapping[str, object],
-               secret_name: str) -> tuple[Optional[str], Optional[str]]:
+def _parse_tls(
+    secret: Mapping[str, object], secret_name: str
+) -> tuple[Optional[str], Optional[str]]:
     """Validate and extract (sslmode, sslrootcert) from a secret's tls block."""
     tls = secret.get('tls')
     if not tls:
@@ -52,7 +56,8 @@ def _parse_tls(secret: Mapping[str, object],
         raise ValueError(
             f'Postgres secret "{secret_name}" has invalid tls config: '
             f'expected an object like {{"sslmode":"verify-full",'
-            f'"sslrootcert":"/path/to/ca.pem"}}.')
+            f'"sslrootcert":"/path/to/ca.pem"}}.'
+        )
 
     sslmode = _value(tls, 'sslmode')
     if sslmode not in _SUPPORTED_SSLMODES:
@@ -60,7 +65,8 @@ def _parse_tls(secret: Mapping[str, object],
             f'Postgres secret "{secret_name}" has invalid tls.sslmode '
             f'{sslmode!r}: expected "verify-ca" or "verify-full". Use '
             f'"verify-full" when the Postgres hostname matches the server '
-            f'certificate.')
+            f'certificate.'
+        )
 
     sslrootcert = _value(tls, 'sslrootcert')
     return sslmode, sslrootcert
@@ -85,17 +91,20 @@ def postgres_conn_from_secret(
     port = _value(secret, 'port')
 
     missing = [
-        name for name, value in {
+        name
+        for name, value in {
             'username': username,
             'host': host,
             'database': database,
-        }.items() if not value
+        }.items()
+        if not value
     ]
     if missing:
         raise ValueError(
             f'Postgres secret "{secret_name}" is missing required structured '
             f'field(s): {", ".join(missing)}. Expected shape: '
-            f'{_STRUCTURED_SECRET_EXAMPLE}.')
+            f'{_STRUCTURED_SECRET_EXAMPLE}.'
+        )
 
     assert username is not None
     assert host is not None
@@ -137,8 +146,10 @@ def _tls_query_suffix(conn: PostgresConn) -> str:
 
 
 def _format_with_tls_query(conn: PostgresConn, scheme: str) -> str:
-    return (f'{scheme}://{_userinfo(conn)}@{_hostport(conn)}/'
-            f'{quote(conn.database, safe="")}{_tls_query_suffix(conn)}')
+    return (
+        f'{scheme}://{_userinfo(conn)}@{_hostport(conn)}/'
+        f'{quote(conn.database, safe="")}{_tls_query_suffix(conn)}'
+    )
 
 
 def postgresql_dsn(conn: PostgresConn) -> str:

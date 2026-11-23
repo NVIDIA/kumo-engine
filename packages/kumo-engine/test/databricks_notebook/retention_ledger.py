@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Recover stale attempts from private control records in the test Volume."""
+
 import argparse
 import hashlib
 import hmac
@@ -21,28 +22,28 @@ MAX_FILES = 10000
 
 
 def scope(config):
-    if (config.get('volume') != VOLUME
-            or config.get('workspace_dir') != WORKSPACE_DIR
-            or not config.get('expected_user')):
-        raise ValueError(
-            'Retention requires the fixed test resources and identity')
+    if (
+        config.get('volume') != VOLUME
+        or config.get('workspace_dir') != WORKSPACE_DIR
+        or not config.get('expected_user')
+    ):
+        raise ValueError('Retention requires the fixed test resources and identity')
     return {
-        key: config[key]
-        for key in ('host', 'volume', 'workspace_dir', 'expected_user')
+        key: config[key] for key in ('host', 'volume', 'workspace_dir', 'expected_user')
     }
 
 
 def identity(client, config):
     scope(config)
-    if client.api('/api/2.0/preview/scim/v2/Me').get(
-            'userName') != config['expected_user']:
-        raise ValueError(
-            'Retention PAT identity differs from the test principal')
+    if (
+        client.api('/api/2.0/preview/scim/v2/Me').get('userName')
+        != config['expected_user']
+    ):
+        raise ValueError('Retention PAT identity differs from the test principal')
 
 
 def file_path(config, attempt):
-    if not isinstance(attempt, str) or not re.fullmatch('[a-f0-9]{12}',
-                                                        attempt):
+    if not isinstance(attempt, str) or not re.fullmatch('[a-f0-9]{12}', attempt):
         raise ValueError('Invalid retention attempt')
     return config['volume'] + '/retention/' + attempt + '/resources.json'
 
@@ -51,31 +52,37 @@ def signature(client, payload):
     token = getattr(client, 'token', None)
     if not isinstance(token, str) or not token:
         raise ValueError('Retention requires the authenticated PAT')
-    canonical = json.dumps(payload, sort_keys=True,
-                           separators=(',', ':')).encode()
-    return hmac.new(token.encode(),
-                    b'kumo-engine-databricks-retention-v1\0' + canonical,
-                    hashlib.sha256).hexdigest()
+    canonical = json.dumps(payload, sort_keys=True, separators=(',', ':')).encode()
+    return hmac.new(
+        token.encode(),
+        b'kumo-engine-databricks-retention-v1\0' + canonical,
+        hashlib.sha256,
+    ).hexdigest()
 
 
 def read(client, path):
-    data = client.api('/api/2.0/fs/files' + quote(path, safe='/'), binary=True,
-                      max_bytes=MAX_BYTES)
+    data = client.api(
+        '/api/2.0/fs/files' + quote(path, safe='/'), binary=True, max_bytes=MAX_BYTES
+    )
     if not isinstance(data, bytes) or len(data) > MAX_BYTES:
         raise ValueError('Retention record exceeds its byte budget')
     envelope = json.loads(data)
-    if (not isinstance(envelope, dict)
-            or set(envelope) != {'payload', 'hmac_sha256'}
-            or not isinstance(envelope['hmac_sha256'], str)
-            or not hmac.compare_digest(envelope['hmac_sha256'],
-                                       signature(client, envelope['payload']))):
+    if (
+        not isinstance(envelope, dict)
+        or set(envelope) != {'payload', 'hmac_sha256'}
+        or not isinstance(envelope['hmac_sha256'], str)
+        or not hmac.compare_digest(
+            envelope['hmac_sha256'], signature(client, envelope['payload'])
+        )
+    ):
         raise ValueError('Retention signature cannot be verified')
     return envelope['payload']
 
 
 def remove_empty_directory(client, record_path):
-    endpoint = ('/api/2.0/fs/directories' +
-                quote(record_path.rsplit('/', 1)[0], safe='/'))
+    endpoint = '/api/2.0/fs/directories' + quote(
+        record_path.rsplit('/', 1)[0], safe='/'
+    )
     try:
         listing = client.api(endpoint + '?page_size=1')
     except RuntimeError as error:
@@ -91,10 +98,7 @@ def remove_empty_directory(client, record_path):
 class ControlRecord:
     def __init__(self, client, config, spec, lifecycle):
         self.client, self.config = client, config
-        self.spec = {
-            key: spec[key]
-            for key in ('attempt', 'notebook_path', 'output')
-        }
+        self.spec = {key: spec[key] for key in ('attempt', 'notebook_path', 'output')}
         if lifecycle:
             self.spec['experiment'] = spec['experiment']
         self.kind = 'lifecycle' if lifecycle else 'graph'
@@ -104,34 +108,49 @@ class ControlRecord:
     def document(self, ledger, root):
         submitted = Path(root) / 'submitted-run.json'
         return dict(
-            version=1, config=scope(self.config), kind=self.kind,
-            spec=self.spec, ledger=ledger, submitted=json.loads(
-                submitted.read_text()) if submitted.is_file() else None)
+            version=1,
+            config=scope(self.config),
+            kind=self.kind,
+            spec=self.spec,
+            ledger=ledger,
+            submitted=json.loads(submitted.read_text())
+            if submitted.is_file()
+            else None,
+        )
 
     def put(self, value, overwrite):
-        raw = (json.dumps(
-            dict(payload=value, hmac_sha256=signature(self.client, value)),
-            sort_keys=True) + '\n').encode()
+        raw = (
+            json.dumps(
+                dict(payload=value, hmac_sha256=signature(self.client, value)),
+                sort_keys=True,
+            )
+            + '\n'
+        ).encode()
         if len(raw) > MAX_BYTES:
             raise ValueError('Retention record exceeds its byte budget')
         self.client.api(
-            '/api/2.0/fs/files' + quote(self.path, safe='/') + '?overwrite=' +
-            str(overwrite).lower(), 'PUT', raw=raw)
+            '/api/2.0/fs/files'
+            + quote(self.path, safe='/')
+            + '?overwrite='
+            + str(overwrite).lower(),
+            'PUT',
+            raw=raw,
+        )
         self.previous = json.loads(json.dumps(value))
 
     def create(self, ledger, root):
         identity(self.client, self.config)
         self.client.api(
-            '/api/2.0/fs/directories' +
-            quote(self.path.rsplit('/', 1)[0], safe='/'), 'PUT')
+            '/api/2.0/fs/directories' + quote(self.path.rsplit('/', 1)[0], safe='/'),
+            'PUT',
+        )
         self.put(self.document(ledger, root), False)
 
     def bind(self, ledger, root):
         identity(self.client, self.config)
         value = self.document(ledger, root)
         if read(self.client, self.path) != value:
-            raise ValueError(
-                'Remote retention state differs from recovery input')
+            raise ValueError('Remote retention state differs from recovery input')
         self.previous = json.loads(json.dumps(value))
 
     def save(self, ledger, root):
@@ -142,14 +161,14 @@ class ControlRecord:
     def complete(self):
         if read(self.client, self.path) != self.previous:
             raise ValueError('Retention record changed during cleanup')
-        self.client.api('/api/2.0/fs/files' + quote(self.path, safe='/'),
-                        'DELETE')
+        self.client.api('/api/2.0/fs/files' + quote(self.path, safe='/'), 'DELETE')
         try:
             return remove_empty_directory(self.client, self.path)
         except RuntimeError:
             logging.getLogger(__name__).warning(
                 'Attempt resources and control record removed; '
-                'the empty control directory will be retried by retention')
+                'the empty control directory will be retried by retention'
+            )
             return False
 
 
@@ -166,12 +185,14 @@ def records(client, config):
     except RuntimeError as error:
         if str(error) != 'Databricks API HTTP 404':
             raise
-    if previous is not None and (not isinstance(previous, dict) or set(previous)
-                                 != {'version', 'config', 'page_token'}
-                                 or previous['version'] != 1
-                                 or previous['config'] != scope(config)
-                                 or not isinstance(previous['page_token'], str)
-                                 or not previous['page_token']):
+    if previous is not None and (
+        not isinstance(previous, dict)
+        or set(previous) != {'version', 'config', 'page_token'}
+        or previous['version'] != 1
+        or previous['config'] != scope(config)
+        or not isinstance(previous['page_token'], str)
+        or not previous['page_token']
+    ):
         raise ValueError('Invalid retention inventory cursor')
     token = previous['page_token'] if previous else None
     prefix = config['volume'] + '/retention'
@@ -185,10 +206,13 @@ def records(client, config):
     for _ in range(10):
         size = min(100, limit)
         try:
-            page = client.api(endpoint + '?' + urlencode(
-                dict(page_size=size, **({
-                    'page_token': token
-                } if token else {}))))
+            page = client.api(
+                endpoint
+                + '?'
+                + urlencode(
+                    dict(page_size=size, **({'page_token': token} if token else {}))
+                )
+            )
         except RuntimeError as error:
             if str(error) == 'Databricks API HTTP 404' and not token:
                 return [], None, previous
@@ -198,10 +222,11 @@ def records(client, config):
             raise ValueError('Retention page exceeds the record budget')
         for entry in contents:
             path = entry.get('path', '').removesuffix('/')
-            if (entry.get('is_directory') is not True
-                    or path.rsplit('/', 1)[0] != prefix
-                    or not re.fullmatch('[a-f0-9]{12}',
-                                        path.rsplit('/', 1)[-1])):
+            if (
+                entry.get('is_directory') is not True
+                or path.rsplit('/', 1)[0] != prefix
+                or not re.fullmatch('[a-f0-9]{12}', path.rsplit('/', 1)[-1])
+            ):
                 raise ValueError('Retention listing escaped its control prefix')
             if path in entries:
                 raise ValueError('Retention listing repeated an attempt')
@@ -225,11 +250,13 @@ def save_cursor(client, config, token, previous):
     if token:
         value = dict(version=1, config=scope(config), page_token=token)
         raw = json.dumps(
-            dict(payload=value, hmac_sha256=signature(client, value))).encode()
+            dict(payload=value, hmac_sha256=signature(client, value))
+        ).encode()
         if len(raw) > MAX_BYTES:
             raise ValueError('Retention cursor exceeds its byte budget')
-        client.api(endpoint + '?overwrite=' + str(previous is not None).lower(),
-                   'PUT', raw=raw)
+        client.api(
+            endpoint + '?overwrite=' + str(previous is not None).lower(), 'PUT', raw=raw
+        )
     elif previous is not None:
         client.api(endpoint, 'DELETE')
 
@@ -254,49 +281,67 @@ def sweep(client, config, root, *, execute=False, ttl_hours=24, now_ms=None):
         try:
             value = read(client, path)
             ledger, spec = value['ledger'], value['spec']
-            if (set(value) != {
-                    'version', 'config', 'kind', 'spec', 'ledger', 'submitted'
-            } or value['version'] != 1 or value['config'] != scope(config)
-                    or value['kind'] not in ('graph', 'lifecycle')
-                    or ledger.get('admitted') is not True
-                    or type(ledger.get('started_ms')) is not int
-                    or not 0 < ledger['started_ms'] <= now_ms
-                    or path != file_path(config, spec['attempt'])
-                    or ledger.get('attempt') != spec['attempt']):
+            if (
+                set(value)
+                != {'version', 'config', 'kind', 'spec', 'ledger', 'submitted'}
+                or value['version'] != 1
+                or value['config'] != scope(config)
+                or value['kind'] not in ('graph', 'lifecycle')
+                or ledger.get('admitted') is not True
+                or type(ledger.get('started_ms')) is not int
+                or not 0 < ledger['started_ms'] <= now_ms
+                or path != file_path(config, spec['attempt'])
+                or ledger.get('attempt') != spec['attempt']
+            ):
                 raise ValueError('Foreign retention record')
             if now_ms - ledger['started_ms'] < ttl_hours * 3600000:
                 preserve('recent')
                 continue
-            flags = ('notebook_created', 'admitted', 'experiment_pending',
-                     'submission_pending', 'import_pending',
-                     'experiment_removed', 'model_removed', 'notebook_removed')
-            if any(key in ledger and type(ledger[key]) is not bool
-                   for key in flags):
+            flags = (
+                'notebook_created',
+                'admitted',
+                'experiment_pending',
+                'submission_pending',
+                'import_pending',
+                'experiment_removed',
+                'model_removed',
+                'notebook_removed',
+            )
+            if any(key in ledger and type(ledger[key]) is not bool for key in flags):
                 raise ValueError('Retention state flags are ambiguous')
             submitted = value['submitted']
-            unknown_creation = any(ledger.get(key) for key in
-                                   ('import_pending', 'experiment_pending'))
-            if unknown_creation or (ledger.get('submission_pending')
-                                    and submitted is None):
+            unknown_creation = any(
+                ledger.get(key) for key in ('import_pending', 'experiment_pending')
+            )
+            if unknown_creation or (
+                ledger.get('submission_pending') and submitted is None
+            ):
                 preserve('unknown_submission_or_creation')
                 continue
-            if submitted is not None and (set(submitted) != {'run_id'} or type(
-                    submitted['run_id']) is not int
-                                          or submitted['run_id'] <= 0):
+            if submitted is not None and (
+                set(submitted) != {'run_id'}
+                or type(submitted['run_id']) is not int
+                or submitted['run_id'] <= 0
+            ):
                 raise ValueError('Invalid submitted run receipt')
             directory = root / spec['attempt']
             directory.mkdir(exist_ok=True)
             for name in ('submitted-run.json', 'cleanup.json'):
                 (directory / name).unlink(missing_ok=True)
-            for name, data in [('scenario.json', spec),
-                               ('resources.json', ledger)]:
+            for name, data in [('scenario.json', spec), ('resources.json', ledger)]:
                 (directory / name).write_text(json.dumps(data) + '\n')
             if submitted is not None:
-                (directory /
-                 'submitted-run.json').write_text(json.dumps(submitted) + '\n')
-            AttemptResources(client, config, spec, directory,
-                             lifecycle=value['kind'] == 'lifecycle',
-                             resume=True)
+                (directory / 'submitted-run.json').write_text(
+                    json.dumps(submitted) + '\n'
+                )
+            AttemptResources(
+                client,
+                config,
+                spec,
+                directory,
+                lifecycle=value['kind'] == 'lifecycle',
+                resume=True,
+            )
             candidates.append((ledger['started_ms'], directory))
         except Exception as error:
             if execute and str(error) == 'Databricks API HTTP 404':
@@ -318,14 +363,17 @@ def sweep(client, config, root, *, execute=False, ttl_hours=24, now_ms=None):
                 cleaned += 1
             except Exception:
                 preserve('unproven_or_failed_cleanup')
-    result = dict(status='passed', execute=execute, eligible=len(candidates),
-                  inventory_has_more=bool(next_token), cleaned=cleaned,
-                  preserved=preserved,
-                  empty_controls_removed=empty_controls_removed,
-                  deferred=max(0,
-                               len(candidates) - MAX_ATTEMPTS))
-    (root /
-     'retention-summary.json').write_text(json.dumps(result, indent=2) + '\n')
+    result = dict(
+        status='passed',
+        execute=execute,
+        eligible=len(candidates),
+        inventory_has_more=bool(next_token),
+        cleaned=cleaned,
+        preserved=preserved,
+        empty_controls_removed=empty_controls_removed,
+        deferred=max(0, len(candidates) - MAX_ATTEMPTS),
+    )
+    (root / 'retention-summary.json').write_text(json.dumps(result, indent=2) + '\n')
     return result
 
 
@@ -336,8 +384,13 @@ def main():
     parser.add_argument('--ttl-hours', type=int, default=24)
     args = parser.parse_args()
     config = configuration()
-    result = sweep(Client(config), config, args.output_dir,
-                   execute=args.execute, ttl_hours=args.ttl_hours)
+    result = sweep(
+        Client(config),
+        config,
+        args.output_dir,
+        execute=args.execute,
+        ttl_hours=args.ttl_hours,
+    )
     print(json.dumps(result, sort_keys=True))
 
 

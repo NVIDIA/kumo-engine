@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """ADLS range-read filesystem: parquet metadata must not read whole files."""
+
 import io
 from types import SimpleNamespace
 
@@ -17,6 +18,7 @@ from io_utils.fsutil.adls_arrow import ADLSArrowFileSystem
 
 class FakeFileSystemClient:
     """Container-scoped fake mirroring the DataLake SDK surface we use."""
+
     def __init__(self):
         self.files: dict[str, bytes] = {}
         self.directories: set[str] = set()
@@ -32,8 +34,7 @@ class FakeFileSystemClient:
     def get_file_client(self, path: str):
         return SimpleNamespace(
             get_file_properties=lambda: self._properties(path),
-            download_file=lambda offset, length: self._download(
-                path, offset, length),
+            download_file=lambda offset, length: self._download(path, offset, length),
         )
 
     def get_paths(self, path=None, recursive=False):
@@ -41,7 +42,7 @@ class FakeFileSystemClient:
         children = set()
         for name in list(self.files) + list(self.directories):
             if name.startswith(prefix) and name != path:
-                children.add(prefix + name[len(prefix):].split('/')[0])
+                children.add(prefix + name[len(prefix) :].split('/')[0])
         if path and not children and path not in self.files:
             raise ResourceNotFoundError(f'not found: {path}')
         return [
@@ -49,7 +50,8 @@ class FakeFileSystemClient:
                 name=child,
                 is_directory=child in self.directories,
                 content_length=len(self.files.get(child, b'')),
-            ) for child in sorted(children)
+            )
+            for child in sorted(children)
         ]
 
     def _properties(self, path: str):
@@ -61,7 +63,7 @@ class FakeFileSystemClient:
 
     def _download(self, path: str, offset: int, length: int):
         self.fetched_ranges.append((offset, offset + length))
-        data = self.files[path][offset:offset + length]
+        data = self.files[path][offset : offset + length]
         return SimpleNamespace(readall=lambda: data)
 
 
@@ -70,13 +72,15 @@ def client() -> FakeFileSystemClient:
     return FakeFileSystemClient()
 
 
-def _write_parquet(client: FakeFileSystemClient, path: str,
-                   num_rows: int = 200_000,
-                   wide_payload: bool = False) -> pa.Table:
+def _write_parquet(
+    client: FakeFileSystemClient,
+    path: str,
+    num_rows: int = 200_000,
+    wide_payload: bool = False,
+) -> pa.Table:
     columns = {
         'id': pa.array(range(num_rows), type=pa.int64()),
-        'value': pa.array((float(i) for i in range(num_rows)),
-                          type=pa.float64()),
+        'value': pa.array((float(i) for i in range(num_rows)), type=pa.float64()),
     }
     if wide_payload:
         columns['payload'] = pa.array([b'x' * (16 << 10)] * num_rows)
@@ -84,8 +88,7 @@ def _write_parquet(client: FakeFileSystemClient, path: str,
     buffer = io.BytesIO()
     # Uncompressed so the data section dwarfs the footer and byte-range
     # assertions stay meaningful.
-    pq.write_table(table, buffer, compression='none',
-                   use_dictionary=not wide_payload)
+    pq.write_table(table, buffer, compression='none', use_dictionary=not wide_payload)
     client.create_file(path, buffer.getvalue())
     return table
 
@@ -100,10 +103,13 @@ def test_schema_read_fetches_only_footer_ranges(client):
 
     # Mirror the kwargs ParquetConnector._parquet_dataset passes in
     # production so buffering options cannot silently regress to full reads.
-    dataset = pq.ParquetDataset('tables/events/part-0.parquet',
-                                partitioning=None, pre_buffer=False,
-                                buffer_size=1024 * 1024 * 64,
-                                filesystem=_pyarrow_fs(client))
+    dataset = pq.ParquetDataset(
+        'tables/events/part-0.parquet',
+        partitioning=None,
+        pre_buffer=False,
+        buffer_size=1024 * 1024 * 64,
+        filesystem=_pyarrow_fs(client),
+    )
 
     assert dataset.schema.names == ['id', 'value']
     assert client.fetched_ranges, 'expected range reads'
@@ -113,22 +119,25 @@ def test_schema_read_fetches_only_footer_ranges(client):
 
 
 def test_bounded_preview_reads_projected_ranges_only(client):
-    _write_parquet(client, 'tables/events/part-0.parquet', num_rows=2048,
-                   wide_payload=True)
+    _write_parquet(
+        client, 'tables/events/part-0.parquet', num_rows=2048, wide_payload=True
+    )
     metadata = pq.ParquetFile(
-        io.BytesIO(client.files['tables/events/part-0.parquet'])).metadata
+        io.BytesIO(client.files['tables/events/part-0.parquet'])
+    ).metadata
     payload_size = metadata.row_group(0).column(2).total_compressed_size
 
-    dataset = pq.ParquetDataset('tables/events/part-0.parquet',
-                                pre_buffer=False,
-                                filesystem=_pyarrow_fs(client))
+    dataset = pq.ParquetDataset(
+        'tables/events/part-0.parquet', pre_buffer=False, filesystem=_pyarrow_fs(client)
+    )
     client.fetched_ranges.clear()
     head = read_bounded_dataset(dataset, ['payload'], 5)
 
     assert head.num_rows == 5
     assert head.column_names == ['payload']
-    assert sum(end - start for start, end in
-               client.fetched_ranges) < payload_size, client.fetched_ranges
+    assert sum(end - start for start, end in client.fetched_ranges) < payload_size, (
+        client.fetched_ranges
+    )
 
 
 def test_directory_dataset_discovers_files_via_listing(client):

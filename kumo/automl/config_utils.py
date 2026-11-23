@@ -48,7 +48,8 @@ def get_encoders_from_pquery(pquery: PredictiveQuery) -> dict[str, str]:
     for table in pquery.graph.tables:
         for col in table.cols:
             if col.encoder is not None:
-                encoders[f"{table.name}.{col.name}"] = (
-                    construct_object_string_from_config(col.encoder))
+                encoders[f'{table.name}.{col.name}'] = (
+                    construct_object_string_from_config(col.encoder)
+                )
 
     return encoders

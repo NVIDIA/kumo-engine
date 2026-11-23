@@ -21,20 +21,24 @@ class JobTagKey(str):
     alphanumeric, dot, underscore and dash characters. This makes them valid
     URL query parameter name.
     """
+
     def __new__(cls, name: str):
         validate_non_empty(name)
         validate_max_length(name, 64)
         if not re.fullmatch(r'[a-zA-Z0-9\-\.\_\~]*', name):
             raise ValueError(
-                "Job tag key must only contain unreserved characters that do "
-                f"not need URL encoding, got: {name}")
+                'Job tag key must only contain unreserved characters that do '
+                f'not need URL encoding, got: {name}'
+            )
         return super().__new__(cls, name)
 
     @classmethod
     def __get_pydantic_core_schema__(cls, source_type, handler):
         from pydantic_core import core_schema
+
         return core_schema.no_info_after_validator_function(
-            cls, core_schema.str_schema())
+            cls, core_schema.str_schema()
+        )
 
 
 # "pquery_name" is the name of PQuery template, if a job is launched from a
@@ -55,22 +59,24 @@ TAG_KEY_PARENT_JOB = JobTagKey('parent_job')
 # Tag key to mark a job as archived. Value should be 'archived'
 TAG_KEY_ARCHIVED = JobTagKey('archived')
 
-_IMMUTABLE_TAG_KEYS = set([
-    TAG_KEY_PQUERY_NAME,
-    TAG_KEY_PQUERY_ID,
-    TAG_KEY_WARM_START_JOB_ID,
-    TAG_KEY_MODEL_ID,
-    TAG_KEY_PARENT_JOB,
-])
+_IMMUTABLE_TAG_KEYS = set(
+    [
+        TAG_KEY_PQUERY_NAME,
+        TAG_KEY_PQUERY_ID,
+        TAG_KEY_WARM_START_JOB_ID,
+        TAG_KEY_MODEL_ID,
+        TAG_KEY_PARENT_JOB,
+    ]
+)
 
 # Set of reserved keywords that CANNOT be used as job tag key.
 RESERVED_KEYWORDS = {
     # Options for LIST request (maybe be extended in future)
-    "limit",
-    "job_status",
-    "status",
-    "skip_cache",  # common API caching param
-    "cache_ttl",  # common API caching param
+    'limit',
+    'job_status',
+    'status',
+    'skip_cache',  # common API caching param
+    'cache_ttl',  # common API caching param
     TAG_KEY_ARCHIVED,
 }
 
@@ -79,17 +85,18 @@ RESERVED_KEYWORDS = {
 # reserved keyword or conflict with a system-predefined key/attribute name.
 def check_custom_tag_key(key: JobTagKey) -> None:
     if key in RESERVED_KEYWORDS:
-        raise ValueError(
-            f'Custom job tag key={key} must not be a reserved keyword')
+        raise ValueError(f'Custom job tag key={key} must not be a reserved keyword')
     if key in _IMMUTABLE_TAG_KEYS:
         raise ValueError(
-            f'Custom job tag key={key} must not be kumo predefined tag key.')
+            f'Custom job tag key={key} must not be kumo predefined tag key.'
+        )
 
 
 class JobTagValue(str):
     """
     Job tag value can be arbitrary non-empty text with max length of 256.
     """
+
     def __new__(cls, name: str):
         validate_non_empty(name)
         validate_max_length(name, 256)
@@ -98,8 +105,10 @@ class JobTagValue(str):
     @classmethod
     def __get_pydantic_core_schema__(cls, source_type, handler):
         from pydantic_core import core_schema
+
         return core_schema.no_info_after_validator_function(
-            cls, core_schema.str_schema())
+            cls, core_schema.str_schema()
+        )
 
     @classmethod
     def null_or_empty(cls, v: Optional[str]) -> bool:
@@ -145,24 +154,25 @@ class JobTags(DBEntry):
         # persisted rows that carry an empty tag value loadable.
         if not isinstance(data, Mapping):
             return data
-        return {
-            k: v
-            for k, v in data.items() if not JobTagValue.null_or_empty(v)
-        }
+        return {k: v for k, v in data.items() if not JobTagValue.null_or_empty(v)}
 
     # ====== Predefined Attributes ======
     #
     @property
     def pquery_name(self) -> Optional[PredictiveQueryID]:
         name = self.tags.get(TAG_KEY_PQUERY_NAME)
-        return PredictiveQueryID(
-            name) if name and not JobTagValue.null_or_empty(name) else None
+        return (
+            PredictiveQueryID(name)
+            if name and not JobTagValue.null_or_empty(name)
+            else None
+        )
 
     @property
     def pquery_id(self) -> Optional[PredictiveQueryID]:
         id = self.tags.get(TAG_KEY_PQUERY_ID)
-        return PredictiveQueryID(
-            id) if id and not JobTagValue.null_or_empty(id) else None
+        return (
+            PredictiveQueryID(id) if id and not JobTagValue.null_or_empty(id) else None
+        )
 
     def match(self, filters: Mapping[str, str]) -> bool:
         for k, v in filters.items():
@@ -193,10 +203,11 @@ class JobTags(DBEntry):
 
 
 @kumo_dataclass
-class JobTagRequest():
+class JobTagRequest:
     """
     Used when adding and deleting tags associated with a job.
     """
+
     job_id: JobID
     project_id: ProjectID
     key: str
@@ -204,5 +215,5 @@ class JobTagRequest():
 
 
 @kumo_dataclass
-class JobTagsMap():
+class JobTagsMap:
     mapping: Dict[JobID, JobTags]

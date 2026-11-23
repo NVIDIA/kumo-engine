@@ -15,8 +15,7 @@ from io_utils import logging
 
 _logger = logging.getLogger(__name__)
 
-_retry_disabled: ContextVar[bool] = ContextVar('_retry_disabled',
-                                               default=False)
+_retry_disabled: ContextVar[bool] = ContextVar('_retry_disabled', default=False)
 
 _ExceptionMatcher: TypeAlias = Callable[[Exception], bool]
 _ExceptionCallback: TypeAlias = Callable[[Exception], None]
@@ -73,8 +72,7 @@ def __retry_internal(
                 # infrastructure boundary, so never interpolate provider
                 # exception text here.
                 logger.warning(
-                    'Operation failed (error_type=%s), retrying in %s '
-                    'seconds...',
+                    'Operation failed (error_type=%s), retrying in %s seconds...',
                     type(e).__name__,
                     _delay,
                 )
@@ -115,6 +113,7 @@ def retry(
                    default: _logger. if None, logging is disabled.
     :returns: a retry decorator.
     """
+
     def retry_decorator(f):
         # NOTE: ``functools.wraps`` (not the ``decorator`` library) so the
         # wrapper propagates ``__annotate__`` (PEP 649). The fsutil impls stack

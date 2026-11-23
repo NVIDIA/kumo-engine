@@ -42,12 +42,14 @@ class PlatformPreset(str, Enum):
     sub-config defaults so that a single env var is sufficient to configure a
     new environment.
     """
+
     AWS = 'aws'
     GCP = 'gcp'
 
 
 class SecretBackend(str, Enum):
     """Where secrets are stored and retrieved from."""
+
     K8S_MOUNT = 'k8s_mount'  # Mounted as files by K8s (legacy)
     AWS_SM = 'aws_sm'  # AWS Secrets Manager
     GCP_SM = 'gcp_sm'  # GCP Secret Manager
@@ -56,6 +58,7 @@ class SecretBackend(str, Enum):
 
 class LoggingBackend(str, Enum):
     """Where structured logs are shipped."""
+
     CLOUDWATCH = 'cloudwatch'
     CLOUD_LOGGING = 'cloud_logging'  # GCP Cloud Logging
     SNOWFLAKE = 'snowflake'  # Snowflake event tables
@@ -64,6 +67,7 @@ class LoggingBackend(str, Enum):
 
 class LoggingOutputFormat(str, Enum):
     """Log output serialization format."""
+
     TEXT = 'text'
     JSON = 'json'
 
@@ -75,6 +79,7 @@ class LoggingOutputFormat(str, Enum):
 
 class MetadataStorageBackend(str, Enum):
     """How REST/ML metadata state is persisted at runtime."""
+
     SQLITE = 'sqlite'
     POSTGRES = 'postgres'
 
@@ -82,6 +87,7 @@ class MetadataStorageBackend(str, Enum):
 @dataclass
 class SqliteMetadataStorageConfig:
     """Persist metadata in local SQLite files."""
+
     type: Literal[MetadataStorageBackend.SQLITE] = MetadataStorageBackend.SQLITE
 
 
@@ -96,6 +102,7 @@ class PostgresMetadataStorageConfig:
       contains structured Postgres connection fields.
     - ``auth_mode`` plus connection fields: passwordless cloud authentication.
     """
+
     dsn: Optional[str] = None
     dsn_secret_name: Optional[str] = None
     auth_mode: Optional[Literal['aws_iam', 'azure_entra']] = None
@@ -105,37 +112,41 @@ class PostgresMetadataStorageConfig:
     database: Optional[str] = None
     region: Optional[str] = None
     sslrootcert: Optional[str] = None
-    type: Literal[
-        MetadataStorageBackend.POSTGRES] = MetadataStorageBackend.POSTGRES
+    type: Literal[MetadataStorageBackend.POSTGRES] = MetadataStorageBackend.POSTGRES
 
     @model_validator(mode='after')
     def _validate_connection_source(self) -> 'PostgresMetadataStorageConfig':
         sources = sum(
-            bool(value) for value in (
+            bool(value)
+            for value in (
                 self.dsn,
                 self.dsn_secret_name,
                 self.auth_mode,
-            ))
+            )
+        )
         if sources != 1:
             raise ValueError(
                 'PostgresMetadataStorageConfig requires exactly one of '
-                '"dsn", "dsn_secret_name", or "auth_mode".')
+                '"dsn", "dsn_secret_name", or "auth_mode".'
+            )
         if self.auth_mode:
             missing = [
-                name for name in ('username', 'host', 'database')
+                name
+                for name in ('username', 'host', 'database')
                 if not getattr(self, name)
             ]
             if missing:
-                raise ValueError('Passwordless Postgres config is missing: ' +
-                                 ', '.join(missing))
-            if self.auth_mode == 'aws_iam' and not self.region:
                 raise ValueError(
-                    'Passwordless AWS Postgres config requires "region".')
+                    'Passwordless Postgres config is missing: ' + ', '.join(missing)
+                )
+            if self.auth_mode == 'aws_iam' and not self.region:
+                raise ValueError('Passwordless AWS Postgres config requires "region".')
         return self
 
 
-MetadataStorageConfig = Union[SqliteMetadataStorageConfig,
-                              PostgresMetadataStorageConfig]
+MetadataStorageConfig = Union[
+    SqliteMetadataStorageConfig, PostgresMetadataStorageConfig
+]
 
 # ---------------------------------------------------------------------------
 # Data compute sub-config
@@ -144,6 +155,7 @@ MetadataStorageConfig = Union[SqliteMetadataStorageConfig,
 
 class DataComputeBackend(str, Enum):
     """How data ingestion and transformation workloads are run."""
+
     DISKGRAPH = 'DISKGRAPH'
 
 
@@ -156,6 +168,7 @@ class DiskgraphNodeType:
     provisioned by the deployment. ``gpu_count`` defaults to one because
     single-GPU cache nodes are the standard configuration.
     """
+
     # Provisioned local SSD/PVC capacity. Placement applies
     # pool_ssd_max_utilization before admitting snapshot bytes.
     ssd_gib: int = Field(gt=0)
@@ -166,7 +179,9 @@ def _pool_resource_quantity(value: str, resource: str) -> Decimal:
     """Validate a positive Kubernetes quantity without importing the K8s SDK."""
     match = re.fullmatch(
         r'([+]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+))'
-        r'([eE][+-]?[0-9]+|[numkMGTPE]|[KMGTPE]i)?', value)
+        r'([eE][+-]?[0-9]+|[numkMGTPE]|[KMGTPE]i)?',
+        value,
+    )
     if not match:
         raise ValueError(f'{resource}: invalid Kubernetes quantity {value!r}')
     number, suffix = match.groups()
@@ -175,7 +190,7 @@ def _pool_resource_quantity(value: str, resource: str) -> Decimal:
         if len(suffix) > 1 and suffix[0] in 'eE' and suffix != 'Ei':
             quantity = Decimal(value)
         elif suffix.endswith('i'):
-            quantity = Decimal(number) * (1024**('KMGTPE'.index(suffix[0]) + 1))
+            quantity = Decimal(number) * (1024 ** ('KMGTPE'.index(suffix[0]) + 1))
         else:
             exponent = {
                 'n': -9,
@@ -187,27 +202,28 @@ def _pool_resource_quantity(value: str, resource: str) -> Decimal:
                 'G': 9,
                 'T': 12,
                 'P': 15,
-                'E': 18
+                'E': 18,
             }[suffix]
-            quantity = Decimal(number) * (Decimal(10)**exponent)
+            quantity = Decimal(number) * (Decimal(10) ** exponent)
         if not 0 < quantity <= (2**63 - 1):
-            raise ValueError(
-                f'{resource}: quantity must be positive and <= 2^63-1')
+            raise ValueError(f'{resource}: quantity must be positive and <= 2^63-1')
         if resource == 'cpu' and quantity % Decimal('0.001'):
             raise ValueError('cpu: quantity must be a multiple of 1m')
         return quantity
     except DecimalException as exc:
-        raise ValueError(
-            f'{resource}: invalid Kubernetes quantity {value!r}') from exc
+        raise ValueError(f'{resource}: invalid Kubernetes quantity {value!r}') from exc
 
 
 @dataclass(config=ConfigDict(extra='forbid'))
 class PoolPodResources:
     """Optional CPU/memory entries, in Kubernetes requests/limits shape."""
-    requests: Dict[Literal['cpu', 'memory'],
-                   str] = dataclasses.field(default_factory=dict)
-    limits: Dict[Literal['cpu', 'memory'],
-                 str] = dataclasses.field(default_factory=dict)
+
+    requests: Dict[Literal['cpu', 'memory'], str] = dataclasses.field(
+        default_factory=dict
+    )
+    limits: Dict[Literal['cpu', 'memory'], str] = dataclasses.field(
+        default_factory=dict
+    )
 
     @field_validator('requests', 'limits', mode='before')
     @classmethod
@@ -237,13 +253,10 @@ class PoolPodResources:
 
     def overlay(self, override: 'PoolPodResources') -> 'PoolPodResources':
         """Merge each resource independently, validating the effective result."""
-        return PoolPodResources(requests={
-            **self.requests,
-            **override.requests
-        }, limits={
-            **self.limits,
-            **override.limits
-        })
+        return PoolPodResources(
+            requests={**self.requests, **override.requests},
+            limits={**self.limits, **override.limits},
+        )
 
 
 @dataclass(config=ConfigDict(extra='forbid'))
@@ -253,26 +266,31 @@ class PoolResourcesConfig:
     Empty maps preserve existing behavior. Training/prediction overrides overlay
     activity_defaults per field; GPUs remain controlled by the placement code.
     """
-    daemon: PoolPodResources = dataclasses.field(
-        default_factory=PoolPodResources)
+
+    daemon: PoolPodResources = dataclasses.field(default_factory=PoolPodResources)
     activity_defaults: PoolPodResources = dataclasses.field(
-        default_factory=PoolPodResources)
+        default_factory=PoolPodResources
+    )
     training_overrides: PoolPodResources = dataclasses.field(
-        default_factory=PoolPodResources)
+        default_factory=PoolPodResources
+    )
     prediction_overrides: PoolPodResources = dataclasses.field(
-        default_factory=PoolPodResources)
+        default_factory=PoolPodResources
+    )
 
     def effective_daemon(self) -> PoolPodResources:
-        return PoolPodResources(requests={
-            'cpu': '1',
-            'memory': '2Gi'
-        }).overlay(self.daemon)
+        return PoolPodResources(requests={'cpu': '1', 'memory': '2Gi'}).overlay(
+            self.daemon
+        )
 
     def effective_activity(
-            self, kind: Optional[Literal['training',
-                                         'prediction']]) -> PoolPodResources:
-        override = (getattr(self, f'{kind}_overrides')
-                    if kind is not None else PoolPodResources())
+        self, kind: Optional[Literal['training', 'prediction']]
+    ) -> PoolPodResources:
+        override = (
+            getattr(self, f'{kind}_overrides')
+            if kind is not None
+            else PoolPodResources()
+        )
         return self.activity_defaults.overlay(override)
 
     @model_validator(mode='after')
@@ -287,20 +305,19 @@ class PoolResourcesConfig:
 @dataclass(config=ConfigDict(extra='forbid', populate_by_name=True))
 class PoolToleration:
     """An additional pod toleration, using Kubernetes field names in JSON."""
+
     key: str = ''
     operator: Literal['Equal', 'Exists', ''] = 'Equal'
     value: str = ''
     effect: Literal['NoSchedule', 'PreferNoSchedule', 'NoExecute', ''] = ''
-    toleration_seconds: Optional[int] = Field(default=None,
-                                              alias='tolerationSeconds',
-                                              strict=True, ge=-(2**63),
-                                              le=2**63 - 1)
+    toleration_seconds: Optional[int] = Field(
+        default=None, alias='tolerationSeconds', strict=True, ge=-(2**63), le=2**63 - 1
+    )
 
     @model_validator(mode='after')
     def _validate_toleration(self) -> 'PoolToleration':
         if not self.key and self.operator != 'Exists':
-            raise ValueError(
-                'a toleration with no key requires operator Exists')
+            raise ValueError('a toleration with no key requires operator Exists')
         if self.operator == 'Exists' and self.value:
             raise ValueError('an Exists toleration must not specify a value')
         if self.toleration_seconds is not None and self.effect != 'NoExecute':
@@ -317,6 +334,7 @@ class K8sPoolStrategyConfig:
     itself is the single worker, so there are no daemon pods, PVCs, or
     heartbeat-based worker health to configure.
     """
+
     # DG node types: a ``{instance-type: DiskgraphNodeType}`` map shared by the
     # cache and ephemeral pools. The controller treats each value as a durable
     # capacity tuple ``(ssd_gib, gpu_count)``: it picks the smallest tuple that
@@ -334,11 +352,13 @@ class K8sPoolStrategyConfig:
     # dataclass.)
     pool_diskgraph_node_types: Dict[str, DiskgraphNodeType] = Field(...)
     pool_resources: PoolResourcesConfig = dataclasses.field(
-        default_factory=PoolResourcesConfig)
+        default_factory=PoolResourcesConfig
+    )
     # Additive for daemon, cache/eph activities, and their startup canaries.
     # Built-in dedicated=diskgraph[-eph]-<tenant>:NoSchedule tolerations remain.
     pool_extra_tolerations: list[PoolToleration] = dataclasses.field(
-        default_factory=list)
+        default_factory=list
+    )
     # Fraction (0, 1] of physical SSD the pool may use for snapshot storage.
     # Serves double duty: (1) admission — smallest tier where
     # tier × utilization ≥ snapshot_estimate is selected; (2) pressure
@@ -366,7 +386,8 @@ class K8sPoolStrategyConfig:
             raise ValueError('pool_diskgraph_node_types must not be empty')
         if any(not k for k in v):
             raise ValueError(
-                'pool_diskgraph_node_types: instance types must be non-empty')
+                'pool_diskgraph_node_types: instance types must be non-empty'
+            )
         return v
 
 
@@ -384,6 +405,7 @@ class DiskgraphConfig:
     under ``k8s_pool``; settings that apply to both k8s and singlehost
     remain here.
     """
+
     type: Literal[DataComputeBackend.DISKGRAPH] = DataComputeBackend.DISKGRAPH
     data_root: str = '/mnt/localssd'
     local_ingest_root: Optional[str] = None
@@ -411,6 +433,7 @@ class DiskgraphConfig:
 
 class TemporalServerLocation(str, Enum):
     """Where the Temporal server runs."""
+
     CLOUD = 'cloud'  # Temporal Cloud (*.tmprl.cloud)
     CUSTOM = 'custom'  # Self-hosted or localhost
 
@@ -423,6 +446,7 @@ class TemporalCloudConfig:
     (<namespace>.put0h.tmprl.cloud:7233). TLS cert is retrieved from
     the secret backend using 'kumo-{namespace}-temporal' convention.
     """
+
     type: Literal[TemporalServerLocation.CLOUD] = TemporalServerLocation.CLOUD
     namespace: Optional[str] = None  # None → derived from deploy_mode
 
@@ -434,6 +458,7 @@ class CustomTemporalConfig:
     Maps to env vars: TEMPORAL_ADDRESS, TEMPORAL_NAMESPACE,
     TEMPORAL_CERT_DIR.
     """
+
     server_address: str  # e.g. '127.0.0.1:7233'
     type: Literal[TemporalServerLocation.CUSTOM] = TemporalServerLocation.CUSTOM
     namespace: Optional[str] = None  # None → derived from deploy_mode
@@ -452,6 +477,7 @@ class StorageScheme(str, Enum):
 
     Values match the URI scheme strings dispatched by ``io_utils.fsutil``.
     """
+
     S3 = 's3'
     GCS = 'gs'
     DBFS = 'dbfs'
@@ -461,6 +487,7 @@ class StorageScheme(str, Enum):
 
 class S3AddressingStyle(str, Enum):
     """Bucket addressing used by an S3-compatible deployment endpoint."""
+
     PATH = 'path'
     VIRTUAL = 'virtual'
     AUTO = 'auto'
@@ -473,6 +500,7 @@ class S3StorageConfig:
     Credentials are represented only by a secret name and are resolved at
     runtime through the configured secret backend.
     """
+
     endpoint_url: str
     region: str
     addressing_style: S3AddressingStyle
@@ -485,25 +513,34 @@ class S3StorageConfig:
         endpoint = self.endpoint_url.strip()
         parsed = urlparse(endpoint)
         valid_scheme = parsed.scheme in ('http', 'https')
-        if (endpoint != self.endpoint_url or not valid_scheme
-                or not parsed.hostname or parsed.username is not None
-                or parsed.password is not None or parsed.query
-                or parsed.fragment or parsed.path not in ('', '/')):
+        if (
+            endpoint != self.endpoint_url
+            or not valid_scheme
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+            or parsed.path not in ('', '/')
+        ):
             raise ValueError(
                 'storage.s3.endpoint_url must be an absolute HTTP(S) S3 API '
-                'origin without credentials, a path, query, or fragment')
+                'origin without credentials, a path, query, or fragment'
+            )
         if not self.region.strip() or self.region != self.region.strip():
             raise ValueError('storage.s3.region must be non-empty')
-        if (not self.credential_secret_name.strip()
-                or self.credential_secret_name
-                != self.credential_secret_name.strip()):
-            raise ValueError(
-                'storage.s3.credential_secret_name must be non-empty')
+        if (
+            not self.credential_secret_name.strip()
+            or self.credential_secret_name != self.credential_secret_name.strip()
+        ):
+            raise ValueError('storage.s3.credential_secret_name must be non-empty')
         if self.ca_bundle_path is not None:
-            if (not self.ca_bundle_path.startswith('/')
-                    or self.ca_bundle_path.endswith('/')):
+            if not self.ca_bundle_path.startswith('/') or self.ca_bundle_path.endswith(
+                '/'
+            ):
                 raise ValueError(
-                    'storage.s3.ca_bundle_path must be an absolute file path')
+                    'storage.s3.ca_bundle_path must be an absolute file path'
+                )
         return self
 
 
@@ -514,6 +551,7 @@ class AzureStorageConfig:
     Used by the ADLS filesystem implementation when the data-plane storage
     root is an ABFS path. All fields are required together.
     """
+
     client_id: str
     client_secret: str
     tenant_id: str
@@ -535,6 +573,7 @@ class FileStorageConfig:
     None means the root is derived at runtime from deploy_mode and
     instance_id using a platform-specific template.
     """
+
     data_plane_storage_root: Optional[str] = None
     control_plane_storage_root: Optional[str] = None
     artifact_root: Optional[str] = None
@@ -547,11 +586,13 @@ class FileStorageConfig:
     def _validate_s3_roots(self) -> 'FileStorageConfig':
         if self.s3 is None:
             return self
-        roots = (self.data_plane_storage_root, self.control_plane_storage_root,
-                 self.artifact_root)
+        roots = (
+            self.data_plane_storage_root,
+            self.control_plane_storage_root,
+            self.artifact_root,
+        )
         if not any(root and root.startswith('s3://') for root in roots):
-            raise ValueError(
-                'storage.s3 requires at least one s3:// deployment root')
+            raise ValueError('storage.s3 requires at least one s3:// deployment root')
         return self
 
 
@@ -571,6 +612,7 @@ class SecretConfig:
     - AWS_SM, GCP_SM: read + write
     - K8S_MOUNT, ENV_VAR: read-only
     """
+
     backend: SecretBackend  # Primary secret backend (required)
     fallbacks: Sequence[SecretBackend] = ()
     mount_path: Optional[str] = None  # Base dir for K8S_MOUNT secrets
@@ -579,6 +621,7 @@ class SecretConfig:
 @dataclass
 class LoggingConfig:
     """Logging/observability settings."""
+
     backend: LoggingBackend = LoggingBackend.CLOUDWATCH
     output_format: LoggingOutputFormat = LoggingOutputFormat.TEXT
 
@@ -586,6 +629,7 @@ class LoggingConfig:
 @dataclass(frozen=True)
 class SecretKeyRef:
     """Reference to a value inside the configured secret backend."""
+
     secret_name: str
     secret_key: str
 
@@ -598,6 +642,7 @@ class DirectConnectGoogleGroupsConfig:
     fetched from the Directory API using a customer-provided service
     account with domain-wide delegation, impersonating ``admin_email``.
     """
+
     service_account_key_ref: Optional[SecretKeyRef] = None
     admin_email: Optional[str] = None
 
@@ -609,6 +654,7 @@ class DirectConnectOIDCAuthConfig:
     Secret values are referenced by name/key so deploy_env_config.json can stay
     non-sensitive.
     """
+
     issuer: Optional[str] = None
     client_id: Optional[str] = None
     client_secret_ref: Optional[SecretKeyRef] = None
@@ -619,12 +665,14 @@ class DirectConnectOIDCAuthConfig:
 @dataclass(frozen=True)
 class DirectConnectPasswordAuthConfig:
     """Direct Connect password-login bootstrap settings."""
+
     temporary_password_ref: Optional[SecretKeyRef] = None
 
 
 @dataclass(frozen=True)
 class DirectConnectAuthConfig:
     """Direct Connect auth settings consumed by REST/UI."""
+
     login_method: Optional[Literal['oidc', 'password']] = None
     allowed_return_origins: Tuple[str, ...] = ()
     admin_emails: Tuple[str, ...] = ()
@@ -648,6 +696,7 @@ class AuthConfig:
     All fields are optional so older deploy_env_config.json files remain valid.
     Direct Connect is the only supported auth backend.
     """
+
     enabled: Optional[bool] = None
     # Kept only to reject stale non-Direct-Connect configs with an explicit
     # error during auth resolution.
@@ -663,6 +712,7 @@ class AmbientS3WorkloadConfig:
     a concrete IAM role; assumed-role session ARNs are normalized back to an
     IAM role before comparison at the activity boundary.
     """
+
     approved_role_arns: Tuple[str, ...]
 
     @field_validator('approved_role_arns', mode='before')
@@ -671,17 +721,18 @@ class AmbientS3WorkloadConfig:
         import re
 
         if isinstance(value, str):
-            values = (value, )
+            values = (value,)
         else:
             values = tuple(value or ())
-        normalized = tuple(
-            str(item).strip() for item in values if str(item).strip())
+        normalized = tuple(str(item).strip() for item in values if str(item).strip())
         if len(set(normalized)) != len(normalized):
             raise ValueError(
-                'ambient_s3.approved_role_arns must not contain duplicates')
+                'ambient_s3.approved_role_arns must not contain duplicates'
+            )
         role_pattern = re.compile(
             r'^arn:(aws|aws-us-gov|aws-cn):iam::[0-9]{12}:'
-            r'role/[A-Za-z0-9+=,.@_-]+$')
+            r'role/[A-Za-z0-9+=,.@_-]+$'
+        )
         if not normalized:
             raise ValueError('ambient_s3.approved_role_arns must not be empty')
         invalid = [arn for arn in normalized if not role_pattern.fullmatch(arn)]
@@ -689,7 +740,8 @@ class AmbientS3WorkloadConfig:
             raise ValueError(
                 'ambient_s3.approved_role_arns must contain concrete, '
                 'pathless IAM role ARNs; invalid values: '
-                f'{invalid}')
+                f'{invalid}'
+            )
         return normalized
 
 
@@ -703,6 +755,7 @@ class AmbientGCPWorkloadConfig:
     service account is attested against this list before it is used to read a
     customer's GCS bucket or BigQuery dataset.
     """
+
     approved_service_account_emails: Tuple[str, ...]
 
     @field_validator('approved_service_account_emails', mode='before')
@@ -711,24 +764,28 @@ class AmbientGCPWorkloadConfig:
         import re
 
         if isinstance(value, str):
-            values = (value, )
+            values = (value,)
         else:
             values = tuple(value or ())
         normalized = tuple(
-            str(item).strip().lower() for item in values if str(item).strip())
+            str(item).strip().lower() for item in values if str(item).strip()
+        )
         if not normalized:
-            raise ValueError('ambient_gcp.approved_service_account_emails '
-                             'must not be empty')
+            raise ValueError(
+                'ambient_gcp.approved_service_account_emails must not be empty'
+            )
         if len(set(normalized)) != len(normalized):
-            raise ValueError('ambient_gcp.approved_service_account_emails '
-                             'must not contain duplicates')
-        email_pattern = re.compile(
-            r'^[a-z0-9._-]+@[a-z0-9.-]+\.gserviceaccount\.com$')
+            raise ValueError(
+                'ambient_gcp.approved_service_account_emails '
+                'must not contain duplicates'
+            )
+        email_pattern = re.compile(r'^[a-z0-9._-]+@[a-z0-9.-]+\.gserviceaccount\.com$')
         invalid = [e for e in normalized if not email_pattern.fullmatch(e)]
         if invalid:
             raise ValueError(
                 'ambient_gcp.approved_service_account_emails must contain '
-                f'Google service-account emails; invalid values: {invalid}')
+                f'Google service-account emails; invalid values: {invalid}'
+            )
         return normalized
 
 
@@ -749,16 +806,21 @@ class RawDeployConfig:
     only need to specify what they override.  Resolution of None values
     (e.g. storage roots) happens in DeployEnvConfig.parse_from_env().
     """
+
     data_compute: DiskgraphConfig = Field(default_factory=DiskgraphConfig)
     orchestration: OrchestrationConfig = Field(
-        default_factory=TemporalCloudConfig, discriminator='type')
+        default_factory=TemporalCloudConfig, discriminator='type'
+    )
     secrets: SecretConfig = Field(
-        default_factory=lambda: SecretConfig(backend=SecretBackend.AWS_SM))
+        default_factory=lambda: SecretConfig(backend=SecretBackend.AWS_SM)
+    )
     storage: FileStorageConfig = Field(default_factory=FileStorageConfig)
     metadata_storage: MetadataStorageConfig = Field(
-        default_factory=SqliteMetadataStorageConfig, discriminator='type')
-    logging: LoggingConfig = Field(default_factory=lambda: LoggingConfig(
-        backend=LoggingBackend.CLOUDWATCH))
+        default_factory=SqliteMetadataStorageConfig, discriminator='type'
+    )
+    logging: LoggingConfig = Field(
+        default_factory=lambda: LoggingConfig(backend=LoggingBackend.CLOUDWATCH)
+    )
     azure_storage: Optional[AzureStorageConfig] = None
     auth: Optional[AuthConfig] = None
     ambient_s3: Optional[AmbientS3WorkloadConfig] = None
@@ -770,23 +832,23 @@ class RawDeployConfig:
 
 
 PLATFORM_DEFAULTS: dict[PlatformPreset, RawDeployConfig] = {
-    PlatformPreset.AWS:
-    RawDeployConfig(
+    PlatformPreset.AWS: RawDeployConfig(
         data_compute=DiskgraphConfig(),
         orchestration=TemporalCloudConfig(),
         secrets=SecretConfig(backend=SecretBackend.AWS_SM),
         storage=FileStorageConfig(),
-        logging=LoggingConfig(backend=LoggingBackend.CLOUDWATCH,
-                              output_format=LoggingOutputFormat.TEXT),
+        logging=LoggingConfig(
+            backend=LoggingBackend.CLOUDWATCH, output_format=LoggingOutputFormat.TEXT
+        ),
     ),
-    PlatformPreset.GCP:
-    RawDeployConfig(
+    PlatformPreset.GCP: RawDeployConfig(
         data_compute=DiskgraphConfig(),
         orchestration=TemporalCloudConfig(),
         secrets=SecretConfig(backend=SecretBackend.GCP_SM),
         storage=FileStorageConfig(),
-        logging=LoggingConfig(backend=LoggingBackend.CLOUD_LOGGING,
-                              output_format=LoggingOutputFormat.TEXT),
+        logging=LoggingConfig(
+            backend=LoggingBackend.CLOUD_LOGGING, output_format=LoggingOutputFormat.TEXT
+        ),
     ),
 }
 
@@ -830,11 +892,13 @@ def load_raw_deploy_config() -> Optional[RawDeployConfig]:
     if config_file and config_json:
         raise ValueError(
             f'{_DEPLOY_CONFIG_FILE_ENV} and {_DEPLOY_CONFIG_JSON_ENV} '
-            f'cannot both be set')
+            f'cannot both be set'
+        )
 
     override_data: Optional[dict] = None
     if config_file:
         from io_utils.json import load_json
+
         override_data = load_json(config_file, dict)
     elif config_json:
         override_data = json.loads(config_json)
@@ -850,8 +914,7 @@ def _deep_merge_dicts(base: dict, override: dict) -> dict:
     """Recursively merge *override* into *base* (override wins)."""
     merged = dict(base)
     for key, val in override.items():
-        if (key in merged and isinstance(merged[key], dict)
-                and isinstance(val, dict)):
+        if key in merged and isinstance(merged[key], dict) and isinstance(val, dict):
             merged[key] = _deep_merge_dicts(merged[key], val)
         else:
             merged[key] = val
@@ -876,4 +939,5 @@ def _parse_raw_deploy_config(data: dict) -> RawDeployConfig:
     ``Field(discriminator='type')`` annotations on RawDeployConfig fields.
     """
     from pydantic import TypeAdapter
+
     return TypeAdapter(RawDeployConfig).validate_python(data)

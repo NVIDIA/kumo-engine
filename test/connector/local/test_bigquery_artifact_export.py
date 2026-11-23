@@ -4,7 +4,6 @@
 """Offline BigQuery export-path regressions; no Temporal/REST server needed."""
 
 from pathlib import Path
-from test.connector.local.test_bigquery_connector import FakeGcsClient
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -33,12 +32,16 @@ from rest.config.data_backend import ConnectorExecutionRef
 from rest.config.jobs import WriteMode
 from statedb.config.common import ConnectorID, ProjectID
 from statedb.utils.errors import ArtifactExportError
+from test.connector.local.test_bigquery_connector import FakeGcsClient
 
 
-@pytest.mark.parametrize('artifact_type', [
-    PredictionArtifactType.PREDICTIONS,
-    PredictionArtifactType.EMBEDDINGS,
-])
+@pytest.mark.parametrize(
+    'artifact_type',
+    [
+        PredictionArtifactType.PREDICTIONS,
+        PredictionArtifactType.EMBEDDINGS,
+    ],
+)
 @pytest.mark.parametrize('multiple_roots', [False, True])
 def test_bigquery_exports_exact_selected_parts_without_root_inference(
     monkeypatch: pytest.MonkeyPatch,
@@ -60,7 +63,7 @@ def test_bigquery_exports_exact_selected_parts_without_root_inference(
         other_root: [second],
         stale_root: [stale_root + '/part-00001-00000.parquet'],
     }
-    roots = (root, other_root) if multiple_roots else (root, )
+    roots = (root, other_root) if multiple_roots else (root,)
     expected_uris = [first, second] if multiple_roots else [first]
     selected = SimpleNamespace(
         artifact_type=artifact_type,
@@ -69,8 +72,10 @@ def test_bigquery_exports_exact_selected_parts_without_root_inference(
         file_count=len(expected_uris),
     )
     monkeypatch.setattr(
-        parquet_io_activities, 'load_prediction_selection',
-        lambda *_args, **_kwargs: SimpleNamespace(artifacts=(selected, )))
+        parquet_io_activities,
+        'load_prediction_selection',
+        lambda *_args, **_kwargs: SimpleNamespace(artifacts=(selected,)),
+    )
     listed_roots = []
 
     def list_objects(path):
@@ -78,81 +83,104 @@ def test_bigquery_exports_exact_selected_parts_without_root_inference(
         return objects[path]
 
     monkeypatch.setattr(fsutil, 'listdir', list_objects)
-    connector = BigQueryConnector('output', project_id='customer-project',
-                                  dataset_id='output_dataset')
+    connector = BigQueryConnector(
+        'output', project_id='customer-project', dataset_id='output_dataset'
+    )
     provider = Mock(spec=bigquery.Client)
     provider.get_table.side_effect = NotFound('table does not exist')
     provider.load_table_from_uri.return_value.done.return_value = True
     connector._context = provider
-    monkeypatch.setattr(parquet_io_activities, 'get_connector_from_spec',
-                        lambda _spec: connector)
+    monkeypatch.setattr(
+        parquet_io_activities, 'get_connector_from_spec', lambda _spec: connector
+    )
     output = NamedOutputConfig(
         connector=ConnectorExecutionRef(
             project_id=ProjectID('project_' + 'a' * 32),
-            connector_id=ConnectorID('connector_' + 'b' * 32)),
-        out_table=ArtifactOutTable(table_name='predictions',
-                                   write_mode=WriteMode.APPEND),
+            connector_id=ConnectorID('connector_' + 'b' * 32),
+        ),
+        out_table=ArtifactOutTable(
+            table_name='predictions', write_mode=WriteMode.APPEND
+        ),
     )
     input = ArtifactExportInput(
         artifact_paths={artifact_type: root},
         output_config={artifact_type: [output]},
         prediction_selection=Mock(),
-        prediction_artifact_types=(artifact_type, ),
+        prediction_artifact_types=(artifact_type,),
     )
-    stats = OutputArtifactStats(artifact_type=artifact_type, num_rows=10,
-                                num_cols=3, size_bytes=240, output_path=root)
+    stats = OutputArtifactStats(
+        artifact_type=artifact_type,
+        num_rows=10,
+        num_cols=3,
+        size_bytes=240,
+        output_path=root,
+    )
 
     with (
-            patch.object(connector, '_initialize_gcs_client',
-                         side_effect=AssertionError('no new GCS client')),
-            patch('google.auth.default',
-                  side_effect=AssertionError('no ambient credential lookup')),
-            patch.object(fsutil, 'copy',
-                         side_effect=AssertionError('no local staging')),
+        patch.object(
+            connector,
+            '_initialize_gcs_client',
+            side_effect=AssertionError('no new GCS client'),
+        ),
+        patch(
+            'google.auth.default',
+            side_effect=AssertionError('no ambient credential lookup'),
+        ),
+        patch.object(fsutil, 'copy', side_effect=AssertionError('no local staging')),
     ):
         result = parquet_io_activities._write_artifacts_to_customer(
-            input, artifact_stats={artifact_type: stats},
-            resolved_connectors={artifact_type: [Mock()]})
+            input,
+            artifact_stats={artifact_type: stats},
+            resolved_connectors={artifact_type: [Mock()]},
+        )
 
     request = provider.load_table_from_uri.call_args.kwargs
     assert request['source_uris'] == expected_uris
-    assert request[
-        'destination'] == 'customer-project.output_dataset.predictions'
+    assert request['destination'] == 'customer-project.output_dataset.predictions'
     assert request['job_config'].write_disposition == 'WRITE_APPEND'
     assert request['job_config'].parquet_options.enable_list_inference
     assert listed_roots == list(roots)
-    assert result[
-        0].output_path == 'customer-project.output_dataset.predictions'
+    assert result[0].output_path == 'customer-project.output_dataset.predictions'
     assert result[0].num_rows == 10
     assert not connector.is_connected
 
 
-@pytest.mark.parametrize(('path', 'expected_uri'), [
-    ('gs://artifacts/predictions.parquet',
-     'gs://artifacts/predictions.parquet'),
-    ('gs://artifacts/predictions', 'gs://artifacts/predictions/*.parquet'),
-    ('gs://artifacts/predictions/', 'gs://artifacts/predictions/*.parquet'),
-    ('gs://artifacts/predictions.parquet/',
-     'gs://artifacts/predictions.parquet/*.parquet'),
-    ('gs://artifacts/predictions/*.parquet',
-     'gs://artifacts/predictions/*.parquet'),
-])
+@pytest.mark.parametrize(
+    ('path', 'expected_uri'),
+    [
+        ('gs://artifacts/predictions.parquet', 'gs://artifacts/predictions.parquet'),
+        ('gs://artifacts/predictions', 'gs://artifacts/predictions/*.parquet'),
+        ('gs://artifacts/predictions/', 'gs://artifacts/predictions/*.parquet'),
+        (
+            'gs://artifacts/predictions.parquet/',
+            'gs://artifacts/predictions.parquet/*.parquet',
+        ),
+        (
+            'gs://artifacts/predictions/*.parquet',
+            'gs://artifacts/predictions/*.parquet',
+        ),
+    ],
+)
 @pytest.mark.parametrize('replace', [False, True])
 def test_bigquery_legacy_uri_handling_and_load_options_are_unchanged(
     path: str,
     expected_uri: str,
     replace: bool,
 ) -> None:
-    connector = BigQueryConnector('output', project_id='customer-project',
-                                  dataset_id='output_dataset')
+    connector = BigQueryConnector(
+        'output', project_id='customer-project', dataset_id='output_dataset'
+    )
     provider = Mock(spec=bigquery.Client)
     schema = [bigquery.SchemaField('embedding', 'FLOAT', mode='REPEATED')]
     provider.get_table.return_value.schema = schema
     provider.load_table_from_uri.return_value.done.return_value = True
     connector._context = provider
 
-    with patch.object(connector, '_initialize_gcs_client',
-                      side_effect=AssertionError('no new GCS client')):
+    with patch.object(
+        connector,
+        '_initialize_gcs_client',
+        side_effect=AssertionError('no new GCS client'),
+    ):
         connector.write_artifacts_to_table('predictions', path, replace=replace)
 
     request = provider.load_table_from_uri.call_args.kwargs
@@ -161,26 +189,29 @@ def test_bigquery_legacy_uri_handling_and_load_options_are_unchanged(
     assert config.schema == schema
     assert not config.autodetect
     assert config.parquet_options.enable_list_inference
-    assert config.write_disposition == ('WRITE_TRUNCATE'
-                                        if replace else 'WRITE_APPEND')
+    assert config.write_disposition == ('WRITE_TRUNCATE' if replace else 'WRITE_APPEND')
     provider.load_table_from_uri.return_value.result.assert_called_once_with()
 
 
-@pytest.mark.parametrize('files', [
-    [],
-    ['s3://artifacts/part.parquet'],
-    ['/tmp/part.parquet'],
-    ['https://example/part.parquet'],
-    ['gs://'],
-    ['gs:///part.parquet'],
-    ['gs://artifacts'],
-    ['gs://artifacts/predictions.parquet/'],
-    ['gs://artifacts/predictions.parquet/*.parquet'],
-    ['gs://artifacts/part.parquet', 'gs://artifacts/part.parquet'],
-])
+@pytest.mark.parametrize(
+    'files',
+    [
+        [],
+        ['s3://artifacts/part.parquet'],
+        ['/tmp/part.parquet'],
+        ['https://example/part.parquet'],
+        ['gs://'],
+        ['gs:///part.parquet'],
+        ['gs://artifacts'],
+        ['gs://artifacts/predictions.parquet/'],
+        ['gs://artifacts/predictions.parquet/*.parquet'],
+        ['gs://artifacts/part.parquet', 'gs://artifacts/part.parquet'],
+    ],
+)
 def test_invalid_selected_files_fail_before_bigquery_io(files) -> None:
-    connector = BigQueryConnector('output', project_id='customer-project',
-                                  dataset_id='output_dataset')
+    connector = BigQueryConnector(
+        'output', project_id='customer-project', dataset_id='output_dataset'
+    )
     provider = Mock(spec=bigquery.Client)
     provider.get_table.side_effect = NotFound('table does not exist')
     provider.load_table_from_uri.return_value.done.return_value = True
@@ -188,16 +219,17 @@ def test_invalid_selected_files_fail_before_bigquery_io(files) -> None:
 
     with pytest.raises(ConnectorError, match='selected.*GCS|Selected.*GCS'):
         connector.write_artifacts_to_table(
-            'predictions', 'gs://artifacts/predictions.parquet',
-            artifact_files=files)
+            'predictions', 'gs://artifacts/predictions.parquet', artifact_files=files
+        )
 
     provider.get_table.assert_not_called()
     provider.load_table_from_uri.assert_not_called()
 
 
 def test_selected_remote_files_cannot_bypass_local_staging() -> None:
-    connector = BigQueryConnector('output', project_id='customer-project',
-                                  dataset_id='output_dataset')
+    connector = BigQueryConnector(
+        'output', project_id='customer-project', dataset_id='output_dataset'
+    )
     provider = Mock(spec=bigquery.Client)
     provider.get_table.side_effect = NotFound('table does not exist')
     provider.load_table_from_uri.return_value.done.return_value = True
@@ -205,8 +237,10 @@ def test_selected_remote_files_cannot_bypass_local_staging() -> None:
 
     with pytest.raises(ConnectorError, match='selected.*GCS|Selected.*GCS'):
         connector.write_artifacts_to_table(
-            'predictions', '/tmp/predictions.parquet',
-            artifact_files=['gs://artifacts/part.parquet'])
+            'predictions',
+            '/tmp/predictions.parquet',
+            artifact_files=['gs://artifacts/part.parquet'],
+        )
 
     provider.get_table.assert_not_called()
     provider.load_table_from_uri.assert_not_called()
@@ -222,47 +256,68 @@ def test_selected_local_bp_output_retains_existing_staging(
     pq.write_table(pa.table({'ID': [1], 'SCORE': [0.5]}), part)
     artifact_type = PredictionArtifactType.PREDICTIONS
     monkeypatch.setattr(
-        parquet_io_activities, 'load_prediction_selection',
-        lambda *_args, **_kwargs: SimpleNamespace(artifacts=(SimpleNamespace(
-            artifact_type=artifact_type, root=str(root), roots=(str(root), ),
-            file_count=1), )))
+        parquet_io_activities,
+        'load_prediction_selection',
+        lambda *_args, **_kwargs: SimpleNamespace(
+            artifacts=(
+                SimpleNamespace(
+                    artifact_type=artifact_type,
+                    root=str(root),
+                    roots=(str(root),),
+                    file_count=1,
+                ),
+            )
+        ),
+    )
     monkeypatch.setenv('GCP_STORAGE_TRANSFER_BUCKET', 'staging-bucket')
-    connector = BigQueryConnector('output', project_id='customer-project',
-                                  dataset_id='output_dataset')
+    connector = BigQueryConnector(
+        'output', project_id='customer-project', dataset_id='output_dataset'
+    )
     provider = Mock(spec=bigquery.Client)
     provider.get_table.side_effect = NotFound('table does not exist')
     provider.load_table_from_uri.return_value.done.return_value = True
     connector._context = provider
     gcs = FakeGcsClient()
     monkeypatch.setattr(connector, '_initialize_gcs_client', lambda: gcs)
-    monkeypatch.setattr(parquet_io_activities, 'get_connector_from_spec',
-                        lambda _spec: connector)
+    monkeypatch.setattr(
+        parquet_io_activities, 'get_connector_from_spec', lambda _spec: connector
+    )
     output = NamedOutputConfig(
         connector=ConnectorExecutionRef(
             project_id=ProjectID('project_' + 'a' * 32),
-            connector_id=ConnectorID('connector_' + 'b' * 32)),
-        out_table=ArtifactOutTable(table_name='predictions',
-                                   write_mode=WriteMode.APPEND))
-    input = ArtifactExportInput(artifact_paths={artifact_type: str(root)},
-                                output_config={artifact_type: [output]},
-                                prediction_selection=Mock(),
-                                prediction_artifact_types=(artifact_type, ))
-    stats = OutputArtifactStats(artifact_type=artifact_type, num_rows=1,
-                                num_cols=2, size_bytes=part.stat().st_size,
-                                output_path=str(root))
+            connector_id=ConnectorID('connector_' + 'b' * 32),
+        ),
+        out_table=ArtifactOutTable(
+            table_name='predictions', write_mode=WriteMode.APPEND
+        ),
+    )
+    input = ArtifactExportInput(
+        artifact_paths={artifact_type: str(root)},
+        output_config={artifact_type: [output]},
+        prediction_selection=Mock(),
+        prediction_artifact_types=(artifact_type,),
+    )
+    stats = OutputArtifactStats(
+        artifact_type=artifact_type,
+        num_rows=1,
+        num_cols=2,
+        size_bytes=part.stat().st_size,
+        output_path=str(root),
+    )
 
     result = parquet_io_activities._write_artifacts_to_customer(
-        input, artifact_stats={artifact_type: stats},
-        resolved_connectors={artifact_type: [Mock()]})
+        input,
+        artifact_stats={artifact_type: stats},
+        resolved_connectors={artifact_type: [Mock()]},
+    )
 
     request = provider.load_table_from_uri.call_args.kwargs
-    (name, ) = gcs.uploaded
+    (name,) = gcs.uploaded
     assert name.startswith('artifact-export/')
     assert name.endswith('/part-00000000.parquet')
     assert gcs.uploaded[name] == 'application/octet-stream'
     directory = name.rsplit('/', 1)[0]
-    assert request['source_uris'] == (
-        f'gs://staging-bucket/{directory}/part-*.parquet')
+    assert request['source_uris'] == (f'gs://staging-bucket/{directory}/part-*.parquet')
     assert request['job_config'].write_disposition == 'WRITE_APPEND'
     assert gcs.bodies == {}
     assert result[0].num_rows == 1
@@ -276,8 +331,9 @@ def test_overwrite_keeps_staging_cleanup_and_sanitizes_load_failures(
     load_fails: bool,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    connector = BigQueryConnector('output', project_id='customer-project',
-                                  dataset_id='output_dataset')
+    connector = BigQueryConnector(
+        'output', project_id='customer-project', dataset_id='output_dataset'
+    )
     provider = Mock(spec=bigquery.Client)
     provider.get_table.return_value.schema = [
         bigquery.SchemaField('embedding', 'FLOAT', mode='REPEATED')
@@ -292,9 +348,14 @@ def test_overwrite_keeps_staging_cleanup_and_sanitizes_load_failures(
     files = [root + '/part-00000-00000.parquet'] if selected else None
 
     def export():
-        return write_artifact_to_bigquery(root, connector, WriteMode.OVERWRITE,
-                                          'predictions', known_size_bytes=240,
-                                          artifact_files=files)
+        return write_artifact_to_bigquery(
+            root,
+            connector,
+            WriteMode.OVERWRITE,
+            'predictions',
+            known_size_bytes=240,
+            artifact_files=files,
+        )
 
     if load_fails:
         with pytest.raises(ArtifactExportError) as error:
@@ -320,20 +381,30 @@ def test_overwrite_keeps_staging_cleanup_and_sanitizes_load_failures(
 
 
 def test_append_schema_mismatch_reaches_the_export_error() -> None:
-    connector = BigQueryConnector('output', project_id='customer-project',
-                                  dataset_id='output_dataset')
+    connector = BigQueryConnector(
+        'output', project_id='customer-project', dataset_id='output_dataset'
+    )
     connector._context = Mock(spec=bigquery.Client)
-    detail = ('Prediction output does not fit the existing BigQuery output '
-              'table: SCORE (FLOAT NULLABLE) is not a table column.')
+    detail = (
+        'Prediction output does not fit the existing BigQuery output '
+        'table: SCORE (FLOAT NULLABLE) is not a table column.'
+    )
 
     with (
-            patch.object(connector, 'write_artifacts_to_table',
-                         side_effect=BigQueryOutputSchemaError(detail)),
-            pytest.raises(ArtifactExportError) as error,
+        patch.object(
+            connector,
+            'write_artifacts_to_table',
+            side_effect=BigQueryOutputSchemaError(detail),
+        ),
+        pytest.raises(ArtifactExportError) as error,
     ):
-        write_artifact_to_bigquery('gs://artifacts/predictions.parquet',
-                                   connector, WriteMode.APPEND, 'predictions',
-                                   known_size_bytes=1)
+        write_artifact_to_bigquery(
+            'gs://artifacts/predictions.parquet',
+            connector,
+            WriteMode.APPEND,
+            'predictions',
+            known_size_bytes=1,
+        )
 
     assert detail in str(error.value)
     assert error.value.non_retryable

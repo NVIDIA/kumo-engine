@@ -25,12 +25,18 @@ log = logging.getLogger(__name__)
 class DataBackendTestUtil:
     @staticmethod
     @blocking_func(DATA_BACKEND_THREAD_POOL)
-    def clear_table_cache(ctx: DataBackendContext, connector_name: str,
-                          source_table_name: str):
+    def clear_table_cache(
+        ctx: DataBackendContext, connector_name: str, source_table_name: str
+    ):
         # Clear out the data persist dir
         data_persist_dir = get_persist_dir()
-        path = os.path.join(data_persist_dir, CACHE_DIR, 'tables',
-                            connector_name, source_table_name or '')
+        path = os.path.join(
+            data_persist_dir,
+            CACHE_DIR,
+            'tables',
+            connector_name,
+            source_table_name or '',
+        )
         log.info('Clearing %s', path)
         fsutil.rm(path)
 
@@ -46,14 +52,16 @@ class DataBackendTestUtil:
         """
         cache: BackendCacheManager = get_active_cache()
         versioned_graph_key = cache.graph_cache.get_many_latest_graph_versions(
-            [graph_key])[0]
+            [graph_key]
+        )[0]
         if not versioned_graph_key:
             log.warning(
                 'Trying to delete validation for graph %s, but data version '
-                'is missing.', graph_key)
+                'is missing.',
+                graph_key,
+            )
             return
-        graph_dir = cache.graph_cache.graph_dir(graph_key,
-                                                versioned_graph_key.version)
+        graph_dir = cache.graph_cache.graph_dir(graph_key, versioned_graph_key.version)
         fsutil.rm(os.path.join(graph_dir, 'validation'))
 
     @staticmethod
@@ -66,34 +74,34 @@ class DataBackendTestUtil:
         Creates and saves a new graph version with the current timestamp.
         """
         graph_version = GraphVersion(
-            str(get_current_timestamps().updated_at.timestamp()))
+            str(get_current_timestamps().updated_at.timestamp())
+        )
         cache = get_active_cache()
         cache.graph_cache.save_latest_graph_version(graph_key, graph_version)
         for edge in edges:
             stats: Dict[EdgeStatType, Stats] = {}
 
-            def set_stat_value(stat_type: EdgeStatType, value: Optional[float],
-                               percent: bool = False) -> None:
-                stat = Stats(value=value, approx=False,
-                             data_version=graph_version)
+            def set_stat_value(
+                stat_type: EdgeStatType, value: Optional[float], percent: bool = False
+            ) -> None:
+                stat = Stats(value=value, approx=False, data_version=graph_version)
                 stats[stat_type] = stat
                 if percent and value is not None:
                     stats[stat_type].value /= 100
 
-            set_stat_value(EdgeStatType.NUM_SRC_NONZERO_DEGREE,
-                           edge.matches.a_in_b)
-            set_stat_value(EdgeStatType.NUM_DST_NONZERO_DEGREE,
-                           edge.matches.b_in_a)
-            set_stat_value(EdgeStatType.FRAC_SRC_NONZERO_DEGREE,
-                           edge.percents.a_in_b, percent=True)
-            set_stat_value(EdgeStatType.FRAC_DST_NONZERO_DEGREE,
-                           edge.percents.b_in_a, percent=True)
-            src = SourceTableColumn(edge.col_a.connector_id,
-                                    edge.col_a.table_name,
-                                    edge.col_a.column_name)
-            dst = SourceTableColumn(edge.col_b.connector_id,
-                                    edge.col_b.table_name,
-                                    edge.col_b.column_name)
-            cache.graph_cache.add_edge_stats(graph_key, src, dst, stats,
-                                             graph_version)
+            set_stat_value(EdgeStatType.NUM_SRC_NONZERO_DEGREE, edge.matches.a_in_b)
+            set_stat_value(EdgeStatType.NUM_DST_NONZERO_DEGREE, edge.matches.b_in_a)
+            set_stat_value(
+                EdgeStatType.FRAC_SRC_NONZERO_DEGREE, edge.percents.a_in_b, percent=True
+            )
+            set_stat_value(
+                EdgeStatType.FRAC_DST_NONZERO_DEGREE, edge.percents.b_in_a, percent=True
+            )
+            src = SourceTableColumn(
+                edge.col_a.connector_id, edge.col_a.table_name, edge.col_a.column_name
+            )
+            dst = SourceTableColumn(
+                edge.col_b.connector_id, edge.col_b.table_name, edge.col_b.column_name
+            )
+            cache.graph_cache.add_edge_stats(graph_key, src, dst, stats, graph_version)
         return graph_version

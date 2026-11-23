@@ -137,8 +137,11 @@ class TableDataTaskResult:
 
     @property
     def ok(self) -> bool:
-        return (self.status == AsyncDataTaskStatus.DONE and not self.error
-                and self.validation.ok)
+        return (
+            self.status == AsyncDataTaskStatus.DONE
+            and not self.error
+            and self.validation.ok
+        )
 
     @property
     def full_col_stats_computed(self) -> bool:
@@ -146,14 +149,17 @@ class TableDataTaskResult:
             return self.col_stats_computed
         if self.stage == TableRefreshStage.COMPLETED:
             return True
-        return (self.stage == TableRefreshStage.COMPUTE_FULL_COL_STATS
-                and self.status == AsyncDataTaskStatus.DONE)
+        return (
+            self.stage == TableRefreshStage.COMPUTE_FULL_COL_STATS
+            and self.status == AsyncDataTaskStatus.DONE
+        )
 
     @property
     def min_col_stats_computed(self) -> bool:
         return self.full_col_stats_computed or (
             self.stage == TableRefreshStage.COMPUTE_MIN_COL_STATS
-            and self.status == AsyncDataTaskStatus.DONE)
+            and self.status == AsyncDataTaskStatus.DONE
+        )
 
 
 @kumo_dataclass
@@ -162,6 +168,7 @@ class TableIngestionInfo:
     S3 at the end of the ingest workflow. Some of these fields are exposed in
     the UI for MLOps purposes.
     """
+
     ingest_start_time: datetime
     ingest_end_time: datetime
     temporal_workflow_id: str
@@ -176,6 +183,7 @@ class DirectDiskgraphSourceDecision:
     entry is different: it belongs to a refresh created before this contract
     existed and may use the temporary compatibility fallback.
     """
+
     source: Optional[Dict[str, Any]]
 
 
@@ -185,8 +193,8 @@ DataVersionResolver: TypeAlias = Callable[[Any, str], str]
 
 @dataclass(frozen=True)
 class PredStats:
-    """All stats on a prediction table
-    """
+    """All stats on a prediction table"""
+
     col_stats: Dict[ColumnName, Dict[ColStatType, StatsConfig]]
 
     @staticmethod
@@ -196,8 +204,7 @@ class PredStats:
         since prediction tables don't have table stats.
         """
         col_dict = fast_from_json(col_json, Dict[str, StatsConfig])
-        col_stats: Dict[ColumnName, Dict[ColStatType,
-                                         StatsConfig]] = defaultdict(dict)
+        col_stats: Dict[ColumnName, Dict[ColStatType, StatsConfig]] = defaultdict(dict)
         for key, stat in col_dict.items():
             try:
                 col_name, stat_type, approx = parse_col_stat_from_key(key)
@@ -210,10 +217,12 @@ class PredStats:
                 # failing the whole parse function
                 logger.exception(
                     'Unable to parse table %s key %s from exact stats, %s',
-                    table_id, key, e)
+                    table_id,
+                    key,
+                    e,
+                )
         if len(col_stats) == 0:
-            raise NoExactStatsFound(
-                "No exact stats could be found in the col_json")
+            raise NoExactStatsFound('No exact stats could be found in the col_json')
 
         return PredStats(col_stats)
 
@@ -230,19 +239,22 @@ def col_stat_key(
 ) -> ColStatKey:
     # N.B. col_config.stype is Optional
     if col_config.stype is None:
-        return "__".join([col_config.name, stat_type.value, str(approx)])
-    return "__".join([
-        col_config.name,
-        persisted_type_token(col_config.stype), stat_type.value,
-        str(approx)
-    ])
+        return '__'.join([col_config.name, stat_type.value, str(approx)])
+    return '__'.join(
+        [
+            col_config.name,
+            persisted_type_token(col_config.stype),
+            stat_type.value,
+            str(approx),
+        ]
+    )
 
 
 def table_stat_key(stat_type: TableStatType, approx: bool = False) -> str:
-    return "__".join([stat_type.value, str(approx)])
+    return '__'.join([stat_type.value, str(approx)])
 
 
-STAGE_KEY = "stage"
+STAGE_KEY = 'stage'
 
 # Dicts for stats indexed by ColStatKey
 ColStatsDict: TypeAlias = Dict[ColStatKey, StatsConfig]
@@ -255,18 +267,18 @@ class _CacheableTable(Protocol):
     Satisfied by ``rest.config.table_v2.TableDefinition``. Declared as a
     Protocol so this module does not need to import from ``rest.config``.
     """
-    @property
-    def source_table_id(self) -> SourceTableID:
-        ...
 
-    def fingerprint(self) -> TableFingerprint:
-        ...
+    @property
+    def source_table_id(self) -> SourceTableID: ...
+
+    def fingerprint(self) -> TableFingerprint: ...
 
 
 # Forwarder; canonical home is ``kumo.data.get_active_cache``.
 def get_active_cache() -> 'BackendCacheManager':
     """Forwarder for :func:`kumo.data.get_active_cache`."""
     from kumo.data import get_active_cache as _gac
+
     return _gac()
 
 
@@ -275,6 +287,7 @@ class BackendCacheManager:
     Class manages caching of backend data to S3 in json format. Includes stats
     and materialization stage.
     """
+
     def __init__(self, backend_cache_dir: str) -> None:
         self._cache_dir = fsutil.s3a_as_s3(backend_cache_dir)
         fsutil.makedirs(self._cache_dir, exist_ok=True)
@@ -284,8 +297,7 @@ class BackendCacheManager:
         # instance is a class variable of the owner backend
 
         # Everything about the graph information.
-        self.graph_cache = GraphCache(
-            cache_dir=osp.join(backend_cache_dir, 'graphs'))
+        self.graph_cache = GraphCache(cache_dir=osp.join(backend_cache_dir, 'graphs'))
 
         # op_id is a unique ID per execution of a pquery table generation op,
         # identifying the generated pquery tables.
@@ -294,22 +306,29 @@ class BackendCacheManager:
             cache_dir=osp.join(backend_cache_dir, 'train_tables'),
             name=PQUERY_TABLE_STATS,
             # Generated in one job and read in another, so skip in-memory cache.
-            capacity=0)
+            capacity=0,
+        )
 
         # op_id --> [NUM_EXPECTED_ITERATIONS/ITERATION_DATA] --> stat
         self.pquery_table_progress_cache = ReadThroughStatsCache(
             cache_dir=osp.join(backend_cache_dir, 'train_tables'),
-            name='table_progress', capacity=0)
+            name='table_progress',
+            capacity=0,
+        )
 
         # job_id -> stat name -> stat
         self.training_table_split_stats_cache = ReadThroughStatsCache(
             cache_dir=osp.join(backend_cache_dir, 'train_tables'),
-            name=TRAIN_TABLE_SPLIT_STATS, capacity=0)
+            name=TRAIN_TABLE_SPLIT_STATS,
+            capacity=0,
+        )
 
         # source name/connector/version --> stat type --> stat
         self._table_stats_cache = ReadThroughStatsCache(
-            cache_dir=osp.join(backend_cache_dir, 'tables'), name="table_stats",
-            capacity=MAX_CACHE_SIZE)
+            cache_dir=osp.join(backend_cache_dir, 'tables'),
+            name='table_stats',
+            capacity=MAX_CACHE_SIZE,
+        )
 
         # source name/connector/version --> ColStatsDict
         self._col_stats_cache = TTLCache(MAX_CACHE_SIZE, CACHE_TTL)
@@ -320,21 +339,25 @@ class BackendCacheManager:
         self._col_stats_modified_since_save: Set[str] = set()
 
         self.materialization_stage = ReadThroughMaterializationStageCache(
-            backend_cache_dir, name='materialization_stage')
+            backend_cache_dir, name='materialization_stage'
+        )
 
         # source name/connector/version --> pd.DataFrame
         self.table_samples_cache = ReadThroughTableSampleCache(
-            backend_cache_dir, name='table_samples')
+            backend_cache_dir, name='table_samples'
+        )
 
         self.table_version_cache = TableVersionCache(backend_cache_dir)
 
         self.table_refresh_result = ReadThroughTableCache[TableDataTaskResult](
-            backend_cache_dir, name='refresh_task_result')
+            backend_cache_dir, name='refresh_task_result'
+        )
         self.ingestion_info = ReadThroughTableCache[TableIngestionInfo](
-            backend_cache_dir, name='ingestion_info')
+            backend_cache_dir, name='ingestion_info'
+        )
         self.direct_diskgraph_source_decision = ReadThroughTableCache[
-            DirectDiskgraphSourceDecision](
-                backend_cache_dir, name=DIRECT_DISKGRAPH_SOURCE_DECISION)
+            DirectDiskgraphSourceDecision
+        ](backend_cache_dir, name=DIRECT_DISKGRAPH_SOURCE_DECISION)
 
     def col_stats_cache_size(self) -> int:
         ret = 0
@@ -347,11 +370,12 @@ class BackendCacheManager:
         fsutil.makedirs(self._cache_dir, exist_ok=True)
         self.graph_cache.reset(osp.join(self._cache_dir, 'graphs'))
         self.pquery_table_progress_cache.reset(
-            osp.join(self._cache_dir, 'train_tables'))
-        self.pquery_table_stats_cache.reset(
-            osp.join(self._cache_dir, 'train_tables'))
+            osp.join(self._cache_dir, 'train_tables')
+        )
+        self.pquery_table_stats_cache.reset(osp.join(self._cache_dir, 'train_tables'))
         self.training_table_split_stats_cache.reset(
-            osp.join(self._cache_dir, 'train_tables'))
+            osp.join(self._cache_dir, 'train_tables')
+        )
         self._table_stats_cache.reset(osp.join(self._cache_dir, 'tables'))
         self.table_samples_cache.reset(self._cache_dir)
         self.table_version_cache.reset(self._cache_dir)
@@ -360,8 +384,9 @@ class BackendCacheManager:
         self.direct_diskgraph_source_decision.reset(self._cache_dir)
 
     @staticmethod
-    def _get_col_stats_cache_key(table_fingerprint: TableFingerprint,
-                                 data_version: str) -> str:
+    def _get_col_stats_cache_key(
+        table_fingerprint: TableFingerprint, data_version: str
+    ) -> str:
         """Create a cache key from TableFingerprint and data_version.
 
         Args:
@@ -374,32 +399,37 @@ class BackendCacheManager:
             with a columns type form a unique key for the col stats cache.
         """
         key_prefix = (
-            table_fingerprint.connector_name[:4] + '.' +
-            table_source_path_component(table_fingerprint.source_name)[:12])
+            table_fingerprint.connector_name[:4]
+            + '.'
+            + table_source_path_component(table_fingerprint.source_name)[:12]
+        )
         # Adding a hash prefix to ensure that the key is unique even if the
         # connector name and source name are long.
         hash_prefix = hashlib.md5(
-            (table_fingerprint.connector_name + '.' +
-             table_fingerprint.source_name).encode()).hexdigest()
+            (
+                table_fingerprint.connector_name + '.' + table_fingerprint.source_name
+            ).encode()
+        ).hexdigest()
         pkey = getattr(table_fingerprint, 'pkey', None)
-        time_col = time_col_config_to_fp(
-            getattr(table_fingerprint, 'time_col', None))
+        time_col = time_col_config_to_fp(getattr(table_fingerprint, 'time_col', None))
         if pkey is not None:
-            key_prefix += f".{pkey}"
+            key_prefix += f'.{pkey}'
         if time_col is not None:
-            key_prefix += f".{time_col}"
-        return f"{key_prefix}_{hash_prefix}_{data_version}"
+            key_prefix += f'.{time_col}'
+        return f'{key_prefix}_{hash_prefix}_{data_version}'
 
     @staticmethod
-    def _get_table_stats_key(table_fingerprint: TableFingerprint,
-                             data_version: str) -> str:
+    def _get_table_stats_key(
+        table_fingerprint: TableFingerprint, data_version: str
+    ) -> str:
         """A key for the table stats cache, which has stats of type
         `TableStatType`.
         """
         return osp.join(
             table_fingerprint.connector_name,
             table_source_path_component(table_fingerprint.source_name),
-            data_version)
+            data_version,
+        )
 
     @synchronized
     def get_missing_col_stats(
@@ -410,30 +440,32 @@ class BackendCacheManager:
         approx: bool,
     ) -> Dict[BaseColumnConfig, List[ColStatType]]:
         cache_key = BackendCacheManager._get_col_stats_cache_key(
-            table_fingerprint, data_version)
-        logger.debug('Getting missing col stats for '
-                     f'{table_fingerprint.connector_name}.'
-                     f'{table_fingerprint.source_name}.{data_version}')
+            table_fingerprint, data_version
+        )
+        logger.debug(
+            'Getting missing col stats for '
+            f'{table_fingerprint.connector_name}.'
+            f'{table_fingerprint.source_name}.{data_version}'
+        )
         if not self._col_stats_cache.get(cache_key):
             return stats_dict
         return_dict = {}
         for col_config, stat_list in stats_dict.items():
             new_list = []
             for stat_type in stat_list:
-                stat_key_approx = col_stat_key(col_config, stat_type,
-                                               approx=True)
-                stat_key_exact = col_stat_key(col_config, stat_type,
-                                              approx=False)
+                stat_key_approx = col_stat_key(col_config, stat_type, approx=True)
+                stat_key_exact = col_stat_key(col_config, stat_type, approx=False)
                 # either approx or exact can be returned for an approx request
                 if approx or stat_type in APPROX_ONLY_COL_STATS:
-                    if (self._col_stats_cache[cache_key].get(stat_key_exact)
-                            is None and self._col_stats_cache[cache_key].get(
-                                stat_key_approx) is None):
+                    if (
+                        self._col_stats_cache[cache_key].get(stat_key_exact) is None
+                        and self._col_stats_cache[cache_key].get(stat_key_approx)
+                        is None
+                    ):
                         new_list.append(stat_type)
                 # if exact is requested, stat is missing if exact not found
                 else:
-                    if self._col_stats_cache[cache_key].get(
-                            stat_key_exact) is None:
+                    if self._col_stats_cache[cache_key].get(stat_key_exact) is None:
                         new_list.append(stat_type)
 
             if len(new_list) > 0:
@@ -454,14 +486,15 @@ class BackendCacheManager:
             # at the top level
             data_version = _get_stats_data_version(stat_dict)
             cache_key = BackendCacheManager._get_col_stats_cache_key(
-                table_fingerprint, data_version)
+                table_fingerprint, data_version
+            )
             self._col_stats_modified_since_save.add(cache_key)
             if cache_key not in self._col_stats_cache:
                 self._col_stats_cache[cache_key] = {}
             for stat_type, stat in stat_dict.items():
                 stat_key = col_stat_key(col_config, stat_type, stat.approx)
                 self._col_stats_cache[cache_key][stat_key] = stat.config()
-        logger.info(f"ColStatsCache size {self.col_stats_cache_size()}")
+        logger.info(f'ColStatsCache size {self.col_stats_cache_size()}')
 
     def _get_col_stats(
         self,
@@ -475,17 +508,14 @@ class BackendCacheManager:
             new_dict = {}
             for stat_type in stat_list:
                 # first, try to get and return the exact stat
-                stat_key_exact = col_stat_key(col_config, stat_type,
-                                              approx=False)
+                stat_key_exact = col_stat_key(col_config, stat_type, approx=False)
                 stat_exact = col_stats_cache[cache_key].get(stat_key_exact)
                 if stat_exact is not None:
                     new_dict[stat_type] = Stats.from_config(stat_exact)
                 # second, if approx requested try getting approx
                 elif approx or stat_type in APPROX_ONLY_COL_STATS:
-                    stat_key_approx = col_stat_key(col_config, stat_type,
-                                                   approx=True)
-                    stat_approx = col_stats_cache[cache_key].get(
-                        stat_key_approx)
+                    stat_key_approx = col_stat_key(col_config, stat_type, approx=True)
+                    stat_approx = col_stats_cache[cache_key].get(stat_key_approx)
                     if stat_approx is not None:
                         new_dict[stat_type] = Stats.from_config(stat_approx)
 
@@ -502,12 +532,12 @@ class BackendCacheManager:
         approx: bool,
     ) -> Dict[BaseColumnConfig, Dict[ColStatType, Stats]]:
         cache_key = BackendCacheManager._get_col_stats_cache_key(
-            table_fingerprint, data_version)
+            table_fingerprint, data_version
+        )
         if not self._col_stats_cache.get(cache_key):
-            logger.info(f"Cols Stats cache miss for {cache_key}")
+            logger.info(f'Cols Stats cache miss for {cache_key}')
             return {}
-        return self._get_col_stats(cache_key, stats_dict, self._col_stats_cache,
-                                   approx)
+        return self._get_col_stats(cache_key, stats_dict, self._col_stats_cache, approx)
 
     @synchronized
     def get_min_col_stats(
@@ -518,23 +548,34 @@ class BackendCacheManager:
         approx: bool,
     ) -> Dict[BaseColumnConfig, Dict[ColStatType, Stats]]:
         cache_key = BackendCacheManager._get_col_stats_cache_key(
-            table_fingerprint, data_version)
+            table_fingerprint, data_version
+        )
         if not self._min_col_stats_cache.get(cache_key):
             return {}
-        return self._get_col_stats(cache_key, stats_dict,
-                                   self._min_col_stats_cache, approx)
+        return self._get_col_stats(
+            cache_key, stats_dict, self._min_col_stats_cache, approx
+        )
 
-    def load_min_col_stats_cache(self, connector_name: str,
-                                 table_fingerprint: TableFingerprint,
-                                 data_version: str) -> bool:
+    def load_min_col_stats_cache(
+        self,
+        connector_name: str,
+        table_fingerprint: TableFingerprint,
+        data_version: str,
+    ) -> bool:
         cache_key = BackendCacheManager._get_col_stats_cache_key(
-            table_fingerprint, data_version)
-        table_dir = self.create_table_cache_dir(connector_name,
-                                                table_fingerprint.source_name,
-                                                data_version, table_fingerprint)
+            table_fingerprint, data_version
+        )
+        table_dir = self.create_table_cache_dir(
+            connector_name,
+            table_fingerprint.source_name,
+            data_version,
+            table_fingerprint,
+        )
         if not fsutil.exists(table_dir._table_dir):
-            logger.warning(f'Table cache not found at {table_dir._table_dir}; '
-                           'popping applicable caches col_stats')
+            logger.warning(
+                f'Table cache not found at {table_dir._table_dir}; '
+                'popping applicable caches col_stats'
+            )
             self._min_col_stats_cache.pop(cache_key, None)
             return False
 
@@ -544,7 +585,8 @@ class BackendCacheManager:
         if value is not None:
             logger.info(
                 f'Loading min col stats for {cache_key} from {file_path},'
-                f'new cache size {len(self._min_col_stats_cache) + 1}')
+                f'new cache size {len(self._min_col_stats_cache) + 1}'
+            )
             self._min_col_stats_cache[cache_key] = value
         else:
             logger.warning(f'No min col stats found at {file_path}')
@@ -553,39 +595,50 @@ class BackendCacheManager:
 
         return True
 
-    def load_col_stats_cache(self, table_fingerprint: TableFingerprint,
-                             data_version: str) -> bool:
+    def load_col_stats_cache(
+        self, table_fingerprint: TableFingerprint, data_version: str
+    ) -> bool:
         cache_key = BackendCacheManager._get_col_stats_cache_key(
-            table_fingerprint, data_version)
+            table_fingerprint, data_version
+        )
         table_dir = self.create_table_cache_dir(
-            table_fingerprint.connector_name, table_fingerprint.source_name,
-            data_version, table_fingerprint)
+            table_fingerprint.connector_name,
+            table_fingerprint.source_name,
+            data_version,
+            table_fingerprint,
+        )
         if not fsutil.exists(table_dir._table_dir):
-            logger.warning(f'Table cache not found at {table_dir._table_dir}; '
-                           'popping applicable caches col_stats')
+            logger.warning(
+                f'Table cache not found at {table_dir._table_dir}; '
+                'popping applicable caches col_stats'
+            )
             self._col_stats_cache.pop(cache_key, None)
             return False
 
         file_path = table_dir.col_stats
         value = _load_col_stats_json(file_path)
         if value is not None:
-            logger.info(f'Loading col stats for {cache_key} from {file_path}'
-                        f'new cache size {len(self._col_stats_cache) + 1}')
+            logger.info(
+                f'Loading col stats for {cache_key} from {file_path}'
+                f'new cache size {len(self._col_stats_cache) + 1}'
+            )
             self._col_stats_cache[cache_key] = value
         else:
             logger.warning(f'No col stats found at {file_path}')
             self._col_stats_cache.pop(cache_key, None)
             return False
-        logger.info(f"ColStatsCache size {self.col_stats_cache_size()}")
+        logger.info(f'ColStatsCache size {self.col_stats_cache_size()}')
 
         return True
 
-    @blocking_method(DATA_BACKEND_THREAD_POOL,
-                     tracing_options=TraceOptions(trace_params=True))
+    @blocking_method(
+        DATA_BACKEND_THREAD_POOL, tracing_options=TraceOptions(trace_params=True)
+    )
     def get_many_min_exact_stats(
         self,
-        versioned_table_fingerprint_list: List[Tuple[VersionedSourceTableID,
-                                                     TableFingerprint]],
+        versioned_table_fingerprint_list: List[
+            Tuple[VersionedSourceTableID, TableFingerprint]
+        ],
         *,
         skip_col_stats: bool = False,
     ) -> List[Optional[ExactStats]]:
@@ -600,10 +653,13 @@ class BackendCacheManager:
         # Fetch data in parallel from S3
         table_stats_paths: List[str] = []
         min_stats_paths: List[str] = []
-        for (table, fingerprint) in versioned_table_fingerprint_list:
-            cache = self.create_table_cache_dir(table.connector_name,
-                                                table.source_table_name,
-                                                table.version, fingerprint)
+        for table, fingerprint in versioned_table_fingerprint_list:
+            cache = self.create_table_cache_dir(
+                table.connector_name,
+                table.source_table_name,
+                table.version,
+                fingerprint,
+            )
             table_stats_paths.append(cache.table_stats)
             if not skip_col_stats:
                 min_stats_paths.append(cache.min_col_stats)
@@ -639,8 +695,7 @@ class BackendCacheManager:
                 results.append(None)
             except Exception as e:
                 # All other errors are indicative of real code bugs
-                logger.exception("Unexpected error when parsing exact stats %s",
-                                 e)
+                logger.exception('Unexpected error when parsing exact stats %s', e)
                 results.append(None)
             else:
                 results.append(stats)
@@ -649,8 +704,8 @@ class BackendCacheManager:
 
     @blocking_method(DATA_BACKEND_THREAD_POOL)
     def get_many_pred_stats(
-            self, pred_tables: Dict[str,
-                                    SourceTableID]) -> Dict[str, PredStats]:
+        self, pred_tables: Dict[str, SourceTableID]
+    ) -> Dict[str, PredStats]:
         """Get a PredStats instance (column stats) for each job in
         ``pred_tables``, keyed by job id.
 
@@ -664,24 +719,28 @@ class BackendCacheManager:
         job_ids = []
         for job_id, source_table in pred_tables.items():
             version = self.table_version_cache.get_for_job(
-                job_id, source_table.connector_name,
-                source_table.source_table_name)
+                job_id, source_table.connector_name, source_table.source_table_name
+            )
             # even if table is not ready yet and doesn't have a version, add
             # placeholder in tables
             if version:
                 tables.append(
-                    VersionedSourceTableID(source_table.connector_name,
-                                           source_table.source_table_name,
-                                           version))
+                    VersionedSourceTableID(
+                        source_table.connector_name,
+                        source_table.source_table_name,
+                        version,
+                    )
+                )
                 job_ids.append(job_id)
 
         # 2. get cache paths
         col_stats_paths = []
         for id in tables:
             col_stats_paths.append(
-                self.create_table_cache_dir(id.connector_name,
-                                            id.source_table_name,
-                                            id.version).col_stats)
+                self.create_table_cache_dir(
+                    id.connector_name, id.source_table_name, id.version
+                ).col_stats
+            )
 
         # 3. get data
         col_stats_data = fsutil.get_many_if_present(col_stats_paths)
@@ -699,8 +758,7 @@ class BackendCacheManager:
                 pass
             except Exception as e:
                 # All other errors are indicative of real code bugs
-                logger.exception(
-                    "Unexpected error when parsing pred table stats %s", e)
+                logger.exception('Unexpected error when parsing pred table stats %s', e)
             else:
                 results[job_id] = stats
 
@@ -721,10 +779,7 @@ class BackendCacheManager:
         data_version = _get_stats_data_version(stats_dict)
         table_key = self._get_table_stats_key(table_fingerprint, data_version)
 
-        stats_dict_str = {
-            table_stat_key(k, v.approx): v
-            for k, v in stats_dict.items()
-        }
+        stats_dict_str = {table_stat_key(k, v.approx): v for k, v in stats_dict.items()}
         self._table_stats_cache.update(table_key, stats_dict_str)
 
     @synchronized
@@ -739,14 +794,19 @@ class BackendCacheManager:
         in_memory_stats = self._table_stats_cache.has(table_key)
         stats = self._table_stats_cache.get(table_key, Dict[str, StatsConfig])
 
-        missing_stats = [
-            k for k in stats_list if table_stat_key(k) not in stats and (
-                not approx or table_stat_key(k, approx=True) not in stats)
-        ] if stats else stats_list
+        missing_stats = (
+            [
+                k
+                for k in stats_list
+                if table_stat_key(k) not in stats
+                and (not approx or table_stat_key(k, approx=True) not in stats)
+            ]
+            if stats
+            else stats_list
+        )
         if len(missing_stats) > 0 and in_memory_stats:
             # Load again to check if there's update in backend storage.
-            stats = self._table_stats_cache.load(table_key, Dict[str,
-                                                                 StatsConfig])
+            stats = self._table_stats_cache.load(table_key, Dict[str, StatsConfig])
 
         if not stats:
             return {}
@@ -761,21 +821,23 @@ class BackendCacheManager:
         return return_dict
 
     @synchronized
-    def save_table_stats(self, table_fingerprint: TableFingerprint,
-                         data_version: str, value: Dict[TableStatType, Stats]):
+    def save_table_stats(
+        self,
+        table_fingerprint: TableFingerprint,
+        data_version: str,
+        value: Dict[TableStatType, Stats],
+    ):
         table_key = self._get_table_stats_key(table_fingerprint, data_version)
-        save_value = {
-            table_stat_key(k, v.approx): v.config()
-            for k, v in value.items()
-        }
+        save_value = {table_stat_key(k, v.approx): v.config() for k, v in value.items()}
         self._table_stats_cache.save(table_key, save_value)
 
     @property
     def cache_dir(self) -> str:
         return self._cache_dir
 
-    @blocking_method(DATA_BACKEND_THREAD_POOL,
-                     tracing_options=TraceOptions(trace_params=True))
+    @blocking_method(
+        DATA_BACKEND_THREAD_POOL, tracing_options=TraceOptions(trace_params=True)
+    )
     def save_all_table_caches(
         self,
         graph_config: GraphConfig,
@@ -788,29 +850,33 @@ class BackendCacheManager:
         Legacy callers with unresolved versions must provide the connector
         adapter explicitly through ``data_version_resolver``.
         """
-        logger.info('Saving all modified table caches for graph'
-                    f' {graph_config.name}')
+        logger.info(f'Saving all modified table caches for graph {graph_config.name}')
         for table in graph_config.tables:
             data_version = table.data_version
             if data_version is None:
                 if data_version_resolver is None:
                     raise ValueError(
-                        "table data versions must be resolved before cache "
-                        f"persistence; missing version for {table.source_name!r}"
+                        'table data versions must be resolved before cache '
+                        f'persistence; missing version for {table.source_name!r}'
                     )
-                connector_config = graph_config.data_source_dict[
-                    table.just_data_source]
-                data_version = data_version_resolver(connector_config,
-                                                     table.source_name)
+                connector_config = graph_config.data_source_dict[table.just_data_source]
+                data_version = data_version_resolver(
+                    connector_config, table.source_name
+                )
             # Create or get table fingerprint
-            table_fingerprint = table.fingerprint() if hasattr(
-                table, 'fingerprint') else table.partial_fingerprint()
+            table_fingerprint = (
+                table.fingerprint()
+                if hasattr(table, 'fingerprint')
+                else table.partial_fingerprint()
+            )
             self.save_col_stats_cache(table_fingerprint, data_version)
-        logger.info('Finished saving all modified table caches for graph'
-                    f' {graph_config.name}')
+        logger.info(
+            f'Finished saving all modified table caches for graph {graph_config.name}'
+        )
 
-    @blocking_method(DATA_BACKEND_THREAD_POOL,
-                     tracing_options=TraceOptions(trace_params=True))
+    @blocking_method(
+        DATA_BACKEND_THREAD_POOL, tracing_options=TraceOptions(trace_params=True)
+    )
     def save_col_stats_cache(
         self,
         table_fingerprint: TableFingerprint,
@@ -824,14 +890,17 @@ class BackendCacheManager:
         multiple workflows. A minimized copy is also written alongside.
         """
         cache_key = BackendCacheManager._get_col_stats_cache_key(
-            table_fingerprint, data_version)
+            table_fingerprint, data_version
+        )
         connector_name = table_fingerprint.connector_name
         source_name = table_fingerprint.source_name
-        table_dir = self.create_table_cache_dir(connector_name, source_name,
-                                                data_version)
+        table_dir = self.create_table_cache_dir(
+            connector_name, source_name, data_version
+        )
         logger.info(
-            f"Requested backend cache save_col_stats_cache for key={cache_key}"
-            f" and directory={table_dir._table_dir}.")
+            f'Requested backend cache save_col_stats_cache for key={cache_key}'
+            f' and directory={table_dir._table_dir}.'
+        )
 
         stats_dict = self._col_stats_cache.get(cache_key)
         dirty_bit = cache_key in self._col_stats_modified_since_save
@@ -845,34 +914,38 @@ class BackendCacheManager:
             # As of now, col stats of the same source table key could be
             # concurrently computed and saved by multiple workflows. To
             # minimize data racing, we perform a read-merge-write here.
-            exist_stats = load_json(file_path, Dict, default={},
-                                    raise_on_missing=False)
+            exist_stats = load_json(file_path, Dict, default={}, raise_on_missing=False)
             if len(exist_stats) > 0:
-                logger.info(f"Read {len(exist_stats)} stats from {file_path}, "
-                            f"performing a read-merge-write with "
-                            f"{len(stats_dict)} new stats.")
+                logger.info(
+                    f'Read {len(exist_stats)} stats from {file_path}, '
+                    f'performing a read-merge-write with '
+                    f'{len(stats_dict)} new stats.'
+                )
             # TODO(dong) Separate min stats from full stats so partial writes
             # cannot replace richer existing stats for the same table key.
             merged_stats = exist_stats
             merged_stats.update(stats_dict)  # type: ignore
 
-            logger.info(
-                f"Saving column stats: key={cache_key}, path={file_path}")
+            logger.info(f'Saving column stats: key={cache_key}, path={file_path}')
             save_json(merged_stats, file_path)
             self._col_stats_modified_since_save.remove(cache_key)
 
             # Save min_col_stats when save col stats.
             _minify_stats_and_save(merged_stats, table_dir.min_col_stats)
         else:
-            logger.info(f"Column statistics were requested to be saved to the "
-                        f"backend cache, but were not saved either due to no "
-                        f"modification or no statistics available. Debug info: "
-                        f"key={cache_key}, dirty_bit={dirty_bit}.")
+            logger.info(
+                f'Column statistics were requested to be saved to the '
+                f'backend cache, but were not saved either due to no '
+                f'modification or no statistics available. Debug info: '
+                f'key={cache_key}, dirty_bit={dirty_bit}.'
+            )
         return table_dir.col_stats
 
-    @blocking_method(DATA_BACKEND_THREAD_POOL,
-                     tracing_options=TraceOptions(trace_params=False),
-                     fut_dedupe_option=FutureDedupeOption.DISABLED)
+    @blocking_method(
+        DATA_BACKEND_THREAD_POOL,
+        tracing_options=TraceOptions(trace_params=False),
+        fut_dedupe_option=FutureDedupeOption.DISABLED,
+    )
     def persist_sampled_col_stats(
         self,
         table_fingerprint: TableFingerprint,
@@ -893,11 +966,15 @@ class BackendCacheManager:
             self.save_col_stats_cache(table_fingerprint, data_version)
         except Exception as exc:
             logger.warning(
-                "persist_sampled_col_stats: best-effort persist failed for "
-                "%s@%s: %r", table_fingerprint.source_name, data_version, exc)
+                'persist_sampled_col_stats: best-effort persist failed for %s@%s: %r',
+                table_fingerprint.source_name,
+                data_version,
+                exc,
+            )
 
-    @blocking_method(DATA_BACKEND_THREAD_POOL,
-                     tracing_options=TraceOptions(trace_params=True))
+    @blocking_method(
+        DATA_BACKEND_THREAD_POOL, tracing_options=TraceOptions(trace_params=True)
+    )
     def load_all_table_caches(
         self,
         graph_config: GraphConfig,
@@ -918,22 +995,25 @@ class BackendCacheManager:
             if data_version is None:
                 if data_version_resolver is None:
                     raise ValueError(
-                        "table data versions must be resolved before cache "
-                        f"loading; missing version for "
-                        f"{table.just_source_name!r}")
-                connector_config = graph_config.data_source_dict[
-                    table.just_data_source]
-                data_version = data_version_resolver(connector_config,
-                                                     table.just_source_name)
-            logger.info(f'Loading cache for table {table.just_source_name}'
-                        ' from load_all_table_caches')
+                        'table data versions must be resolved before cache '
+                        f'loading; missing version for '
+                        f'{table.just_source_name!r}'
+                    )
+                connector_config = graph_config.data_source_dict[table.just_data_source]
+                data_version = data_version_resolver(
+                    connector_config, table.just_source_name
+                )
+            logger.info(
+                f'Loading cache for table {table.just_source_name}'
+                ' from load_all_table_caches'
+            )
             # Create or get table fingerprint
             table_fingerprint = table.fingerprint()
-            success = self.load_col_stats_cache(table_fingerprint, data_version,
-                                                **kwargs)
+            success = self.load_col_stats_cache(
+                table_fingerprint, data_version, **kwargs
+            )
             success_all = success_all and success
-        logger.info(f'Finished load all table caches for graph '
-                    f'{graph_config.name}')
+        logger.info(f'Finished load all table caches for graph {graph_config.name}')
         return success_all
 
     # TODO(siyang): Evaluate if there is a better approach to avoid copying
@@ -964,8 +1044,9 @@ class BackendCacheManager:
         fsutil.copy(src_dir, dst_dir, overwrite=True, raise_on_exists=False)
         logger.info('Copied train table stats from %s to %s', src_dir, dst_dir)
 
-    @blocking_method(DATA_BACKEND_THREAD_POOL,
-                     tracing_options=TraceOptions(trace_params=True))
+    @blocking_method(
+        DATA_BACKEND_THREAD_POOL, tracing_options=TraceOptions(trace_params=True)
+    )
     def get_many_min_latest_exact_stats(
         self,
         table_args_list: List[_CacheableTable],
@@ -980,8 +1061,11 @@ class BackendCacheManager:
         versions = self.table_version_cache.get_many(tables)
 
         stats = self.get_many_min_exact_stats(
-            [(k, v.fingerprint())
-             for k, v in zip(versions, table_args_list) if k is not None],
+            [
+                (k, v.fingerprint())
+                for k, v in zip(versions, table_args_list)
+                if k is not None
+            ],
             skip_col_stats=not fetch_column_stats,
         )
         # Since we did not fetch stats for tables with no versions, we need to
@@ -1021,9 +1105,13 @@ class BackendCacheManager:
         version: str,
         table_fingerprint: Optional[TableFingerprint] = None,
     ) -> TableCacheDir:
-        table_dir = osp.join(self.cache_dir, 'tables', connector_name,
-                             table_source_path_component(source_table_name),
-                             version)
+        table_dir = osp.join(
+            self.cache_dir,
+            'tables',
+            connector_name,
+            table_source_path_component(source_table_name),
+            version,
+        )
         fsutil.makedirs(table_dir, exist_ok=True)
         return TableCacheDir(table_dir, table_fingerprint)
 
@@ -1031,7 +1119,7 @@ class BackendCacheManager:
 def _get_stats_data_version(stats_dict: Dict[Any, Stats]) -> str:
     data_version = list(stats_dict.items())[0][1].data_version
     if data_version is None:
-        raise RuntimeError(f"Stat is missing data version: {stats_dict}")
+        raise RuntimeError(f'Stat is missing data version: {stats_dict}')
     return str(data_version)
 
 
@@ -1045,16 +1133,19 @@ def _minify_stats(stats_dict: Optional[Dict]) -> Dict:
 
     filtered_dict: dict = dict()
     for key, value in stats_dict.items():
-        if ((key.endswith("CATEGORY_COUNTS__False")
-             or key.endswith("CATEGORY_COUNTS__True")) and value is not None):
+        if (
+            key.endswith('CATEGORY_COUNTS__False')
+            or key.endswith('CATEGORY_COUNTS__True')
+        ) and value is not None:
             if isinstance(value, dict):
                 original_count = len(value['value'])
                 new_val_obj = copy.deepcopy(value)
-                new_val_obj['value'] = value[
-                    'value'][:min(original_count, CATEGORY_LIMIT)]
+                new_val_obj['value'] = value['value'][
+                    : min(original_count, CATEGORY_LIMIT)
+                ]
                 filtered_dict[key] = new_val_obj
             elif isinstance(value, list):
-                filtered_dict[key] = value[:min(len(value), CATEGORY_LIMIT)]
+                filtered_dict[key] = value[: min(len(value), CATEGORY_LIMIT)]
         else:
             filtered_dict[key] = value
     return filtered_dict

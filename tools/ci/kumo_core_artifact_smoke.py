@@ -53,11 +53,9 @@ def main() -> None:
     installed_api_path = Path(kumoapi.__file__).resolve()
     checkout = args.forbid_prefix.resolve()
     if installed_path.is_relative_to(checkout):
-        raise AssertionError(
-            f'kumo_core leaked from checkout: {installed_path}')
+        raise AssertionError(f'kumo_core leaked from checkout: {installed_path}')
     if installed_api_path.is_relative_to(checkout):
-        raise AssertionError(
-            f'kumoapi leaked from checkout: {installed_api_path}')
+        raise AssertionError(f'kumoapi leaked from checkout: {installed_api_path}')
     for module in CAPABILITY_MODULES:
         importlib.import_module(module)
 
@@ -89,8 +87,7 @@ def main() -> None:
         raise AssertionError('validation target was dropped')
     if not torch.equal(transformed_target, torch.tensor([0.0, 1.0])):
         raise AssertionError('unexpected transformed target')
-    if not torch.allclose(probability, torch.tensor([0.2689, 0.7311]),
-                          atol=1e-4):
+    if not torch.allclose(probability, torch.tensor([0.2689, 0.7311]), atol=1e-4):
         raise AssertionError('unexpected transformed probability')
 
     print(f'Kumo-core artifact smoke passed from {installed_path}')

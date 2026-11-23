@@ -16,8 +16,11 @@ from kumo.task.task import Task
 
 @blocking_func()
 def load_job_task(job_config: JobConfig | PredictionConfig) -> Task:
-    config_dir = (job_config.home_dir if isinstance(job_config, JobConfig) else
-                  job_config.train_dir)
+    config_dir = (
+        job_config.home_dir
+        if isinstance(job_config, JobConfig)
+        else job_config.train_dir
+    )
     return Task.load(job_config.task_name, config_dir)
 
 
@@ -29,7 +32,8 @@ def load_job_automl_config(job_config: JobConfig) -> ModelPlan:
 def get_pred_job_model_dir(prediction_config: PredictionConfig) -> str:
     model_dir = prediction_config.model_dir
     overrides_path = HomeDirManager(
-        prediction_config.train_dir).train_dir_overrides_file
+        prediction_config.train_dir
+    ).train_dir_overrides_file
     overrides = load_json(
         overrides_path,
         TrainDirOverrides,

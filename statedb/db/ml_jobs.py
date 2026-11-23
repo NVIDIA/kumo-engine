@@ -90,21 +90,22 @@ def _enforce_job_output_invariants(job: Any) -> None:
     (training or batch prediction). Generate-table outputs do
     not expose ``terminal_invariant_violations`` and are skipped.
     """
-    execution = getattr(job, "execution", None)
+    execution = getattr(job, 'execution', None)
     if execution is None:
         return
-    check = getattr(execution, "terminal_invariant_violations", None)
+    check = getattr(execution, 'terminal_invariant_violations', None)
     if check is None:
         return
     violations = check()
     if violations:
-        job_id = getattr(job, "id", "<unknown>")
-        raise JobInvariantViolationError(f"Refusing to persist job {job_id}: " +
-                                         "; ".join(violations))
+        job_id = getattr(job, 'id', '<unknown>')
+        raise JobInvariantViolationError(
+            f'Refusing to persist job {job_id}: ' + '; '.join(violations)
+        )
 
 
-_RANGE_JOB_ATTRS = {"start_time", "end_time"}
-_TIME_RANGE_FORMAT = "%Y-%m-%d %H:%M:%S"
+_RANGE_JOB_ATTRS = {'start_time', 'end_time'}
+_TIME_RANGE_FORMAT = '%Y-%m-%d %H:%M:%S'
 _AGGREGATE_JOB_TYPES = {
     JobType.TRAINING_JOB,
     JobType.BATCH_PREDICTION_JOB,
@@ -136,28 +137,30 @@ class MLJobRegistryEntry:
 
 
 def _placeholder(tx: StateTx, position: int) -> str:
-    return f"${position}" if tx.backend == "postgres" else "?"
+    return f'${position}' if tx.backend == 'postgres' else '?'
 
 
 def _json_value(tx: StateTx, field_name: str) -> str:
-    if tx.backend == "postgres":
+    if tx.backend == 'postgres':
         return f"payload->>'{field_name}'"
     return f"json_extract(payload, '$.{field_name}')"
 
 
 def _json_path_value(tx: StateTx, *field_names: str) -> str:
-    if tx.backend == "postgres":
-        return "payload #>> '{" + ",".join(field_names) + "}'"
-    return "json_extract(payload, '$." + ".".join(field_names) + "')"
+    if tx.backend == 'postgres':
+        return "payload #>> '{" + ','.join(field_names) + "}'"
+    return "json_extract(payload, '$." + '.'.join(field_names) + "')"
 
 
 def _batch_prediction_has_execution_clause(tx: StateTx) -> str:
-    return (f"({_json_value(tx, 'status')} IS NOT NULL OR "
-            f"{_json_path_value(tx, 'execution', 'status')} IS NOT NULL)")
+    return (
+        f'({_json_value(tx, "status")} IS NOT NULL OR '
+        f'{_json_path_value(tx, "execution", "status")} IS NOT NULL)'
+    )
 
 
 def _batch_prediction_countable_execution_clause(tx: StateTx) -> str:
-    return f"{_json_path_value(tx, 'execution', 'status')} IS NOT NULL"
+    return f'{_json_path_value(tx, "execution", "status")} IS NOT NULL'
 
 
 def _clone_clauses(clauses: list[str]) -> list[str]:
@@ -165,13 +168,12 @@ def _clone_clauses(clauses: list[str]) -> list[str]:
 
 
 def _lower_sql(expression: str) -> str:
-    return f"lower({expression})"
+    return f'lower({expression})'
 
 
 def _like_pattern(value: str) -> str:
-    escaped = (value.replace("\\", "\\\\").replace("%",
-                                                   "\\%").replace("_", "\\_"))
-    return f"%{escaped}%"
+    escaped = value.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+    return f'%{escaped}%'
 
 
 def _job_id_from_raw(job_type: JobType, id: str) -> JobID:
@@ -183,25 +185,25 @@ def _job_id_from_raw(job_type: JobType, id: str) -> JobID:
         return GenerateTrainTableJobID(id)
     if job_type == JobType.GENERATE_PREDICTION_TABLE_JOB:
         return GeneratePredictionTableJobID(id)
-    raise AssertionError(f"Unsupported job type {job_type}")
+    raise AssertionError(f'Unsupported job type {job_type}')
 
 
 class MLJobService:
     """State DB service boundary for ML job metadata updates."""
+
     def __init__(self, state_db: StateDB) -> None:
         self._state_db = state_db
-        self._training_jobs = JsonRepository("training_jobs",
-                                             TrainingJobDBEntry)
+        self._training_jobs = JsonRepository('training_jobs', TrainingJobDBEntry)
         self._batch_prediction_jobs = JsonRepository(
-            "batch_prediction_jobs",
+            'batch_prediction_jobs',
             BatchPredictionJobDBEntry,
         )
         self._generate_train_table_jobs = JsonRepository(
-            "generate_train_table_jobs",
+            'generate_train_table_jobs',
             GenerateTrainTableJobDBEntry,
         )
         self._generate_pred_table_jobs = JsonRepository(
-            "generate_pred_table_jobs",
+            'generate_pred_table_jobs',
             GeneratePredTableJobDBEntry,
         )
         self._job_tags_repository = JobTagsRepository()
@@ -213,8 +215,10 @@ class MLJobService:
         resource_name: str,
     ) -> None:
         if referenced.project_id != project_id:
-            raise ValueError(f'{resource_name} belongs to project '
-                             f"'{referenced.project_id}', not '{project_id}'")
+            raise ValueError(
+                f'{resource_name} belongs to project '
+                f"'{referenced.project_id}', not '{project_id}'"
+            )
 
     async def _require_connector_ref_in_project(
         self,
@@ -224,10 +228,9 @@ class MLJobService:
     ) -> None:
         if reference.project_id != project_id:
             raise ValueError(
-                f"Connector '{reference.connector_id}' belongs to another "
-                'project')
-        await require_connectors_for_admission(tx, project_id,
-                                               [reference.connector_id])
+                f"Connector '{reference.connector_id}' belongs to another project"
+            )
+        await require_connectors_for_admission(tx, project_id, [reference.connector_id])
 
     async def _require_batch_output_connectors_in_project(
         self,
@@ -240,10 +243,15 @@ class MLJobService:
         connector_ids = sorted(
             {
                 ConnectorID(str(raw_connector_id))
-                for output in config.outputs if (raw_connector_id := getattr(
-                    output, 'connector_id', None)) is not None
-            } | ({ConnectorID(config.custom_pred_table_source.connector_id)}
-                 if config.custom_pred_table_source is not None else set()),
+                for output in config.outputs
+                if (raw_connector_id := getattr(output, 'connector_id', None))
+                is not None
+            }
+            | (
+                {ConnectorID(config.custom_pred_table_source.connector_id)}
+                if config.custom_pred_table_source is not None
+                else set()
+            ),
             key=str,
         )
         await require_connectors_for_admission(tx, project_id, connector_ids)
@@ -254,8 +262,7 @@ class MLJobService:
         graph_data_version: str,
     ) -> None:
         async with self._state_db.write_tx() as tx:
-            job = await self._get_required(tx, self._generate_train_table_jobs,
-                                           id)
+            job = await self._get_required(tx, self._generate_train_table_jobs, id)
             self._set_graph_data_version(job, graph_data_version)
             await self._modify_if_open(tx, self._generate_train_table_jobs, job)
 
@@ -268,8 +275,10 @@ class MLJobService:
             job = await self._get_if_exists(tx, self._training_jobs, id)
             if job is None:
                 raise ValueError(f"Training Job with ID '{id}' does not exist.")
-            assert (job.graph_data_version is None
-                    or job.graph_data_version == graph_data_version)
+            assert (
+                job.graph_data_version is None
+                or job.graph_data_version == graph_data_version
+            )
             job.graph_data_version = graph_data_version
             await self._modify_if_open(tx, self._training_jobs, job)
 
@@ -281,11 +290,12 @@ class MLJobService:
         async with self._state_db.write_tx() as tx:
             job = await self._get_if_exists(tx, self._batch_prediction_jobs, id)
             if job is None:
-                raise ValueError(
-                    f"Batch Prediction Job with ID '{id}' does not exist.")
+                raise ValueError(f"Batch Prediction Job with ID '{id}' does not exist.")
             assert job.config
-            assert (job.config.graph_data_version is None
-                    or job.config.graph_data_version == graph_data_version)
+            assert (
+                job.config.graph_data_version is None
+                or job.config.graph_data_version == graph_data_version
+            )
             job.config.graph_data_version = graph_data_version
             await self._modify_if_open(tx, self._batch_prediction_jobs, job)
 
@@ -295,8 +305,7 @@ class MLJobService:
         graph_data_version: str,
     ) -> None:
         async with self._state_db.write_tx() as tx:
-            job = await self._get_required(tx, self._generate_pred_table_jobs,
-                                           id)
+            job = await self._get_required(tx, self._generate_pred_table_jobs, id)
             self._set_graph_data_version(job, graph_data_version)
             await self._modify_if_open(tx, self._generate_pred_table_jobs, job)
 
@@ -308,7 +317,7 @@ class MLJobService:
         async with self._state_db.write_tx() as tx:
             job = await self._get_job_if_exists_generic_in_tx(tx, id)
             if job is None:
-                raise KeyError(f"Job with id {id} not found in database")
+                raise KeyError(f'Job with id {id} not found in database')
             job.storage_path = storage_path
             await self._modify_job_metadata_if_open_in_tx(tx, job)
 
@@ -320,8 +329,8 @@ class MLJobService:
         async with self._state_db.write_tx() as tx:
             job = await self._get_job_if_exists_generic_in_tx(tx, id)
             if job is None:
-                raise KeyError(f"Job with id {id} not found in database")
-            metadata = deepcopy(getattr(job, "registry_metadata", None))
+                raise KeyError(f'Job with id {id} not found in database')
+            metadata = deepcopy(getattr(job, 'registry_metadata', None))
             if metadata is None:
                 metadata = MLJobRegistryMetadata()
             metadata.override_model_path = override_model_path
@@ -336,10 +345,9 @@ class MLJobService:
         async with self._state_db.write_tx() as tx:
             job = await self._get_job_if_exists_generic_in_tx(tx, id)
             if job is None:
-                raise KeyError(f"Job with id {id} not found in database")
-            if not hasattr(job, "input_data_stats"):
-                raise ValueError(
-                    f"Job with id {id} does not support input_data_stats")
+                raise KeyError(f'Job with id {id} not found in database')
+            if not hasattr(job, 'input_data_stats'):
+                raise ValueError(f'Job with id {id} does not support input_data_stats')
             job.input_data_stats = dict(input_data_stats)
             await self._modify_job_metadata_if_open_in_tx(tx, job)
 
@@ -347,8 +355,7 @@ class MLJobService:
         while True:
             id = TrainingJobID.make_random_id()
             async with self._state_db.read_tx() as tx:
-                existing = await self._get_if_exists(tx, self._training_jobs,
-                                                     id)
+                existing = await self._get_if_exists(tx, self._training_jobs, id)
             if existing is None:
                 return id
 
@@ -372,28 +379,30 @@ class MLJobService:
         async with self._state_db.write_tx() as tx:
             if reserved_job_id is not None:
                 id = reserved_job_id
-                existing = await self._get_if_exists(tx, self._training_jobs,
-                                                     id)
+                existing = await self._get_if_exists(tx, self._training_jobs, id)
                 if existing is not None:
                     raise ValueError(
-                        f"Reserved training job id={id} is already in use.")
+                        f'Reserved training job id={id} is already in use.'
+                    )
             else:
                 while True:
                     id = TrainingJobID.make_random_id()
-                    existing = await self._get_if_exists(
-                        tx, self._training_jobs, id)
+                    existing = await self._get_if_exists(tx, self._training_jobs, id)
                     if existing is None:
                         break
 
             if custom_train_table is not None:
                 await self._require_connector_ref_in_project(
-                    tx, custom_train_table.connector_spec, project_id)
+                    tx, custom_train_table.connector_spec, project_id
+                )
             if warm_start_job_id is not None:
                 referenced_job = await self._get_if_exists(
-                    tx, self._training_jobs, TrainingJobID(warm_start_job_id))
+                    tx, self._training_jobs, TrainingJobID(warm_start_job_id)
+                )
                 if referenced_job is not None:
-                    self._require_same_project(referenced_job, project_id,
-                                               'Warm-start training job')
+                    self._require_same_project(
+                        referenced_job, project_id, 'Warm-start training job'
+                    )
 
             if generate_train_table_job_id:
                 child_job = await self._get_if_exists(
@@ -403,27 +412,30 @@ class MLJobService:
                 )
                 if child_job is None:
                     raise ValueError(
-                        "Generate train table job is not found for "
-                        f"{generate_train_table_job_id}")
-                self._require_same_project(child_job, project_id,
-                                           'Generate train table job')
+                        'Generate train table job is not found for '
+                        f'{generate_train_table_job_id}'
+                    )
+                self._require_same_project(
+                    child_job, project_id, 'Generate train table job'
+                )
                 if child_job.execution.status in (
-                        JobStatus.FAILED,
-                        JobStatus.CANCELLED,
+                    JobStatus.FAILED,
+                    JobStatus.CANCELLED,
                 ):
                     raise ValueError(
-                        "Unable to create a training job, using a previously "
-                        f"{child_job.execution.status} generate-train-table "
-                        f"job id={generate_train_table_job_id}")
+                        'Unable to create a training job, using a previously '
+                        f'{child_job.execution.status} generate-train-table '
+                        f'job id={generate_train_table_job_id}'
+                    )
                 if child_job.config.pquery_id != pquery_id:
                     raise ValueError(
-                        f"Unable to create training job for pquery={pquery_id} "
-                        "while using training table that was generated for a "
-                        f"different pquery={child_job.config.pquery_id}")
+                        f'Unable to create training job for pquery={pquery_id} '
+                        'while using training table that was generated for a '
+                        f'different pquery={child_job.config.pquery_id}'
+                    )
             else:
                 train_table_plan = advanced_options.training_table_generation
-                generate_train_table_job_id = (
-                    GenerateTrainTableJobID.as_child_of(id))
+                generate_train_table_job_id = GenerateTrainTableJobID.as_child_of(id)
                 await self._create_generate_train_table_job_in_tx(
                     tx,
                     id=generate_train_table_job_id,
@@ -461,7 +473,9 @@ class MLJobService:
                     custom_train_table_used=custom_train_table is not None,
                     custom_train_table_connector_ref=(
                         custom_train_table.connector_spec
-                        if custom_train_table is not None else None),
+                        if custom_train_table is not None
+                        else None
+                    ),
                     warm_start_job_id=warm_start_job_id,
                     kumo_version=get_kumo_version(),
                     user=user_info,
@@ -495,17 +509,20 @@ class MLJobService:
         async with self._state_db.write_tx() as tx:
             if custom_train_table is not None:
                 await self._require_connector_ref_in_project(
-                    tx, custom_train_table.connector_spec, project_id)
+                    tx, custom_train_table.connector_spec, project_id
+                )
             if id is not None:
                 existing = await self._get_if_exists(
-                    tx, self._generate_train_table_jobs, id)
+                    tx, self._generate_train_table_jobs, id
+                )
                 if existing is not None:
-                    raise ValueError(f"Job id={id} already exists.")
+                    raise ValueError(f'Job id={id} already exists.')
             else:
                 while True:
                     id = GenerateTrainTableJobID.make_random_id()
                     existing = await self._get_if_exists(
-                        tx, self._generate_train_table_jobs, id)
+                        tx, self._generate_train_table_jobs, id
+                    )
                     if existing is None:
                         break
 
@@ -531,10 +548,13 @@ class MLJobService:
                     # in its secret-free public shape.
                     custom_train_table_used=(
                         custom_train_table is not None
-                        or config.custom_train_table is not None),
+                        or config.custom_train_table is not None
+                    ),
                     custom_train_table_connector_ref=(
                         custom_train_table.connector_spec
-                        if custom_train_table is not None else None),
+                        if custom_train_table is not None
+                        else None
+                    ),
                 ),
             )
         return id
@@ -555,14 +575,16 @@ class MLJobService:
         async with self._state_db.write_tx() as tx:
             if id is not None:
                 existing = await self._get_if_exists(
-                    tx, self._generate_pred_table_jobs, id)
+                    tx, self._generate_pred_table_jobs, id
+                )
                 if existing is not None:
-                    raise ValueError(f"Job id={id} already exists.")
+                    raise ValueError(f'Job id={id} already exists.')
             else:
                 while True:
                     id = GeneratePredictionTableJobID.make_random_id()
                     existing = await self._get_if_exists(
-                        tx, self._generate_pred_table_jobs, id)
+                        tx, self._generate_pred_table_jobs, id
+                    )
                     if existing is None:
                         break
 
@@ -595,7 +617,7 @@ class MLJobService:
         source=None,
         project_id: ProjectID,
         user: str | None = None,
-        description: str = "",
+        description: str = '',
         batch_prediction_workflow_id: BatchPredictionWorkflowID | None = None,
     ) -> tuple[BatchPredictionJobID, bool]:
         if now is None:
@@ -604,39 +626,44 @@ class MLJobService:
         async with self._state_db.write_tx() as tx:
             if id is not None:
                 existing = await self._get_if_exists(
-                    tx, self._batch_prediction_jobs, id)
+                    tx, self._batch_prediction_jobs, id
+                )
                 if existing is not None:
-                    raise ValueError(
-                        f"Batch prediction job id={id} already exists.")
+                    raise ValueError(f'Batch prediction job id={id} already exists.')
             else:
                 while True:
                     id = BatchPredictionJobID.make_random_id()
                     existing = await self._get_if_exists(
-                        tx, self._batch_prediction_jobs, id)
+                        tx, self._batch_prediction_jobs, id
+                    )
                     if existing is None:
                         break
 
             assert bool(config.custom_pred_table_source) ^ bool(
-                config.generate_pred_table_job_id)
+                config.generate_pred_table_job_id
+            )
             assert config.graph_id
 
-            training_job = await self._get_if_exists(tx, self._training_jobs,
-                                                     config.training_job_id)
+            training_job = await self._get_if_exists(
+                tx, self._training_jobs, config.training_job_id
+            )
             if training_job is not None:
-                self._require_same_project(training_job, project_id,
-                                           'Training job')
+                self._require_same_project(training_job, project_id, 'Training job')
             await self._require_batch_output_connectors_in_project(
-                tx, config, project_id)
+                tx, config, project_id
+            )
 
             pred_table_job_id = config.generate_pred_table_job_id
             created_pred_table_job = False
             if pred_table_job_id:
                 pred_table_job = await self._get_if_exists(
-                    tx, self._generate_pred_table_jobs, pred_table_job_id)
+                    tx, self._generate_pred_table_jobs, pred_table_job_id
+                )
                 if pred_table_job is None:
                     created_pred_table_job = True
                     assert pred_table_job_id == (
-                        GeneratePredictionTableJobID.as_child_of(id))
+                        GeneratePredictionTableJobID.as_child_of(id)
+                    )
                     await self._create_generate_pred_table_job_in_tx(
                         tx,
                         id=pred_table_job_id,
@@ -655,17 +682,19 @@ class MLJobService:
                         self._generate_pred_table_jobs,
                         pred_table_job_id,
                     )
-                self._require_same_project(pred_table_job, project_id,
-                                           'Generate prediction table job')
+                self._require_same_project(
+                    pred_table_job, project_id, 'Generate prediction table job'
+                )
                 if pred_table_job.execution.status in (
-                        JobStatus.FAILED,
-                        JobStatus.CANCELLED,
+                    JobStatus.FAILED,
+                    JobStatus.CANCELLED,
                 ):
                     raise ValueError(
-                        "Unable to create a batch prediction job, using a "
-                        f"previously {pred_table_job.execution.status} "
-                        "generate-prediction-table job "
-                        f"id={pred_table_job_id}")
+                        'Unable to create a batch prediction job, using a '
+                        f'previously {pred_table_job.execution.status} '
+                        'generate-prediction-table job '
+                        f'id={pred_table_job_id}'
+                    )
 
             entry = BatchPredictionJobDBEntry(
                 id=id,
@@ -710,7 +739,7 @@ class MLJobService:
             rows = await tx.fetch(
                 f"""
                 DELETE FROM {self._batch_prediction_jobs._table_name}
-                WHERE {self._in_predicate(tx, "id", raw_ids, 1)}
+                WHERE {self._in_predicate(tx, 'id', raw_ids, 1)}
                 RETURNING id
                 """,
                 *raw_ids,
@@ -720,7 +749,7 @@ class MLJobService:
                 JobType.BATCH_PREDICTION_JOB,
                 id_values,
             )
-        return {BatchPredictionJobID(row_str(row, "id", 0)) for row in rows}
+        return {BatchPredictionJobID(row_str(row, 'id', 0)) for row in rows}
 
     async def save_training_job_output(
         self,
@@ -744,10 +773,10 @@ class MLJobService:
         async with self._state_db.write_tx() as tx:
             job = await self._get_if_exists(tx, self._batch_prediction_jobs, id)
             if job is None:
-                raise ValueError(
-                    f"Batch Prediction Job with ID '{id}' does not exist.")
-            if job.execution is not None and (job.execution.progress is not None
-                                              and output.progress is None):
+                raise ValueError(f"Batch Prediction Job with ID '{id}' does not exist.")
+            if job.execution is not None and (
+                job.execution.progress is not None and output.progress is None
+            ):
                 output.progress = job.execution.progress
             job.execution = output
             await self._modify_job_if_open_in_tx(tx, deepcopy(job))
@@ -786,8 +815,7 @@ class MLJobService:
         *,
         project_ids: Collection[ProjectID] | None,
     ) -> GenerateTrainTableJobDBEntry | None:
-        rows = await self.get_generate_train_table_jobs([id],
-                                                        project_ids=project_ids)
+        rows = await self.get_generate_train_table_jobs([id], project_ids=project_ids)
         return rows[0] if rows else None
 
     async def get_generate_train_table_jobs(
@@ -807,8 +835,7 @@ class MLJobService:
         id: GeneratePredictionTableJobID,
     ) -> GeneratePredTableJobDBEntry | None:
         async with self._state_db.read_tx() as tx:
-            return await self._get_if_exists(tx, self._generate_pred_table_jobs,
-                                             id)
+            return await self._get_if_exists(tx, self._generate_pred_table_jobs, id)
 
     async def get_generate_pred_table_jobs(
         self,
@@ -834,15 +861,14 @@ class MLJobService:
         ids: Iterable[TrainingJobID],
     ) -> list[TrainingJobDBEntry]:
         async with self._state_db.read_tx() as tx:
-            return await self._list_payloads_by_ids(tx, self._training_jobs,
-                                                    ids)
+            return await self._list_payloads_by_ids(tx, self._training_jobs, ids)
 
     async def list_training_job_rows(
         self,
         *,
         job_ids: Collection[TrainingJobID],
         project_ids: Collection[ProjectID] | None,
-        sort_created_at: str = "asc",
+        sort_created_at: str = 'asc',
         limit: int | None = None,
     ) -> list[TrainingJobDBEntry]:
         """List tagged training candidates within an explicit project scope."""
@@ -861,8 +887,7 @@ class MLJobService:
         *,
         project_ids: Collection[ProjectID] | None,
     ) -> list[BatchPredictionJobDBEntry]:
-        return await self.get_batch_prediction_rows(ids,
-                                                    project_ids=project_ids)
+        return await self.get_batch_prediction_rows(ids, project_ids=project_ids)
 
     async def get_batch_prediction_rows(
         self,
@@ -876,9 +901,9 @@ class MLJobService:
                 project_ids=project_ids,
                 job_ids=ids,
             )
-            rows = await self._list_payloads_where(tx,
-                                                   self._batch_prediction_jobs,
-                                                   clauses, args)
+            rows = await self._list_payloads_where(
+                tx, self._batch_prediction_jobs, clauses, args
+            )
         return [deepcopy(row) for row in rows]
 
     async def list_batch_prediction_rows_by_workflow_id(
@@ -887,20 +912,20 @@ class MLJobService:
         *,
         project_ids: Collection[ProjectID] | None,
     ) -> list[BatchPredictionJobDBEntry]:
-        expected_workflow_id = (None if workflow_id is None else
-                                BatchPredictionWorkflowID(str(workflow_id)))
+        expected_workflow_id = (
+            None if workflow_id is None else BatchPredictionWorkflowID(str(workflow_id))
+        )
         async with self._state_db.read_tx() as tx:
-            workflow_expr = _json_value(tx, "batch_prediction_workflow_id")
+            workflow_expr = _json_value(tx, 'batch_prediction_workflow_id')
             clauses, args = self._project_ids_where(tx, project_ids)
             if expected_workflow_id is None:
-                clauses.append(f"{workflow_expr} IS NULL")
+                clauses.append(f'{workflow_expr} IS NULL')
             else:
                 args.append(str(expected_workflow_id))
-                clauses.append(
-                    f"{workflow_expr} = {_placeholder(tx, len(args))}")
-            rows = await self._list_payloads_where(tx,
-                                                   self._batch_prediction_jobs,
-                                                   clauses, args)
+                clauses.append(f'{workflow_expr} = {_placeholder(tx, len(args))}')
+            rows = await self._list_payloads_where(
+                tx, self._batch_prediction_jobs, clauses, args
+            )
         return [deepcopy(row) for row in rows]
 
     async def list_batch_prediction_rows(
@@ -911,7 +936,7 @@ class MLJobService:
         pquery_id: PredictiveQueryID | None = None,
         job_ids: Iterable[BatchPredictionJobID] | None = None,
         status: JobStatus | None = None,
-        sort_created_at: str = "asc",
+        sort_created_at: str = 'asc',
         limit: int | None = None,
         offset: int = 0,
         match_pquery_def_fpid: bool = True,
@@ -957,7 +982,7 @@ class MLJobService:
                 status=status,
                 match_pquery_def_fpid=match_pquery_def_fpid,
             )
-            where_sql = (" WHERE " + " AND ".join(clauses) if clauses else "")
+            where_sql = ' WHERE ' + ' AND '.join(clauses) if clauses else ''
             row = await tx.fetchrow(
                 f"""
                 SELECT COUNT(*) AS count
@@ -968,7 +993,7 @@ class MLJobService:
             )
         if row is None:
             return 0
-        return int(row_field(row, "count", 0))
+        return int(row_field(row, 'count', 0))
 
     async def has_batch_prediction_rows(
         self,
@@ -990,7 +1015,7 @@ class MLJobService:
                 status=status,
                 match_pquery_def_fpid=match_pquery_def_fpid,
             )
-            where_sql = (" WHERE " + " AND ".join(clauses) if clauses else "")
+            where_sql = ' WHERE ' + ' AND '.join(clauses) if clauses else ''
             row = await tx.fetchrow(
                 f"""
                 SELECT 1
@@ -1014,7 +1039,7 @@ class MLJobService:
 
         result: dict[PredictiveQueryID, BatchPredictionJobID] = {}
         async with self._state_db.read_tx() as tx:
-            pquery_expr = _json_value(tx, "pquery_id")
+            pquery_expr = _json_value(tx, 'pquery_id')
             clauses, args = self._project_ids_where(tx, project_ids)
             clauses.append(
                 self._in_predicate(
@@ -1022,14 +1047,15 @@ class MLJobService:
                     pquery_expr,
                     pquery_id_values,
                     len(args) + 1,
-                ))
+                )
+            )
             args.extend(pquery_id_values)
             rows = await self._list_payloads_where(
                 tx,
                 self._batch_prediction_jobs,
                 clauses,
                 args,
-                sort_created_at="desc",
+                sort_created_at='desc',
             )
             for row in rows:
                 if row.pquery_id is None or row.pquery_id in result:
@@ -1044,23 +1070,23 @@ class MLJobService:
         project_ids: Collection[ProjectID] | None,
         keep_most_recent: int,
     ) -> list[BatchPredictionJobID]:
-        expected_workflow_id = (None if workflow_id is None else
-                                BatchPredictionWorkflowID(str(workflow_id)))
+        expected_workflow_id = (
+            None if workflow_id is None else BatchPredictionWorkflowID(str(workflow_id))
+        )
         async with self._state_db.read_tx() as tx:
-            workflow_expr = _json_value(tx, "batch_prediction_workflow_id")
+            workflow_expr = _json_value(tx, 'batch_prediction_workflow_id')
             clauses, args = self._project_ids_where(tx, project_ids)
             if expected_workflow_id is None:
-                clauses.append(f"{workflow_expr} IS NULL")
+                clauses.append(f'{workflow_expr} IS NULL')
             else:
                 args.append(str(expected_workflow_id))
-                clauses.append(
-                    f"{workflow_expr} = {_placeholder(tx, len(args))}")
+                clauses.append(f'{workflow_expr} = {_placeholder(tx, len(args))}')
             rows = await self._list_payloads_where(
                 tx,
                 self._batch_prediction_jobs,
                 clauses,
                 args,
-                sort_created_at="desc",
+                sort_created_at='desc',
                 offset=keep_most_recent,
             )
         return [row.id for row in rows]
@@ -1087,20 +1113,26 @@ class MLJobService:
         async with self._state_db.read_tx() as tx:
             clauses, args = self._project_ids_where(tx, project_ids)
             status_start = len(args) + 1
-            clauses.append("(" + " OR ".join([
-                self._in_predicate(
-                    tx,
-                    _json_value(tx, "status"),
-                    submitted_statuses,
-                    status_start,
-                ),
-                self._in_predicate(
-                    tx,
-                    _json_path_value(tx, "execution", "status"),
-                    submitted_statuses,
-                    status_start + len(submitted_statuses),
-                ),
-            ]) + ")")
+            clauses.append(
+                '('
+                + ' OR '.join(
+                    [
+                        self._in_predicate(
+                            tx,
+                            _json_value(tx, 'status'),
+                            submitted_statuses,
+                            status_start,
+                        ),
+                        self._in_predicate(
+                            tx,
+                            _json_path_value(tx, 'execution', 'status'),
+                            submitted_statuses,
+                            status_start + len(submitted_statuses),
+                        ),
+                    ]
+                )
+                + ')'
+            )
             args.extend(submitted_statuses)
             args.extend(submitted_statuses)
             rows = await self._list_ids_where(
@@ -1117,15 +1149,18 @@ class MLJobService:
             return await self.get_training_job(TrainingJobID(id))
         if job_type == JobType.BATCH_PREDICTION_JOB:
             jobs = await self.get_batch_prediction_jobs(
-                [BatchPredictionJobID(id)], project_ids=None)
+                [BatchPredictionJobID(id)], project_ids=None
+            )
             return jobs[0] if jobs else None
         if job_type == JobType.GENERATE_TRAIN_TABLE_JOB:
             return await self.get_generate_train_table_job(
-                GenerateTrainTableJobID(id), project_ids=None)
+                GenerateTrainTableJobID(id), project_ids=None
+            )
         if job_type == JobType.GENERATE_PREDICTION_TABLE_JOB:
             return await self.get_generate_pred_table_job(
-                GeneratePredictionTableJobID(id))
-        raise AssertionError(f"Unsupported job type {job_type}")
+                GeneratePredictionTableJobID(id)
+            )
+        raise AssertionError(f'Unsupported job type {job_type}')
 
     async def upsert_job_registry_metadata(
         self,
@@ -1147,11 +1182,11 @@ class MLJobService:
                 repository = self._generate_pred_table_jobs
                 key = GeneratePredictionTableJobID(id)
             else:
-                raise AssertionError(f"Unsupported job type {job_type}")
+                raise AssertionError(f'Unsupported job type {job_type}')
 
             job = await self._get_if_exists(tx, repository, key)
             if job is None:
-                raise ValueError(f"Job id={id} does not exist.")
+                raise ValueError(f'Job id={id} does not exist.')
             job = deepcopy(job)
             job.registry_metadata = metadata
             await repository.upsert(tx, str(id), job)
@@ -1162,7 +1197,8 @@ class MLJobService:
     ) -> list[MLJobRegistryEntry]:
         entries = await self._list_registry_entries()
         return [
-            entry for entry in entries
+            entry
+            for entry in entries
             if self._registry_entry_matches_filters(entry, filters)
         ]
 
@@ -1171,10 +1207,12 @@ class MLJobService:
         train_job_ids: list[str],
     ) -> dict[str, MLJobRegistryEntry]:
         ids = set(train_job_ids)
-        entries = await self.select_jobs({
-            "job_type": [JobType.TRAINING_JOB],
-            "job_id": list(ids),
-        })
+        entries = await self.select_jobs(
+            {
+                'job_type': [JobType.TRAINING_JOB],
+                'job_id': list(ids),
+            }
+        )
         return {str(entry.job_id): entry for entry in entries}
 
     async def list_job_ids_by_type(self, job_type: JobType) -> list[JobID]:
@@ -1201,10 +1239,9 @@ class MLJobService:
                 )
                 for row in rows:
                     job = row.payload
-                    execution = getattr(job, "execution", None)
+                    execution = getattr(job, 'execution', None)
                     if execution is not None:
-                        statuses[_job_id_from_raw(job_type,
-                                                  row.id)] = execution.status
+                        statuses[_job_id_from_raw(job_type, row.id)] = execution.status
         return statuses
 
     async def delete_batch_prediction_jobs(
@@ -1235,20 +1272,23 @@ class MLJobService:
         async with self._state_db.write_tx() as tx:
             job = await self._get_job_if_exists_generic_in_tx(tx, id)
             if job is None:
-                raise KeyError(f"Job with id {id} not found in database")
+                raise KeyError(f'Job with id {id} not found in database')
             execution = job.execution
-            execution.workflow_end_state = (execution.workflow_end_state or
-                                            WorkflowExecutionStatus.TIMED_OUT)
+            execution.workflow_end_state = (
+                execution.workflow_end_state or WorkflowExecutionStatus.TIMED_OUT
+            )
             if execution.status.is_submitted:
                 execution.status = JobStatus.FAILED
                 execution.failure_info = JobFailureInfo(
-                    message=(f"This {job_type.value} has expired and its"
-                             " workflow is not found."),
-                    stacktrace="",
+                    message=(
+                        f'This {job_type.value} has expired and its'
+                        ' workflow is not found.'
+                    ),
+                    stacktrace='',
                 )
                 execution.log = JobEventLogEntry.failed(
                     now,
-                    f"{job_type.value} workflow has expired and not found.",
+                    f'{job_type.value} workflow has expired and not found.',
                 )
             await self._modify_job_if_open_in_tx(tx, job)
             return job
@@ -1258,7 +1298,7 @@ class MLJobService:
         async with self._state_db.write_tx() as tx:
             job = await self._get_job_if_exists_generic_in_tx(tx, id)
             if job is None:
-                raise KeyError(f"Job with id {id} not found in database")
+                raise KeyError(f'Job with id {id} not found in database')
             if job.execution.workflow_end_state:
                 assert job.execution.status.is_terminal
                 return job.execution.status == JobStatus.CANCELLED
@@ -1266,7 +1306,8 @@ class MLJobService:
             job.execution.workflow_end_state = WorkflowExecutionStatus.CANCELED
             job.execution.status = JobStatus.CANCELLED
             job.execution.log = JobEventLogEntry.cancelled(
-                message=f"{job_type.value} was cancelled by user")
+                message=f'{job_type.value} was cancelled by user'
+            )
             await self._modify_job_if_open_in_tx(tx, job)
 
         return True
@@ -1282,12 +1323,14 @@ class MLJobService:
             job = await self._get_job_if_exists_generic_in_tx(tx, id)
             if job is None:
                 return False
-            execution = getattr(job, "execution", None)
-            if (execution is not None and execution.status.is_submitted
-                    and not force):
-                raise ValueError(f"Unable to delete a queued/running job {id}")
-            child = (await self._find_child_job_in_tx(tx, job)
-                     if delete_created_child else None)
+            execution = getattr(job, 'execution', None)
+            if execution is not None and execution.status.is_submitted and not force:
+                raise ValueError(f'Unable to delete a queued/running job {id}')
+            child = (
+                await self._find_child_job_in_tx(tx, job)
+                if delete_created_child
+                else None
+            )
             await self._delete_job_in_tx(tx, job)
             if child is not None:
                 await self._delete_job_in_tx(tx, child)
@@ -1398,7 +1441,7 @@ class MLJobService:
         return await self.apply_job_tags(
             JobType.from_id(job_id),
             job_id,
-            {TAG_KEY_ARCHIVED: JobTagValue("null")},
+            {TAG_KEY_ARCHIVED: JobTagValue('null')},
         )
 
     async def list_job_tags(
@@ -1412,9 +1455,11 @@ class MLJobService:
         async with self._state_db.read_tx() as tx:
             if job_ids is not None:
                 return await self._job_tags_repository.list_by_ids(
-                    tx, job_type, job_ids)
+                    tx, job_type, job_ids
+                )
             return await self._job_tags_repository.list_by_filters(
-                tx, job_type, filters)
+                tx, job_type, filters
+            )
 
     async def search_jobs(
         self,
@@ -1492,18 +1537,17 @@ class MLJobService:
             ListJobsProcessor.apply_filters(
                 query=list_query,
                 jobs=jobs,
-            ))
+            )
+        )
 
     async def list_jobs_by_project_visibility(
         self,
         visible_project_ids: Iterable[ProjectID],
     ) -> list[Any]:
-        visible = {
-            ProjectID(str(project_id))
-            for project_id in visible_project_ids
-        }
+        visible = {ProjectID(str(project_id)) for project_id in visible_project_ids}
         return await self._list_aggregate_job_entries_for_project_visibility(
-            visible, )
+            visible,
+        )
 
     async def list_aggregate_job_entries(
         self,
@@ -1516,7 +1560,8 @@ class MLJobService:
                 project_id=project_id,
             )
             training_jobs = await self._list_payloads_where(
-                tx, self._training_jobs, project_clauses, project_args)
+                tx, self._training_jobs, project_clauses, project_args
+            )
             batch_rows = await self._list_payloads_where(
                 tx,
                 self._batch_prediction_jobs,
@@ -1565,8 +1610,11 @@ class MLJobService:
             search_tag_ids = self._job_tag_search_predicates(list_query, tags)
         limit = list_query.limit if pushdown_page else None
         offset = list_query.limit * list_query.page if pushdown_page else 0
-        sort_created_at = (self._aggregate_created_at_sort_direction(list_query)
-                           if pushdown_page else None)
+        sort_created_at = (
+            self._aggregate_created_at_sort_direction(list_query)
+            if pushdown_page
+            else None
+        )
         async with self._state_db.read_tx() as tx:
             project_clauses, project_args = self._project_where(
                 tx,
@@ -1603,38 +1651,36 @@ class MLJobService:
                 limit=limit,
                 offset=offset,
             )
-            generate_train_table_jobs = (await
-                                         self._list_aggregate_payloads_for_type(
-                                             tx,
-                                             self._generate_train_table_jobs,
-                                             JobType.GENERATE_TRAIN_TABLE_JOB,
-                                             requested_job_types,
-                                             project_clauses,
-                                             project_args,
-                                             list_query,
-                                             tag_filter_ids=tag_filter_ids,
-                                             archived_ids=archived_ids,
-                                             search_tag_ids=search_tag_ids,
-                                             sort_created_at=sort_created_at,
-                                             limit=limit,
-                                             offset=offset,
-                                         ))
-            generate_pred_table_jobs = (
-                await self._list_aggregate_payloads_for_type(
-                    tx,
-                    self._generate_pred_table_jobs,
-                    JobType.GENERATE_PREDICTION_TABLE_JOB,
-                    requested_job_types,
-                    project_clauses,
-                    project_args,
-                    list_query,
-                    tag_filter_ids=tag_filter_ids,
-                    archived_ids=archived_ids,
-                    search_tag_ids=search_tag_ids,
-                    sort_created_at=sort_created_at,
-                    limit=limit,
-                    offset=offset,
-                ))
+            generate_train_table_jobs = await self._list_aggregate_payloads_for_type(
+                tx,
+                self._generate_train_table_jobs,
+                JobType.GENERATE_TRAIN_TABLE_JOB,
+                requested_job_types,
+                project_clauses,
+                project_args,
+                list_query,
+                tag_filter_ids=tag_filter_ids,
+                archived_ids=archived_ids,
+                search_tag_ids=search_tag_ids,
+                sort_created_at=sort_created_at,
+                limit=limit,
+                offset=offset,
+            )
+            generate_pred_table_jobs = await self._list_aggregate_payloads_for_type(
+                tx,
+                self._generate_pred_table_jobs,
+                JobType.GENERATE_PREDICTION_TABLE_JOB,
+                requested_job_types,
+                project_clauses,
+                project_args,
+                list_query,
+                tag_filter_ids=tag_filter_ids,
+                archived_ids=archived_ids,
+                search_tag_ids=search_tag_ids,
+                sort_created_at=sort_created_at,
+                limit=limit,
+                offset=offset,
+            )
         return [
             *training_jobs,
             *batch_rows,
@@ -1660,59 +1706,61 @@ class MLJobService:
                 tx,
                 project_id=project_id,
             )
-            return sum([
-                await self._count_aggregate_jobs_for_type(
-                    tx,
-                    self._training_jobs,
-                    JobType.TRAINING_JOB,
-                    requested_job_types,
-                    project_clauses,
-                    project_args,
-                    list_query,
-                    tag_filter_ids,
-                    archived_ids,
-                    search_tag_ids=search_tag_ids,
-                ),
-                await self._count_aggregate_jobs_for_type(
-                    tx,
-                    self._batch_prediction_jobs,
-                    JobType.BATCH_PREDICTION_JOB,
-                    requested_job_types,
-                    project_clauses,
-                    project_args,
-                    list_query,
-                    tag_filter_ids,
-                    archived_ids,
-                    extra_clauses=[
-                        _batch_prediction_countable_execution_clause(tx)
-                    ],
-                    search_tag_ids=search_tag_ids,
-                ),
-                await self._count_aggregate_jobs_for_type(
-                    tx,
-                    self._generate_train_table_jobs,
-                    JobType.GENERATE_TRAIN_TABLE_JOB,
-                    requested_job_types,
-                    project_clauses,
-                    project_args,
-                    list_query,
-                    tag_filter_ids,
-                    archived_ids,
-                    search_tag_ids=search_tag_ids,
-                ),
-                await self._count_aggregate_jobs_for_type(
-                    tx,
-                    self._generate_pred_table_jobs,
-                    JobType.GENERATE_PREDICTION_TABLE_JOB,
-                    requested_job_types,
-                    project_clauses,
-                    project_args,
-                    list_query,
-                    tag_filter_ids,
-                    archived_ids,
-                    search_tag_ids=search_tag_ids,
-                ),
-            ])
+            return sum(
+                [
+                    await self._count_aggregate_jobs_for_type(
+                        tx,
+                        self._training_jobs,
+                        JobType.TRAINING_JOB,
+                        requested_job_types,
+                        project_clauses,
+                        project_args,
+                        list_query,
+                        tag_filter_ids,
+                        archived_ids,
+                        search_tag_ids=search_tag_ids,
+                    ),
+                    await self._count_aggregate_jobs_for_type(
+                        tx,
+                        self._batch_prediction_jobs,
+                        JobType.BATCH_PREDICTION_JOB,
+                        requested_job_types,
+                        project_clauses,
+                        project_args,
+                        list_query,
+                        tag_filter_ids,
+                        archived_ids,
+                        extra_clauses=[
+                            _batch_prediction_countable_execution_clause(tx)
+                        ],
+                        search_tag_ids=search_tag_ids,
+                    ),
+                    await self._count_aggregate_jobs_for_type(
+                        tx,
+                        self._generate_train_table_jobs,
+                        JobType.GENERATE_TRAIN_TABLE_JOB,
+                        requested_job_types,
+                        project_clauses,
+                        project_args,
+                        list_query,
+                        tag_filter_ids,
+                        archived_ids,
+                        search_tag_ids=search_tag_ids,
+                    ),
+                    await self._count_aggregate_jobs_for_type(
+                        tx,
+                        self._generate_pred_table_jobs,
+                        JobType.GENERATE_PREDICTION_TABLE_JOB,
+                        requested_job_types,
+                        project_clauses,
+                        project_args,
+                        list_query,
+                        tag_filter_ids,
+                        archived_ids,
+                        search_tag_ids=search_tag_ids,
+                    ),
+                ]
+            )
 
     async def _list_aggregate_payloads_for_type(
         self,
@@ -1787,7 +1835,7 @@ class MLJobService:
         if clauses_and_args is None:
             return 0
         clauses, args = clauses_and_args
-        where_sql = (" WHERE " + " AND ".join(clauses) if clauses else "")
+        where_sql = ' WHERE ' + ' AND '.join(clauses) if clauses else ''
         row = await tx.fetchrow(
             f"""
             SELECT COUNT(*) AS count
@@ -1798,7 +1846,7 @@ class MLJobService:
         )
         if row is None:
             return 0
-        return int(row_field(row, "count", 0))
+        return int(row_field(row, 'count', 0))
 
     def _aggregate_query_clauses(
         self,
@@ -1825,29 +1873,29 @@ class MLJobService:
 
         if list_query.status:
             status_values = [
-                str(getattr(status, "value", status))
-                for status in list_query.status
+                str(getattr(status, 'value', status)) for status in list_query.status
             ]
             clauses.append(
                 self._in_predicate(
                     tx,
-                    _json_path_value(tx, "execution", "status"),
+                    _json_path_value(tx, 'execution', 'status'),
                     status_values,
                     len(args) + 1,
-                ))
+                )
+            )
             args.extend(status_values)
 
-        created_expr = _json_path_value(tx, "timestamps", "created_at")
+        created_expr = _json_path_value(tx, 'timestamps', 'created_at')
         if list_query.time_range_start is not None:
             args.append(list_query.time_range_start.isoformat())
-            clauses.append(f"{created_expr} >= {_placeholder(tx, len(args))}")
+            clauses.append(f'{created_expr} >= {_placeholder(tx, len(args))}')
         if list_query.time_range_end is not None:
             args.append(list_query.time_range_end.isoformat())
-            clauses.append(f"{created_expr} <= {_placeholder(tx, len(args))}")
+            clauses.append(f'{created_expr} <= {_placeholder(tx, len(args))}')
 
         if tag_filter_ids is not None:
             job_ids = sorted(tag_filter_ids.get(job_type, set()))
-            clauses.append(self._in_predicate(tx, "id", job_ids, len(args) + 1))
+            clauses.append(self._in_predicate(tx, 'id', job_ids, len(args) + 1))
             args.extend(job_ids)
         elif archived_ids is not None:
             archived_job_ids = sorted(archived_ids.get(job_type, set()))
@@ -1855,10 +1903,11 @@ class MLJobService:
                 clauses.append(
                     self._not_in_predicate(
                         tx,
-                        "id",
+                        'id',
                         archived_job_ids,
                         len(args) + 1,
-                    ))
+                    )
+                )
                 args.extend(archived_job_ids)
 
         search_clause = self._aggregate_search_clause(
@@ -1887,43 +1936,46 @@ class MLJobService:
         search_pattern = _like_pattern(search_term)
         search_clauses = []
         for expression in (
-                "id",
-                _json_value(tx, "source"),
-                _json_value(tx, "user"),
+            'id',
+            _json_value(tx, 'source'),
+            _json_value(tx, 'user'),
         ):
             args.append(search_pattern)
             search_clauses.append(
-                f"{_lower_sql(expression)} LIKE {_placeholder(tx, len(args))} "
-                "ESCAPE '\\'")
+                f'{_lower_sql(expression)} LIKE {_placeholder(tx, len(args))} '
+                "ESCAPE '\\'"
+            )
 
-        job_type_label = job_type.value.lower().replace("_", " ")
+        job_type_label = job_type.value.lower().replace('_', ' ')
         if search_term in job_type_label:
-            search_clauses.append("1 = 1")
+            search_clauses.append('1 = 1')
 
         tag_job_ids = sorted((search_tag_ids or {}).get(job_type, set()))
         if tag_job_ids:
             search_clauses.append(
-                self._in_predicate(tx, "id", tag_job_ids,
-                                   len(args) + 1))
+                self._in_predicate(tx, 'id', tag_job_ids, len(args) + 1)
+            )
             args.extend(tag_job_ids)
-        return "(" + " OR ".join(search_clauses) + ")"
+        return '(' + ' OR '.join(search_clauses) + ')'
 
     @staticmethod
     def _aggregate_created_at_sort_direction(
-        list_query: ListJobsQuery, ) -> str:
+        list_query: ListJobsQuery,
+    ) -> str:
         if list_query.sort_by is None:
-            return "desc"
+            return 'desc'
         if list_query.sort_by == JobSortField.START_TIME:
-            return "desc" if list_query.sort_desc else "asc"
-        raise ValueError(f"Unsupported aggregate job SQL sort: "
-                         f"{list_query.sort_by}")
+            return 'desc' if list_query.sort_desc else 'asc'
+        raise ValueError(f'Unsupported aggregate job SQL sort: {list_query.sort_by}')
 
     def _can_pushdown_aggregate_page(self, list_query: ListJobsQuery) -> bool:
         if list_query.sort_by not in (None, JobSortField.START_TIME):
             return False
         requested_job_types = set(list_query.job_type)
-        return (len(requested_job_types) == 1
-                and next(iter(requested_job_types)) in _AGGREGATE_JOB_TYPES)
+        return (
+            len(requested_job_types) == 1
+            and next(iter(requested_job_types)) in _AGGREGATE_JOB_TYPES
+        )
 
     def _job_tag_count_predicates(
         self,
@@ -1941,8 +1993,9 @@ class MLJobService:
         for job_id, job_tags in tags.items():
             job_type = JobType.from_id(job_id)
             tag_values = {str(value) for value in job_tags.tags.values()}
-            archived = (str(
-                job_tags.tags.get(TAG_KEY_ARCHIVED)) == str(TAG_VALUE_ARCHIVED))
+            archived = str(job_tags.tags.get(TAG_KEY_ARCHIVED)) == str(
+                TAG_VALUE_ARCHIVED
+            )
             if matching_ids is not None:
                 if archived != want_archived:
                     continue
@@ -1964,10 +2017,10 @@ class MLJobService:
         search_term = list_query.search_keyword.lower()
         matching_ids: dict[JobType, set[str]] = {}
         for job_id, job_tags in tags.items():
-            if any(search_term in str(value).lower()
-                   for value in job_tags.tags.values()):
-                matching_ids.setdefault(JobType.from_id(job_id),
-                                        set()).add(str(job_id))
+            if any(
+                search_term in str(value).lower() for value in job_tags.tags.values()
+            ):
+                matching_ids.setdefault(JobType.from_id(job_id), set()).add(str(job_id))
         return matching_ids
 
     async def _list_aggregate_job_entries_for_project_visibility(
@@ -1980,7 +2033,8 @@ class MLJobService:
                 visible_project_ids,
             )
             training_jobs = await self._list_payloads_where(
-                tx, self._training_jobs, project_clauses, project_args)
+                tx, self._training_jobs, project_clauses, project_args
+            )
             batch_rows = await self._list_payloads_where(
                 tx,
                 self._batch_prediction_jobs,
@@ -2022,7 +2076,8 @@ class MLJobService:
         instead of scanning every historical job row.
         """
         training_jobs = await self._list_open_job_payloads_where(
-            tx, self._training_jobs)
+            tx, self._training_jobs
+        )
         batch_rows = await self._list_open_job_payloads_where(
             tx,
             self._batch_prediction_jobs,
@@ -2030,9 +2085,11 @@ class MLJobService:
             [],
         )
         generate_train_table_jobs = (
-            await self._list_open_orphan_generate_train_table_jobs(tx))
+            await self._list_open_orphan_generate_train_table_jobs(tx)
+        )
         generate_pred_table_jobs = (
-            await self._list_open_orphan_generate_pred_table_jobs(tx))
+            await self._list_open_orphan_generate_pred_table_jobs(tx)
+        )
 
         return [
             *training_jobs,
@@ -2081,8 +2138,7 @@ class MLJobService:
         ids: Iterable[JobID],
     ) -> list[Any]:
         return [
-            row.payload
-            for row in await self._list_rows_by_ids(tx, repository, ids)
+            row.payload for row in await self._list_rows_by_ids(tx, repository, ids)
         ]
 
     async def _delete_batch_prediction_ids_in_tx(
@@ -2096,11 +2152,11 @@ class MLJobService:
         if not id_values:
             return []
 
-        status_expr = _json_path_value(tx, "execution", "status")
+        status_expr = _json_path_value(tx, 'execution', 'status')
         args: list[Any] = list(id_values)
         where_clauses = [
-            self._in_predicate(tx, "id", id_values, 1),
-            f"{status_expr} IS NOT NULL",
+            self._in_predicate(tx, 'id', id_values, 1),
+            f'{status_expr} IS NOT NULL',
         ]
         if not force:
             submitted_statuses = [
@@ -2112,18 +2168,19 @@ class MLJobService:
                     status_expr,
                     submitted_statuses,
                     len(args) + 1,
-                ))
+                )
+            )
             args.extend(submitted_statuses)
 
         rows = await tx.fetch(
             f"""
             DELETE FROM {self._batch_prediction_jobs._table_name}
-            WHERE {" AND ".join(where_clauses)}
+            WHERE {' AND '.join(where_clauses)}
             RETURNING id
             """,
             *args,
         )
-        return [row_str(row, "id", 0) for row in rows]
+        return [row_str(row, 'id', 0) for row in rows]
 
     def _repository_for_job(self, job: Any) -> JsonRepository:
         if isinstance(job, TrainingJobDBEntry):
@@ -2132,7 +2189,7 @@ class MLJobService:
             return self._generate_train_table_jobs
         if isinstance(job, GeneratePredTableJobDBEntry):
             return self._generate_pred_table_jobs
-        raise AssertionError(f"Unsupported job db entry type: {type(job)}")
+        raise AssertionError(f'Unsupported job db entry type: {type(job)}')
 
     def _repository_for_job_type(self, job_type: JobType) -> JsonRepository:
         if job_type == JobType.TRAINING_JOB:
@@ -2143,7 +2200,7 @@ class MLJobService:
             return self._generate_train_table_jobs
         if job_type == JobType.GENERATE_PREDICTION_TABLE_JOB:
             return self._generate_pred_table_jobs
-        raise AssertionError(f"Unsupported job type {job_type}")
+        raise AssertionError(f'Unsupported job type {job_type}')
 
     async def _list_payloads_where(
         self,
@@ -2156,26 +2213,24 @@ class MLJobService:
         limit: int | None = None,
         offset: int = 0,
     ) -> list[Any]:
-        where_sql = (" WHERE " +
-                     " AND ".join(where_clauses) if where_clauses else "")
-        order_sql = "ORDER BY id"
+        where_sql = ' WHERE ' + ' AND '.join(where_clauses) if where_clauses else ''
+        order_sql = 'ORDER BY id'
         if sort_created_at is not None:
-            if sort_created_at not in ("asc", "desc"):
-                raise ValueError(
-                    f"Unsupported created_at sort: {sort_created_at}")
-            created_expr = _json_path_value(tx, "timestamps", "created_at")
-            order_sql = f"ORDER BY {created_expr} {sort_created_at.upper()}, id"
+            if sort_created_at not in ('asc', 'desc'):
+                raise ValueError(f'Unsupported created_at sort: {sort_created_at}')
+            created_expr = _json_path_value(tx, 'timestamps', 'created_at')
+            order_sql = f'ORDER BY {created_expr} {sort_created_at.upper()}, id'
         query_args = list(args)
-        limit_sql = ""
+        limit_sql = ''
         if limit is not None:
             query_args.append(limit)
-            limit_sql = f" LIMIT {_placeholder(tx, len(query_args))}"
-        offset_sql = ""
+            limit_sql = f' LIMIT {_placeholder(tx, len(query_args))}'
+        offset_sql = ''
         if offset:
-            if limit is None and tx.backend == "sqlite":
-                limit_sql = " LIMIT -1"
+            if limit is None and tx.backend == 'sqlite':
+                limit_sql = ' LIMIT -1'
             query_args.append(offset)
-            offset_sql = f" OFFSET {_placeholder(tx, len(query_args))}"
+            offset_sql = f' OFFSET {_placeholder(tx, len(query_args))}'
         rows = await tx.fetch(
             f"""
             SELECT id, payload, created_at, updated_at
@@ -2201,8 +2256,7 @@ class MLJobService:
             repository,
             [
                 *([] if where_clauses is None else where_clauses),
-                f"{_json_path_value(tx, 'execution', 'workflow_end_state')} "
-                "IS NULL",
+                f'{_json_path_value(tx, "execution", "workflow_end_state")} IS NULL',
             ],
             [] if args is None else args,
         )
@@ -2211,20 +2265,20 @@ class MLJobService:
         self,
         tx: StateTx,
     ) -> list[GenerateTrainTableJobDBEntry]:
-        child_id = f"{self._generate_train_table_jobs._table_name}.id"
+        child_id = f'{self._generate_train_table_jobs._table_name}.id'
         training_parent_id = self._child_parent_id_expr(
             tx,
             child_id,
-            parent_prefix="trainingjob-",
-            child_prefix="gen-traintable-job-",
+            parent_prefix='trainingjob-',
+            child_prefix='gen-traintable-job-',
         )
         return await self._list_open_job_payloads_where(
             tx,
             self._generate_train_table_jobs,
             [
-                "NOT EXISTS ("
-                f"SELECT 1 FROM {self._training_jobs._table_name} parent "
-                f"WHERE parent.id = {training_parent_id})",
+                'NOT EXISTS ('
+                f'SELECT 1 FROM {self._training_jobs._table_name} parent '
+                f'WHERE parent.id = {training_parent_id})',
             ],
             [],
         )
@@ -2233,20 +2287,20 @@ class MLJobService:
         self,
         tx: StateTx,
     ) -> list[GeneratePredTableJobDBEntry]:
-        child_id = f"{self._generate_pred_table_jobs._table_name}.id"
+        child_id = f'{self._generate_pred_table_jobs._table_name}.id'
         batch_parent_id = self._child_parent_id_expr(
             tx,
             child_id,
-            parent_prefix="bp-job-",
-            child_prefix="gen-predtable-job-",
+            parent_prefix='bp-job-',
+            child_prefix='gen-predtable-job-',
         )
         return await self._list_open_job_payloads_where(
             tx,
             self._generate_pred_table_jobs,
             [
-                "NOT EXISTS ("
-                f"SELECT 1 FROM {self._batch_prediction_jobs._table_name} "
-                f"parent WHERE parent.id = {batch_parent_id})",
+                'NOT EXISTS ('
+                f'SELECT 1 FROM {self._batch_prediction_jobs._table_name} '
+                f'parent WHERE parent.id = {batch_parent_id})',
             ],
             [],
         )
@@ -2260,9 +2314,10 @@ class MLJobService:
         child_prefix: str,
     ) -> str:
         suffix_start = len(child_prefix) + 1
-        if tx.backend == "postgres":
-            return (f"'{parent_prefix}' || substring({child_id_expr} "
-                    f"from {suffix_start})")
+        if tx.backend == 'postgres':
+            return (
+                f"'{parent_prefix}' || substring({child_id_expr} from {suffix_start})"
+            )
         return f"'{parent_prefix}' || substr({child_id_expr}, {suffix_start})"
 
     async def _list_ids_where(
@@ -2272,8 +2327,7 @@ class MLJobService:
         where_clauses: list[str],
         args: list[Any],
     ) -> list[str]:
-        where_sql = (" WHERE " +
-                     " AND ".join(where_clauses) if where_clauses else "")
+        where_sql = ' WHERE ' + ' AND '.join(where_clauses) if where_clauses else ''
         rows = await tx.fetch(
             f"""
             SELECT id
@@ -2283,7 +2337,7 @@ class MLJobService:
             """,
             *args,
         )
-        return [row_str(row, "id", 0) for row in rows]
+        return [row_str(row, 'id', 0) for row in rows]
 
     def _batch_prediction_where(
         self,
@@ -2299,30 +2353,36 @@ class MLJobService:
         clauses, args = self._project_ids_where(tx, project_ids)
         if job_ids is not None:
             job_id_args = sorted(str(job_id) for job_id in job_ids)
-            clauses.append(
-                self._in_predicate(tx, "id", job_id_args,
-                                   len(args) + 1))
+            clauses.append(self._in_predicate(tx, 'id', job_id_args, len(args) + 1))
             args.extend(job_id_args)
         if model_id is not None:
             args.append(str(model_id))
-            clauses.append(f"{_json_value(tx, 'training_job_id')} = "
-                           f"{_placeholder(tx, len(args))}")
+            clauses.append(
+                f'{_json_value(tx, "training_job_id")} = {_placeholder(tx, len(args))}'
+            )
         if status is not None:
             args.append(status.value)
-            clauses.append(f"{_json_value(tx, 'status')} = "
-                           f"{_placeholder(tx, len(args))}")
+            clauses.append(
+                f'{_json_value(tx, "status")} = {_placeholder(tx, len(args))}'
+            )
         if pquery_id is not None:
             pquery_clauses = []
             args.append(str(pquery_id))
-            pquery_clauses.append(f"{_json_value(tx, 'pquery_id')} = "
-                                  f"{_placeholder(tx, len(args))}")
+            pquery_clauses.append(
+                f'{_json_value(tx, "pquery_id")} = {_placeholder(tx, len(args))}'
+            )
             _, fpid = PredictiveQueryID.parse(pquery_id)
-            if (match_pquery_def_fpid and fpid is not None
-                    and PredictiveQueryID.compose(fpid=fpid) == pquery_id):
+            if (
+                match_pquery_def_fpid
+                and fpid is not None
+                and PredictiveQueryID.compose(fpid=fpid) == pquery_id
+            ):
                 args.append(str(fpid))
-                pquery_clauses.append(f"{_json_value(tx, 'pquery_def_fpid')} = "
-                                      f"{_placeholder(tx, len(args))}")
-            clauses.append("(" + " OR ".join(pquery_clauses) + ")")
+                pquery_clauses.append(
+                    f'{_json_value(tx, "pquery_def_fpid")} = '
+                    f'{_placeholder(tx, len(args))}'
+                )
+            clauses.append('(' + ' OR '.join(pquery_clauses) + ')')
         return clauses, args
 
     def _project_ids_where(
@@ -2352,7 +2412,7 @@ class MLJobService:
         async with self._state_db.read_tx() as tx:
             clauses, args = self._project_ids_where(tx, project_ids)
             id_args = sorted(str(id) for id in ids)
-            clauses.append(self._in_predicate(tx, "id", id_args, len(args) + 1))
+            clauses.append(self._in_predicate(tx, 'id', id_args, len(args) + 1))
             args.extend(id_args)
             payloads = await self._list_payloads_where(
                 tx,
@@ -2375,12 +2435,12 @@ class MLJobService:
     ) -> str:
         values = list(values)
         if not values:
-            return "1 = 0"
+            return '1 = 0'
         placeholders = [
             _placeholder(tx, position)
             for position in range(first_position, first_position + len(values))
         ]
-        return f"{expression} IN ({', '.join(placeholders)})"
+        return f'{expression} IN ({", ".join(placeholders)})'
 
     def _not_in_predicate(
         self,
@@ -2391,76 +2451,78 @@ class MLJobService:
     ) -> str:
         values = list(values)
         if not values:
-            return "1 = 1"
+            return '1 = 1'
         placeholders = [
             _placeholder(tx, position)
             for position in range(first_position, first_position + len(values))
         ]
-        return f"{expression} NOT IN ({', '.join(placeholders)})"
+        return f'{expression} NOT IN ({", ".join(placeholders)})'
 
     async def _list_registry_entries(self) -> list[MLJobRegistryEntry]:
         async with self._state_db.read_tx() as tx:
             training_jobs = await self._training_jobs.list_all(tx)
-            batch_prediction_rows = await self._batch_prediction_jobs.list_all(
-                tx)
-            generate_train_table_jobs = (
-                await self._generate_train_table_jobs.list_all(tx))
-            generate_pred_table_jobs = (
-                await self._generate_pred_table_jobs.list_all(tx))
+            batch_prediction_rows = await self._batch_prediction_jobs.list_all(tx)
+            generate_train_table_jobs = await self._generate_train_table_jobs.list_all(
+                tx
+            )
+            generate_pred_table_jobs = await self._generate_pred_table_jobs.list_all(tx)
 
         return [
             *[
-                self._registry_entry_from_job(self._repository_payload(job),
-                                              JobType.TRAINING_JOB)
+                self._registry_entry_from_job(
+                    self._repository_payload(job), JobType.TRAINING_JOB
+                )
                 for job in training_jobs
             ],
             *[
                 self._registry_entry_from_job(
                     self._repository_payload(row),
                     JobType.BATCH_PREDICTION_JOB,
-                ) for row in batch_prediction_rows
+                )
+                for row in batch_prediction_rows
             ],
             *[
                 self._registry_entry_from_job(
                     self._repository_payload(job),
                     JobType.GENERATE_TRAIN_TABLE_JOB,
-                ) for job in generate_train_table_jobs
+                )
+                for job in generate_train_table_jobs
             ],
             *[
                 self._registry_entry_from_job(
                     self._repository_payload(job),
                     JobType.GENERATE_PREDICTION_TABLE_JOB,
-                ) for job in generate_pred_table_jobs
+                )
+                for job in generate_pred_table_jobs
             ],
         ]
 
     @staticmethod
     def _repository_payload(row: Any) -> Any:
-        return getattr(row, "payload", row)
+        return getattr(row, 'payload', row)
 
     def _registry_entry_from_job(
         self,
         job: Any,
         job_type: JobType,
     ) -> MLJobRegistryEntry:
-        metadata = getattr(job, "registry_metadata", None)
-        execution = getattr(job, "execution", None)
-        config = getattr(job, "config", None)
-        timestamps = getattr(job, "timestamps", None)
-        status = getattr(execution, "status", None)
-        log_entry = getattr(execution, "log", None)
+        metadata = getattr(job, 'registry_metadata', None)
+        execution = getattr(job, 'execution', None)
+        config = getattr(job, 'config', None)
+        timestamps = getattr(job, 'timestamps', None)
+        status = getattr(execution, 'status', None)
+        log_entry = getattr(execution, 'log', None)
         pquery_id = None
         trained_job_id = None
         if config is not None:
-            pquery_id = getattr(config, "pquery_id", None)
+            pquery_id = getattr(config, 'pquery_id', None)
             if pquery_id is None:
-                pquery_id = getattr(config, "predictive_query_id", None)
-            trained_job_id = getattr(config, "training_job_id", None)
+                pquery_id = getattr(config, 'predictive_query_id', None)
+            trained_job_id = getattr(config, 'training_job_id', None)
         if pquery_id is None:
-            pquery_id = getattr(job, "pquery_id", None)
-        metadata_pquery_id = self._metadata_value(metadata, "pquery_id")
-        metadata_trained_job_id = self._metadata_value(metadata,
-                                                       "trained_job_id")
+            pquery_id = getattr(job, 'pquery_id', None)
+        metadata_pquery_id = self._metadata_value(metadata, 'pquery_id')
+        metadata_trained_job_id = self._metadata_value(metadata, 'trained_job_id')
         if metadata_pquery_id is not None:
             pquery_id = metadata_pquery_id
         if metadata_trained_job_id is not None:
@@ -2471,34 +2533,38 @@ class MLJobService:
         if timestamps is not None:
             start_time = timestamps.created_at
             is_terminal = (
-                status.is_terminal if hasattr(status, "is_terminal") else
-                JobStatus(status).is_terminal if status is not None else False)
+                status.is_terminal
+                if hasattr(status, 'is_terminal')
+                else JobStatus(status).is_terminal
+                if status is not None
+                else False
+            )
             if is_terminal:
                 end_time = timestamps.updated_at
-        status_value = None if status is None else getattr(
-            status, "value", status)
+        status_value = None if status is None else getattr(status, 'value', status)
 
         return MLJobRegistryEntry(
             job_id=job.id,
             job_type=job_type,
-            instance_id=self._metadata_value(metadata, "instance_id"),
+            instance_id=self._metadata_value(metadata, 'instance_id'),
             pquery_id=None if pquery_id is None else str(pquery_id),
             start_time=start_time,
             end_time=end_time,
-            storage_path=getattr(job, "storage_path", None),
-            input_data_stats=getattr(job, "input_data_stats", {}),
-            kumo_version=(self._metadata_value(metadata, "kumo_version")
-                          or getattr(job, "kumo_version", None)),
-            pquery_str=self._metadata_value(metadata, "pquery_str"),
-            generator_advanced_options=(self._metadata_value(
-                metadata, "generator_advanced_options")),
-            trained_job_id=None
-            if trained_job_id is None else str(trained_job_id),
-            bp_filters=self._metadata_value(metadata, "bp_filters"),
-            override_model_path=self._metadata_value(metadata,
-                                                     "override_model_path"),
+            storage_path=getattr(job, 'storage_path', None),
+            input_data_stats=getattr(job, 'input_data_stats', {}),
+            kumo_version=(
+                self._metadata_value(metadata, 'kumo_version')
+                or getattr(job, 'kumo_version', None)
+            ),
+            pquery_str=self._metadata_value(metadata, 'pquery_str'),
+            generator_advanced_options=(
+                self._metadata_value(metadata, 'generator_advanced_options')
+            ),
+            trained_job_id=None if trained_job_id is None else str(trained_job_id),
+            bp_filters=self._metadata_value(metadata, 'bp_filters'),
+            override_model_path=self._metadata_value(metadata, 'override_model_path'),
             status=status_value,
-            stage=getattr(log_entry, "stage_name", None),
+            stage=getattr(log_entry, 'stage_name', None),
         )
 
     @staticmethod
@@ -2515,23 +2581,27 @@ class MLJobService:
                 if key in _RANGE_JOB_ATTRS and len(value) == 2:
                     lower_bound = MLJobService._try_time_range_format(value[0])
                     upper_bound = MLJobService._try_time_range_format(value[1])
-                    if lower_bound and (entry_value is None
-                                        or entry_value < lower_bound):
+                    if lower_bound and (
+                        entry_value is None or entry_value < lower_bound
+                    ):
                         return False
-                    if upper_bound and (entry_value is None
-                                        or entry_value > upper_bound):
+                    if upper_bound and (
+                        entry_value is None or entry_value > upper_bound
+                    ):
                         return False
                     continue
                 expected_values = {
-                    MLJobService._registry_filter_value(item)
-                    for item in value
+                    MLJobService._registry_filter_value(item) for item in value
                 }
-                if (MLJobService._registry_filter_value(entry_value)
-                        not in expected_values):
+                if (
+                    MLJobService._registry_filter_value(entry_value)
+                    not in expected_values
+                ):
                     return False
                 continue
-            if (MLJobService._registry_filter_value(entry_value)
-                    != MLJobService._registry_filter_value(value)):
+            if MLJobService._registry_filter_value(
+                entry_value
+            ) != MLJobService._registry_filter_value(value):
                 return False
         return True
 
@@ -2545,7 +2615,7 @@ class MLJobService:
 
     @staticmethod
     def _registry_filter_value(value: object) -> str:
-        return str(getattr(value, "value", value))
+        return str(getattr(value, 'value', value))
 
     @staticmethod
     def _try_time_range_format(value: str | None) -> datetime | None:
@@ -2562,24 +2632,24 @@ class MLJobService:
         *,
         project_id: ProjectID,
     ) -> tuple[list[str], list[Any]]:
-        project_expr = _json_value(tx, "project_id")
-        return [f"{project_expr} = {_placeholder(tx, 1)}"], [str(project_id)]
+        project_expr = _json_value(tx, 'project_id')
+        return [f'{project_expr} = {_placeholder(tx, 1)}'], [str(project_id)]
 
     def _project_visibility_where(
         self,
         tx: StateTx,
         visible_project_ids: set[ProjectID],
     ) -> tuple[list[str], list[Any]]:
-        project_expr = _json_value(tx, "project_id")
-        project_args = sorted(
-            str(project_id) for project_id in visible_project_ids)
+        project_expr = _json_value(tx, 'project_id')
+        project_args = sorted(str(project_id) for project_id in visible_project_ids)
         project_clauses = []
         if project_args:
             project_clauses.append(
-                self._in_predicate(tx, project_expr, project_args, 1))
+                self._in_predicate(tx, project_expr, project_args, 1)
+            )
         if not project_clauses:
-            return ["1 = 0"], []
-        return ["(" + " OR ".join(project_clauses) + ")"], project_args
+            return ['1 = 0'], []
+        return ['(' + ' OR '.join(project_clauses) + ')'], project_args
 
     async def _get_job_if_exists_generic_in_tx(
         self,
@@ -2588,11 +2658,11 @@ class MLJobService:
     ) -> Any | None:
         job_type = JobType.from_id(id)
         if job_type == JobType.TRAINING_JOB:
-            return await self._get_if_exists(tx, self._training_jobs,
-                                             TrainingJobID(id))
+            return await self._get_if_exists(tx, self._training_jobs, TrainingJobID(id))
         if job_type == JobType.BATCH_PREDICTION_JOB:
-            return await self._get_if_exists(tx, self._batch_prediction_jobs,
-                                             BatchPredictionJobID(id))
+            return await self._get_if_exists(
+                tx, self._batch_prediction_jobs, BatchPredictionJobID(id)
+            )
         if job_type == JobType.GENERATE_TRAIN_TABLE_JOB:
             return await self._get_if_exists(
                 tx,
@@ -2605,7 +2675,7 @@ class MLJobService:
                 self._generate_pred_table_jobs,
                 GeneratePredictionTableJobID(id),
             )
-        raise AssertionError(f"Unsupported job type {job_type}")
+        raise AssertionError(f'Unsupported job type {job_type}')
 
     async def _save_job_entry_if_open(
         self,
@@ -2613,22 +2683,22 @@ class MLJobService:
         job: Any,
     ) -> bool:
         if isinstance(job, BatchPredictionJobDBEntry):
-            existing = await self._get_required(tx, self._batch_prediction_jobs,
-                                                job.id)
+            existing = await self._get_required(tx, self._batch_prediction_jobs, job.id)
             existing_execution = existing.execution
-            if (existing_execution is not None
-                    and existing_execution.workflow_end_state):
+            if existing_execution is not None and existing_execution.workflow_end_state:
                 log.warning(
-                    "ML job %s is already in terminal state, reject "
-                    "further modification: %s",
+                    'ML job %s is already in terminal state, reject '
+                    'further modification: %s',
                     job.id,
                     job,
                 )
                 return False
             _enforce_job_output_invariants(job)
             now = now_utc()
-            if (existing_execution.status == JobStatus.QUEUED
-                    and job.execution.status != JobStatus.QUEUED):
+            if (
+                existing_execution.status == JobStatus.QUEUED
+                and job.execution.status != JobStatus.QUEUED
+            ):
                 job.execution.start_time = now
             else:
                 job.execution.start_time = existing_execution.start_time
@@ -2637,8 +2707,9 @@ class MLJobService:
             await self._batch_prediction_jobs.upsert(tx, str(job.id), job)
             return True
 
-        return await self._modify_if_open(tx, self._repository_for_job(job),
-                                          deepcopy(job))
+        return await self._modify_if_open(
+            tx, self._repository_for_job(job), deepcopy(job)
+        )
 
     async def _modify_job_if_open_in_tx(
         self,
@@ -2670,15 +2741,17 @@ class MLJobService:
             # later reports a failure of its own has that write rejected with a
             # log warning rather than reopening a closed job.
             child_job.execution.status = JobStatus.CANCELLED
-            child_job.execution.workflow_end_state = (
-                WorkflowExecutionStatus.CANCELED)
+            child_job.execution.workflow_end_state = WorkflowExecutionStatus.CANCELED
             child_job.execution.log = JobEventLogEntry.cancelled(
-                message=(f"This job is cancelled by its parent job "
-                         f"{job.id} which has reached "
-                         f"{job.execution.status.value} state"))
+                message=(
+                    f'This job is cancelled by its parent job '
+                    f'{job.id} which has reached '
+                    f'{job.execution.status.value} state'
+                )
+            )
             log.info(
-                "Updating child job %s status from %s to %s as its "
-                "parent job becomes %s",
+                'Updating child job %s status from %s to %s as its '
+                'parent job becomes %s',
                 child_job.id,
                 child_status,
                 child_job.execution.status,
@@ -2720,7 +2793,7 @@ class MLJobService:
         elif isinstance(job, GeneratePredTableJobDBEntry):
             await self._generate_pred_table_jobs.delete(tx, str(job.id))
         else:
-            raise AssertionError(f"Unsupported job db entry type: {type(job)}")
+            raise AssertionError(f'Unsupported job db entry type: {type(job)}')
         await self._job_tags_repository.delete_by_ids(
             tx,
             JobType.from_id(job.id),
@@ -2809,8 +2882,10 @@ class MLJobService:
 
     @staticmethod
     def _set_graph_data_version(job: Any, graph_data_version: str) -> None:
-        assert (job.config.graph_data_version is None
-                or job.config.graph_data_version == graph_data_version)
+        assert (
+            job.config.graph_data_version is None
+            or job.config.graph_data_version == graph_data_version
+        )
         job.config.graph_data_version = graph_data_version
 
     async def _modify_if_open(
@@ -2820,21 +2895,22 @@ class MLJobService:
         job: Any,
     ) -> bool:
         existing_job = await self._get_required(tx, repository, job.id)
-        existing_execution = getattr(existing_job, "execution", None)
-        if (existing_execution is not None
-                and existing_execution.workflow_end_state):
+        existing_execution = getattr(existing_job, 'execution', None)
+        if existing_execution is not None and existing_execution.workflow_end_state:
             log.warning(
-                "ML job %s is already in terminal state, reject further "
-                "modification: %s",
+                'ML job %s is already in terminal state, reject further '
+                'modification: %s',
                 job.id,
                 job,
             )
             return False
         _enforce_job_output_invariants(job)
         now = now_utc()
-        if (existing_execution is not None
-                and existing_execution.status == JobStatus.QUEUED
-                and job.execution.status != JobStatus.QUEUED):
+        if (
+            existing_execution is not None
+            and existing_execution.status == JobStatus.QUEUED
+            and job.execution.status != JobStatus.QUEUED
+        ):
             job.execution.start_time = now
         elif existing_execution is not None:
             job.execution.start_time = existing_execution.start_time

@@ -31,7 +31,6 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 
 from kumo_core.sources.principals import IdentityRef, Principal, resolve
 from kumo_core.sources.sql import resolve_snowflake_identifier
-from kumo_snowflake.keys import load_private_key, private_key_bytes
 from kumoapi.data_source import (
     SnowflakeAuthenticationKind,
     SnowflakeConnectorResourceConfig,
@@ -42,6 +41,8 @@ from kumoapi.data_source import (
 from kumoapi.plugin import SourceConnector
 from pydantic import SecretStr
 from snowflake.snowpark import Session
+
+from kumo_snowflake.keys import load_private_key, private_key_bytes
 
 #: What this module builds and hands upward.
 SnowflakeSession = Session
@@ -65,8 +66,7 @@ _TargetKey = Tuple[Tuple[str, str], ...]
 _CacheKey = Tuple[str, _TargetKey]
 
 
-def _target_config(
-        connector: SourceConnector) -> SnowflakeConnectorResourceConfig:
+def _target_config(connector: SourceConnector) -> SnowflakeConnectorResourceConfig:
     r"""Narrows a connector's target to this provider's own.
 
     A host routes on ``connector.source_type``, so in practice this always
@@ -77,8 +77,9 @@ def _target_config(
     config = connector.config
     if not isinstance(config, SnowflakeConnectorResourceConfig):
         raise ValueError(
-            f"Connector {connector.id!r} points at a "
-            f"{config.type.value} target, so it cannot be read as Snowflake.")
+            f'Connector {connector.id!r} points at a '
+            f'{config.type.value} target, so it cannot be read as Snowflake.'
+        )
     return config
 
 
@@ -110,12 +111,16 @@ def _require_snowpark(session: object) -> None:
     if not isinstance(session, Session):
         raise TypeError(
             f"A Snowflake session must be a Snowpark 'Session'; got "
-            f"{type(session).__name__!r}.")
+            f'{type(session).__name__!r}.'
+        )
 
 
-def _rows(session: SnowflakeSession, sql: str,
-          params: Optional[List[Any]] = None,
-          timeout: Optional[int] = None) -> List[Any]:
+def _rows(
+    session: SnowflakeSession,
+    sql: str,
+    params: Optional[List[Any]] = None,
+    timeout: Optional[int] = None,
+) -> List[Any]:
     r"""Runs ``sql`` and returns its rows as sequences.
 
     Rows are normalized to tuples so that no driver type escapes this function:
@@ -131,10 +136,10 @@ def _rows(session: SnowflakeSession, sql: str,
     if timeout is None:
         return [tuple(row) for row in result.collect()]
     return [
-        tuple(row) for row in result.collect(
-            statement_params={
-                'STATEMENT_TIMEOUT_IN_SECONDS': str(int(timeout))
-            })
+        tuple(row)
+        for row in result.collect(
+            statement_params={'STATEMENT_TIMEOUT_IN_SECONDS': str(int(timeout))}
+        )
     ]
 
 
@@ -149,8 +154,10 @@ def _private_key_der(pem: str, passphrase: Optional[str]) -> bytes:
     here costs no dependency the caller did not already have.
     """
     from cryptography.hazmat.primitives import serialization
-    return private_key_bytes(load_private_key(pem, passphrase),
-                             serialization.Encoding.DER)
+
+    return private_key_bytes(
+        load_private_key(pem, passphrase), serialization.Encoding.DER
+    )
 
 
 def _secret(value: Optional[SecretStr]) -> Optional[str]:
@@ -169,8 +176,9 @@ def _snowflake_config(principal: Principal) -> SnowflakeIdentityConfig:
     config = principal.config
     if not isinstance(config, SnowflakeIdentityConfig):
         raise ValueError(
-            f"Identity {principal.name!r} is a {config.type.value} "
-            f"identity, so it cannot open a Snowflake connection.")
+            f'Identity {principal.name!r} is a {config.type.value} '
+            f'identity, so it cannot open a Snowflake connection.'
+        )
     return config
 
 
@@ -197,35 +205,41 @@ def _authentication(principal: Principal) -> _ConnectSettings:
                 token = handle.read().strip()
         except OSError as error:
             raise ValueError(
-                f"Identity {principal.name!r} authenticates with the "
-                f"Snowflake OAuth token at {path}, which cannot be read: "
-                f"{error.strerror}. This identity works only inside Snowpark "
-                f"Container Services, which mounts that file; outside it, "
-                f"create an identity with a key pair or a password.") from None
+                f'Identity {principal.name!r} authenticates with the '
+                f'Snowflake OAuth token at {path}, which cannot be read: '
+                f'{error.strerror}. This identity works only inside Snowpark '
+                f'Container Services, which mounts that file; outside it, '
+                f'create an identity with a key pair or a password.'
+            ) from None
         # A full graph materialization can run without issuing a Snowflake
         # statement for several hours.  Keep the server session alive so the
         # final artifact import does not discover that its mounted OAuth
         # token has expired after all model work has completed.
-        settings.update(token=token, authenticator='oauth',
-                        client_session_keep_alive=True)
+        settings.update(
+            token=token, authenticator='oauth', client_session_keep_alive=True
+        )
         if config.host:
             settings['host'] = config.host
         return settings
 
     if config.username is None:
-        raise ValueError(f"Identity {principal.name!r} authenticates with "
-                         f"{kind.value} but names no username.")
+        raise ValueError(
+            f'Identity {principal.name!r} authenticates with '
+            f'{kind.value} but names no username.'
+        )
     settings['user'] = config.username
     if isinstance(credentials, SnowflakePasswordCredentials):
         settings['password'] = _secret(credentials.password) or ''
     elif isinstance(credentials, SnowflakeKeyPairCredentials):
         settings['private_key'] = _private_key_der(
             _secret(credentials.private_key) or '',
-            _secret(credentials.private_key_passphrase))
+            _secret(credentials.private_key_passphrase),
+        )
     else:
         raise ValueError(
-            f"Identity {principal.name!r} declares {kind.value} but holds "
-            f"{type(credentials).__name__} credentials.")
+            f'Identity {principal.name!r} declares {kind.value} but holds '
+            f'{type(credentials).__name__} credentials.'
+        )
     return settings
 
 
@@ -259,10 +273,7 @@ def _target_key(connector: Optional[SourceConnector]) -> _TargetKey:
     # Cache equivalent unquoted spellings together, but keep case-sensitive
     # quoted identifiers distinct. This is catalog identity, unlike _target's
     # declared connection syntax.
-    settings = {
-        name: resolved(value)
-        for name, value in _target(connector).items()
-    }
+    settings = {name: resolved(value) for name, value in _target(connector).items()}
     return tuple(sorted(settings.items()))
 
 
@@ -293,12 +304,18 @@ class _SessionCache:
     beside it opened another would double the connections an account sees for
     no gain.
     """
+
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._sessions: Dict[_CacheKey, Session] = {}
 
-    def get(self, principal: Principal, connector: Optional[SourceConnector], *,
-            fresh: bool = False) -> Session:
+    def get(
+        self,
+        principal: Principal,
+        connector: Optional[SourceConnector],
+        *,
+        fresh: bool = False,
+    ) -> Session:
         key: _CacheKey = (principal.name, _target_key(connector))
         with self._lock:
             session = self._sessions.get(key)
@@ -322,9 +339,7 @@ class _SessionCache:
         idle session on its own.
         """
         with self._lock:
-            keys = [
-                key for key in self._sessions if name is None or key[0] == name
-            ]
+            keys = [key for key in self._sessions if name is None or key[0] == name]
             for key in keys:
                 session = self._sessions.pop(key)
                 try:
@@ -339,8 +354,9 @@ _sessions = _SessionCache()
 
 
 @contextmanager
-def _owned_session(principal: Principal,
-                   connector: Optional[SourceConnector]) -> Iterator[Session]:
+def _owned_session(
+    principal: Principal, connector: Optional[SourceConnector]
+) -> Iterator[Session]:
     """Open one uncached session and close it when the caller finishes.
 
     Recovery uses this instead of replacing a cache entry because another
@@ -356,8 +372,7 @@ def _owned_session(principal: Principal,
             pass
 
 
-def _connect(principal: Principal,
-             connector: Optional[SourceConnector]) -> Session:
+def _connect(principal: Principal, connector: Optional[SourceConnector]) -> Session:
     settings = {
         **_authentication(principal),
         **_target(connector),
@@ -369,8 +384,9 @@ def _connect(principal: Principal,
     except Exception as error:
         where = f' for {connector.id!r}' if connector is not None else ''
         raise RuntimeError(
-            f"Could not open a Snowflake session{where} with identity "
-            f"{principal.name!r}: {error}") from error
+            f'Could not open a Snowflake session{where} with identity '
+            f'{principal.name!r}: {error}'
+        ) from error
 
 
 def probe(principal: Principal) -> None:
@@ -441,8 +457,9 @@ class _SnowflakeSessions:
         self._identity = identity
 
     @contextmanager
-    def _session(self, connector: SourceConnector, *,
-                 fresh: bool = False) -> Iterator[SnowflakeSession]:
+    def _session(
+        self, connector: SourceConnector, *, fresh: bool = False
+    ) -> Iterator[SnowflakeSession]:
         r"""Yields a session already pointed at this connector's target.
 
         No lock and nothing to restore: the session belongs to this
@@ -453,17 +470,21 @@ class _SnowflakeSessions:
 
     def _principal(self, connector: SourceConnector) -> Principal:
         return resolve(
-            (getattr(connector, 'identity', None),
-             getattr(connector, 'identity_id', None), self._identity),
+            (
+                getattr(connector, 'identity', None),
+                getattr(connector, 'identity_id', None),
+                self._identity,
+            ),
             connector=connector,
             config_example='SnowflakeIdentityConfig(...), credentials=...',
             connector_example='SnowflakeConnector(identity=identity, ...)',
-            fallback=(f'A default for sources that name none is also '
-                      f'accepted, as {self._default_hint}.'),
+            fallback=(
+                f'A default for sources that name none is also '
+                f'accepted, as {self._default_hint}.'
+            ),
         )
 
-    def table_location(self, connector: SourceConnector,
-                       table_name: str) -> str:
+    def table_location(self, connector: SourceConnector, table_name: str) -> str:
         """``account/"DB"."SCHEMA"."TABLE"``; the account when it resolves."""
         try:
             account = _snowflake_config(self._principal(connector)).account
@@ -474,6 +495,8 @@ class _SnowflakeSessions:
 
     @staticmethod
     def _qualified(connector: SourceConnector, table_name: str) -> str:
-        return (f'{_quoted(resolved(_target_config(connector).database))}.'
-                f'{_quoted(resolved(_target_config(connector).schema_name))}.'
-                f'{_quoted(table_name)}')
+        return (
+            f'{_quoted(resolved(_target_config(connector).database))}.'
+            f'{_quoted(resolved(_target_config(connector).schema_name))}.'
+            f'{_quoted(table_name)}'
+        )

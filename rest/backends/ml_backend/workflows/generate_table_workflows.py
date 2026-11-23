@@ -126,8 +126,7 @@ def _apply_graph_version_to_table_configs(graph_config, graph_version_info):
         if isinstance(table, TableConfig):
             table_name = TableName(table.table_name)
             if table_name in graph_version_info.table_data_versions:
-                table.data_version = (
-                    graph_version_info.table_data_versions[table_name])
+                table.data_version = graph_version_info.table_data_versions[table_name]
 
 
 @kumo_dataclass
@@ -161,10 +160,13 @@ class GenerateTrainTableResult:
 class GenerateTrainingTableWorkflow(JobWorkflowCancellationMixin):
     async def _save_job(self, job_output: GenerateTrainTableJobOutput):
         await workflow.execute_activity(
-            JobOutputActivities.save_generate_train_table_job_output, args=[
+            JobOutputActivities.save_generate_train_table_job_output,
+            args=[
                 self._job_input.generate_train_table_job_id,
                 job_output,
-            ], schedule_to_close_timeout=timedelta(minutes=10))
+            ],
+            schedule_to_close_timeout=timedelta(minutes=10),
+        )
         self.check_cancelled()
 
     @workflow.run
@@ -189,7 +191,8 @@ class GenerateTrainingTableWorkflow(JobWorkflowCancellationMixin):
                 ml_job_settings,
                 standalone_mode,
                 home_dir,
-            ))
+            )
+        )
 
     async def _run(
         self,
@@ -201,10 +204,11 @@ class GenerateTrainingTableWorkflow(JobWorkflowCancellationMixin):
         self._job_input = job_input
         self._ml_job_settings = ml_job_settings
         self._standalone_mode = standalone_mode
-        self.job_id = GenerateTrainTableJobID(
-            job_input.generate_train_table_job_id)
-        log.info(f"GenerateTrainingTableWorkflow._run: received "
-                 f"standalone_mode={standalone_mode}, job_id={self.job_id}")
+        self.job_id = GenerateTrainTableJobID(job_input.generate_train_table_job_id)
+        log.info(
+            f'GenerateTrainingTableWorkflow._run: received '
+            f'standalone_mode={standalone_mode}, job_id={self.job_id}'
+        )
 
         # Init: create job entry in SQL DB, and persist job inputs
         await init_job_generic(job_input, ml_job_settings, self.job_id)
@@ -215,42 +219,53 @@ class GenerateTrainingTableWorkflow(JobWorkflowCancellationMixin):
         else:  # child mode
             assert self.job_id.is_child_of(job_input.id)
 
-        log.info("Start training table generation")
+        log.info('Start training table generation')
         await self._save_job(
             GenerateTrainTableJobOutput(
-                JobStatus.RUNNING,
-                JobEventLogEntry.generating_training_table()))
+                JobStatus.RUNNING, JobEventLogEntry.generating_training_table()
+            )
+        )
 
         try:
             result = await self._generate_table()
         except Exception as ex:
-            log.exception(f'GenerateTrainingTableWorkflow failed '
-                          f'for job id={self.job_id}')
+            log.exception(
+                f'GenerateTrainingTableWorkflow failed for job id={self.job_id}'
+            )
             if is_cancelled_exception(ex):
                 job_output = GenerateTrainTableJobOutput(
                     JobStatus.CANCELLED,
-                    JobEventLogEntry('Generating Training Data', now_utc(),
-                                     'Generating train table is canceled.'),
+                    JobEventLogEntry(
+                        'Generating Training Data',
+                        now_utc(),
+                        'Generating train table is canceled.',
+                    ),
                     workflow_end_state=WorkflowExecutionStatus.CANCELED,
                     failure_info=JobFailureInfo(
                         message='Generating train table is canceled.',
-                        stacktrace=traceback.format_exc()))
+                        stacktrace=traceback.format_exc(),
+                    ),
+                )
                 await self._save_job(job_output)
             else:
-                validation_response = ValidationResponse(errors=[
-                    ValidationError(
-                        title="Unexpected error in generating training table",
-                        message=maybe_get_public_message(ex) or (
-                            "An internal error occurred while generating the "
-                            "training table. Please retry the job. If the "
-                            "problem continues, contact Kumo support."))
-                ])
+                validation_response = ValidationResponse(
+                    errors=[
+                        ValidationError(
+                            title='Unexpected error in generating training table',
+                            message=maybe_get_public_message(ex)
+                            or (
+                                'An internal error occurred while generating the '
+                                'training table. Please retry the job. If the '
+                                'problem continues, contact Kumo support.'
+                            ),
+                        )
+                    ]
+                )
 
                 # This is the case when _generate_table() failed with an unhandled
                 # error which raised an exception as opposed to returning a
                 # ValidationResponse
-                log.debug(
-                    f'Saving Validation response to: {home_dir}/{self.job_id}')
+                log.debug(f'Saving Validation response to: {home_dir}/{self.job_id}')
 
                 await save_validation_response(
                     validation_response,
@@ -281,8 +296,7 @@ class GenerateTrainingTableWorkflow(JobWorkflowCancellationMixin):
                     self.job_id,
                 )
 
-                failure_info = extract_failure_info(
-                    validation=result.validation)
+                failure_info = extract_failure_info(validation=result.validation)
                 msg = failure_info.message
 
             train_table_home_dir: str = get_job_dir(
@@ -292,16 +306,15 @@ class GenerateTrainingTableWorkflow(JobWorkflowCancellationMixin):
             await self._save_job(
                 GenerateTrainTableJobOutput(
                     status,
-                    JobEventLogEntry('Generating Training Data', now_utc(),
-                                     msg),
+                    JobEventLogEntry('Generating Training Data', now_utc(), msg),
                     workflow_end_state=WorkflowExecutionStatus.COMPLETED,
                     train_table_path=result.train_table_path,
-                    train_table_materialization_path=result.
-                    train_table_materialization_path,
+                    train_table_materialization_path=result.train_table_materialization_path,
                     validation=result.validation,
                     train_table_home_dir=train_table_home_dir,
                     failure_info=failure_info,
-                ))
+                )
+            )
             return result
         finally:
             if self._standalone_mode:
@@ -313,7 +326,8 @@ class GenerateTrainingTableWorkflow(JobWorkflowCancellationMixin):
         is_child_job: Optional[bool] = False,
     ) -> GenerateTrainTableResult:
         data_backend_ctx = DataBackendContext(
-            deploy_env(), DataBackendSettings(disable_async_ingestion=False))
+            deploy_env(), DataBackendSettings(disable_async_ingestion=False)
+        )
 
         validation_response = ValidationResponse()
 
@@ -324,12 +338,14 @@ class GenerateTrainingTableWorkflow(JobWorkflowCancellationMixin):
             assert self._job_input.graph_data_compute_input
             graph_refresh_wf_id = GraphRefreshWorkflow.compose_wf_id(
                 self._job_input.graph_data_compute_input,
-                self._job_input.graph_version_info)
+                self._job_input.graph_version_info,
+            )
             log.info(
-                f"GenerateTrainingTableWorkflow._generate_table: Starting "
-                f"GraphRefreshWorkflow as CHILD (standalone_mode=True) with "
-                f"job_id={self.job_id}, "
-                f"wf_id={graph_refresh_wf_id}")
+                f'GenerateTrainingTableWorkflow._generate_table: Starting '
+                f'GraphRefreshWorkflow as CHILD (standalone_mode=True) with '
+                f'job_id={self.job_id}, '
+                f'wf_id={graph_refresh_wf_id}'
+            )
             result, g_input = await _refresh_graph_snapshot(
                 data_backend_ctx,
                 graph_refresh_wf_id,
@@ -345,19 +361,17 @@ class GenerateTrainingTableWorkflow(JobWorkflowCancellationMixin):
             # snapshot gen_tt would consume was never built. Stop here rather
             # than dispatch a consumer that can only fail.
             if not validation_response.ok:
-                return GenerateTrainTableResult('', '', validation_response,
-                                                '')
+                return GenerateTrainTableResult('', '', validation_response, '')
             graph_ver = result.graph_version_info.graph_data_version
             # Propagate graph_version_info so downstream activities
             # (e.g. diskgraph) can locate the index.
-            self._job_input.graph_version_info = \
-                result.graph_version_info
+            self._job_input.graph_version_info = result.graph_version_info
             # Update timestamp unit for graph config in job input,
             # when graph refresh workflow is executed.
             updated_graph_config = update_graph_config_from_graph_input(
-                self._job_input.spec.predictive_query.graph, g_input)
-            self._job_input.spec.predictive_query.graph = \
-                updated_graph_config
+                self._job_input.spec.predictive_query.graph, g_input
+            )
+            self._job_input.spec.predictive_query.graph = updated_graph_config
             # update_graph_config_from_graph_input carries timestamp units and
             # delimiters only, never data_version.
             _apply_graph_version_to_table_configs(
@@ -366,7 +380,7 @@ class GenerateTrainingTableWorkflow(JobWorkflowCancellationMixin):
             )
         else:
             assert self._job_input.graph_version_info
-            graph_ver = (self._job_input.graph_version_info.graph_data_version)
+            graph_ver = self._job_input.graph_version_info.graph_data_version
             _apply_graph_version_to_table_configs(
                 self._job_input.spec.predictive_query.graph,
                 self._job_input.graph_version_info,
@@ -376,8 +390,9 @@ class GenerateTrainingTableWorkflow(JobWorkflowCancellationMixin):
         # Persist graph data vesion for this job in ML-jobs-DB
         await workflow.execute_activity(
             JobOutputActivities.save_generate_train_table_graph_version,
-            args=[self._job_input.generate_train_table_job_id,
-                  graph_ver], schedule_to_close_timeout=timedelta(minutes=10))
+            args=[self._job_input.generate_train_table_job_id, graph_ver],
+            schedule_to_close_timeout=timedelta(minutes=10),
+        )
 
         # Rows the caller supplied, rather than rows this job generates.
         # Everything above still ran -- the query, the plan and the graph
@@ -385,17 +400,21 @@ class GenerateTrainingTableWorkflow(JobWorkflowCancellationMixin):
         # what a training run reads back off this job.
         custom_train_table = self._job_input.spec.custom_train_table
         if custom_train_table is not None:
-            return await self._register_supplied_table(custom_train_table,
-                                                       validation_response)
+            return await self._register_supplied_table(
+                custom_train_table, validation_response
+            )
 
         # Diskgraph dispatches gen_tt via the pool to ensure snapshot
         # residency on the worker before delegating to the underlying
         # generate_training_table body.
-        log.info("GenerateTrainingTableWorkflow._generate_table: Calling "
-                 "generate_training_table activity")
-        graph_key = (self._job_input.graph_data_compute_input.graph_key)
+        log.info(
+            'GenerateTrainingTableWorkflow._generate_table: Calling '
+            'generate_training_table activity'
+        )
+        graph_key = self._job_input.graph_data_compute_input.graph_key
         snapshot_id = DataSnapshot.GRAPH.canonicalize(
-            f'{_graph_key_to_v2(graph_key)}@{graph_ver}')
+            f'{_graph_key_to_v2(graph_key)}@{graph_ver}'
+        )
         # gen_tt handles both training and prediction target tables;
         # home_dir/is_child_job are unused on the training path.
         path, response, home_dir = await run_pooled_activity(
@@ -410,7 +429,8 @@ class GenerateTrainingTableWorkflow(JobWorkflowCancellationMixin):
                 False,  # is_child_job — prediction-only
             ],
             schedule_to_close_timeout=timedelta(
-                hours=DATA_BACKEND_MATERIALIZE_TIMEOUT_HOURS),
+                hours=DATA_BACKEND_MATERIALIZE_TIMEOUT_HOURS
+            ),
             heartbeat_timeout=HEARTBEAT_TIMEOUT_COMPUTE_ACTIVITY,
             retry_policy=COMPUTE_ACTIVITY_RETRY_POLICY,
         )
@@ -421,12 +441,11 @@ class GenerateTrainingTableWorkflow(JobWorkflowCancellationMixin):
 
         # Apply decoupled splits if allowed by the environment variable
         if _USE_DECOUPLED_SPLITS:
-            materialized_path, response = (await
-                                           self._materialize_and_split_table(
-                                               path,
-                                               validation_response,
-                                               home_dir,
-                                           ))
+            materialized_path, response = await self._materialize_and_split_table(
+                path,
+                validation_response,
+                home_dir,
+            )
             if not response.ok or materialized_path is None:
                 return GenerateTrainTableResult(path, '', response, '')
 
@@ -434,18 +453,16 @@ class GenerateTrainingTableWorkflow(JobWorkflowCancellationMixin):
             # Materialize training table (TableData attributions,
             # splits etc)
             execute_splits = True
-            materialized_path, response = (await
-                                           self._materialize_training_table(
-                                               path, execute_splits))
+            materialized_path, response = await self._materialize_training_table(
+                path, execute_splits
+            )
 
             validation_response.merge(response)
             if not validation_response.ok:
-                return GenerateTrainTableResult(path, '', validation_response,
-                                                '')
+                return GenerateTrainTableResult(path, '', validation_response, '')
 
-        log.info("Finish training table generation")
-        return GenerateTrainTableResult(path, materialized_path, response,
-                                        home_dir)
+        log.info('Finish training table generation')
+        return GenerateTrainTableResult(path, materialized_path, response, home_dir)
 
     async def _register_supplied_table(
         self,
@@ -478,8 +495,10 @@ class GenerateTrainingTableWorkflow(JobWorkflowCancellationMixin):
         predictive_query = self._job_input.spec.predictive_query
         entity_time_col = _resolve_entity_time_col(predictive_query)
 
-        log.info("GenerateTrainingTableWorkflow._register_supplied_table: "
-                 "Calling ingest_custom_train_table activity")
+        log.info(
+            'GenerateTrainingTableWorkflow._register_supplied_table: '
+            'Calling ingest_custom_train_table activity'
+        )
         path, response = await workflow.execute_activity(
             ingest_custom_train_table,
             args=[
@@ -494,41 +513,46 @@ class GenerateTrainingTableWorkflow(JobWorkflowCancellationMixin):
             ],
             task_queue=DATA_BACKEND_TASK_QUEUE,
             schedule_to_close_timeout=timedelta(
-                hours=DATA_BACKEND_INGEST_TIMEOUT_HOURS),
+                hours=DATA_BACKEND_INGEST_TIMEOUT_HOURS
+            ),
             retry_policy=COMPUTE_ACTIVITY_RETRY_POLICY,
         )
         validation_response.merge(response)
         if not validation_response.ok:
             return GenerateTrainTableResult('', '', validation_response, '')
 
-        validation_response.merge(await workflow.execute_activity(
-            validate_weighted_train_table,
-            args=[
-                None,
-                path,
-                custom_train_table.weight_col_name,
-                deploy_env(),
-                self._job_input.id,
-                task_type,
-                custom_train_table.split_col_name,
-                not anchor_is_sentinel(
+        validation_response.merge(
+            await workflow.execute_activity(
+                validate_weighted_train_table,
+                args=[
+                    None,
+                    path,
+                    custom_train_table.weight_col_name,
+                    deploy_env(),
+                    self._job_input.id,
                     task_type,
-                    predictive_query.query_type,
-                    bool(predictive_query.list_distinct_target_is_array),
-                    entity_time_col,
+                    custom_train_table.split_col_name,
+                    not anchor_is_sentinel(
+                        task_type,
+                        predictive_query.query_type,
+                        bool(predictive_query.list_distinct_target_is_array),
+                        entity_time_col,
+                    ),
+                ],
+                task_queue=DATA_BACKEND_TASK_QUEUE,
+                schedule_to_close_timeout=timedelta(
+                    hours=DATA_BACKEND_INGEST_TIMEOUT_HOURS
                 ),
-            ],
-            task_queue=DATA_BACKEND_TASK_QUEUE,
-            schedule_to_close_timeout=timedelta(
-                hours=DATA_BACKEND_INGEST_TIMEOUT_HOURS),
-            retry_policy=COMPUTE_ACTIVITY_RETRY_POLICY,
-        ))
+                retry_policy=COMPUTE_ACTIVITY_RETRY_POLICY,
+            )
+        )
         if not validation_response.ok:
             return GenerateTrainTableResult('', '', validation_response, '')
 
-        log.info("Finish registering supplied training table")
-        return GenerateTrainTableResult(path, path, validation_response,
-                                        home_dir, registered=True)
+        log.info('Finish registering supplied training table')
+        return GenerateTrainTableResult(
+            path, path, validation_response, home_dir, registered=True
+        )
 
     async def _materialize_training_table(
         self,
@@ -547,7 +571,8 @@ class GenerateTrainingTableWorkflow(JobWorkflowCancellationMixin):
                 False,
             ],
             schedule_to_close_timeout=timedelta(
-                hours=DATA_BACKEND_MATERIALIZE_TIMEOUT_HOURS),
+                hours=DATA_BACKEND_MATERIALIZE_TIMEOUT_HOURS
+            ),
             heartbeat_timeout=HEARTBEAT_TIMEOUT_TRAIN_TABLE_SPLIT,
             retry_policy=COMPUTE_ACTIVITY_RETRY_POLICY,
             task_queue=DATA_BACKEND_TASK_QUEUE,
@@ -575,8 +600,10 @@ class GenerateTrainingTableWorkflow(JobWorkflowCancellationMixin):
         """
         # First validate and materialize the base TrainingTable
         execute_split = False
-        materialized_train_table_data_path, response = (
-            await self._materialize_training_table(path, execute_split))
+        (
+            materialized_train_table_data_path,
+            response,
+        ) = await self._materialize_training_table(path, execute_split)
 
         validation_response.merge(response)
         if not validation_response.ok:
@@ -584,14 +611,14 @@ class GenerateTrainingTableWorkflow(JobWorkflowCancellationMixin):
 
         # Then apply the splits
         training_table_generation_plan = (
-            self._job_input.spec.advanced_options.training_table_generation)
+            self._job_input.spec.advanced_options.training_table_generation
+        )
         graph_key = None
         graph_data_version = None
         if self._job_input.graph_data_compute_input is not None:
             graph_key = self._job_input.graph_data_compute_input.graph_key
         if self._job_input.graph_version_info is not None:
-            graph_data_version = (
-                self._job_input.graph_version_info.graph_data_version)
+            graph_data_version = self._job_input.graph_version_info.graph_data_version
         split_wf_input, split_wf_id = construct_split_workflow_input(
             self._job_input.generate_train_table_job_id,
             training_table_generation_plan,
@@ -613,8 +640,7 @@ class GenerateTrainingTableWorkflow(JobWorkflowCancellationMixin):
                 False,  # standalone_mode (called indep. of a training job)
             ],
             id=split_wf_id,
-            execution_timeout=timedelta(
-                hours=DATA_BACKEND_REFRESH_TIMEOUT_HOURS),
+            execution_timeout=timedelta(hours=DATA_BACKEND_REFRESH_TIMEOUT_HOURS),
             task_queue=ML_WORKFLOW_TASK_QUEUE,
             cancellation_type=ChildWorkflowCancellationType.TRY_CANCEL,
             parent_close_policy=ParentClosePolicy.REQUEST_CANCEL,
@@ -639,10 +665,13 @@ class GeneratePredTableResult:
 class GeneratePredictionTableWorkflow(JobWorkflowCancellationMixin):
     async def _save_job(self, job_output: GeneratePredTableJobOutput):
         await workflow.execute_activity(
-            JobOutputActivities.save_generate_pred_table_job_output, args=[
+            JobOutputActivities.save_generate_pred_table_job_output,
+            args=[
                 self._job_input.generate_pred_table_job_id,
                 job_output,
-            ], schedule_to_close_timeout=timedelta(minutes=10))
+            ],
+            schedule_to_close_timeout=timedelta(minutes=10),
+        )
         self.check_cancelled()
 
     async def _generate_table(
@@ -650,7 +679,8 @@ class GeneratePredictionTableWorkflow(JobWorkflowCancellationMixin):
         is_child_job: Optional[bool] = False,
     ) -> GeneratePredTableResult:
         data_backend_ctx = DataBackendContext(
-            deploy_env(), DataBackendSettings(disable_async_ingestion=False))
+            deploy_env(), DataBackendSettings(disable_async_ingestion=False)
+        )
         validation_response = ValidationResponse()
         # Refresh even when ``graph_version_info`` is already pinned: a pinned
         # version names the snapshot to read, not one that exists. A standalone
@@ -661,12 +691,14 @@ class GeneratePredictionTableWorkflow(JobWorkflowCancellationMixin):
         if self._standalone_mode:
             graph_refresh_wf_id = GraphRefreshWorkflow.compose_wf_id(
                 self._job_input.graph_data_compute_input,
-                self._job_input.graph_version_info)
+                self._job_input.graph_version_info,
+            )
             log.info(
-                f"GeneratePredictionTableWorkflow._generate_table: Starting "
-                f"GraphRefreshWorkflow as CHILD (standalone_mode=True) with "
-                f"job_id={self._job_input.id}, "
-                f"wf_id={graph_refresh_wf_id}")
+                f'GeneratePredictionTableWorkflow._generate_table: Starting '
+                f'GraphRefreshWorkflow as CHILD (standalone_mode=True) with '
+                f'job_id={self._job_input.id}, '
+                f'wf_id={graph_refresh_wf_id}'
+            )
             result, g_input = await _refresh_graph_snapshot(
                 data_backend_ctx,
                 graph_refresh_wf_id,
@@ -691,7 +723,8 @@ class GeneratePredictionTableWorkflow(JobWorkflowCancellationMixin):
             # Update timestamp unit for graph config in job input,
             # when graph refresh workflow is executed.
             updated_graph_config = update_graph_config_from_graph_input(
-                self._job_input.predictive_query.graph, g_input)
+                self._job_input.predictive_query.graph, g_input
+            )
             self._job_input.predictive_query.graph = updated_graph_config
             # An unpinned job's version is only resolved by the refresh, so the
             # job input file written at submission time is stale. Re-apply the
@@ -711,7 +744,7 @@ class GeneratePredictionTableWorkflow(JobWorkflowCancellationMixin):
             # Child mode: BatchPredictionParentWorkflow already ran the refresh
             # (and its ingest) as Step 1.
             assert self._job_input.graph_version_info
-            graph_ver = (self._job_input.graph_version_info.graph_data_version)
+            graph_ver = self._job_input.graph_version_info.graph_data_version
             _apply_graph_version_to_table_configs(
                 self._job_input.predictive_query.graph,
                 self._job_input.graph_version_info,
@@ -721,15 +754,19 @@ class GeneratePredictionTableWorkflow(JobWorkflowCancellationMixin):
         # Persist graph data vesion for this job in ML-jobs-DB
         await workflow.execute_activity(
             JobOutputActivities.save_generate_pred_table_graph_version,
-            args=[self._job_input.generate_pred_table_job_id,
-                  graph_ver], schedule_to_close_timeout=timedelta(minutes=10))
+            args=[self._job_input.generate_pred_table_job_id, graph_ver],
+            schedule_to_close_timeout=timedelta(minutes=10),
+        )
         self.check_cancelled()
 
-        log.info("GeneratePredictionTableWorkflow._generate_table: Calling "
-                 "generate_prediction_table activity")
+        log.info(
+            'GeneratePredictionTableWorkflow._generate_table: Calling '
+            'generate_prediction_table activity'
+        )
         graph_key = self._job_input.graph_data_compute_input.graph_key
         snapshot_id = DataSnapshot.GRAPH.canonicalize(
-            f'{_graph_key_to_v2(graph_key)}@{graph_ver}')
+            f'{_graph_key_to_v2(graph_key)}@{graph_ver}'
+        )
         # gen_tt dispatches to the prediction-table body based on
         # job_input type.
         path, response, _ = await run_pooled_activity(
@@ -744,13 +781,14 @@ class GeneratePredictionTableWorkflow(JobWorkflowCancellationMixin):
                 is_child_job,
             ],
             schedule_to_close_timeout=timedelta(
-                hours=DATA_BACKEND_MATERIALIZE_TIMEOUT_HOURS),
+                hours=DATA_BACKEND_MATERIALIZE_TIMEOUT_HOURS
+            ),
             heartbeat_timeout=HEARTBEAT_TIMEOUT_COMPUTE_ACTIVITY,
             retry_policy=COMPUTE_ACTIVITY_RETRY_POLICY,
             resource_hint=getattr(self, '_resource_hint', None),
         )
 
-        log.info("Finish prediction table generation")
+        log.info('Finish prediction table generation')
         return GeneratePredTableResult(path, response)
 
     @workflow.run
@@ -770,8 +808,15 @@ class GeneratePredictionTableWorkflow(JobWorkflowCancellationMixin):
         # rationale behind not opening a session-level lease at this
         # outer point.
         return await self.run_until_canceled(
-            self._run(job_input, ml_job_settings, standalone_mode, home_dir,
-                      is_child_job, resource_hint))
+            self._run(
+                job_input,
+                ml_job_settings,
+                standalone_mode,
+                home_dir,
+                is_child_job,
+                resource_hint,
+            )
+        )
 
     async def _run(
         self,
@@ -788,10 +833,11 @@ class GeneratePredictionTableWorkflow(JobWorkflowCancellationMixin):
         self._home_dir = home_dir
         self._resource_hint = resource_hint
         assert job_input.generate_pred_table_job_id
-        job_id = GeneratePredictionTableJobID(
-            job_input.generate_pred_table_job_id)
-        log.info(f"GeneratePredictionTableWorkflow._run: received "
-                 f"standalone_mode={standalone_mode}, job_id={job_id}")
+        job_id = GeneratePredictionTableJobID(job_input.generate_pred_table_job_id)
+        log.info(
+            f'GeneratePredictionTableWorkflow._run: received '
+            f'standalone_mode={standalone_mode}, job_id={job_id}'
+        )
 
         # Init: create job entry in SQL DB, and persist job inputs
         await init_job_generic(job_input, ml_job_settings, job_id)
@@ -802,47 +848,58 @@ class GeneratePredictionTableWorkflow(JobWorkflowCancellationMixin):
         else:  # child mode
             assert job_id.is_child_of(job_input.id)
 
-        log.info("Start prediction table generation")
+        log.info('Start prediction table generation')
         await self._save_job(
-            GeneratePredTableJobOutput(JobStatus.RUNNING,
-                                       JobEventLogEntry.generating_pred_table())
+            GeneratePredTableJobOutput(
+                JobStatus.RUNNING, JobEventLogEntry.generating_pred_table()
+            )
         )
 
         try:
             result = await self._generate_table(is_child_job)
         except Exception as ex:
-            log.exception(
-                f'GeneratePredictionTableWorkflow failed for job id={job_id}')
+            log.exception(f'GeneratePredictionTableWorkflow failed for job id={job_id}')
             if is_cancelled_exception(ex):
                 job_output = GeneratePredTableJobOutput(
                     JobStatus.CANCELLED,
-                    JobEventLogEntry('Generating Prediction Data', now_utc(),
-                                     'Generating pred table is canceled.'),
+                    JobEventLogEntry(
+                        'Generating Prediction Data',
+                        now_utc(),
+                        'Generating pred table is canceled.',
+                    ),
                     workflow_end_state=WorkflowExecutionStatus.CANCELED,
                     failure_info=JobFailureInfo(
                         message='Generating prediction table is canceled.',
-                        stacktrace=traceback.format_exc()))
+                        stacktrace=traceback.format_exc(),
+                    ),
+                )
             else:
                 # We only save a ValidationResponse if it is a failure other
                 # than job cancelled. Extract user-friendly message from
                 # PublicException if available.
-                validation_response = ValidationResponse(errors=[
-                    ValidationError(
-                        title="Uncaught error in generating prediction table",
-                        message=maybe_get_public_message(ex) or (
-                            "An internal error occurred while generating the "
-                            "prediction table. Please retry the job. If the "
-                            "problem continues, contact Kumo support."),
-                    )
-                ])
+                validation_response = ValidationResponse(
+                    errors=[
+                        ValidationError(
+                            title='Uncaught error in generating prediction table',
+                            message=maybe_get_public_message(ex)
+                            or (
+                                'An internal error occurred while generating the '
+                                'prediction table. Please retry the job. If the '
+                                'problem continues, contact Kumo support.'
+                            ),
+                        )
+                    ]
+                )
                 await save_validation_response(
                     validation_response,
                     home_dir,
                     job_id,
                 )
                 job_output = GeneratePredTableJobOutput.failed(
-                    validation=validation_response, exception=ex,
-                    workflow_end_state=WorkflowExecutionStatus.FAILED)
+                    validation=validation_response,
+                    exception=ex,
+                    workflow_end_state=WorkflowExecutionStatus.FAILED,
+                )
             await self._save_job(job_output)
             raise
         else:
@@ -859,20 +916,19 @@ class GeneratePredictionTableWorkflow(JobWorkflowCancellationMixin):
                     job_id,
                 )
 
-                failure_info = extract_failure_info(
-                    validation=result.validation)
+                failure_info = extract_failure_info(validation=result.validation)
                 msg = failure_info.message
 
             await self._save_job(
                 GeneratePredTableJobOutput(
                     status,
-                    JobEventLogEntry('Generating Prediction Data', now_utc(),
-                                     msg),
+                    JobEventLogEntry('Generating Prediction Data', now_utc(), msg),
                     workflow_end_state=WorkflowExecutionStatus.COMPLETED,
                     pred_table_path=result.pred_table_path,
                     validation=result.validation,
                     failure_info=failure_info,
-                ))
+                )
+            )
             return result
         finally:
             if self._standalone_mode:

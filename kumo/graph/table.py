@@ -126,6 +126,7 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
             (default: :obj:`None`)
         stats (dict, optional): Table statistics. (default: :obj:`None`)
     """
+
     def __init__(
         self,
         table_name: str,
@@ -144,7 +145,7 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
         assert table_name is not None
         assert data_source is not None
 
-        common_utils.string.validate_id(table_name, "Table")
+        common_utils.string.validate_id(table_name, 'Table')
         if source_name:
             string.validate_connector_source_name(source_name)
         else:
@@ -212,8 +213,12 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
         return self.num_fkeys + self.num_cols + (1 if self.has_pkey() else 0)
 
     def __contains__(self, name: str) -> bool:
-        return self.is_pkey(name) or self.has_fkey(name) or self.has_col(
-            name) or self.is_end_time_col(name)
+        return (
+            self.is_pkey(name)
+            or self.has_fkey(name)
+            or self.has_col(name)
+            or self.is_end_time_col(name)
+        )
 
     def __getitem__(self, name: Any) -> Any:
         r"""Returns a given column of the table. In case a certain column is
@@ -227,8 +232,10 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
             elif len(name) == 2:
                 name, idx = name
             else:
-                raise IndexError(f"Only tuples with at most two elements can "
-                                 f"be used for indexing (got {name}).")
+                raise IndexError(
+                    f'Only tuples with at most two elements can '
+                    f'be used for indexing (got {name}).'
+                )
 
         if name == Ellipsis:
             out = self
@@ -247,8 +254,10 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
             else:
                 raise KeyError(f"'{name}' not in table '{self.table_name}'")
         else:
-            raise IndexError(f"Only strings, list and tuples can be used for "
-                             f"indexing (got '{type(name).__name__}')")
+            raise IndexError(
+                f'Only strings, list and tuples can be used for '
+                f"indexing (got '{type(name).__name__}')"
+            )
 
         return out if idx is None else out.pandas[idx]
 
@@ -288,8 +297,9 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
             self.remove_col(name)
         elif self.is_end_time_col(name):
             raise KeyError(
-                f"Cannot delete end_time_col {self.end_time_col_name} "
-                "because it is not a feature column.")
+                f'Cannot delete end_time_col {self.end_time_col_name} '
+                'because it is not a feature column.'
+            )
         else:
             raise KeyError(f"Cannot delete non-existing column '{name}'")
 
@@ -317,17 +327,19 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
         return out
 
     def __repr__(self) -> str:
-        fkey_names = str(self.fkey_names).replace("'", "")
-        col_names = str(self.col_names).replace("'", "")
-        return (f'{self.__class__.__name__}(\n'
-                f'  name={self.name},\n'
-                f'  data_source={self.data_source},\n'
-                f'  pkey={self.pkey_name or "???"},\n'
-                f'  fkeys={fkey_names},\n'
-                f'  cols={col_names},\n'
-                f'  time_col={self.time_col_name or "???"},\n'
-                f'  end_time_col={self.end_time_col_name or "???"},\n'
-                f')')
+        fkey_names = str(self.fkey_names).replace("'", '')
+        col_names = str(self.col_names).replace("'", '')
+        return (
+            f'{self.__class__.__name__}(\n'
+            f'  name={self.name},\n'
+            f'  data_source={self.data_source},\n'
+            f'  pkey={self.pkey_name or "???"},\n'
+            f'  fkeys={fkey_names},\n'
+            f'  cols={col_names},\n'
+            f'  time_col={self.time_col_name or "???"},\n'
+            f'  end_time_col={self.end_time_col_name or "???"},\n'
+            f')'
+        )
 
     # Configuration ###########################################################
 
@@ -341,17 +353,19 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
             fkeys=[fkey.config() for fkey in self.fkeys],
             cols=[col.base_config() for col in self.cols],
             time_col=self.time_col.config() if self.time_col else None,
-            end_time_col=self.end_time_col.config()
-            if self.end_time_col else None,
+            end_time_col=self.end_time_col.config() if self.end_time_col else None,
         )
 
     @classmethod
-    def from_source_config(cls, meta_config: TableMetadataConfig, name: str,
-                           data_source: str,
-                           connector: Connector | None = None) -> 'Table':
+    def from_source_config(
+        cls,
+        meta_config: TableMetadataConfig,
+        name: str,
+        data_source: str,
+        connector: Connector | None = None,
+    ) -> 'Table':
         table_name = name or meta_config.table_name
-        table = cls.from_config(
-            meta_config.as_table_config(table_name, data_source))
+        table = cls.from_config(meta_config.as_table_config(table_name, data_source))
         table.connector = connector
         return table
 
@@ -373,7 +387,8 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
         cols = dict([(c.name, c.dtype) for c in self.data_cols])
         multicategorical_delimiters = {
             c.name: c.multicategorical_delimiter
-            for c in self.data_cols if c.multicategorical_delimiter is not None
+            for c in self.data_cols
+            if c.multicategorical_delimiter is not None
         }
         assert all([dtype is not None for dtype in list(cols.values())])
         return IngestedTableFingerprint(
@@ -381,10 +396,10 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
             source_name=self.source_name,
             cols=cols,  # type: ignore
             pkey=(self.pkey.name if self.pkey is not None else None),
-            time_col=(self.time_col.config()
-                      if self.time_col is not None else None),
-            end_time_col=(self.end_time_col.config()
-                          if self.end_time_col is not None else None),
+            time_col=(self.time_col.config() if self.time_col is not None else None),
+            end_time_col=(
+                self.end_time_col.config() if self.end_time_col is not None else None
+            ),
             multicategorical_delimiters=multicategorical_delimiters,
         )
 
@@ -395,10 +410,10 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
             source_name=self.source_name,
             cols=cols,
             pkey=(self.pkey.name if self.pkey is not None else None),
-            time_col=(self.time_col.config()
-                      if self.time_col is not None else None),
-            end_time_col=(self.end_time_col.config()
-                          if self.end_time_col is not None else None),
+            time_col=(self.time_col.config() if self.time_col is not None else None),
+            end_time_col=(
+                self.end_time_col.config() if self.end_time_col is not None else None
+            ),
         )
 
     # Connector/Table Binding #################################################
@@ -410,7 +425,8 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
             self._data_source = connector.name
         if self._data_version is not None:
             get_active_cache().table_version_cache.save_in_memory(
-                self._data_source, self.source_name, self._data_version)
+                self._data_source, self.source_name, self._data_version
+            )
         if self._pkey is not None:
             self._pkey.connector = connector
             self._pkey.table_name = self.source_name
@@ -571,6 +587,7 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
     @property
     def is_training_table(self) -> bool:
         from kumo.task.training_table import TrainingTable
+
         return isinstance(self, TrainingTable)
 
     @property
@@ -646,17 +663,21 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
             return self
 
         if pkey.name in self.fkey_names:
-            logger.info(f"'{pkey.name}' already exists as a foreign key in "
-                        f"table '{self.name}'. Removing it in order to add it "
-                        f"as a primary key")
+            logger.info(
+                f"'{pkey.name}' already exists as a foreign key in "
+                f"table '{self.name}'. Removing it in order to add it "
+                f'as a primary key'
+            )
             pkey.dtype = pkey.dtype or self.fkey(pkey.name).dtype
             pkey.stype = self.fkey(pkey.name).stype or pkey.stype
             self.remove_fkey(pkey.name)
 
         if pkey.name in self.col_names:
-            logger.info(f"'{pkey.name}' already exists as a feature column in "
-                        f"table '{self.name}'. Removing it in order to add it "
-                        f"as a primary key")
+            logger.info(
+                f"'{pkey.name}' already exists as a feature column in "
+                f"table '{self.name}'. Removing it in order to add it "
+                f'as a primary key'
+            )
             pkey.dtype = pkey.dtype or self.col(pkey.name).dtype
             pkey.stype = self.col(pkey.name).stype or pkey.stype
             self.remove_col(pkey.name)
@@ -695,16 +716,20 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
             return self
 
         if self.is_pkey(fkey.name):
-            logger.info(f"'{fkey.name}' already exists as a primary key in "
-                        f"table '{self.name}'. Removing it in order to add it "
-                        f"as a foreign key")
+            logger.info(
+                f"'{fkey.name}' already exists as a primary key in "
+                f"table '{self.name}'. Removing it in order to add it "
+                f'as a foreign key'
+            )
             fkey.dtype = fkey.dtype or self.pkey.dtype
             self.remove_pkey()
 
         if fkey.name in self.col_names:
-            logger.info(f"'{fkey.name}' already exists as a feature column in "
-                        f"table '{self.name}'. Removing it in order to add it "
-                        f"as a foreign key")
+            logger.info(
+                f"'{fkey.name}' already exists as a feature column in "
+                f"table '{self.name}'. Removing it in order to add it "
+                f'as a foreign key'
+            )
             fkey.dtype = fkey.dtype or self.col(fkey.name).dtype
             fkey.stype = self.col(fkey.name).stype or fkey.stype
             self.remove_col(fkey.name)
@@ -748,8 +773,7 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
         col = Column.cast(*args, **kwargs)
 
         # Do not add end_time_col as feature
-        if (self.end_time_col is not None
-                and col.name == self.end_time_col.name):
+        if self.end_time_col is not None and col.name == self.end_time_col.name:
             return
 
         assert col is not None
@@ -760,16 +784,20 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
 
         if self.is_pkey(col.name):
             col.dtype = col.dtype or self.pkey.dtype
-            logger.info(f"'{col.name}' already exists as a primary key in "
-                        f"table '{self.name}'. Removing it in order to add "
-                        f"it as a feature column")
+            logger.info(
+                f"'{col.name}' already exists as a primary key in "
+                f"table '{self.name}'. Removing it in order to add "
+                f'it as a feature column'
+            )
             self.remove_pkey()
 
         if col.name in self.fkey_names:
             col.dtype = col.dtype or self.fkey(col.name).dtype
-            logger.info(f"'{col.name}' already exists as a foreign key in "
-                        f"table '{self.name}'. Removing it in order to add "
-                        f"it as a feature column")
+            logger.info(
+                f"'{col.name}' already exists as a foreign key in "
+                f"table '{self.name}'. Removing it in order to add "
+                f'it as a feature column'
+            )
             self.remove_fkey(col.name)
 
         self._cols[col.name] = col
@@ -788,22 +816,31 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
         del self._cols[name]
         return self
 
-    def _check_time_cols(self, time_col: Optional[TimeColumn] = None,
-                         end_time_col: Optional[TimeColumn] = None):
+    def _check_time_cols(
+        self,
+        time_col: Optional[TimeColumn] = None,
+        end_time_col: Optional[TimeColumn] = None,
+    ):
         r"""Raises a value error if `time_col` is same as `self.end_time_col`
         OR if `end_time_col` is same as `self.time_col`."""
         if time_col is not None:
-            if (self.has_end_time_col() and self.end_time_col.name.lower()
-                    == time_col.name.lower()):
+            if (
+                self.has_end_time_col()
+                and self.end_time_col.name.lower() == time_col.name.lower()
+            ):
                 raise ValueError(
                     f"Time column '{time_col.name}' cannot be same as "
-                    "self.end_time_col.")
+                    'self.end_time_col.'
+                )
         if end_time_col is not None:
-            if (self.has_time_col() and self.time_col.name.lower()
-                    == end_time_col.name.lower()):
+            if (
+                self.has_time_col()
+                and self.time_col.name.lower() == end_time_col.name.lower()
+            ):
                 raise ValueError(
                     f"End time column '{end_time_col.name}' cannot be same as "
-                    "self.time_col.")
+                    'self.time_col.'
+                )
 
     @raise_post_materialization
     def set_time_col(self, *args, **kwargs) -> 'Table':
@@ -815,10 +852,11 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
 
         Any arguments of :obj:`kumo.graph.TimeColumn` can be passed.
         """
-        self._time_dtype_explicit = (
-            kwargs.get('dtype') is not None
-            or (args and not isinstance(args[0], str)
-                and getattr(args[0], 'dtype', None) is not None))
+        self._time_dtype_explicit = kwargs.get('dtype') is not None or (
+            args
+            and not isinstance(args[0], str)
+            and getattr(args[0], 'dtype', None) is not None
+        )
         time_col = TimeColumn.cast(*args, **kwargs)
 
         if time_col is None:
@@ -847,10 +885,11 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
 
         Any arguments of :obj:`kumo.graph.TimeColumn` can be passed.
         """
-        self._end_dtype_explicit = (
-            kwargs.get('dtype') is not None
-            or (args and not isinstance(args[0], str)
-                and getattr(args[0], 'dtype', None) is not None))
+        self._end_dtype_explicit = kwargs.get('dtype') is not None or (
+            args
+            and not isinstance(args[0], str)
+            and getattr(args[0], 'dtype', None) is not None
+        )
         end_time_col = TimeColumn.cast(*args, **kwargs)
 
         if end_time_col is None:
@@ -896,8 +935,10 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
                 del self[col.name]
 
         if len(removed_cols) > 0:
-            logger.info(f"Removing columns {removed_cols} without "
-                        f"an encoding from table '{self.name}'")
+            logger.info(
+                f'Removing columns {removed_cols} without '
+                f"an encoding from table '{self.name}'"
+            )
 
         return self
 
@@ -907,10 +948,13 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
     def num_feature_cols(self) -> int:
         r"""Computes the number of feature columns that do not have `Null()`
         encoders. If the encoder is `None`, it counts as not `Null()`"""
-        return len([
-            col for col in self.cols
-            if not hasattr(col, 'encoder') or col.encoder != Null()
-        ])
+        return len(
+            [
+                col
+                for col in self.cols
+                if not hasattr(col, 'encoder') or col.encoder != Null()
+            ]
+        )
 
     def copy_encoders(self, table: 'Table'):
         r"""Copies the encoders of `table` to the current table."""
@@ -946,8 +990,7 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
                 # ``_data_version`` above and still takes precedence.
                 return self.source_name
             elif self.has_connector:
-                self._data_version = self.connector.get_data_version(
-                    self.source_name)
+                self._data_version = self.connector.get_data_version(self.source_name)
                 return self._data_version
             else:
                 return DEFAULT_DATA_VERSION
@@ -958,14 +1001,18 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
         guarantee that the tables are consistently using the same data
         version throughout a workflow."""
         backend_cache = get_active_cache()
-        data_version = (backend_cache.table_version_cache.get_for_job(
-            job_id, self.data_source, self.source_name))
-        logger.info(f"Setting data version for table {self.name} to "
-                    f"{data_version}, which was cached for job id {job_id}")
+        data_version = backend_cache.table_version_cache.get_for_job(
+            job_id, self.data_source, self.source_name
+        )
+        logger.info(
+            f'Setting data version for table {self.name} to '
+            f'{data_version}, which was cached for job id {job_id}'
+        )
         if data_version is not None and self.has_connector:
             self._data_version = data_version
             backend_cache.table_version_cache.save_in_memory(
-                self.connector.name, self.source_name, data_version)
+                self.connector.name, self.source_name, data_version
+            )
 
     # Metadata and Type Inferral ##############################################
     #
@@ -1010,12 +1057,14 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
         )
         if stype is None:
             raise ValueError(
-                f"Table {self.name} failed inferring the semantic type for a "
-                f"column with data type {dtype} and statistics {stats}.")
+                f'Table {self.name} failed inferring the semantic type for a '
+                f'column with data type {dtype} and statistics {stats}.'
+            )
         return stype
 
-    def infer_stypes(self, skip_cache: bool = False,
-                     require_stats: bool = True) -> 'Table':
+    def infer_stypes(
+        self, skip_cache: bool = False, require_stats: bool = True
+    ) -> 'Table':
         r"""Infer semantic type for each column in the table.
 
         Args:
@@ -1039,16 +1088,19 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
             if sql_sample is None or sql_sample.empty:
                 require_stats = False
 
-        stype_inferred_from_dtype = lambda dtype: dtype in [
-            Dtype.date,
-            Dtype.time,
-            Dtype.timedelta,
-            Dtype.bool,
-            Dtype.floatlist,
-            Dtype.intlist,
-            Dtype.stringlist,
-            Dtype.unsupported,
-        ]
+        stype_inferred_from_dtype = lambda dtype: (
+            dtype
+            in [
+                Dtype.date,
+                Dtype.time,
+                Dtype.timedelta,
+                Dtype.bool,
+                Dtype.floatlist,
+                Dtype.intlist,
+                Dtype.stringlist,
+                Dtype.unsupported,
+            ]
+        )
 
         # First, attempt to infer semantic type based on data types and column
         # names:
@@ -1060,8 +1112,9 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
             elif stype_inferred_from_dtype(col.dtype):
                 col.stype = self._infer_stype_from_dtype(col.dtype)
                 continue
-            elif (named_stype := infer_stype_from_name(col.name, col.dtype)) \
-                    is not None:
+            elif (
+                named_stype := infer_stype_from_name(col.name, col.dtype)
+            ) is not None:
                 col.stype = named_stype
 
         if not require_stats:
@@ -1088,9 +1141,13 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
             # compute the requisite statistics to do so:
             cols_to_infer = [col for col in self.cols if col.stype is None]
             declared_multicats_to_resolve = [
-                col for col in self.cols
-                if (col.stype == Stype.multicategorical and col.dtype ==
-                    Dtype.string and col.multicategorical_delimiter is None)
+                col
+                for col in self.cols
+                if (
+                    col.stype == Stype.multicategorical
+                    and col.dtype == Dtype.string
+                    and col.multicategorical_delimiter is None
+                )
             ]
             cols_needing_stats = cols_to_infer + declared_multicats_to_resolve
             if cols_needing_stats:
@@ -1131,11 +1188,12 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
                     # in time values and bracketed JSON-like strings must not
                     # create an stype/storage-shape mismatch.
                     separator_stat = stats.get(MULTI_CATEGORIES_SEPARATOR)
-                    separator = (col.multicategorical_delimiter
-                                 or (separator_stat.value
-                                     if separator_stat is not None else None))
-                    multicategorical_proven = (col.dtype.is_list() or separator
-                                               in MULTICAT_DELIMITERS)
+                    separator = col.multicategorical_delimiter or (
+                        separator_stat.value if separator_stat is not None else None
+                    )
+                    multicategorical_proven = (
+                        col.dtype.is_list() or separator in MULTICAT_DELIMITERS
+                    )
 
                     stats = StypeInferralStats(
                         num_unique=num_unique,
@@ -1145,22 +1203,24 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
                     )
 
                     col.stype = self._infer_stype_from_stats(col.dtype, stats)
-                    if (col.stype == Stype.multicategorical
-                            and col.dtype == Dtype.string):
+                    if (
+                        col.stype == Stype.multicategorical
+                        and col.dtype == Dtype.string
+                    ):
                         col.multicategorical_delimiter = separator
 
                 # Caller-declared scalar multicategorical columns use the
                 # delimiter already computed by the same approximate-stats
                 # sample. Explicit delimiters remain authoritative.
                 for col in declared_multicats_to_resolve:
-                    separator_stat = computed_stats.get(
-                        col.name, {}).get(MULTI_CATEGORIES_SEPARATOR)
+                    separator_stat = computed_stats.get(col.name, {}).get(
+                        MULTI_CATEGORIES_SEPARATOR
+                    )
                     if separator_stat is not None:
                         col.multicategorical_delimiter = separator_stat.value
 
         for col in self.cols:
-            if (col.stype != Stype.multicategorical
-                    or col.dtype != Dtype.string):
+            if col.stype != Stype.multicategorical or col.dtype != Dtype.string:
                 col.multicategorical_delimiter = None
 
         # Fill out any remaining semantic types for pkey and fkeys with the ID
@@ -1200,13 +1260,16 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
         for col in self._data_cols:
             if col.stype is None:
                 raise ValueError(
-                    f"Stype ({col.stype}) for column ({col.name}) with "
-                    f"dtype ({col.dtype}) is None. Must infer stype first.")
+                    f'Stype ({col.stype}) for column ({col.name}) with '
+                    f'dtype ({col.dtype}) is None. Must infer stype first.'
+                )
 
             if col.stype == Stype.timestamp:
                 try:
-                    if (col.timestamp_unit is not None
-                            or TS_FORMAT_METADATA in col.metadata):
+                    if (
+                        col.timestamp_unit is not None
+                        or TS_FORMAT_METADATA in col.metadata
+                    ):
                         # Gate: a column that already carries a unit or format
                         # hint is left alone; the detector never re-infers a
                         # hinted column. Only fix the dtype if needed.
@@ -1242,6 +1305,7 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
                         # the detector does not model; persist the native
                         # duration resolution as the unit.
                         import numpy as np
+
                         col.timestamp_unit = np.datetime_data(sample.dtype)[0]
                     else:
                         # The detector is the single producer of the hint. It
@@ -1251,8 +1315,7 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
                         hint = infer_temporal_hint(
                             sample,
                             declared_unit=col.timestamp_unit,
-                            declared_format=col.metadata.get(
-                                TS_FORMAT_METADATA),
+                            declared_format=col.metadata.get(TS_FORMAT_METADATA),
                         )
                         storage = hint_to_storage(hint)
                         # A UNIT hint writes ``timestamp_unit``; a FORMAT hint
@@ -1280,8 +1343,9 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
                     # the ingestion logic works fine. Therefore, we set the
                     # default dtype based on customer settings or time.
                     logger.warning(
-                        f"Infer dtype failed for {col} with error"
-                        f" {e}, set the default dtype to {col.dtype}.")
+                        f'Infer dtype failed for {col} with error'
+                        f' {e}, set the default dtype to {col.dtype}.'
+                    )
 
             if col.stype == Stype.unsupported:
                 continue
@@ -1291,8 +1355,9 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
 
             if not col.stype.supports_cast_from_dtype(col.dtype):
                 raise ValueError(
-                    f"Stype ({col.stype}) for column ({col.name}) is not "
-                    f"compatible for the column's dtype ({col.dtype})")
+                    f'Stype ({col.stype}) for column ({col.name}) is not '
+                    f"compatible for the column's dtype ({col.dtype})"
+                )
 
             if col.stype == Stype.numerical and col.dtype == Dtype.time:
                 if samples_df is _SAMPLE_UNSET:
@@ -1312,9 +1377,10 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
 
             else:
                 raise ValueError(
-                    f"Infer dtype from stype for column ({col.name}) of "
+                    f'Infer dtype from stype for column ({col.name}) of '
                     f"Stype ({col.stype}) is not supported. Column's dtype "
-                    f"is ({col.dtype})")
+                    f'is ({col.dtype})'
+                )
 
         return cols_to_new_dtypes
 
@@ -1338,63 +1404,85 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
         self.infer_dtypes_from_stypes()
         return self
 
-    def _set_dtype_from_metadata(self, table: TableOrViewMetadataConfig,
-                                 include_cols: Optional[Set[str]] = None,
-                                 exclude_cols: Optional[Set[str]] = None,
-                                 drop_id_cols: bool = False) -> None:
+    def _set_dtype_from_metadata(
+        self,
+        table: TableOrViewMetadataConfig,
+        include_cols: Optional[Set[str]] = None,
+        exclude_cols: Optional[Set[str]] = None,
+        drop_id_cols: bool = False,
+    ) -> None:
         r"""Set dtype of `self.cols`, `self.pkey`, `self.fkeys`, and
         `self.time_col` based on metadata in `table`."""
 
         if include_cols and exclude_cols:
-            raise ValueError(
-                "Both 'include_cols' and 'exclude_cols' cannot be set.")
+            raise ValueError("Both 'include_cols' and 'exclude_cols' cannot be set.")
 
         # Filter result based on `include_cols` and `exclude_cols`.
         if include_cols is not None:
-            if (table.pkey is not None and table.pkey.name not in self
-                    and table.pkey.name not in include_cols):
+            if (
+                table.pkey is not None
+                and table.pkey.name not in self
+                and table.pkey.name not in include_cols
+            ):
                 table.pkey = None
 
             table.fkeys = [
-                fkey for fkey in table.fkeys
+                fkey
+                for fkey in table.fkeys
                 if fkey.name in self or fkey.name in include_cols
             ]
 
-            if (table.time_col is not None and table.time_col.name not in self
-                    and table.time_col.name not in include_cols):
+            if (
+                table.time_col is not None
+                and table.time_col.name not in self
+                and table.time_col.name not in include_cols
+            ):
                 table.time_col = None
 
             if table.end_time_col in include_cols:
-                logger.warning('end_time_col cannot be added as a feature '
-                               'column. Setting it in include_cols will '
-                               'be ignored.')
+                logger.warning(
+                    'end_time_col cannot be added as a feature '
+                    'column. Setting it in include_cols will '
+                    'be ignored.'
+                )
                 include_cols.remove(table.end_time_col)
 
             table.cols = [
-                col for col in table.cols
+                col
+                for col in table.cols
                 if col.name in self or col.name in include_cols
             ]
 
         elif exclude_cols is not None:
-            if (table.pkey is not None and table.pkey.name not in self
-                    and table.pkey.name in exclude_cols):
+            if (
+                table.pkey is not None
+                and table.pkey.name not in self
+                and table.pkey.name in exclude_cols
+            ):
                 table.pkey = None
 
             table.fkeys = [
-                fkey for fkey in table.fkeys
+                fkey
+                for fkey in table.fkeys
                 if fkey.name in self or fkey.name not in exclude_cols
             ]
 
-            if (table.time_col is not None and table.time_col.name not in self
-                    and table.time_col.name in exclude_cols):
+            if (
+                table.time_col is not None
+                and table.time_col.name not in self
+                and table.time_col.name in exclude_cols
+            ):
                 table.time_col = None
 
-            if (table.end_time_col is not None
-                    and table.end_time_col.name in exclude_cols):
+            if (
+                table.end_time_col is not None
+                and table.end_time_col.name in exclude_cols
+            ):
                 table.end_time_col = None
 
             table.cols = [
-                col for col in table.cols
+                col
+                for col in table.cols
                 if col.name in self or col.name not in exclude_cols
             ]
 
@@ -1405,7 +1493,8 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
                     warnings.warn(
                         f"Inferred primary key '{table.pkey.name}' differs "
                         f" from set primary key '{self.pkey.name}'. "
-                        f"Ignoring inferred primary key.")
+                        f'Ignoring inferred primary key.'
+                    )
                 else:
                     self.pkey.update(table.pkey, override=False)
             else:
@@ -1422,25 +1511,27 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
                 warnings.warn(
                     f"Inferred time column '{table.time_col.name}' differs "
                     f"from set time column '{self.time_col_name}'. Ignoring "
-                    f"inferred time column.")
+                    f'inferred time column.'
+                )
             elif self.has_time_col():
                 self.time_col.update(table.time_col, override=False)
             else:
-                self.set_time_col(table.time_col.name,
-                                  dtype=table.time_col.dtype)
+                self.set_time_col(table.time_col.name, dtype=table.time_col.dtype)
 
         if table.end_time_col is not None:
             if self.end_time_col_name != table.end_time_col.name:
                 warnings.warn(
                     f"Inferred end time column '{table.end_time_col.name}' "
-                    f"differs from set end time column "
+                    f'differs from set end time column '
                     f"'{self.end_time_col.name}'. "
-                    f"Ignoring inferred time column.")
+                    f'Ignoring inferred time column.'
+                )
             elif self.has_end_time_col():
                 self.end_time_col.update(table.end_time_col, override=False)
             else:
-                self.set_end_time_col(table.end_time_col.name,
-                                      dtype=table.end_time_col.dtype)
+                self.set_end_time_col(
+                    table.end_time_col.name, dtype=table.end_time_col.dtype
+                )
 
         ignored_id_cols: Set[str] = set()
         for col in table.cols:
@@ -1456,8 +1547,9 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
 
             if col.name in self:
                 self[col.name].update(col, override=False)
-                if ((self.is_pkey(col.name) or self.has_fkey(col.name))
-                        and self.has_col(col.name)):
+                if (self.is_pkey(col.name) or self.has_fkey(col.name)) and self.has_col(
+                    col.name
+                ):
                     # In case a primary key column or a fkey column is also a
                     # feature column, force update the feature column.
                     self.col(col.name).update(col, override=False)
@@ -1470,17 +1562,18 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
 
         if len(ignored_id_cols) > 0:
             warnings.warn(
-                f"Not including {ignored_id_cols} as feature columns in table "
+                f'Not including {ignored_id_cols} as feature columns in table '
                 f"'{self.name}' since they potentially may refer to foreign "
-                f"keys or primary keys. Consider explicitly including these "
-                f"columns via `graph[table_name].add_col(...)` before calling "
+                f'keys or primary keys. Consider explicitly including these '
+                f'columns via `graph[table_name].add_col(...)` before calling '
                 f"'infer_metadata', or explicitly excluding these columns via "
-                f"`graph.infer_metadata(exclude_cols=[...])` to suppress this "
-                f"warning")
+                f'`graph.infer_metadata(exclude_cols=[...])` to suppress this '
+                f'warning'
+            )
 
         for col in table.all_cols():
             if col.dtype is Dtype.unsupported:
-                logger.warning(f"{col.name} has unsupported raw dtype")
+                logger.warning(f'{col.name} has unsupported raw dtype')
 
     @blocking_method()
     def _infer_metadata_blocking(
@@ -1514,20 +1607,20 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
                 insensitive) in the name. (default :obj:`True`).
         """
         if self.is_sql:
-            return self._infer_sql_metadata(include_cols, exclude_cols,
-                                            drop_id_cols)
+            return self._infer_sql_metadata(include_cols, exclude_cols, drop_id_cols)
 
         # Obtain metadata from backing connector:
         table_meta_list = self.connector.get_table_metadata([self.source_name])
         if not table_meta_list:
-            raise ValueError(f"Failed to read schema for table '{self.name}' "
-                             f"in connector '{self.connector}'. "
-                             f"Please check whether table was "
-                             f"accidentally dropped, renamed or emptied "
-                             f"since it was first imported into Kumo.")
+            raise ValueError(
+                f"Failed to read schema for table '{self.name}' "
+                f"in connector '{self.connector}'. "
+                f'Please check whether table was '
+                f'accidentally dropped, renamed or emptied '
+                f'since it was first imported into Kumo.'
+            )
         table = table_meta_list[0]
-        self._set_dtype_from_metadata(table, include_cols, exclude_cols,
-                                      drop_id_cols)
+        self._set_dtype_from_metadata(table, include_cols, exclude_cols, drop_id_cols)
         return self.infer_stypes()
 
     def _infer_sql_metadata(
@@ -1546,15 +1639,15 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
         duplicates = sorted({name for name in names if names.count(name) > 1})
         if duplicates:
             raise DuplicateColumnsError(
-                f"Custom SQL output columns {duplicates} are duplicated. "
-                "Give every output column a unique alias.")
+                f'Custom SQL output columns {duplicates} are duplicated. '
+                'Give every output column a unique alias.'
+            )
         self._raise_on_missing_sql_columns(metadata)
-        self._set_dtype_from_metadata(metadata, include_cols, exclude_cols,
-                                      drop_id_cols)
+        self._set_dtype_from_metadata(
+            metadata, include_cols, exclude_cols, drop_id_cols
+        )
         self._sql_source_metadata = metadata
-        self._sql_column_order = [
-            name for name in names if name in self.data_col_dict
-        ]
+        self._sql_column_order = [name for name in names if name in self.data_col_dict]
         self._raise_on_unsupported_sql_dtypes(metadata)
         # Best-effort inheritance pre-pass: seed stypes for columns that trace
         # to a referenced Kumo table before the heuristic/stats inference below
@@ -1595,38 +1688,44 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
         for col in self.cols:
             if col.stype is not None or col.name == self.pkey_name:
                 continue
-            traced = source_table_for_col(self.custom_sql,
-                                          self._sql_connector_type, col.name)
+            traced = source_table_for_col(
+                self.custom_sql, self._sql_connector_type, col.name
+            )
             if traced is None:
                 continue
             table_name, source_col = traced
             # Match on the bare table name: ``reference_stypes`` is keyed by the
             # raw Kumo table's (unqualified) source name, so a qualified SQL
             # reference still reconciles.
-            leaf = normalized_sql_identifier_leaf(table_name,
-                                                  self._sql_connector_type)
+            leaf = normalized_sql_identifier_leaf(table_name, self._sql_connector_type)
             inherited = reference_stypes.get(leaf, {}).get(source_col)
-            if (inherited == Stype.multicategorical
-                    and col.dtype == Dtype.string
-                    and col.multicategorical_delimiter is None):
+            if (
+                inherited == Stype.multicategorical
+                and col.dtype == Dtype.string
+                and col.multicategorical_delimiter is None
+            ):
                 continue
             if inherited is not None and inherited.supports_dtype(col.dtype):
                 col.stype = inherited
 
     def _raise_on_missing_sql_columns(
-            self, metadata: TableOrViewMetadataConfig) -> None:
+        self, metadata: TableOrViewMetadataConfig
+    ) -> None:
         r"""Reject requested columns absent from the query result."""
         output_names = {col.name for col in metadata.all_cols()}
-        missing = sorted(col.name for col in self.data_cols
-                         if col.name not in output_names)
+        missing = sorted(
+            col.name for col in self.data_cols if col.name not in output_names
+        )
         if missing:
             raise ValueError(
-                f"Columns {missing} are not produced by the SQL query for "
+                f'Columns {missing} are not produced by the SQL query for '
                 f"table '{self.name}'. Select or alias them in your SQL, or "
-                f"remove them from the table definition.")
+                f'remove them from the table definition.'
+            )
 
     def _raise_on_unsupported_sql_dtypes(
-            self, metadata: TableOrViewMetadataConfig) -> None:
+        self, metadata: TableOrViewMetadataConfig
+    ) -> None:
         r"""Reject unsupported warehouse-described output types.
 
         The authoritative query schema is checked so a request dtype override
@@ -1634,29 +1733,31 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
         """
         query_dtypes = {col.name: col.dtype for col in metadata.all_cols()}
         table_col_names = {col.name for col in self.data_cols}
-        unsupported = sorted(name for name in table_col_names
-                             if query_dtypes.get(name) is Dtype.unsupported)
+        unsupported = sorted(
+            name
+            for name in table_col_names
+            if query_dtypes.get(name) is Dtype.unsupported
+        )
         if unsupported:
             raise UnsupportedColumnTypeError(
-                f"Custom SQL columns {unsupported} have an unsupported output "
-                f"type. Cast each to a supported type in your SQL (e.g. "
-                f"`CAST(<expr> AS STRING) AS {unsupported[0]}`); an unaliased "
-                f"computed column also needs an explicit alias.")
+                f'Custom SQL columns {unsupported} have an unsupported output '
+                f'type. Cast each to a supported type in your SQL (e.g. '
+                f'`CAST(<expr> AS STRING) AS {unsupported[0]}`); an unaliased '
+                f'computed column also needs an explicit alias.'
+            )
 
     # Encoder Inferral ########################################################
 
     def get_encoder_stats(self, **kwargs) -> ExactStats:
         # Fill in approximate statistics for columns
-        approx_stats: Dict[str, Dict[ColStatType, Stats]] = \
-            self.compute_col_stats(
-                col_stat_types=EncoderGenerator.REQUIRED_APPROX_STATS,
-                approx=True, **kwargs)
+        approx_stats: Dict[str, Dict[ColStatType, Stats]] = self.compute_col_stats(
+            col_stat_types=EncoderGenerator.REQUIRED_APPROX_STATS, approx=True, **kwargs
+        )
 
         # Fill in exact statistics for columns
-        exact_stats: Dict[str, Dict[ColStatType, Stats]] = \
-            self.compute_col_stats(
-                col_stat_types=EncoderGenerator.REQUIRED_EXACT_STATS,
-                approx=False, **kwargs)
+        exact_stats: Dict[str, Dict[ColStatType, Stats]] = self.compute_col_stats(
+            col_stat_types=EncoderGenerator.REQUIRED_EXACT_STATS, approx=False, **kwargs
+        )
 
         # Merge the two
         col_stats: Dict[ColumnName, Dict[ColStatType, StatsConfig]] = {}
@@ -1664,19 +1765,20 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
         for col_name in all_col_names:
             # Prefer exact:
             exact: Dict[ColStatType, StatsConfig] = {
-                k: v.config()
-                for k, v in exact_stats[col_name].items()
+                k: v.config() for k, v in exact_stats[col_name].items()
             }
             approx: Dict[ColStatType, StatsConfig] = {
                 k: v.config()
-                for k, v in approx_stats[col_name].items() if k not in exact
+                for k, v in approx_stats[col_name].items()
+                if k not in exact
             }
             col_stats[col_name] = dict(**approx, **exact)
 
         return ExactStats(table_stats={}, col_stats=col_stats)
 
-    def infer_encoders(self, encoder_stats: Optional[ExactStats] = None,
-                       **kwargs) -> 'Table':
+    def infer_encoders(
+        self, encoder_stats: Optional[ExactStats] = None, **kwargs
+    ) -> 'Table':
         r"""Infers unspecified encoders of the table, according to a sample
         of the table rows.
 
@@ -1693,42 +1795,42 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
             kwargs['num_rows'] = NUM_ROWS_FOR_APPROX_STATS
 
         if kwargs.get('num_rows', 1000) < 1000:
-            raise ValueError(
-                "Inferring encoders requires at least reading 1,000 rows")
+            raise ValueError('Inferring encoders requires at least reading 1,000 rows')
 
         raise_on_error = kwargs.get('raise_on_error', True)
 
         # Only compute stats for columns that need encoder inferral:
-        cols_needing_encoders = [
-            col for col in self.cols if col.encoder is None
-        ]
+        cols_needing_encoders = [col for col in self.cols if col.encoder is None]
         if encoder_stats is None and cols_needing_encoders:
             logger.info(f'Computing encoder stats for table {self.name}')
             encoder_stats: ExactStats = self.get_encoder_stats(
-                cols=cols_needing_encoders, **kwargs)
+                cols=cols_needing_encoders, **kwargs
+            )
 
         # Set the encoders for each column:
         for col in cols_needing_encoders:
             try:
-                stats_configs: Dict[ColStatType,
-                                    StatsConfig] = encoder_stats.col_stats.get(
-                                        col.name, {})
+                stats_configs: Dict[ColStatType, StatsConfig] = (
+                    encoder_stats.col_stats.get(col.name, {})
+                )
                 stats: Dict[ColStatType, Stats] = {
-                    k: Stats.from_config(v)
-                    for k, v in stats_configs.items()
+                    k: Stats.from_config(v) for k, v in stats_configs.items()
                 }
                 col.encoder = EncoderGenerator.get_encoder(
-                    col, stats, table_name=self.table_name)
+                    col, stats, table_name=self.table_name
+                )
             except Exception as e:
                 if raise_on_error:
                     raise RuntimeError(
                         f"Failed to infer encoder for column '{self.name}.'"
                         f"'{col.name}' version: {self.data_version}. "
-                        f"Cause: {e!r}") from e
+                        f'Cause: {e!r}'
+                    ) from e
                 else:
                     logger.error(
                         f"Failed to infer encoder for column '{self.name}.'"
-                        f"'{col.name}' version: {self.data_version} {e}")
+                        f"'{col.name}' version: {self.data_version} {e}"
+                    )
                     col.encoder = Null()
         return self
 
@@ -1766,33 +1868,43 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
             status = False
             logging.warn_or_raise(
                 f"Table '{self.name}' is expected to have at least one "
-                f"primary key or one foreign key", raise_on_error)
+                f'primary key or one foreign key',
+                raise_on_error,
+            )
 
         # Float/double PK columns yield zero nodes at ingest; reject so the user declares an int key.
-        if self.pkey is not None and self.pkey.dtype is not None \
-                and self.pkey.dtype.is_float():
+        if (
+            self.pkey is not None
+            and self.pkey.dtype is not None
+            and self.pkey.dtype.is_float()
+        ):
             status = False
             logging.warn_or_raise(
                 f"The primary key '{self.pkey.name}' of table '{self.name}' "
                 f"has dtype '{self.pkey.dtype}'. ID/key columns must be "
-                f"integer or string; float/double key columns are not "
-                f"supported and would be dropped at ingest (yielding zero "
+                f'integer or string; float/double key columns are not '
+                f'supported and would be dropped at ingest (yielding zero '
                 f"nodes). Please set the dtype of '{self.pkey.name}' to "
-                f"'int'.", raise_on_error)
+                f"'int'.",
+                raise_on_error,
+            )
 
         # Get fingerprint for validation
         try:
             table_fingerprint = self.fingerprint()
         except AssertionError as e:
             logger.warning(
-                "Failed to generate exact fingerprint, deferring to "
-                "approximate fingerprint: %s", e)
+                'Failed to generate exact fingerprint, deferring to '
+                'approximate fingerprint: %s',
+                e,
+            )
             table_fingerprint = self.partial_fingerprint()
 
         # Load col stats if we need to validate encoders.
         if not ignore_encoders:
-            get_active_cache().load_col_stats_cache(table_fingerprint,
-                                                    self.data_version)
+            get_active_cache().load_col_stats_cache(
+                table_fingerprint, self.data_version
+            )
 
         for col in self.cols:
             # 2. Validate the correctness of each column.
@@ -1800,18 +1912,23 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
 
             if not ignore_encoders:
                 # passing data version is a slow operation.
-                required_stats = [ColStatType.NUM_UNIQUE] \
-                    if col.stype == Stype.ID else []
+                required_stats = (
+                    [ColStatType.NUM_UNIQUE] if col.stype == Stype.ID else []
+                )
                 # DG-native path: read directly from BackendCacheManager
                 # (populated by diskgraph ingest via
                 # copy_ingest_stats_to_backend_cache). The severed legacy
                 # factory no longer offers get_col_stats.
                 data_backend_cache = get_active_cache()
                 stats = data_backend_cache.get_col_stats(
-                    table_fingerprint, {col.base_config(): required_stats},
-                    data_version=self.data_version, approx=True)
-                status &= col.validate_encoders(self.data_version,
-                                                raise_on_error, stats)
+                    table_fingerprint,
+                    {col.base_config(): required_stats},
+                    data_version=self.data_version,
+                    approx=True,
+                )
+                status &= col.validate_encoders(
+                    self.data_version, raise_on_error, stats
+                )
 
         return status
 
@@ -1835,8 +1952,7 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
         cols = self.data_cols
         if self.has_pkey():
             # Ensure pkey shows first
-            cols = [self.pkey
-                    ] + [col for col in cols if col.name != self.pkey.name]
+            cols = [self.pkey] + [col for col in cols if col.name != self.pkey.name]
         return PandasView(self.connector, self.source_name, cols, None)
 
     def compute_exact_stats(
@@ -1860,12 +1976,15 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
         if is_minimal:
             stat_dict = get_minimal_stats(cols)
             logger.info(
-                f"Computing minimal statistics for table {self.name}, on "
-                f"columns {[c.name for c in cols]}")
+                f'Computing minimal statistics for table {self.name}, on '
+                f'columns {[c.name for c in cols]}'
+            )
         else:
             stat_dict = get_full_stats(cols)
-            logger.info(f"Computing full statistics for table {self.name}, on "
-                        f"columns {[c.name for c in cols]}")
+            logger.info(
+                f'Computing full statistics for table {self.name}, on '
+                f'columns {[c.name for c in cols]}'
+            )
 
         stat_dict = {k.base_config(): v for k, v in stat_dict.items()}
 
@@ -1875,17 +1994,21 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
         # present in the cache and raise loudly on miss instead of silently
         # falling into deleted compute.
         missing = data_backend_cache.get_missing_col_stats(
-            self.fingerprint(), stat_dict, self.data_version, approx=False)
+            self.fingerprint(), stat_dict, self.data_version, approx=False
+        )
         if missing:
-            missing_desc = ', '.join(f"{cfg.name}:{[s.name for s in stats]}"
-                                     for cfg, stats in missing.items())
+            missing_desc = ', '.join(
+                f'{cfg.name}:{[s.name for s in stats]}'
+                for cfg, stats in missing.items()
+            )
             raise UnsupportedInDiskgraphError(
-                "compute_exact_stats: requested col stats missing from the "
+                'compute_exact_stats: requested col stats missing from the '
                 f"DiskGraph-populated cache for table '{self.name}'@"
-                f"{self.data_version}. DiskGraph ingest populates this "
+                f'{self.data_version}. DiskGraph ingest populates this '
                 "cache; a miss means either ingest hasn't run for this "
-                "table / version, or the requested stat type is not "
-                f"emitted by DG. Missing: {missing_desc}.")
+                'table / version, or the requested stat type is not '
+                f'emitted by DG. Missing: {missing_desc}.'
+            )
 
         # Persist to the cache:
         data_backend_cache.save_col_stats_cache(
@@ -1904,24 +2027,24 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
         """
         all_possible_stat_types = EncoderGenerator.REQUIRED_STATS
         valid_stat_types = [
-            stat_type for stat_type in all_possible_stat_types
-            if stat_type.supports(col.dtype)
-            and stat_type.supports_stype(col.stype)
+            stat_type
+            for stat_type in all_possible_stat_types
+            if stat_type.supports(col.dtype) and stat_type.supports_stype(col.stype)
         ]
 
         exact_stat_types = [
-            stat_type for stat_type in valid_stat_types
+            stat_type
+            for stat_type in valid_stat_types
             if stat_type in EncoderGenerator.REQUIRED_EXACT_STATS
         ]
         approx_stat_types = [
-            stat_type for stat_type in valid_stat_types
+            stat_type
+            for stat_type in valid_stat_types
             if stat_type in EncoderGenerator.REQUIRED_APPROX_STATS
         ]
 
-        exact_stats = self.compute_col_stats([col], exact_stat_types,
-                                             approx=False)
-        approx_stats = self.compute_col_stats([col], approx_stat_types,
-                                              approx=True)
+        exact_stats = self.compute_col_stats([col], exact_stat_types, approx=False)
+        approx_stats = self.compute_col_stats([col], approx_stat_types, approx=True)
 
         ret = exact_stats.get(col.name, {})
         ret.update(approx_stats.get(col.name, {}))
@@ -1968,10 +2091,12 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
             # the DG cache is guaranteed empty and we go straight to the
             # connector sample path.
             col_stats_by_config = self._compute_stats_via_connector_sample(
-                request, approx, data_version, **kwargs)
+                request, approx, data_version, **kwargs
+            )
         else:
             col_stats_by_config = self._read_dg_cache_with_fallback(
-                request, approx, data_version, **kwargs)
+                request, approx, data_version, **kwargs
+            )
 
         return self._format_by_col_name(cols, col_stats_by_config)
 
@@ -1985,26 +2110,29 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
         scanning a large query."""
         if self.is_sql:
             if self._sql_inference_sample is _SAMPLE_UNSET:
-                estimate = self.connector.get_query_scan_estimate_bytes(
-                    self.custom_sql)
-                if sample_over_budget(estimate,
-                                      gated=self.connector.gates_query_scan):
-                    cost = ('an amount BigQuery would not estimate'
-                            if estimate is None else f'~{estimate} bytes')
+                estimate = self.connector.get_query_scan_estimate_bytes(self.custom_sql)
+                if sample_over_budget(estimate, gated=self.connector.gates_query_scan):
+                    cost = (
+                        'an amount BigQuery would not estimate'
+                        if estimate is None
+                        else f'~{estimate} bytes'
+                    )
                     logger.warning(
                         f"Custom SQL query for table '{self.name}' would scan "
-                        f"{cost} (> {SQL_SAMPLE_MAX_SCAN_BYTES}); "
-                        f"skipping the stype-inference sample and falling back "
-                        f"to name/dtype heuristics. Add a filter or cast "
-                        f"columns to refine stypes.")
+                        f'{cost} (> {SQL_SAMPLE_MAX_SCAN_BYTES}); '
+                        f'skipping the stype-inference sample and falling back '
+                        f'to name/dtype heuristics. Add a filter or cast '
+                        f'columns to refine stypes.'
+                    )
                     self._sql_inference_sample = None
                 else:
                     self._sql_inference_sample = self.connector.sample_query(
-                        self.custom_sql, NUM_ROWS_FOR_APPROX_STATS)
+                        self.custom_sql, NUM_ROWS_FOR_APPROX_STATS
+                    )
             return self._sql_inference_sample
-        return self.connector.read_table_sample(self.source_name,
-                                                cols=self.cols,
-                                                cast_response=False)
+        return self.connector.read_table_sample(
+            self.source_name, cols=self.cols, cast_response=False
+        )
 
     def _resolve_data_version(self, skip_cache: bool) -> Optional[str]:
         if self.is_sql:
@@ -2017,8 +2145,7 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
             return self._data_version
         if self.data_version is not None:
             return self.data_version
-        return self.connector.get_data_version(self.source_name,
-                                               skip_cache=skip_cache)
+        return self.connector.get_data_version(self.source_name, skip_cache=skip_cache)
 
     def _build_supported_stats_request(
         self,
@@ -2030,14 +2157,18 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
         # anything failing the gates would be silently dropped by the
         # downstream cache/connector path anyway.
         from kumo_core.train.autoregression import AUTOREGRESSION_COL
+
         request: Dict[BaseColumnConfig, List[ColStatType]] = {}
         for col in cols:
             if col.name == AUTOREGRESSION_COL:
                 continue
             supported = [
-                stat_type for stat_type in col_stat_types
-                if (stat_type.supports(col.dtype)
-                    and stat_type.supports_stype(col.stype))
+                stat_type
+                for stat_type in col_stat_types
+                if (
+                    stat_type.supports(col.dtype)
+                    and stat_type.supports_stype(col.stype)
+                )
             ]
             if supported:
                 request[col.base_config()] = supported
@@ -2061,9 +2192,9 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
             sample = self._read_inference_sample()
             if sample is None:
                 return {}
-            return _compute_col_stats_from_sample(request, sample,
-                                                  approx=approx,
-                                                  data_version=data_version)
+            return _compute_col_stats_from_sample(
+                request, sample, approx=approx, data_version=data_version
+            )
         return self.connector.compute_col_stats(
             self.source_name,
             request,
@@ -2093,14 +2224,19 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
             return
         try:
             by_config = self._compute_stats_via_connector_sample(
-                request, approx=True, data_version=data_version,
-                num_rows=NUM_ROWS_FOR_APPROX_STATS)
+                request,
+                approx=True,
+                data_version=data_version,
+                num_rows=NUM_ROWS_FOR_APPROX_STATS,
+            )
         except pd.errors.OutOfBoundsDatetime:
             logger.warning(
-                "Skipping Custom SQL preview stats for out-of-range timestamps")
+                'Skipping Custom SQL preview stats for out-of-range timestamps'
+            )
             return
-        get_active_cache().persist_sampled_col_stats(self.fingerprint(),
-                                                     data_version, by_config)
+        get_active_cache().persist_sampled_col_stats(
+            self.fingerprint(), data_version, by_config
+        )
 
     def _read_dg_cache_with_fallback(
         self,
@@ -2113,11 +2249,12 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
         fingerprint = self.fingerprint()
         data_backend_cache.load_col_stats_cache(fingerprint, data_version)
 
-        col_stats = data_backend_cache.get_col_stats(fingerprint, request,
-                                                     data_version,
-                                                     approx=approx)
+        col_stats = data_backend_cache.get_col_stats(
+            fingerprint, request, data_version, approx=approx
+        )
         missing = data_backend_cache.get_missing_col_stats(
-            fingerprint, request, data_version, approx=approx)
+            fingerprint, request, data_version, approx=approx
+        )
         if not missing:
             return col_stats
 
@@ -2128,23 +2265,26 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
         # DG snapshot and must strict-raise. Mirrors the connector-sample
         # fallback in ``DataBackend.get_min_col_stats``.
         from kumo.stats.stats import APPROX_ONLY_COL_STATS
+
         fallback_dict: Dict[BaseColumnConfig, List[ColStatType]] = {}
         for cfg, stats in missing.items():
-            fallback_stats = [
-                s for s in stats if approx or s in APPROX_ONLY_COL_STATS
-            ]
+            fallback_stats = [s for s in stats if approx or s in APPROX_ONLY_COL_STATS]
             if fallback_stats:
                 fallback_dict[cfg] = fallback_stats
 
         if fallback_dict:
             try:
                 fallback = self._compute_stats_via_connector_sample(
-                    fallback_dict, True, data_version, **kwargs)
+                    fallback_dict, True, data_version, **kwargs
+                )
             except Exception as exc:
                 logger.warning(
-                    "Table.compute_col_stats: connector sample fallback "
-                    "failed for %s@%s: %r", fingerprint.source_name,
-                    data_version, exc)
+                    'Table.compute_col_stats: connector sample fallback '
+                    'failed for %s@%s: %r',
+                    fingerprint.source_name,
+                    data_version,
+                    exc,
+                )
                 fallback = {}
             for cfg, by_stat in fallback.items():
                 if not by_stat:
@@ -2154,7 +2294,8 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
             # of re-sampling -- mirrors the REST ``get_min_col_stats`` path so
             # the two connector-sample fallbacks stay consistent. Best-effort.
             data_backend_cache.persist_sampled_col_stats(
-                fingerprint, data_version, fallback)
+                fingerprint, data_version, fallback
+            )
 
         # Recompute what's still missing after the connector-sample merge:
         # the error fires only when no path produced the stat. Strict
@@ -2168,16 +2309,19 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
                 still_missing[cfg] = remaining
 
         if still_missing:
-            missing_desc = ', '.join(f"{cfg.name}:{[s.name for s in stats]}"
-                                     for cfg, stats in still_missing.items())
+            missing_desc = ', '.join(
+                f'{cfg.name}:{[s.name for s in stats]}'
+                for cfg, stats in still_missing.items()
+            )
             raise UnsupportedInDiskgraphError(
-                "Requested col stats missing from the DiskGraph-"
-                "populated cache for "
-                f"{fingerprint.source_name}@{data_version}. "
-                "DiskGraph ingest populates this cache; a miss means "
+                'Requested col stats missing from the DiskGraph-'
+                'populated cache for '
+                f'{fingerprint.source_name}@{data_version}. '
+                'DiskGraph ingest populates this cache; a miss means '
                 "either ingest hasn't run for this table / version, "
-                "or the requested stat type is not emitted by DG. "
-                f"Missing: {missing_desc}.")
+                'or the requested stat type is not emitted by DG. '
+                f'Missing: {missing_desc}.'
+            )
 
         return col_stats
 
@@ -2220,12 +2364,11 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
         from kumo.diskgraph.stats import compute_table_stats_native
 
         data_backend_cache: BackendCacheManager = get_active_cache()
-        table_stats: Dict[TableStatType,
-                          Stats] = (data_backend_cache.get_table_stats(
-                              self.fingerprint(),
-                              stats_list=table_stat_types,
-                              data_version=self.data_version,
-                          ))
+        table_stats: Dict[TableStatType, Stats] = data_backend_cache.get_table_stats(
+            self.fingerprint(),
+            stats_list=table_stat_types,
+            data_version=self.data_version,
+        )
 
         missing = [s for s in table_stat_types if s not in table_stats]
         if missing:
@@ -2240,8 +2383,7 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
             )
             table_stats = {**table_stats, **native_stats}
             if native_stats:
-                data_backend_cache.add_table_stats(self.fingerprint(),
-                                                   native_stats)
+                data_backend_cache.add_table_stats(self.fingerprint(), native_stats)
 
         # TODO(manan) remove, here for backwards compatibility:
         self.stats.update(table_stats)
@@ -2251,11 +2393,13 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
     @blocking_method(DATA_BACKEND_THREAD_POOL)
     def get_stats(self, stat_types: List[Any]) -> List[Optional[Stats]]:
         r"""Obtains the statistics :obj:`stat_types`."""
-        self.stats.update(get_active_cache().get_table_stats(
-            self.fingerprint(),
-            stats_list=[TableStatType(st) for st in stat_types],
-            data_version=self.data_version,
-        ))
+        self.stats.update(
+            get_active_cache().get_table_stats(
+                self.fingerprint(),
+                stats_list=[TableStatType(st) for st in stat_types],
+                data_version=self.data_version,
+            )
+        )
 
         return [self.stats.get(stat_type, None) for stat_type in stat_types]
 
@@ -2271,8 +2415,9 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
             return self.get_stats([TableStatType.NUM_ROWS])[0].value
         except Exception as e:
             if compute_table_stats_if_missing:
-                return self.compute_table_stats(
-                    [TableStatType.NUM_ROWS])[TableStatType.NUM_ROWS].value
+                return self.compute_table_stats([TableStatType.NUM_ROWS])[
+                    TableStatType.NUM_ROWS
+                ].value
             raise e
 
     def num_nodes(
@@ -2292,7 +2437,7 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
                     break
                 except Exception:
                     logger.warning(
-                        f"Failed to get number of dropped rows from column {col.name}."
+                        f'Failed to get number of dropped rows from column {col.name}.'
                     )
         return num_nodes
 
@@ -2302,10 +2447,12 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
         r"""Prints a summary of the table, *i.e.* the data types, encoder
         decisions, and number of :obj:`N/A` values per column."""
         if not self.has_data:
-            warnings.warn(f"Table {self.name} has not been "
-                          "materialized yet. As a result, the encoder "
-                          "statistics shown in the summary could be "
-                          "inaccurate.")
+            warnings.warn(
+                f'Table {self.name} has not been '
+                'materialized yet. As a result, the encoder '
+                'statistics shown in the summary could be '
+                'inaccurate.'
+            )
         from tabulate import tabulate
 
         header = ['Name', 'SType', 'DType', 'Encoder', 'N/A']

@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Tests for ``pool.worker_main`` — env-var schema + activity discovery."""
+
 import asyncio
 import contextlib
 import json
@@ -119,8 +120,9 @@ def _capture_signal_handlers(monkeypatch):
         handlers[signum] = (callback, args)
 
     monkeypatch.setattr(loop, 'add_signal_handler', _add)
-    monkeypatch.setattr(loop, 'remove_signal_handler',
-                        lambda signum: removed.append(signum) or True)
+    monkeypatch.setattr(
+        loop, 'remove_signal_handler', lambda signum: removed.append(signum) or True
+    )
     return handlers, removed
 
 
@@ -136,8 +138,9 @@ def test_envvar_declarations_validate_at_import():
     assert worker_main._POOL_NOFILE_SOFT_LIMIT.default_value == 65535
     assert _POOL_ACTIVITY_WORKER_POD_NAME.name == (ACTIVITY_WORKER_POD_NAME_ENV)
     assert _POOL_ACTIVITY_WORKER_POD_NAME.default_value == ''
-    assert activity_worker_identity(
-        'activity-pod-abc', 'dev-1') == ('pool-worker-activity-pod-abc-dev-1')
+    assert activity_worker_identity('activity-pod-abc', 'dev-1') == (
+        'pool-worker-activity-pod-abc-dev-1'
+    )
 
 
 def _run_nofile_probe(source: str) -> dict:
@@ -295,14 +298,13 @@ def test_discover_activities_skips_private_helpers():
 def test_shutdown_grace_is_immediate_only_for_long_lived_daemon():
     assert _SIGNAL_SHUTDOWN_TIMEOUT_SECS < 30
     assert 0 < _ACTIVITY_SHUTDOWN_GRACE_SECS < _SIGNAL_SHUTDOWN_TIMEOUT_SECS
+    assert _graceful_shutdown_timeout(PoolStorageMode.DAEMON_ON_PVC) == timedelta()
+    assert _graceful_shutdown_timeout(PoolStorageMode.ACTIVITY_ON_PVC) == timedelta(
+        seconds=_ACTIVITY_SHUTDOWN_GRACE_SECS
+    )
     assert _graceful_shutdown_timeout(
-        PoolStorageMode.DAEMON_ON_PVC) == timedelta()
-    assert _graceful_shutdown_timeout(
-        PoolStorageMode.ACTIVITY_ON_PVC) == timedelta(
-            seconds=_ACTIVITY_SHUTDOWN_GRACE_SECS)
-    assert _graceful_shutdown_timeout(
-        PoolStorageMode.ACTIVITY_ON_EMPTYDIR) == timedelta(
-            seconds=_ACTIVITY_SHUTDOWN_GRACE_SECS)
+        PoolStorageMode.ACTIVITY_ON_EMPTYDIR
+    ) == timedelta(seconds=_ACTIVITY_SHUTDOWN_GRACE_SECS)
 
 
 @pytest.mark.asyncio
@@ -373,7 +375,8 @@ async def test_signal_after_activity_done_still_forces_signal_exit(monkeypatch):
     worker = _BlockingShutdownWorker()
     activity_done = asyncio.Event()
     run_task = asyncio.create_task(
-        _run_worker_until_shutdown(worker, activity_done=activity_done))
+        _run_worker_until_shutdown(worker, activity_done=activity_done)
+    )
     await worker.started.wait()
     activity_done.set()
     await worker.shutdown_started.wait()
@@ -403,7 +406,8 @@ async def test_signal_shutdown_deadline_is_fail_closed(monkeypatch):
         _run_worker_until_shutdown(
             worker,
             signal_requested=signal_requested,
-        ))
+        )
+    )
     await worker.started.wait()
     callback, args = handlers[signal.SIGTERM]
     callback(*args)
@@ -421,7 +425,8 @@ async def test_activity_done_uses_same_orderly_shutdown_path(monkeypatch):
     activity_done = asyncio.Event()
 
     run_task = asyncio.create_task(
-        _run_worker_until_shutdown(worker, activity_done=activity_done))
+        _run_worker_until_shutdown(worker, activity_done=activity_done)
+    )
     await worker.started.wait()
     activity_done.set()
     signal_shutdown = await asyncio.wait_for(run_task, timeout=1)
@@ -433,7 +438,7 @@ async def test_activity_done_uses_same_orderly_shutdown_path(monkeypatch):
 def test_signal_exit_does_not_join_default_executor(tmp_path):
     """A native call abandoned after worker shutdown cannot keep PID 1 alive."""
     output = tmp_path / 'native-side-effects'
-    program = f'''\
+    program = f"""\
 import asyncio
 import os
 import time
@@ -457,7 +462,7 @@ async def main():
     _exit_after_signal_shutdown()
 
 asyncio.run(main())
-'''
+"""
     process = subprocess.Popen(
         [sys.executable, '-c', program],
     )
@@ -478,12 +483,11 @@ asyncio.run(main())
     assert output.read_bytes() == output_after_exit
 
 
-def test_signal_shutdown_timeout_exits_without_joining_default_executor(
-        tmp_path):
+def test_signal_shutdown_timeout_exits_without_joining_default_executor(tmp_path):
     """A failed signal shutdown still exits nonzero before executor join."""
     output = tmp_path / 'native-timeout-side-effects'
     ready = tmp_path / 'worker-ready'
-    program = f'''\
+    program = f"""\
 import asyncio
 import os
 import time
@@ -538,7 +542,7 @@ async def main():
         )
 
 asyncio.run(main())
-'''
+"""
     process = subprocess.Popen([sys.executable, '-c', program])
     for _ in range(3000):
         if ready.exists():
@@ -561,8 +565,7 @@ asyncio.run(main())
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('signal_shutdown', [False, True])
-async def test_worker_resources_close_before_signal_exit(
-        monkeypatch, signal_shutdown):
+async def test_worker_resources_close_before_signal_exit(monkeypatch, signal_shutdown):
     calls = []
     worker_env = MagicMock()
     worker_env.shutdown.side_effect = lambda: calls.append('worker-env')
@@ -593,7 +596,8 @@ async def test_worker_resources_close_before_signal_exit(
 @pytest.mark.parametrize('failed_step', ['worker-env', 'activities'])
 @pytest.mark.parametrize('signal_shutdown', [False, True])
 async def test_worker_cleanup_failure_attempts_both_and_fails_closed(
-        monkeypatch, failed_step, signal_shutdown):
+    monkeypatch, failed_step, signal_shutdown
+):
     calls = []
     error = RuntimeError(f'{failed_step} failed')
     worker_env = MagicMock()
@@ -672,8 +676,9 @@ async def test_signal_handler_installation_failure_is_fail_closed(monkeypatch):
             raise RuntimeError('handler unavailable')
 
     monkeypatch.setattr(loop, 'add_signal_handler', _add)
-    monkeypatch.setattr(loop, 'remove_signal_handler',
-                        lambda signum: removed.append(signum) or True)
+    monkeypatch.setattr(
+        loop, 'remove_signal_handler', lambda signum: removed.append(signum) or True
+    )
     worker = _FakeWorker()
 
     with pytest.raises(RuntimeError, match='handler unavailable'):
@@ -688,15 +693,18 @@ async def test_signal_handler_installation_failure_is_fail_closed(monkeypatch):
     reason='requires Python PID 1 and an isolated Temporal test server',
 )
 @pytest.mark.asyncio
-@pytest.mark.parametrize('storage_mode,ignore_term,max_shutdown_seconds', [
-    (PoolStorageMode.DAEMON_ON_PVC, False, 10.0),
-    (PoolStorageMode.ACTIVITY_ON_PVC, False, 10.0),
-    (PoolStorageMode.DAEMON_ON_PVC, True, 30.0),
-    (PoolStorageMode.ACTIVITY_ON_PVC, True, 30.0),
-])
+@pytest.mark.parametrize(
+    'storage_mode,ignore_term,max_shutdown_seconds',
+    [
+        (PoolStorageMode.DAEMON_ON_PVC, False, 10.0),
+        (PoolStorageMode.ACTIVITY_ON_PVC, False, 10.0),
+        (PoolStorageMode.DAEMON_ON_PVC, True, 30.0),
+        (PoolStorageMode.ACTIVITY_ON_PVC, True, 30.0),
+    ],
+)
 async def test_real_temporal_worker_sigterm_cancels_activity_before_pod_grace(
-        tmp_path, monkeypatch, storage_mode, ignore_term,
-        max_shutdown_seconds):
+    tmp_path, monkeypatch, storage_mode, ignore_term, max_shutdown_seconds
+):
     """SDK 1.30 shutdown cancels and reaps before container/pod grace."""
     if not _subprocess_supervisor_capabilities_available():
         pytest.skip('strong pidfd/procfs supervisor unavailable')
@@ -705,9 +713,9 @@ async def test_real_temporal_worker_sigterm_cancels_activity_before_pod_grace(
     output_path = tmp_path / 'real-temporal-output.log'
     command = tmp_path / 'kumo-pred'
     child_term_setup = (
-        'signal.signal(signal.SIGTERM, signal.SIG_IGN); '
-        if ignore_term else '')
-    command.write_text(f'''\
+        'signal.signal(signal.SIGTERM, signal.SIG_IGN); ' if ignore_term else ''
+    )
+    command.write_text(f"""\
 #!{sys.executable}
 import os
 import signal
@@ -730,14 +738,16 @@ with open({str(child_pid_path)!r} + '.tmp', 'w') as pid_file:
 _os.replace({str(child_pid_path)!r} + '.tmp', {str(child_pid_path)!r})
 print('parent-ready', flush=True)
 time.sleep(60)
-''')
+""")
     command.chmod(0o755)
 
     real_exists = os.path.exists
     monkeypatch.setattr(
         'pool.activities.osp.exists',
-        lambda path: (False if str(path).endswith('/bin/kumo-pred') else
-                      real_exists(path)))
+        lambda path: (
+            False if str(path).endswith('/bin/kumo-pred') else real_exists(path)
+        ),
+    )
     monkeypatch.setenv('PATH', f'{tmp_path}:{os.environ["PATH"]}')
 
     client = await Client.connect(os.environ['KUMO_TEST_TEMPORAL_ADDRESS'])
@@ -758,13 +768,18 @@ time.sleep(60)
         task_queue=task_queue,
     )
     for _ in range(1000):
-        if (child_pid_path.exists() and output_path.exists()
-                and b'child-ready' in output_path.read_bytes()):
+        if (
+            child_pid_path.exists()
+            and output_path.exists()
+            and b'child-ready' in output_path.read_bytes()
+        ):
             break
         await asyncio.sleep(0.01)
-    assert (child_pid_path.exists() and output_path.exists()
-            and b'child-ready' in output_path.read_bytes()), (
-                'real Temporal activity never started its native descendant')
+    assert (
+        child_pid_path.exists()
+        and output_path.exists()
+        and b'child-ready' in output_path.read_bytes()
+    ), 'real Temporal activity never started its native descendant'
     child_pid = int(child_pid_path.read_text())
 
     shutdown_started = time.monotonic()
@@ -794,7 +809,8 @@ async def test_activity_worker_grace_preserves_terminal_result():
         task_queue=task_queue,
         activities=[_pid1_activity_result],
         graceful_shutdown_timeout=_graceful_shutdown_timeout(
-            PoolStorageMode.ACTIVITY_ON_PVC),
+            PoolStorageMode.ACTIVITY_ON_PVC
+        ),
     )
     workflow_worker = Worker(
         client,
@@ -803,8 +819,8 @@ async def test_activity_worker_grace_preserves_terminal_result():
         workflow_runner=UnsandboxedWorkflowRunner(),
     )
     activity_worker_task = asyncio.create_task(
-        _run_worker_until_shutdown(activity_worker,
-                                   activity_done=_activity_result_done))
+        _run_worker_until_shutdown(activity_worker, activity_done=_activity_result_done)
+    )
     workflow_worker_task = asyncio.create_task(workflow_worker.run())
     result = await client.execute_workflow(
         _PID1ActivityResultWorkflow.run,
@@ -819,15 +835,18 @@ async def test_activity_worker_grace_preserves_terminal_result():
     assert result == 'reported'
 
 
-@pytest.mark.skipif(os.getpid() != 1,
-                    reason='requires production-like Python PID 1')
+@pytest.mark.skipif(os.getpid() != 1, reason='requires production-like Python PID 1')
 @pytest.mark.asyncio
-@pytest.mark.parametrize('ignore_term,max_shutdown_seconds', [
-    (False, 10.0),
-    (True, 30.0),
-])
+@pytest.mark.parametrize(
+    'ignore_term,max_shutdown_seconds',
+    [
+        (False, 10.0),
+        (True, 30.0),
+    ],
+)
 async def test_pid1_sigterm_cancels_and_reaps_native_subprocess(
-        tmp_path, monkeypatch, ignore_term, max_shutdown_seconds):
+    tmp_path, monkeypatch, ignore_term, max_shutdown_seconds
+):
     """Container TERM reaches Temporal shutdown and the native cleanup path."""
     if not _subprocess_supervisor_capabilities_available():
         pytest.skip('strong pidfd/procfs supervisor unavailable')
@@ -836,9 +855,9 @@ async def test_pid1_sigterm_cancels_and_reaps_native_subprocess(
     output_path = tmp_path / 'native-output.log'
     command = tmp_path / 'kumo-pred'
     child_term_setup = (
-        'signal.signal(signal.SIGTERM, signal.SIG_IGN); '
-        if ignore_term else '')
-    command.write_text(f'''\
+        'signal.signal(signal.SIGTERM, signal.SIG_IGN); ' if ignore_term else ''
+    )
+    command.write_text(f"""\
 #!{sys.executable}
 import os
 import signal
@@ -861,14 +880,16 @@ with open({str(child_pid_path)!r} + '.tmp', 'w') as pid_file:
 _os.replace({str(child_pid_path)!r} + '.tmp', {str(child_pid_path)!r})
 print('parent-ready', flush=True)
 time.sleep(60)
-''')
+""")
     command.chmod(0o755)
 
     real_exists = os.path.exists
     monkeypatch.setattr(
         'pool.activities.osp.exists',
-        lambda path: (False if str(path).endswith('/bin/kumo-pred') else
-                      real_exists(path)))
+        lambda path: (
+            False if str(path).endswith('/bin/kumo-pred') else real_exists(path)
+        ),
+    )
     monkeypatch.setenv('PATH', f'{tmp_path}:{os.environ["PATH"]}')
     monkeypatch.setattr('pool.activities.activity.heartbeat', MagicMock())
     monkeypatch.setattr('pool.activities._SUBPROCESS_EXIT_POLL_SECS', 0.01)
@@ -881,8 +902,8 @@ time.sleep(60)
 
         async def run(self):
             self.activity_task = asyncio.create_task(
-                _run_kumo_subprocess('kumo-pred', 'pid1-term',
-                                     '/tmp/unused.json', None))
+                _run_kumo_subprocess('kumo-pred', 'pid1-term', '/tmp/unused.json', None)
+            )
             try:
                 await self.activity_task
             except asyncio.CancelledError:
@@ -900,13 +921,18 @@ time.sleep(60)
     worker = _ActivityWorker()
     worker_task = asyncio.create_task(_run_worker_until_shutdown(worker))
     for _ in range(500):
-        if (child_pid_path.exists() and output_path.exists()
-                and b'child-ready' in output_path.read_bytes()):
+        if (
+            child_pid_path.exists()
+            and output_path.exists()
+            and b'child-ready' in output_path.read_bytes()
+        ):
             break
         await asyncio.sleep(0.01)
-    assert (child_pid_path.exists() and output_path.exists()
-            and b'child-ready' in output_path.read_bytes()), (
-                'native descendant never became signal-ready')
+    assert (
+        child_pid_path.exists()
+        and output_path.exists()
+        and b'child-ready' in output_path.read_bytes()
+    ), 'native descendant never became signal-ready'
     child_pid = int(child_pid_path.read_text())
 
     shutdown_started = time.monotonic()
@@ -935,7 +961,9 @@ time.sleep(60)
                     fd_stat = fd_entry.stat(follow_symlinks=True)
                 except (FileNotFoundError, PermissionError):
                     continue
-                if (fd_stat.st_dev == output_stat.st_dev
-                        and fd_stat.st_ino == output_stat.st_ino):
+                if (
+                    fd_stat.st_dev == output_stat.st_dev
+                    and fd_stat.st_ino == output_stat.st_ino
+                ):
                     holders.append(f'{proc_fd_dir.name}/{fd_entry.name}')
     assert holders == []

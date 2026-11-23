@@ -13,8 +13,8 @@ from rest.config.batch_prediction_job import BatchPredictionJobInput
 
 # Configure basic logging
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 
@@ -30,7 +30,7 @@ def ls(dirpath: str):
         - Names of all files in the directory
     """
     files = fsutil.listdir(dirpath)
-    logger.info(f"Dirpath: {dirpath}")
+    logger.info(f'Dirpath: {dirpath}')
     for f in files:
         logger.info(f' - {os.path.basename(f)}')
 
@@ -87,15 +87,15 @@ def validate_lp_pred_table(
 
     # Read and validate prediction table
     if verbose > 0:
-        logger.info(f"Validating LP pred table at {pred_table_path}")
+        logger.info(f'Validating LP pred table at {pred_table_path}')
     pred_table = parquet_util.read_parquet(pred_table_path)
     if verbose > 0:
-        logger.info(f"Pred table columns: {pred_table.columns}")
+        logger.info(f'Pred table columns: {pred_table.columns}')
 
     # Validate uniqueness of TARGET values
     fkeys = pred_table['TARGET']
     if not (fkeys.value_counts() == 1).all():
-        raise ValueError("Some TARGET values appear more than once")
+        raise ValueError('Some TARGET values appear more than once')
 
     # ``JobConfig.table_names_with_paths`` is unavailable on DG (the DG
     # short-circuit discards it before any reader runs). This debug tool
@@ -106,28 +106,35 @@ def validate_lp_pred_table(
     # unavailable: raise instead of pretending to succeed.
     del rhs_pkey_col_name  # Unused; see raise below.
     raise NotImplementedError(
-        "validate_lp_pred_table does not have access to table persist "
-        "paths on DiskGraph; rewrite to consume the diskgraph manifest "
-        "before re-enabling.")
+        'validate_lp_pred_table does not have access to table persist '
+        'paths on DiskGraph; rewrite to consume the diskgraph manifest '
+        'before re-enabling.'
+    )
 
 
 # Example usage for Databricks environment
 dirpath = (
-    "dbfs:/Volumes/kumo_test_catalogue/test_output/"
-    "test_volume/testing-uw2-test/"
-    "nightly-test-hnm_10k_transactions_customer_id_list_temporal_target_filter"
-    "/72e2915e-cd8d-4e46-95aa-0608b0dcfd63/nightly-905272be")
-pred_table_subpath = ("/jobs/bp-job-11b46070ebce41b6be12ed050d259988/"
-                      "pred_table/test_release_test_v1_42_3/pred_table")
+    'dbfs:/Volumes/kumo_test_catalogue/test_output/'
+    'test_volume/testing-uw2-test/'
+    'nightly-test-hnm_10k_transactions_customer_id_list_temporal_target_filter'
+    '/72e2915e-cd8d-4e46-95aa-0608b0dcfd63/nightly-905272be'
+)
+pred_table_subpath = (
+    '/jobs/bp-job-11b46070ebce41b6be12ed050d259988/'
+    'pred_table/test_release_test_v1_42_3/pred_table'
+)
 
-pred_config_subpath = ("/jobs/bp-job-11b46070ebce41b6be12ed050d259988/"
-                       "inputs/prediction_job_input.json")
-job_config_subpath = ("/jobs/bp-job-11b46070ebce41b6be12ed050d259988/"
-                      "jobs/bp-job-11b46070ebce41b6be12ed050d259988-0-3.json")
+pred_config_subpath = (
+    '/jobs/bp-job-11b46070ebce41b6be12ed050d259988/inputs/prediction_job_input.json'
+)
+job_config_subpath = (
+    '/jobs/bp-job-11b46070ebce41b6be12ed050d259988/'
+    'jobs/bp-job-11b46070ebce41b6be12ed050d259988-0-3.json'
+)
 
-pred_table_path = (dirpath + pred_table_subpath)
-pred_config_path = (dirpath + pred_config_subpath)
-job_config_path = (dirpath + job_config_subpath)
+pred_table_path = dirpath + pred_table_subpath
+pred_config_path = dirpath + pred_config_subpath
+job_config_path = dirpath + job_config_subpath
 
 # Example validation call
 validate_lp_pred_table(

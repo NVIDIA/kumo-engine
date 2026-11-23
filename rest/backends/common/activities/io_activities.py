@@ -35,8 +35,9 @@ def load_validation_response_activity(
     return ValidationResponse.load_or_create(root_path, unique_id)
 
 
-async def save_validation_response(response: ValidationResponse, home_dir: str,
-                                   job_id: str) -> None:
+async def save_validation_response(
+    response: ValidationResponse, home_dir: str, job_id: str
+) -> None:
     """Save the validation response to the job directory."""
     await workflow.execute_activity(
         save_validation_response_activity,

@@ -6,8 +6,7 @@ import pytest
 from kumo_core.automl.auto_trainer import AutoTrainer
 
 
-@pytest.mark.parametrize('metric, single_class_hint', [('auroc', True),
-                                                       ('mae', False)])
+@pytest.mark.parametrize('metric, single_class_hint', [('auroc', True), ('mae', False)])
 def test_all_nan_tune_metric(tmp_path, monkeypatch, metric, single_class_hint):
     for trial in ('trial_0', 'trial_1'):
         (tmp_path / trial / 'checkpoint').mkdir(parents=True)

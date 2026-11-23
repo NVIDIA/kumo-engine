@@ -86,8 +86,7 @@ def _publish_after_process_barrier(path, ready_path, allow_path):
     save_json_atomic({'value': 'new'}, path)
 
 
-def test_save_json_atomic_keeps_old_value_visible_across_process_replace(
-        test_dir):
+def test_save_json_atomic_keeps_old_value_visible_across_process_replace(test_dir):
     path = osp.join(test_dir, 'atomic.json')
     save_json_atomic({'value': 'old'}, path)
     context = multiprocessing.get_context('spawn')
@@ -113,8 +112,7 @@ def test_save_json_atomic_keeps_old_value_visible_across_process_replace(
     assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
 
 
-def test_save_json_atomic_concurrent_readers_never_see_partial_document(
-        test_dir):
+def test_save_json_atomic_concurrent_readers_never_see_partial_document(test_dir):
     path = osp.join(test_dir, 'concurrent.json')
     save_json_atomic({'generation': 0, 'payload': '0' * 8192}, path)
     stop = threading.Event()
@@ -137,7 +135,9 @@ def test_save_json_atomic_concurrent_readers_never_see_partial_document(
             {
                 'generation': generation,
                 'payload': str(generation) * 8192,
-            }, path)
+            },
+            path,
+        )
     stop.set()
     for thread in readers:
         thread.join(timeout=5)
@@ -146,7 +146,8 @@ def test_save_json_atomic_concurrent_readers_never_see_partial_document(
 
 
 def test_save_json_atomic_failure_preserves_target_and_cleans_temp(
-        monkeypatch, test_dir):
+    monkeypatch, test_dir
+):
     path = osp.join(test_dir, 'atomic.json')
     save_json_atomic({'secret': 'old'}, path)
 
@@ -163,15 +164,20 @@ def test_save_json_atomic_failure_preserves_target_and_cleans_temp(
     assert sorted(os.listdir(test_dir)) == ['atomic.json']
 
 
-@pytest.mark.parametrize('scheme,path', [
-    ('s3', 's3://test-bucket/job/inputs/input.json'),
-    ('gs', 'gs://test-bucket/job/inputs/input.json'),
-])
-def test_save_json_atomic_remote_uses_single_final_key_write(
-        monkeypatch, scheme, path):
+@pytest.mark.parametrize(
+    'scheme,path',
+    [
+        ('s3', 's3://test-bucket/job/inputs/input.json'),
+        ('gs', 'gs://test-bucket/job/inputs/input.json'),
+    ],
+)
+def test_save_json_atomic_remote_uses_single_final_key_write(monkeypatch, scheme, path):
     write = MagicMock()
-    mkstemp = MagicMock(side_effect=AssertionError(
-        'remote publication must not create a temporary object'))
+    mkstemp = MagicMock(
+        side_effect=AssertionError(
+            'remote publication must not create a temporary object'
+        )
+    )
     monkeypatch.setattr(fsutil, 'makedirs', MagicMock())
     monkeypatch.setattr(fsutil, 'get_scheme', MagicMock(return_value=scheme))
     monkeypatch.setattr(fsutil, 'write_text', write)
@@ -179,15 +185,13 @@ def test_save_json_atomic_remote_uses_single_final_key_write(
 
     save_json_atomic({'value': 1}, path)
 
-    write.assert_called_once_with(path, to_json({'value': 1}),
-                                  compression=False)
+    write.assert_called_once_with(path, to_json({'value': 1}), compression=False)
     mkstemp.assert_not_called()
 
 
 @pytest.mark.parametrize('scheme', ['abfs', 'abfss'])
 def test_save_json_atomic_adls_uses_provider_atomic_write(monkeypatch, scheme):
-    path = (f'{scheme}://filesystem@account.dfs.core.windows.net/'
-            'job/inputs/input.json')
+    path = f'{scheme}://filesystem@account.dfs.core.windows.net/job/inputs/input.json'
     atomic_write = MagicMock()
     monkeypatch.setattr(fsutil, 'makedirs', MagicMock())
     monkeypatch.setattr(fsutil, 'get_scheme', MagicMock(return_value=scheme))
@@ -195,8 +199,7 @@ def test_save_json_atomic_adls_uses_provider_atomic_write(monkeypatch, scheme):
 
     save_json_atomic({'value': 1}, path)
 
-    atomic_write.assert_called_once_with(path, to_json({'value': 1}),
-                                         compression=False)
+    atomic_write.assert_called_once_with(path, to_json({'value': 1}), compression=False)
 
 
 def test_save_json_atomic_compressed_roundtrip(test_dir):
@@ -218,12 +221,16 @@ def test_save_json_atomic_rejects_symlink(test_dir):
     assert os.path.islink(link_path)
 
 
-@pytest.mark.parametrize('scheme,path', [
-    ('dbfs', 'dbfs:/Volumes/catalog/schema/volume/job/inputs/input.json'),
-    ('unsupported', 'unsupported://input.json'),
-])
+@pytest.mark.parametrize(
+    'scheme,path',
+    [
+        ('dbfs', 'dbfs:/Volumes/catalog/schema/volume/job/inputs/input.json'),
+        ('unsupported', 'unsupported://input.json'),
+    ],
+)
 def test_save_json_atomic_fails_closed_without_proven_atomic_replace(
-        monkeypatch, scheme, path):
+    monkeypatch, scheme, path
+):
     write = MagicMock()
     monkeypatch.setattr(fsutil, 'get_scheme', MagicMock(return_value=scheme))
     monkeypatch.setattr(fsutil, 'makedirs', MagicMock())
@@ -242,9 +249,9 @@ def test_escape_dataclass(create_graph):
 
     table_as_json = to_json(escape_dataclass(table.metadata_config()))
     table_from_json_config = from_json(table_as_json, TableMetadataConfig)
-    recovered_table = Table.from_source_config(table_from_json_config,
-                                               'FINANCIAL', table.data_source,
-                                               table.connector)
+    recovered_table = Table.from_source_config(
+        table_from_json_config, 'FINANCIAL', table.data_source, table.connector
+    )
     assert len(recovered_table.cols) == len(table.cols)
 
 
@@ -257,35 +264,36 @@ def test_json_safe_float():
 
 
 def test_json_load_no_such_key():
-    path = "s3://kumo-public-datasets/something_not_exist"
-    assert load_json(path, str, default="not_exists",
-                     raise_on_missing=False) == "not_exists"
+    path = 's3://kumo-public-datasets/something_not_exist'
+    assert (
+        load_json(path, str, default='not_exists', raise_on_missing=False)
+        == 'not_exists'
+    )
 
     with pytest.raises(FileNotFoundError):
-        load_json(path, str, default="not_exists")
+        load_json(path, str, default='not_exists')
 
 
 def test_json_load_missing_local_file_returns_default_without_read(
-        monkeypatch, test_dir):
-    missing_path = osp.join(test_dir, "missing.json")
+    monkeypatch, test_dir
+):
+    missing_path = osp.join(test_dir, 'missing.json')
     read_called = False
 
     def _raise_if_read(*args, **kwargs):
         nonlocal read_called
         read_called = True
-        raise AssertionError("read_text should not be called for missing file")
+        raise AssertionError('read_text should not be called for missing file')
 
-    monkeypatch.setattr(fsutil, "read_text", _raise_if_read)
-    assert load_json(missing_path, dict, default={"missing": True},
-                     raise_on_missing=False) == {
-                         "missing": True
-                     }
+    monkeypatch.setattr(fsutil, 'read_text', _raise_if_read)
+    assert load_json(
+        missing_path, dict, default={'missing': True}, raise_on_missing=False
+    ) == {'missing': True}
     assert read_called is False
 
 
 def test_json_load_zipfile():
-    path = "s3://kumo-public-datasets/test_zip_file/" \
-           "materialization_task_info.json.gz"
+    path = 's3://kumo-public-datasets/test_zip_file/materialization_task_info.json.gz'
     # This public artifact predates the strict connector-ID schema. The test
     # covers compressed S3 JSON I/O, not legacy object-model compatibility.
     data = load_json(path, dict, compressed=True)
@@ -293,19 +301,28 @@ def test_json_load_zipfile():
 
 
 def test_load_json_eof(test_dir, caplog):
-    path = osp.join(test_dir, "test.json")
-    obj: dict[int, str] = {20250606: "friday"}
+    path = osp.join(test_dir, 'test.json')
+    obj: dict[int, str] = {20250606: 'friday'}
     rogue_chars_cases = [
-        "}", "{}", ",", "\\", "\"", "\u0394", "\xA0", "\a", "\a\n",
-        "AAAAAAAAAA", "20250606"
+        '}',
+        '{}',
+        ',',
+        '\\',
+        '"',
+        '\u0394',
+        '\xa0',
+        '\a',
+        '\a\n',
+        'AAAAAAAAAA',
+        '20250606',
     ]
     for rogue_chars in rogue_chars_cases:
-        content = f"{to_json(obj)}{rogue_chars}"
+        content = f'{to_json(obj)}{rogue_chars}'
         fsutil.write_text(path, content)
 
         caplog.clear()
         with caplog.at_level(logging.WARNING):
             obj_rt = load_json(path, cls=dict[int, str])
-            assert "json decode error" in caplog.records[0].message
+            assert 'json decode error' in caplog.records[0].message
 
         assert obj_rt == obj

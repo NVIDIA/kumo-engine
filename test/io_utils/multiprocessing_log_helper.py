@@ -30,38 +30,36 @@ def _wait_for_lines(path, count):
 def main():
     path = Path(sys.argv[1])
     logger_name = 'multiprocessing_log_helper'
-    logging.config.dictConfig({
-        'version': 1,
-        'formatters': {
-            'plain': {
-                'format': '%(message)s'
-            }
-        },
-        'handlers': {
-            'multiprocessing': {
-                'class': 'io_utils.logging.MultiProcessingLog',
-                'formatter': 'plain',
-                'path': path,
-                'mode': 'a',
-                'maxsize': 1048576,
-                'rotate': 1,
-            }
-        },
-        'loggers': {
-            logger_name: {
-                'handlers': ['multiprocessing'],
-                'level': 'INFO',
-                'propagate': False,
-            }
-        },
-    })
+    logging.config.dictConfig(
+        {
+            'version': 1,
+            'formatters': {'plain': {'format': '%(message)s'}},
+            'handlers': {
+                'multiprocessing': {
+                    'class': 'io_utils.logging.MultiProcessingLog',
+                    'formatter': 'plain',
+                    'path': path,
+                    'mode': 'a',
+                    'maxsize': 1048576,
+                    'rotate': 1,
+                }
+            },
+            'loggers': {
+                logger_name: {
+                    'handlers': ['multiprocessing'],
+                    'level': 'INFO',
+                    'propagate': False,
+                }
+            },
+        }
+    )
     logger = logging.getLogger(logger_name)
     logger.info('from_parent')
     _wait_for_lines(path, 1)
 
     process = multiprocessing.get_context('fork').Process(
         target=_child_log,
-        args=(logger_name, ),
+        args=(logger_name,),
         daemon=True,
     )
     try:
@@ -69,7 +67,8 @@ def main():
         process.join(5.0)
         if process.is_alive() or process.exitcode != 0:
             raise RuntimeError(
-                f'logging child did not exit cleanly: {process.exitcode}')
+                f'logging child did not exit cleanly: {process.exitcode}'
+            )
         _wait_for_lines(path, 2)
     finally:
         if process.is_alive():

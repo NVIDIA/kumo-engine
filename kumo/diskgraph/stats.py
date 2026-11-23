@@ -34,8 +34,7 @@ def _count_rows_for_path(path: str) -> int:
         if has_parquet:
             return parquet_util.parquet_num_rows(path)
         if has_csv:
-            return sum(
-                fsutil.file_lines(e) for e in entries if e.endswith('.csv'))
+            return sum(fsutil.file_lines(e) for e in entries if e.endswith('.csv'))
         return parquet_util.parquet_num_rows(path)
 
     if path.endswith('.csv'):
@@ -65,8 +64,8 @@ def compute_table_stats_native(
         stats=stats_list,
     )
     return {
-        key:
-        Stats(value=value.value, approx=value.approx,
-              data_version=value.data_version)
+        key: Stats(
+            value=value.value, approx=value.approx, data_version=value.data_version
+        )
         for key, value in portable.items()
     }

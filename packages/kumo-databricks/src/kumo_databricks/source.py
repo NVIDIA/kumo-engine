@@ -18,14 +18,14 @@ from kumo_core.sources.protocol import require_mode, staged_first
 from kumo_core.sources.transfer import staged_fetch
 from kumo_core.sources.types import ReadMode, StagedTable
 from kumo_core.types.enums import ConnectorType
+from kumoapi.typing import Dtype
+
 from kumo_databricks.errors import translated
-from kumo_databricks.identity import column_types
+from kumo_databricks.identity import column_types, query_column_types
 from kumo_databricks.identity import data_version as read_data_version
-from kumo_databricks.identity import query_column_types
 from kumo_databricks.sql import build_projection, qualified_name, read_query
 from kumo_databricks.staging import clear_volume, download, list_parquet, stage
 from kumo_databricks.streaming import stream_to_parquet
-from kumoapi.typing import Dtype
 
 
 @dataclass
@@ -49,8 +49,13 @@ class DatabricksSourceReader:
         needs no grant beyond the ``SELECT``, and no probe to establish it."""
         return staged_first(self._stages())
 
-    def data_version(self, table: str, *, sql: str | None = None,
-                     columns: Mapping[str, Dtype] | None = None) -> str:
+    def data_version(
+        self,
+        table: str,
+        *,
+        sql: str | None = None,
+        columns: Mapping[str, Dtype] | None = None,
+    ) -> str:
         cursor = self.connection.cursor()
         try:
             with translated(table, ReadMode.STREAMED):
@@ -58,16 +63,24 @@ class DatabricksSourceReader:
         finally:
             cursor.close()
 
-    def _stamp(self, cursor: Cursor, table: str, sql: str | None = None,
-               columns: Mapping[str, Dtype] | None = None) -> str:
+    def _stamp(
+        self,
+        cursor: Cursor,
+        table: str,
+        sql: str | None = None,
+        columns: Mapping[str, Dtype] | None = None,
+    ) -> str:
         # `DESCRIBE HISTORY` over a query is reported as a missing table, so
         # a query is never routed through it.
         if sql is None:
             return read_data_version(cursor, self._source(table))
         return sql_data_version(
-            sql, ConnectorType.DATABRICKS,
-            lambda leaf: read_data_version(cursor, self._source(leaf)), columns,
-            table=table)
+            sql,
+            ConnectorType.DATABRICKS,
+            lambda leaf: read_data_version(cursor, self._source(leaf)),
+            columns,
+            table=table,
+        )
 
     def prepare(
         self,
@@ -83,7 +96,7 @@ class DatabricksSourceReader:
         version: str | None = None,
     ) -> StagedTable:
         if not columns:
-            raise ValueError("a projection of at least one column is required")
+            raise ValueError('a projection of at least one column is required')
         cursor = self.connection.cursor()
         try:
             with translated(table, mode):
@@ -93,8 +106,9 @@ class DatabricksSourceReader:
                     dest,
                     mode,
                     stamp=lambda: self._stamp(cursor, table, sql, columns),
-                    read=lambda: self._read(cursor, table, dest, columns,
-                                            aliases, mode, worker_ceiling, sql),
+                    read=lambda: self._read(
+                        cursor, table, dest, columns, aliases, mode, worker_ceiling, sql
+                    ),
                     expected_rows=expected_rows,
                     version=version,
                 )
@@ -115,39 +129,59 @@ class DatabricksSourceReader:
         """The declared width of a column is known only to the catalog, and a
         ``DECIMAL`` beyond 64 bits has to be narrowed before it is read."""
         source = self._embedded(table, sql)
-        declared = (column_types(cursor, source)
-                    if sql is None else query_column_types(cursor, source))
+        declared = (
+            column_types(cursor, source)
+            if sql is None
+            else query_column_types(cursor, source)
+        )
         projection = build_projection(columns, aliases, declared)
         if mode is ReadMode.STREAMED:
-            written = stream_to_parquet(cursor, read_query(source, projection),
-                                        dest, worker_ceiling=worker_ceiling)
+            written = stream_to_parquet(
+                cursor,
+                read_query(source, projection),
+                dest,
+                worker_ceiling=worker_ceiling,
+            )
             return ReadOutput(paths=written.paths, num_rows=written.rows)
-        return self._stage(cursor, table, dest, projection, worker_ceiling,
-                           source)
+        return self._stage(cursor, table, dest, projection, worker_ceiling, source)
 
-    def _stage(self, cursor: Cursor, table: str, dest: str, projection: str,
-               worker_ceiling: int | None, source: str) -> ReadOutput:
+    def _stage(
+        self,
+        cursor: Cursor,
+        table: str,
+        dest: str,
+        projection: str,
+        worker_ceiling: int | None,
+        source: str,
+    ) -> ReadOutput:
         """Every attempt unloads into a directory of its own because the
         volume is cleared before the unload and again after it, so one read of
         a table-named directory would delete another's parquet or download a
         mixture of the two.
         """
         volume = self.staging_volume_path.rstrip('/')
-        location = f"{volume}/{table}/{uuid4().hex}"
+        location = f'{volume}/{table}/{uuid4().hex}'
         client = self.workspace_client
 
         def unload() -> None:
-            stage(cursor, location=location, projection=projection,
-                  source=source)
+            stage(cursor, location=location, projection=projection, source=source)
 
         def fetch(_: None) -> tuple[str, ...]:
-            return download(client, list_parquet(client, location), dest,
-                            worker_ceiling=worker_ceiling)
+            return download(
+                client,
+                list_parquet(client, location),
+                dest,
+                worker_ceiling=worker_ceiling,
+            )
 
         _, paths = staged_fetch(
-            clear=partial(clear_volume, client, location,
-                          worker_ceiling=worker_ceiling), unload=unload,
-            fetch=fetch, location=location)
+            clear=partial(
+                clear_volume, client, location, worker_ceiling=worker_ceiling
+            ),
+            unload=unload,
+            fetch=fetch,
+            location=location,
+        )
         return ReadOutput(paths=paths, num_rows=count_rows(paths))
 
     def _stages(self) -> bool:
@@ -157,4 +191,4 @@ class DatabricksSourceReader:
         return qualified_name(self.catalog, self.schema, table)
 
     def _embedded(self, table: str, sql: str | None) -> str:
-        return self._source(table) if sql is None else f"({sql})"
+        return self._source(table) if sql is None else f'({sql})'

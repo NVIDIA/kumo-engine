@@ -34,6 +34,8 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple, TypeVar
 # reaching for the identity store quietly gets the snapshot store instead.
 from kumo_core.sources.principals import IdentityRef
 from kumo_core.sources.principals import store as identity_store
+from kumoapi.plugin import IngestResult, SnapshotStore, _Handle
+
 from kumo_snowflake.session import (
     SnowflakeSession,
     _quoted_literal,
@@ -42,29 +44,32 @@ from kumo_snowflake.session import (
     _sessions,
     resolved,
 )
-from kumoapi.plugin import IngestResult, SnapshotStore, _Handle
 
 _Item = TypeVar('_Item')
 _Result = TypeVar('_Result')
 
 
-def _in_parallel(work: Callable[[_Item], _Result], items: Sequence[_Item],
-                 workers: int, name: str) -> List[_Result]:
+def _in_parallel(
+    work: Callable[[_Item], _Result], items: Sequence[_Item], workers: int, name: str
+) -> List[_Result]:
     r"""``pool.map`` re-raises the first failure on iteration, so a caller
     that gets a list back knows every item succeeded. The pool is sized to the
     work so that a two-file tree does not start sixteen threads.
     """
     if not items:
         return []
-    with ThreadPoolExecutor(max_workers=min(workers, len(items)),
-                            thread_name_prefix=name) as pool:
+    with ThreadPoolExecutor(
+        max_workers=min(workers, len(items)), thread_name_prefix=name
+    ) as pool:
         return list(pool.map(work, items))
 
 
-_IDENTIFIER = (r'(?:[A-Za-z_][A-Za-z0-9_$]*|"(?:[A-Za-z0-9_$ .-]|"")+")')
-_STAGE_LOCATION_BODY = (rf'(?P<stage>@(?P<database>{_IDENTIFIER})\.'
-                        rf'(?P<schema>{_IDENTIFIER})\.(?P<name>{_IDENTIFIER}))'
-                        r'(?:/(?P<prefix>[A-Za-z0-9_$=+.,/\-]+))?')
+_IDENTIFIER = r'(?:[A-Za-z_][A-Za-z0-9_$]*|"(?:[A-Za-z0-9_$ .-]|"")+")'
+_STAGE_LOCATION_BODY = (
+    rf'(?P<stage>@(?P<database>{_IDENTIFIER})\.'
+    rf'(?P<schema>{_IDENTIFIER})\.(?P<name>{_IDENTIFIER}))'
+    r'(?:/(?P<prefix>[A-Za-z0-9_$=+.,/\-]+))?'
+)
 _STAGE_LOCATION = re.compile(rf'^{_STAGE_LOCATION_BODY}$')
 
 _TREE_MANIFEST = '.kumo-stage-tree.json'
@@ -82,23 +87,27 @@ def _split_normalized_stage_location(normalized: str) -> Tuple[str, str, str]:
     match = _STAGE_LOCATION.fullmatch(normalized)
     if match is None:
         raise ValueError(
-            f"Snowflake stage location {normalized!r} must be a fully-qualified "
+            f'Snowflake stage location {normalized!r} must be a fully-qualified '
             "named stage such as '@DB.SCHEMA.KUMO_ARTIFACTS/prefix'. User "
-            "and table stages are not supported because COPY FILES cannot "
-            "promote snapshots through them.")
+            'and table stages are not supported because COPY FILES cannot '
+            'promote snapshots through them.'
+        )
     prefix = match.group('prefix') or ''
     if any(part in ('', '.', '..') for part in prefix.split('/') if prefix):
         raise ValueError(
             f'Snowflake stage prefix {prefix!r} must not contain empty, dot, '
-            'or parent-directory components.')
+            'or parent-directory components.'
+        )
     return match.group('stage'), prefix, match.group('name')
 
 
 def _split_stage_location(location: str) -> Tuple[str, str, str]:
     r"""Returns the stage, normalized prefix, and stage identifier."""
     if not isinstance(location, str):
-        raise TypeError(f'a Snowflake stage location must be a string, got '
-                        f'{type(location).__name__}')
+        raise TypeError(
+            f'a Snowflake stage location must be a string, got '
+            f'{type(location).__name__}'
+        )
     return _split_normalized_stage_location(location.rstrip('/'))
 
 
@@ -121,8 +130,7 @@ def _stage_join(location: str, *parts: str, directory: bool = False) -> str:
 def _safe_relative(value: str) -> str:
     r"""Normalizes a stage-relative file name and refuses traversal."""
     relative = value.replace('\\', '/').strip('/')
-    if not relative or any(part in ('', '.', '..')
-                           for part in relative.split('/')):
+    if not relative or any(part in ('', '.', '..') for part in relative.split('/')):
         raise ValueError(f'Unsafe Snowflake staged file name {value!r}.')
     return relative
 
@@ -147,19 +155,21 @@ def _relative_stage_name(name: str, location: str) -> Optional[str]:
     value = str(name).replace('\\', '/').rstrip('/')
     stage_prefix = resolved(stage_identifier) + '/'
     has_stage_prefix = (
-        value.startswith(stage_prefix) if stage_identifier.startswith('"') else
-        value[:len(stage_prefix)].casefold() == stage_prefix.casefold())
+        value.startswith(stage_prefix)
+        if stage_identifier.startswith('"')
+        else value[: len(stage_prefix)].casefold() == stage_prefix.casefold()
+    )
     if has_stage_prefix:
-        value = value[len(stage_prefix):]
+        value = value[len(stage_prefix) :]
     if prefix:
         if value == prefix:
             return ''
         if value.startswith(prefix + '/'):
-            return value[len(prefix) + 1:]
+            return value[len(prefix) + 1 :]
         marker = '/' + prefix + '/'
         offset = value.find(marker)
         if offset >= 0:
-            return value[offset + len(marker):]
+            return value[offset + len(marker) :]
         return None
     # Every location used by this module has a prefix by the time LIST runs,
     # but retain a useful fallback for a caller listing a bare stage.
@@ -174,15 +184,14 @@ class _StageObject:
 
 class _StageFiles:
     r"""The file operations injected into ``LocalSnapshotStore``."""
+
     def __init__(self, session: SnowflakeSession, parallel: int) -> None:
         _require_snowpark(session)
         self._session = session
         self._parallel = parallel
 
-    def _list(self, location: str, *,
-              tree: bool = True) -> Dict[str, _StageObject]:
-        rows = _rows(self._session,
-                     f'LIST {_stage_join(location, directory=tree)}')
+    def _list(self, location: str, *, tree: bool = True) -> Dict[str, _StageObject]:
+        rows = _rows(self._session, f'LIST {_stage_join(location, directory=tree)}')
         objects: Dict[str, _StageObject] = {}
         for row in rows:
             relative = _relative_stage_name(str(row[0]), location)
@@ -193,8 +202,8 @@ class _StageFiles:
             key = relative if not relative else _safe_relative(relative)
             if key in objects:
                 raise ValueError(
-                    f'Snowflake listed {key!r} more than once under '
-                    f'{location!r}.')
+                    f'Snowflake listed {key!r} more than once under {location!r}.'
+                )
             objects[key] = _StageObject(key, int(row[1]))
         return objects
 
@@ -221,26 +230,34 @@ class _StageFiles:
         database_name = resolved(database_sql)
         schema_name = resolved(schema_sql)
         self._session.sql(
-            f'SHOW STAGES IN SCHEMA {database_sql}.{schema_sql}').collect()
+            f'SHOW STAGES IN SCHEMA {database_sql}.{schema_sql}'
+        ).collect()
         # SHOW output grows over time, so project stable named columns instead
         # of relying on their positional indexes in Snowflake's row shape.
         rows = _rows(
             self._session,
             'SELECT "name", "database_name", "schema_name", "type" '
-            'FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))')
+            'FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))',
+        )
         matches = [
-            row for row in rows if len(row) == 4 and str(row[0]) == stage_name
-            and str(row[1]) == database_name and str(row[2]) == schema_name
+            row
+            for row in rows
+            if len(row) == 4
+            and str(row[0]) == stage_name
+            and str(row[1]) == database_name
+            and str(row[2]) == schema_name
         ]
         if not matches:
             raise ValueError(
                 f'Snowflake stage {match.group("stage")!r} does not exist or '
-                'is not visible to the registered session role.')
+                'is not visible to the registered session role.'
+            )
         stage_type = str(matches[0][3]).upper()
         if 'INTERNAL' not in stage_type:
             raise ValueError(
                 f'Snowflake stage {match.group("stage")!r} is {stage_type!r}; '
-                'StageArtifactLocation requires a named internal stage.')
+                'StageArtifactLocation requires a named internal stage.'
+            )
 
         run_root = _stage_join(location, '.kumo-preflight', uuid.uuid4().hex)
         source = _stage_join(run_root, 'source')
@@ -253,19 +270,22 @@ class _StageFiles:
                 if not self.exists(_stage_join(source, probe.name)):
                     raise RuntimeError(
                         f'PUT to Snowflake stage {location!r} completed but '
-                        'the probe was not visible to LIST.')
+                        'the probe was not visible to LIST.'
+                    )
                 self._copy_files(source, target, [probe.name])
                 copied = _stage_join(target, probe.name)
                 if not self.exists(copied):
                     raise RuntimeError(
                         f'COPY FILES in Snowflake stage {location!r} completed '
-                        'but its target was not visible to LIST.')
+                        'but its target was not visible to LIST.'
+                    )
                 downloaded = Path(tmp) / 'downloaded' / probe.name
                 self._get(copied, downloaded, probe.stat().st_size)
                 if downloaded.read_bytes() != probe.read_bytes():
                     raise RuntimeError(
                         f'GET from Snowflake stage {location!r} returned '
-                        'different probe contents.')
+                        'different probe contents.'
+                    )
             finally:
                 self.remove(run_root)
 
@@ -276,21 +296,27 @@ class _StageFiles:
         if source_is_stage == target_is_stage:
             raise ValueError(
                 f'A stage tree copy needs one local and one stage path; got '
-                f'{source!r} -> {target!r}.')
+                f'{source!r} -> {target!r}.'
+            )
         if target_is_stage:
             self._upload_tree(Path(source), target)
         else:
             self._download_tree(source, Path(target))
 
     def _put(self, source: Path, target_dir: str) -> None:
-        results = self._session.file.put(str(source), target_dir, parallel=1,
-                                         auto_compress=False,
-                                         source_compression='NONE',
-                                         overwrite=True)
+        results = self._session.file.put(
+            str(source),
+            target_dir,
+            parallel=1,
+            auto_compress=False,
+            source_compression='NONE',
+            overwrite=True,
+        )
         if not results:
             raise RuntimeError(
                 f'Snowflake reported no result while uploading {source} to '
-                f'{target_dir}.')
+                f'{target_dir}.'
+            )
 
     def _upload_tree(self, source: Path, target: str) -> None:
         if not source.is_dir():
@@ -309,7 +335,8 @@ class _StageFiles:
             if not resolved.is_relative_to(root):
                 raise ValueError(
                     f'Artifact file {path} resolves outside {source}; stage '
-                    'publication does not follow escaping symlinks.')
+                    'publication does not follow escaping symlinks.'
+                )
             files.append((_safe_relative(relative), path))
 
         with tempfile.TemporaryDirectory(prefix='kumo-stage-manifest-') as tmp:
@@ -325,7 +352,12 @@ class _StageFiles:
                             }
                             for relative, path in files
                         },
-                    }, sort_keys=True) + '\n', encoding='utf-8')
+                    },
+                    sort_keys=True,
+                )
+                + '\n',
+                encoding='utf-8',
+            )
             # Upload order is irrelevant: promotion copies `_SUCCESS` last,
             # and readers treat only that marker as a committed snapshot.
             entries = files + [(_TREE_MANIFEST, manifest)]
@@ -337,46 +369,45 @@ class _StageFiles:
 
             try:
                 _in_parallel(upload, entries, self._parallel, 'kumo-stage-put')
-                expected = {
-                    relative: path.stat().st_size
-                    for relative, path in entries
-                }
-                actual = {
-                    name: obj.size
-                    for name, obj in self._list(target).items()
-                }
+                expected = {relative: path.stat().st_size for relative, path in entries}
+                actual = {name: obj.size for name, obj in self._list(target).items()}
                 if set(actual) != set(expected):
                     raise RuntimeError(
                         f'Uploading {source} to {target} produced a different '
                         f'file set: expected {sorted(expected)}, got '
-                        f'{sorted(actual)}.')
+                        f'{sorted(actual)}.'
+                    )
             except Exception:
                 self.remove(target)
                 raise
 
-    def _get(self, source: str, target: Path,
-             expected_size: Optional[int] = None) -> None:
+    def _get(
+        self, source: str, target: Path, expected_size: Optional[int] = None
+    ) -> None:
         target.parent.mkdir(parents=True, exist_ok=True)
         results = self._session.file.get(source, str(target.parent), parallel=1)
         if not results:
             raise RuntimeError(
-                f'Snowflake reported no result while downloading {source}.')
+                f'Snowflake reported no result while downloading {source}.'
+            )
         if not target.is_file():
             raise RuntimeError(
                 f'Snowflake reported a download for {source}, but no file '
-                f'landed at {target}.')
-        if (expected_size is not None
-                and target.stat().st_size != expected_size):
+                f'landed at {target}.'
+            )
+        if expected_size is not None and target.stat().st_size != expected_size:
             raise RuntimeError(
                 f'Downloading {source} produced {target.stat().st_size} '
-                f'bytes, but the stage reported {expected_size}.')
+                f'bytes, but the stage reported {expected_size}.'
+            )
 
     def _download_tree(self, source: str, target: Path) -> None:
         objects = self._list(source)
         if not objects:
             raise RuntimeError(
                 f'Snowflake stage tree {source!r} was present when restore '
-                'started but contains no files.')
+                'started but contains no files.'
+            )
         if target.exists():
             shutil.rmtree(target)
         target.mkdir(parents=True)
@@ -385,19 +416,22 @@ class _StageFiles:
             relative, _ = item
             if not relative:
                 raise ValueError(
-                    f'Cannot restore exact stage object {source!r} as a tree.')
+                    f'Cannot restore exact stage object {source!r} as a tree.'
+                )
             destination = target / _safe_relative(relative)
             self._get(_stage_join(source, relative), destination)
 
         try:
-            _in_parallel(download, list(objects.items()), self._parallel,
-                         'kumo-stage-get')
+            _in_parallel(
+                download, list(objects.items()), self._parallel, 'kumo-stage-get'
+            )
             manifest = target / _TREE_MANIFEST
             if not manifest.is_file():
                 raise RuntimeError(
                     f'Snowflake stage tree {source!r} has no '
                     f'{_TREE_MANIFEST}; it was not published completely by '
-                    'StageArtifactLocation.')
+                    'StageArtifactLocation.'
+                )
             payload = json.loads(manifest.read_text(encoding='utf-8'))
             expected = payload.get('files') or {}
             actual = {
@@ -409,14 +443,18 @@ class _StageFiles:
                 if path.is_file() and path != manifest
             }
             if actual != expected:
-                changed = sorted(name for name in set(expected) | set(actual)
-                                 if expected.get(name) != actual.get(name))
+                changed = sorted(
+                    name
+                    for name in set(expected) | set(actual)
+                    if expected.get(name) != actual.get(name)
+                )
                 raise RuntimeError(
-                    f'Restoring {source} failed its integrity check for: '
-                    f'{changed}.')
+                    f'Restoring {source} failed its integrity check for: {changed}.'
+                )
             for relative in payload.get('directories') or []:
                 (target / _safe_relative(str(relative))).mkdir(
-                    parents=True, exist_ok=True)
+                    parents=True, exist_ok=True
+                )
             manifest.unlink()
         except Exception:
             shutil.rmtree(target, ignore_errors=True)
@@ -433,16 +471,17 @@ class _StageFiles:
         objects = self._list(source)
         if _SUCCESS not in objects:
             raise RuntimeError(
-                f'Cannot publish {source!r}: it has no {_SUCCESS} marker.')
+                f'Cannot publish {source!r}: it has no {_SUCCESS} marker.'
+            )
         oversized = [
-            name for name, obj in objects.items()
-            if obj.size > _COPY_FILES_MAX_BYTES
+            name for name, obj in objects.items() if obj.size > _COPY_FILES_MAX_BYTES
         ]
         if oversized:
             self.remove(source)
             raise ValueError(
                 'Snowflake COPY FILES cannot promote files larger than 5 GB; '
-                f'{source!r} contains oversized files: {oversized!r}.')
+                f'{source!r} contains oversized files: {oversized!r}.'
+            )
         self.remove(target)
         ordinary = [name for name in objects if name != _SUCCESS]
         try:
@@ -454,7 +493,8 @@ class _StageFiles:
             if actual != expected:
                 raise RuntimeError(
                     f'Publishing {target} produced a different file set: '
-                    f'expected {sorted(expected)}, got {sorted(actual)}.')
+                    f'expected {sorted(expected)}, got {sorted(actual)}.'
+                )
         except Exception:
             # Never remove a tree another publisher committed while this one
             # was failing. Without a marker, the prefix is only our partial
@@ -465,19 +505,18 @@ class _StageFiles:
         finally:
             self.remove(source)
 
-    def _copy_files(self, source: str, target: str,
-                    relatives: List[str]) -> None:
+    def _copy_files(self, source: str, target: str, relatives: List[str]) -> None:
         for start in range(0, len(relatives), _COPY_FILES_LIMIT):
-            chunk = relatives[start:start + _COPY_FILES_LIMIT]
+            chunk = relatives[start : start + _COPY_FILES_LIMIT]
             if not chunk:
                 continue
-            names = ', '.join("'" + _quoted_literal(name) + "'"
-                              for name in chunk)
+            names = ', '.join("'" + _quoted_literal(name) + "'" for name in chunk)
             _rows(
                 self._session,
                 f'COPY FILES INTO {_stage_join(target, directory=True)} '
                 f'FROM {_stage_join(source, directory=True)} FILES = ({names}) '
-                'DETAILED_OUTPUT = TRUE')
+                'DETAILED_OUTPUT = TRUE',
+            )
 
     def remove(self, location: str) -> None:
         r"""Removes every object under a stage location."""
@@ -502,14 +541,14 @@ class StageArtifactLocation:
     callers never pass a stage URI to DiskGraph, pandas, Torch, or
     ``kumo_core``.
     """
+
     root: str
     identity: IdentityRef
     parallel: int = 16
 
     def __post_init__(self) -> None:
         stage, prefix, _ = _split_stage_location(self.root)
-        object.__setattr__(self, 'root',
-                           f'{stage}/{prefix}' if prefix else stage)
+        object.__setattr__(self, 'root', f'{stage}/{prefix}' if prefix else stage)
         if not isinstance(self.parallel, int) or not 1 <= self.parallel <= 99:
             raise ValueError('parallel must be an integer from 1 through 99')
 
@@ -533,7 +572,8 @@ class StageArtifactLocation:
                 f'Snowflake stage {self.root!r} names identity '
                 f'{self.identity!r}, which does not exist in this process. '
                 f'Create it with kumoai_studio.create_identity first. '
-                f'Existing: {known}.')
+                f'Existing: {known}.'
+            )
         session = _sessions.get(identity_store.get(name), None)
         _require_snowpark(session)
         return session
@@ -542,25 +582,34 @@ class StageArtifactLocation:
         r"""Validates stage type and effective transfer privileges."""
         _StageFiles(self._session(), self.parallel).preflight(self.root)
 
-    def restore(self, store: SnapshotStore[_Handle],
-                handle: _Handle) -> Optional[IngestResult]:
+    def restore(
+        self, store: SnapshotStore[_Handle], handle: _Handle
+    ) -> Optional[IngestResult]:
         files = _StageFiles(self._session(), self.parallel)
-        restored = store.restore(handle, self.root, exists=files.exists,
-                                 copy_tree=files.copy_tree)
+        restored = store.restore(
+            handle, self.root, exists=files.exists, copy_tree=files.copy_tree
+        )
         if restored is None:
             return None
         from kumo_core.diskgraph.snapshot import rebased
+
         return rebased(store, handle)
 
-    def checkpoint(self, store: SnapshotStore[_Handle],
-                   handle: _Handle) -> Optional[str]:
+    def checkpoint(
+        self, store: SnapshotStore[_Handle], handle: _Handle
+    ) -> Optional[str]:
         files = _StageFiles(self._session(), self.parallel)
-        return store.checkpoint(handle, self.root, exists=files.exists,
-                                copy_tree=files.copy_tree,
-                                replace_tree=files.replace_tree)
+        return store.checkpoint(
+            handle,
+            self.root,
+            exists=files.exists,
+            copy_tree=files.copy_tree,
+            replace_tree=files.replace_tree,
+        )
 
-    def durable_path(self, store: SnapshotStore[_Handle],
-                     handle: _Handle) -> Optional[str]:
+    def durable_path(
+        self, store: SnapshotStore[_Handle], handle: _Handle
+    ) -> Optional[str]:
         return store.durable_path(handle, self.root)
 
 

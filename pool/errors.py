@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Snapshot lifecycle helper errors."""
+
 import errno
 from typing import Optional
 

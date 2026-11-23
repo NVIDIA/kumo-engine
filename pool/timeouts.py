@@ -33,6 +33,7 @@ Three timeout layers, applied per RPC method:
 Layered: workflow ─[start_to_close, schedule_to_close]→ AutoRPC client
 ─[rpc_timeout]→ controller.
 """
+
 from datetime import timedelta
 from typing import Dict
 
@@ -59,8 +60,7 @@ PLACE_SCHEDULE_TO_CLOSE = timedelta(minutes=45)
 # sweep recover a zombie if release never lands. Allow 60s for Job deletion,
 # plus 30s for the controller RPC and another 30s for the wrapper activity.
 ACTIVITY_JOB_DELETE_TIMEOUT_SEC = 60
-RELEASE_LEASE_RPC_TIMEOUT = timedelta(seconds=ACTIVITY_JOB_DELETE_TIMEOUT_SEC +
-                                      30)
+RELEASE_LEASE_RPC_TIMEOUT = timedelta(seconds=ACTIVITY_JOB_DELETE_TIMEOUT_SEC + 30)
 RELEASE_START_TO_CLOSE = timedelta(seconds=ACTIVITY_JOB_DELETE_TIMEOUT_SEC + 60)
 RELEASE_SCHEDULE_TO_CLOSE = timedelta(minutes=5)
 
@@ -103,8 +103,6 @@ ACTIVITY_POLLER_READY_TIMEOUT_SEC = 2 * 60
 # applied via ``setdefault`` so env vars win.
 # ────────────────────────────────────────────────────────────────────
 DEFAULT_METHOD_TIMEOUTS: Dict[str, AutoRpcTimeoutConfig] = {
-    'place_snapshot': AutoRpcTimeoutConfig(
-        rpc_timeout=PLACE_SNAPSHOT_RPC_TIMEOUT),
-    'release_lease': AutoRpcTimeoutConfig(
-        rpc_timeout=RELEASE_LEASE_RPC_TIMEOUT),
+    'place_snapshot': AutoRpcTimeoutConfig(rpc_timeout=PLACE_SNAPSHOT_RPC_TIMEOUT),
+    'release_lease': AutoRpcTimeoutConfig(rpc_timeout=RELEASE_LEASE_RPC_TIMEOUT),
 }

@@ -35,11 +35,6 @@ from kumo_core.sources.errors import PermanentSourceError, SourceNotFoundError
 from kumo_core.sources.layout import staging_dir
 from kumo_core.sources.principals import IdentityRef
 from kumo_core.sources.types import ReadMode
-from kumo_databricks import sql as dbx_sql
-from kumo_databricks.catalog import table_names
-from kumo_databricks.session import _DatabricksSessions, _target_config
-from kumo_databricks.source import DatabricksSourceReader
-from kumo_databricks.types import dtype_for
 from kumoapi.data_source import DataSourceType
 from kumoapi.plugin import PrepareIngestResult, SourceConnector
 from kumoapi.source_table import (
@@ -50,6 +45,12 @@ from kumoapi.source_table import (
     SourceTableListResponse,
 )
 from kumoapi.typing import Dtype
+
+from kumo_databricks import sql as dbx_sql
+from kumo_databricks.catalog import table_names
+from kumo_databricks.session import _DatabricksSessions, _target_config
+from kumo_databricks.source import DatabricksSourceReader
+from kumo_databricks.types import dtype_for
 
 
 class DatabricksSourceBackend(_DatabricksSessions):
@@ -97,8 +98,10 @@ class DatabricksSourceBackend(_DatabricksSessions):
 
     source_type = DataSourceType.DATABRICKS
 
-    _default_hint = ('LocalBackend(sources={DataSourceType.DATABRICKS: '
-                     'DatabricksSourceBackend(identity=identity)})')
+    _default_hint = (
+        'LocalBackend(sources={DataSourceType.DATABRICKS: '
+        'DatabricksSourceBackend(identity=identity)})'
+    )
 
     def __init__(
         self,
@@ -122,9 +125,12 @@ class DatabricksSourceBackend(_DatabricksSessions):
         with self._connected(connector) as connection:
             cursor = connection.cursor()
             try:
-                tables = table_names(cursor, catalog=config.catalog,
-                                     schema=config.schema_name,
-                                     target_schema=config.schema_name)
+                tables = table_names(
+                    cursor,
+                    catalog=config.catalog,
+                    schema=config.schema_name,
+                    target_schema=config.schema_name,
+                )
             finally:
                 cursor.close()
         return SourceTableListResponse(table_names=tables)
@@ -142,13 +148,15 @@ class DatabricksSourceBackend(_DatabricksSessions):
         with self._connected(connector) as connection:
             self._columns(connector, connection, bare)
         config = _target_config(connector)
-        return SourceTableConfigResponse(source_table=DatabricksSourceTable(
-            databricks_connector_id=connector.id,
-            # Qualified, because this field is the only place a Databricks
-            # source table can carry its catalog and schema, and a portable
-            # graph is read back by that name alone.
-            table=f'{config.catalog}.{config.schema_name}.{bare}',
-        ))
+        return SourceTableConfigResponse(
+            source_table=DatabricksSourceTable(
+                databricks_connector_id=connector.id,
+                # Qualified, because this field is the only place a Databricks
+                # source table can carry its catalog and schema, and a portable
+                # graph is read back by that name alone.
+                table=f'{config.catalog}.{config.schema_name}.{bare}',
+            )
+        )
 
     def get_columns(
         self,
@@ -177,8 +185,7 @@ class DatabricksSourceBackend(_DatabricksSessions):
 
         bare = self._bare(connector, table_name)
         query = self._embeddable(connector, sql)
-        source = (f'({query})' if query is not None else self._qualified(
-            connector, bare))
+        source = f'({query})' if query is not None else self._qualified(connector, bare)
         with self._connected(connector) as connection:
             columns = self._columns(connector, connection, bare, query)
             cursor = connection.cursor()
@@ -199,9 +206,10 @@ class DatabricksSourceBackend(_DatabricksSessions):
         project_id: Optional[str] = None,
     ) -> List[str]:
         raise NotImplementedError(
-            "Databricks tables have no download URL; they are read through a "
-            "SQL connection. Custom prediction tables must come from an "
-            "object-store connector.")
+            'Databricks tables have no download URL; they are read through a '
+            'SQL connection. Custom prediction tables must come from an '
+            'object-store connector.'
+        )
 
     def get_data_version(
         self,
@@ -246,14 +254,21 @@ class DatabricksSourceBackend(_DatabricksSessions):
         query = self._embeddable(connector, sql)
         with self._connected(connector) as connection:
             columns = self._declared(connector, connection, bare, dtypes, query)
-            staged = read_table(self._reader(connector, connection), bare,
-                                str(destination), columns=columns,
-                                mode=self.mode, sql=query, version=data_version)
+            staged = read_table(
+                self._reader(connector, connection),
+                bare,
+                str(destination),
+                columns=columns,
+                mode=self.mode,
+                sql=query,
+                version=data_version,
+            )
         if not staged.num_rows:
             raise PermanentSourceError(
                 f'Reading {bare} returned no rows. An empty source '
                 f'table cannot be ingested; DiskGraph needs at least one row '
-                f'to infer an encoding.')
+                f'to infer an encoding.'
+            )
 
         return ingest_result(staged)
 
@@ -266,16 +281,18 @@ class DatabricksSourceBackend(_DatabricksSessions):
         sql: Optional[str] = None,
     ) -> Mapping[str, Dtype]:
         catalog = self._columns(connector, connection, table_name, sql)
-        return select_columns(table_name,
-                              {column.name: column.dtype
-                               for column in catalog}, dtypes)
+        return select_columns(
+            table_name, {column.name: column.dtype for column in catalog}, dtypes
+        )
 
-    def _reader(self, connector: SourceConnector,
-                connection: Connection) -> DatabricksSourceReader:
+    def _reader(
+        self, connector: SourceConnector, connection: Connection
+    ) -> DatabricksSourceReader:
         r"""Borrows the caller's connection rather than opening a second one,
         so the catalog reads framing a bulk read run on the same session.
         """
         from kumo_databricks.source import DatabricksSourceReader
+
         return DatabricksSourceReader(
             connection,
             catalog=_target_config(connector).catalog,
@@ -286,8 +303,9 @@ class DatabricksSourceBackend(_DatabricksSessions):
 
     # Internals ############################################################
 
-    def _embeddable(self, connector: SourceConnector,
-                    sql: Optional[str]) -> Optional[str]:
+    def _embeddable(
+        self, connector: SourceConnector, sql: Optional[str]
+    ) -> Optional[str]:
         r"""The only form of a query this reader ever sends: the caller's text
         with its trailing terminator and comment removed, so it stands in
         subquery position.
@@ -295,18 +313,21 @@ class DatabricksSourceBackend(_DatabricksSessions):
         if sql is None:
             return None
         from kumo_core.types import ConnectorType
-        gate_custom_sql(sql, ConnectorType.DATABRICKS,
-                        _target_config(connector))
+
+        gate_custom_sql(sql, ConnectorType.DATABRICKS, _target_config(connector))
         return subquery_safe_sql(sql, ConnectorType.DATABRICKS)
 
     @staticmethod
-    def _sample_timeout(timeout: Optional[int],
-                        query: Optional[str]) -> Optional[int]:
+    def _sample_timeout(timeout: Optional[int], query: Optional[str]) -> Optional[int]:
         return sample_timeout(timeout, query)
 
-    def _columns(self, connector: SourceConnector, connection: Connection,
-                 table_name: str,
-                 sql: Optional[str] = None) -> List[SourceColumn]:
+    def _columns(
+        self,
+        connector: SourceConnector,
+        connection: Connection,
+        table_name: str,
+        sql: Optional[str] = None,
+    ) -> List[SourceColumn]:
         from kumo_databricks import errors, identity
 
         cursor = connection.cursor()
@@ -314,7 +335,9 @@ class DatabricksSourceBackend(_DatabricksSessions):
             if sql is None:
                 declared = list(
                     identity.column_types(
-                        cursor, self._qualified(connector, table_name)).items())
+                        cursor, self._qualified(connector, table_name)
+                    ).items()
+                )
             else:
                 declared = identity.query_columns(cursor, f'({sql})')
         except Exception as error:
@@ -329,15 +352,19 @@ class DatabricksSourceBackend(_DatabricksSessions):
             config = _target_config(connector)
             raise SourceNotFoundError(
                 f'Invalid table {table_name}: it does not exist in '
-                f'{config.catalog}.{config.schema_name}.')
+                f'{config.catalog}.{config.schema_name}.'
+            )
 
         return source_columns(
-            (name, self.dtype_for(data_type)) for name, data_type in declared)
+            (name, self.dtype_for(data_type)) for name, data_type in declared
+        )
 
     @staticmethod
     def dtype_for(data_type: str) -> Dtype:
         return dtype_for(data_type)
 
     def __repr__(self) -> str:
-        return (f'DatabricksSourceBackend(identity={self._identity!r}, '
-                f'staging_volume_path={self.staging_volume_path!r})')
+        return (
+            f'DatabricksSourceBackend(identity={self._identity!r}, '
+            f'staging_volume_path={self.staging_volume_path!r})'
+        )

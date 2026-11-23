@@ -19,7 +19,9 @@ ROOT = os.environ.get('KUMO_ADLS_LIVE_ROOT')
 if not ROOT:
     pytest.skip(
         'Set KUMO_ADLS_LIVE_ROOT to an existing HNS directory; '
-        'live storage behavior was not validated.', allow_module_level=True)
+        'live storage behavior was not validated.',
+        allow_module_level=True,
+    )
 
 
 @pytest.fixture
@@ -27,8 +29,7 @@ def live_directory():
     parsed = urlsplit(normalize_adls_root_uri(ROOT))
     _, host = parsed.netloc.split('@', 1)
     account, suffix = host.split('.', 1)
-    filesystem = ADLSFileSystem(session_for(None, account, suffix), account,
-                                suffix)
+    filesystem = ADLSFileSystem(session_for(None, account, suffix), account, suffix)
     path = parsed.netloc + unquote(parsed.path).rstrip('/')
     return filesystem, path
 
@@ -56,18 +57,15 @@ def test_listing_identities_match_heads_and_conditional_reads(live_directory):
     filesystem, path = live_directory
     client, key, authority = filesystem._address(path)
     if not key:
-        pytest.skip(
-            'Listing identities require a directory below the filesystem root')
+        pytest.skip('Listing identities require a directory below the filesystem root')
     paths = []
-    for item in islice(client.get_paths(path=key or None, recursive=False),
-                       1024):
+    for item in islice(client.get_paths(path=key or None, recursive=False), 1024):
         if not item.is_directory:
             paths.append(f'{authority}/{item.name}')
             if len(paths) == 2:
                 break
     if len(paths) < 2:
-        pytest.skip(
-            'Live identity check needs two files among the first 1024 entries')
+        pytest.skip('Live identity check needs two files among the first 1024 entries')
 
     # Require usable live listing metadata, rather than silently taking HEAD fallback.
     listed = filesystem.object_identities(paths, root=path)
@@ -75,8 +73,9 @@ def test_listing_identities_match_heads_and_conditional_reads(live_directory):
     heads = [filesystem.object_identity(name) for name in paths]
     assert listed == heads
     arrow = PyFileSystem(FSSpecHandler(filesystem))
-    reader = ADLSSourceReader(arrow, root=path,
-                              object_identity=filesystem.object_identity)
+    reader = ADLSSourceReader(
+        arrow, root=path, object_identity=filesystem.object_identity
+    )
     found = arrow.get_file_info(paths)
     assert reader._identities(found, 1) == heads
     assert filesystem.object_identities(paths[:1], root=path) is None
@@ -84,7 +83,6 @@ def test_listing_identities_match_heads_and_conditional_reads(live_directory):
     for name, identity in zip(paths, heads):
         with filesystem.open(name, 'rb', cache_type='none') as stream:
             raw = stream.etag
-            token = raw[1:-1] if raw.startswith('"') and raw.endswith(
-                '"') else raw
+            token = raw[1:-1] if raw.startswith('"') and raw.endswith('"') else raw
             assert token == identity[0]
             assert len(stream.read(4)) == min(4, int(identity[-1]))

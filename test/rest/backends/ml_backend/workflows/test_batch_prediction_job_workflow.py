@@ -13,8 +13,7 @@ from kumo_core.types import PredictionArtifactType
 
 from kumo.train.artifact_manifest import PredictionManifestRef
 from rest.backends.ml_backend.settings import MLJobSettings
-from rest.backends.ml_backend.workflows import \
-    batch_prediction_job_workflow as module
+from rest.backends.ml_backend.workflows import batch_prediction_job_workflow as module
 from rest.config.batch_prediction_job import (
     BatchPredictionJobInput,
     DatabricksVolumeShard,
@@ -35,8 +34,12 @@ def test_diskgraph_bp_resource_hint(
     max_durable_gpu_slots,
     expected,
 ):
-    assert module._prediction_resource_hint(
-        num_shards, max_durable_gpu_slots).min_gpu_slots == expected
+    assert (
+        module._prediction_resource_hint(
+            num_shards, max_durable_gpu_slots
+        ).min_gpu_slots
+        == expected
+    )
 
 
 def _uploads(producer_abis):
@@ -51,7 +54,8 @@ def _uploads(producer_abis):
             num_cols=3,
             size_bytes=100 + index,
             producer_abi=abi,
-        ) for index, abi in enumerate(producer_abis)
+        )
+        for index, abi in enumerate(producer_abis)
     ]
 
 
@@ -72,57 +76,72 @@ def test_aggregate_databricks_uploads_combines_workers_once_per_output():
     assert stats[PredictionArtifactType.PREDICTIONS].size_bytes == 201
 
 
-@pytest.mark.parametrize('producer_abis,accepted', [
-    (['kumo-pred-output-v2'], True),
-    (['kumo-pred-output-v2', 'kumo-pred-output-v3'], False),
-    (['kumo-pred-output-v2', 'kumo-pred-output-v2'], False),
-])
-def test_aggregate_databricks_uploads_requires_shard_count_abi(
-        producer_abis, accepted):
+@pytest.mark.parametrize(
+    'producer_abis,accepted',
+    [
+        (['kumo-pred-output-v2'], True),
+        (['kumo-pred-output-v2', 'kumo-pred-output-v3'], False),
+        (['kumo-pred-output-v2', 'kumo-pred-output-v2'], False),
+    ],
+)
+def test_aggregate_databricks_uploads_requires_shard_count_abi(producer_abis, accepted):
     uploads = _uploads(producer_abis)
     if accepted:
-        module._aggregate_databricks_uploads(uploads,
-                                             expected_shards=len(uploads))
+        module._aggregate_databricks_uploads(uploads, expected_shards=len(uploads))
     else:
-        with pytest.raises(PredictionOutputProcessingError,
-                           match='version change.*Re-run'):
-            module._aggregate_databricks_uploads(
-                uploads, expected_shards=len(uploads))
+        with pytest.raises(
+            PredictionOutputProcessingError, match='version change.*Re-run'
+        ):
+            module._aggregate_databricks_uploads(uploads, expected_shards=len(uploads))
         # Pre-patch histories replay without the check.
-        module._aggregate_databricks_uploads(uploads,
-                                             expected_shards=len(uploads),
-                                             check_producer_abi=False)
+        module._aggregate_databricks_uploads(
+            uploads, expected_shards=len(uploads), check_producer_abi=False
+        )
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('infos,message', [
-    ([
-        JobFailureInfo(message='Out-of-memory (OOM) error: x',
-                       stacktrace='Traceback ...')
-    ], 'Out-of-memory (OOM) error: x'),
-    ([
-        None,
-        JobFailureInfo(message='', stacktrace=''),
-        JobFailureInfo(message='', stacktrace='Traceback ...')
-    ], 'kumo-pred subprocess exited non-zero'),
-])
+@pytest.mark.parametrize(
+    'infos,message',
+    [
+        (
+            [
+                JobFailureInfo(
+                    message='Out-of-memory (OOM) error: x', stacktrace='Traceback ...'
+                )
+            ],
+            'Out-of-memory (OOM) error: x',
+        ),
+        (
+            [
+                None,
+                JobFailureInfo(message='', stacktrace=''),
+                JobFailureInfo(message='', stacktrace='Traceback ...'),
+            ],
+            'kumo-pred subprocess exited non-zero',
+        ),
+    ],
+)
 async def test_diskgraph_bp_dispatch_uses_long_job_deadline(
-        monkeypatch, caplog, infos, message):
+    monkeypatch, caplog, infos, message
+):
     job_input = SimpleNamespace(
         id='batchpredictionjob-test',
         training_job_id='trainingjob-test',
         predictive_query=SimpleNamespace(
-            name='query', graph=SimpleNamespace(name='prediction-graph')),
+            name='query', graph=SimpleNamespace(name='prediction-graph')
+        ),
         graph_data_compute_input=SimpleNamespace(graph_key='prediction-graph'),
         graph_version_info=SimpleNamespace(graph_data_version='version-1'),
-        config=SimpleNamespace(num_parallel_workers_limit=len(infos),
-                               outputs=[]),
+        config=SimpleNamespace(num_parallel_workers_limit=len(infos), outputs=[]),
     )
     monkeypatch.setattr(
-        module, 'deploy_env', lambda: SimpleNamespace(
+        module,
+        'deploy_env',
+        lambda: SimpleNamespace(
             on_local=False,
             data_compute=SimpleNamespace(k8s_pool=None),
-        ))
+        ),
+    )
     monkeypatch.setattr(module.workflow, 'now', lambda: datetime.now())
     monkeypatch.setattr(
         module.workflow,
@@ -131,8 +150,11 @@ async def test_diskgraph_bp_dispatch_uses_long_job_deadline(
     )
     monkeypatch.setattr(module.workflow, 'execute_activity', AsyncMock())
     monkeypatch.setattr(module.workflow, 'logger', logging.getLogger(__name__))
-    run_pooled = AsyncMock(side_effect=lambda **kwargs: PredictionShardResult(
-        state=JobState.FAILED, failure_info=infos[kwargs['shard_index']]))
+    run_pooled = AsyncMock(
+        side_effect=lambda **kwargs: PredictionShardResult(
+            state=JobState.FAILED, failure_info=infos[kwargs['shard_index']]
+        )
+    )
     monkeypatch.setattr(module, 'run_pooled_activity', run_pooled)
 
     workflow = module.BatchPredictionJobWorkflow()
@@ -153,8 +175,7 @@ async def test_diskgraph_bp_dispatch_uses_long_job_deadline(
 
 
 @pytest.mark.asyncio
-async def test_direct_databricks_stats_run_before_copy_and_stage_cleanup(
-        monkeypatch):
+async def test_direct_databricks_stats_run_before_copy_and_stage_cleanup(monkeypatch):
     connector_id = ConnectorID('connector_' + '2' * 32)
     output = DatabricksPredictionOutput(
         artifact_type=PredictionArtifactType.PREDICTIONS,
@@ -199,27 +220,30 @@ async def test_direct_databricks_stats_run_before_copy_and_stage_cleanup(
         events.append(('copy', None))
         return []
 
-    monkeypatch.setattr(module, 'deploy_env',
-                        lambda: SimpleNamespace(on_local=False))
-    monkeypatch.setattr(module, 'DataBackendContext',
-                        lambda *_args: SimpleNamespace())
+    monkeypatch.setattr(module, 'deploy_env', lambda: SimpleNamespace(on_local=False))
+    monkeypatch.setattr(module, 'DataBackendContext', lambda *_args: SimpleNamespace())
     monkeypatch.setattr(module.workflow, 'now', lambda: datetime.now())
     monkeypatch.setattr(module.workflow, 'patched', lambda _name: True)
-    monkeypatch.setattr(module.workflow, 'uuid4',
-                        lambda: SimpleNamespace(hex='abcdef'))
+    monkeypatch.setattr(module.workflow, 'uuid4', lambda: SimpleNamespace(hex='abcdef'))
     monkeypatch.setattr(module.workflow, 'execute_activity', execute_activity)
-    monkeypatch.setattr(module.workflow, 'execute_child_workflow',
-                        execute_child_workflow)
+    monkeypatch.setattr(
+        module.workflow, 'execute_child_workflow', execute_child_workflow
+    )
     monkeypatch.setattr(
         module,
         'run_pooled_activity',
-        AsyncMock(return_value=PredictionShardResult(
-            state=JobState.SUCCEEDED,
-            databricks_uploads=[upload],
-        )),
+        AsyncMock(
+            return_value=PredictionShardResult(
+                state=JobState.SUCCEEDED,
+                databricks_uploads=[upload],
+            )
+        ),
     )
-    monkeypatch.setattr(module.ArtifactExportInput, 'from_bp_input',
-                        lambda *_args, **_kwargs: SimpleNamespace())
+    monkeypatch.setattr(
+        module.ArtifactExportInput,
+        'from_bp_input',
+        lambda *_args, **_kwargs: SimpleNamespace(),
+    )
 
     workflow = module.BatchPredictionJobWorkflow()
     workflow._save_output = AsyncMock()  # type: ignore[method-assign]
@@ -232,13 +256,14 @@ async def test_direct_databricks_stats_run_before_copy_and_stage_cleanup(
 
     assert events == [('stats', stage), ('copy', None), ('cleanup', None)]
     assert result.status == module.JobStatus.DONE
-    assert all(call.args[0].status != module.JobStatus.DONE
-               for call in workflow._save_output.await_args_list)
+    assert all(
+        call.args[0].status != module.JobStatus.DONE
+        for call in workflow._save_output.await_args_list
+    )
 
 
 @pytest.mark.asyncio
-async def test_durable_output_selects_only_accepted_shard_manifests(
-        monkeypatch):
+async def test_durable_output_selects_only_accepted_shard_manifests(monkeypatch):
     refs = [
         PredictionManifestRef(
             path=f'/attempt-{index}/_artifact_manifest.json',
@@ -247,7 +272,8 @@ async def test_durable_output_selects_only_accepted_shard_manifests(
             job_id='batchpredictionjob-durable',
             attempt_id=f'attempt-{index}',
             runtime_shard_id=index,
-        ) for index in range(2)
+        )
+        for index in range(2)
     ]
     job_input = SimpleNamespace(
         id='batchpredictionjob-durable',
@@ -261,14 +287,10 @@ async def test_durable_output_selects_only_accepted_shard_manifests(
         graph_version_info=SimpleNamespace(graph_data_version='version-1'),
         config=SimpleNamespace(
             num_parallel_workers_limit=2,
-            outputs=[
-                SimpleNamespace(
-                    artifact_type=PredictionArtifactType.PREDICTIONS)
-            ],
+            outputs=[SimpleNamespace(artifact_type=PredictionArtifactType.PREDICTIONS)],
         ),
     )
-    selection = SimpleNamespace(
-        pointer_path='/selected/_selected_artifacts.json')
+    selection = SimpleNamespace(pointer_path='/selected/_selected_artifacts.json')
     finalizer_args = None
     finalizer_options = None
 
@@ -294,27 +316,31 @@ async def test_durable_output_selects_only_accepted_shard_manifests(
         assert kwargs['prediction_selection'] is selection
         return export_input
 
-    monkeypatch.setattr(module, 'deploy_env',
-                        lambda: SimpleNamespace(on_local=False))
+    monkeypatch.setattr(module, 'deploy_env', lambda: SimpleNamespace(on_local=False))
     monkeypatch.setattr(module.workflow, 'now', lambda: datetime.now())
     monkeypatch.setattr(module.workflow, 'patched', lambda _name: True)
-    monkeypatch.setattr(module.workflow, 'uuid4',
-                        lambda: SimpleNamespace(hex='selection'))
+    monkeypatch.setattr(
+        module.workflow, 'uuid4', lambda: SimpleNamespace(hex='selection')
+    )
     monkeypatch.setattr(module.workflow, 'execute_activity', execute_activity)
-    monkeypatch.setattr(module.workflow, 'execute_child_workflow',
-                        execute_child_workflow)
+    monkeypatch.setattr(
+        module.workflow, 'execute_child_workflow', execute_child_workflow
+    )
     monkeypatch.setattr(
         module,
         'run_pooled_activity',
-        AsyncMock(side_effect=[
-            PredictionShardResult(state=JobState.SUCCEEDED,
-                                  artifact_manifest=refs[0]),
-            PredictionShardResult(state=JobState.SUCCEEDED,
-                                  artifact_manifest=refs[1]),
-        ]),
+        AsyncMock(
+            side_effect=[
+                PredictionShardResult(
+                    state=JobState.SUCCEEDED, artifact_manifest=refs[0]
+                ),
+                PredictionShardResult(
+                    state=JobState.SUCCEEDED, artifact_manifest=refs[1]
+                ),
+            ]
+        ),
     )
-    monkeypatch.setattr(module.ArtifactExportInput, 'from_bp_input',
-                        from_bp_input)
+    monkeypatch.setattr(module.ArtifactExportInput, 'from_bp_input', from_bp_input)
 
     workflow = module.BatchPredictionJobWorkflow()
     workflow._save_output = AsyncMock()  # type: ignore[method-assign]

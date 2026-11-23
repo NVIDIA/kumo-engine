@@ -17,8 +17,10 @@ def test_default_rest_settings_disable_auth_in_test_mode(monkeypatch):
 
     assert rest_settings.authentication.disable is True
     assert rest_settings.authentication.is_unit_test is True
-    assert (rest_settings.authentication.
-            direct_connect_password_login_ip_rate_limit_enabled is True)
+    assert (
+        rest_settings.authentication.direct_connect_password_login_ip_rate_limit_enabled
+        is True
+    )
     assert not hasattr(rest_settings.authentication, 'credentials')
 
 
@@ -27,7 +29,8 @@ def test_direct_connect_auth_allows_any_product_port_with_explicit_cors():
         app=AppSettings(
             port=42001,
             middleware_origin='https://kumo.example.com',
-        ), )
+        ),
+    )
 
     settings.validate()
 

@@ -66,6 +66,7 @@ class JobsDriver:
         snapshot business logic.
 
     """
+
     def __init__(
         self,
         pquery_driver: PQueryApiDriver,
@@ -109,7 +110,8 @@ class JobsDriver:
         try:
             # Check if this graph already exists
             graph_response = await self._graph_driver.get_graph_v2(
-                graph_fpid, ProjectID(request.project_id))
+                graph_fpid, ProjectID(request.project_id)
+            )
             graph_id = GraphIDv2.from_public(graph_response[0].id)
         except KeyError:
             # If doesn't exists, create it. This graph definition needs to be
@@ -123,20 +125,18 @@ class JobsDriver:
         assert graph_id.fpid is not None
 
         # Pre-compute TrainingJobID before creating the graph snapshot.
-        reserved_training_job_id = await self._ml_job_backend.reserve_training_job_id(
+        reserved_training_job_id = await self._ml_job_backend.reserve_training_job_id()
+        logger.info(
+            f'jobs_driver.train: Reserved training job ID: {reserved_training_job_id}'
         )
-        logger.info(f"jobs_driver.train: Reserved training job ID: "
-                    f"{reserved_training_job_id}")
 
-        logger.info("jobs_driver.train: creating graph snapshot for %s",
-                    graph_id.fpid)
-        graph_snapshot_id = await (
-            self._data_snapshot_driver.create_graph_snapshot(
-                graph_id.fpid,
-                True,
-                base_graph_name=request.base_graph_name,
-                project_id=request.project_id,
-            ))
+        logger.info('jobs_driver.train: creating graph snapshot for %s', graph_id.fpid)
+        graph_snapshot_id = await self._data_snapshot_driver.create_graph_snapshot(
+            graph_id.fpid,
+            True,
+            base_graph_name=request.base_graph_name,
+            project_id=request.project_id,
+        )
         # Create a predictive query
         pquery_id = await self._pquery_driver.create_predictive_query_v2(
             PQueryResource(
@@ -149,7 +149,7 @@ class JobsDriver:
 
         ui_tags = {
             **self._convert_to_tags_dict(request.tags),
-            **(request.job_tags or {})
+            **(request.job_tags or {}),
         }
         # Call the start_training_job_v2. This will depend on the graph
         # snapshot job instantiated above. It will automatically created a
@@ -162,9 +162,10 @@ class JobsDriver:
         )
 
         logger.info(
-            f"jobs_driver.train: About to call start_training_job_v2. "
-            f"graph_snapshot_id={graph_snapshot_id}, pquery_id={pquery_id}, "
-            f"reserved_training_job_id={reserved_training_job_id}")
+            f'jobs_driver.train: About to call start_training_job_v2. '
+            f'graph_snapshot_id={graph_snapshot_id}, pquery_id={pquery_id}, '
+            f'reserved_training_job_id={reserved_training_job_id}'
+        )
         return await self._pquery_driver.start_training_job_v2(
             ctx=ctx,
             request=training_job_req,
@@ -207,18 +208,17 @@ class JobsDriver:
         if request.graph_id is not None:
             # If graph_id is supplied, start a new data snapshot for this
             # graph and use that
-            graph_snapshot_id = (
-                await self._data_snapshot_driver.create_graph_snapshot(
-                    request.graph_id,
-                    True,
-                    project_id=request.project_id,
-                ))
+            graph_snapshot_id = await self._data_snapshot_driver.create_graph_snapshot(
+                request.graph_id,
+                True,
+                project_id=request.project_id,
+            )
         batch_prediction_api_request = jobs_api.BatchPredictionRequest(
             model_training_job_id=request.model_training_job_id,
             outputs=request.outputs,
             job_tags={
                 **self._convert_to_tags_dict(request.tags),
-                **(request.job_tags or {})
+                **(request.job_tags or {}),
             },
             pred_table_job_id=None,
             graph_snapshot_id=graph_snapshot_id,
@@ -228,11 +228,12 @@ class JobsDriver:
 
         # get pquery_id from the model_training_job_id
         model_training_job = await self._ml_job_backend.get_training_job(
-            ctx, request.model_training_job_id)  # type: ignore
+            ctx, request.model_training_job_id
+        )  # type: ignore
         if model_training_job is None:
             raise HTTPException(
                 status_code=HTTPStatus.NOT_FOUND,
-                detail="Model training job not found.",
+                detail='Model training job not found.',
             )
         pquery_id = await self._pquery_driver.get_training_job_pquery_id_v2(
             ctx,
@@ -241,7 +242,7 @@ class JobsDriver:
         if pquery_id is None:
             raise HTTPException(
                 status_code=HTTPStatus.NOT_FOUND,
-                detail="Predictive query not found for training job.",
+                detail='Predictive query not found for training job.',
             )
 
         # If the predictive query is overridden, create a new predictive query
@@ -253,30 +254,30 @@ class JobsDriver:
             assert graph_snapshot_id is not None
 
             graph_fpid, _ = DataSnapshot.GRAPH.parse_id(graph_snapshot_id)
-            _, graph_definition = (
-                await self._data_snapshot_driver._get_graph_by_fpid(
-                    request.project_id, graph_fpid))
+            _, graph_definition = await self._data_snapshot_driver._get_graph_by_fpid(
+                request.project_id, graph_fpid
+            )
 
             # Creating a new predictive query with overridden query.
-            created_pquery_id = (await
-                                 self._pquery_driver.create_predictive_query_v2(
-                                     PQueryResource(
-                                         query_string=pquery_overriden,
-                                         graph=graph_definition,
-                                     ),
-                                     project_id=request.project_id,
-                                 ))
+            created_pquery_id = await self._pquery_driver.create_predictive_query_v2(
+                PQueryResource(
+                    query_string=pquery_overriden,
+                    graph=graph_definition,
+                ),
+                project_id=request.project_id,
+            )
             pquery_id = created_pquery_id
         assert pquery_id is not None
 
         gen_pred_table_request = jobs_api.GeneratePredictionTableRequest(
             job_tags={
                 **self._convert_to_tags_dict(request.tags),
-                **(request.job_tags or {})
+                **(request.job_tags or {}),
             },
             pquery_id=str(pquery_id),
             plan=plan_api.PredictionTableGenerationPlan(
-                anchor_time=request.anchor_time),
+                anchor_time=request.anchor_time
+            ),
             graph_snapshot_id=graph_snapshot_id,
         )
         # Setting this will allow the bp job to leverage this gen pred
@@ -289,18 +290,21 @@ class JobsDriver:
                 is_child_job=True,
                 training_job_id=model_training_job.id,
                 project_id=request.project_id,
-            ))
+            )
+        )
 
-        id, validation_response = (
-            await self._pquery_driver.start_batch_prediction_job_v2(
-                ctx=ctx,
-                request=batch_prediction_api_request,
-                job_source=job_source,
-                filter_overrides=request.filter_overrides,
-                custom_tags=request.tags,
-                user=request.user,
-                project_id=request.project_id,
-            ))
+        (
+            id,
+            validation_response,
+        ) = await self._pquery_driver.start_batch_prediction_job_v2(
+            ctx=ctx,
+            request=batch_prediction_api_request,
+            job_source=job_source,
+            filter_overrides=request.filter_overrides,
+            custom_tags=request.tags,
+            user=request.user,
+            project_id=request.project_id,
+        )
 
         if len(validation_response.errors) != 0:
             raise HTTPException(
@@ -350,31 +354,35 @@ class JobsDriver:
         classification to reduce the number of potential NA/missing items.
         """
         # get train table job path
-        train_table_job_path = await \
-            self._ml_job_backend.get_generate_train_table_job_path(
+        train_table_job_path = (
+            await self._ml_job_backend.get_generate_train_table_job_path(
                 id,
             )
+        )
 
         # Sample the first N rows for the preview. 40 for
         # multiclass/multilabel to reduce the chance of all-NA columns.
-        sample_limit = 40 if task_type in (
-            TaskType.MULTICLASS_CLASSIFICATION,
-            TaskType.MULTILABEL_CLASSIFICATION,
-        ) else 10
+        sample_limit = (
+            40
+            if task_type
+            in (
+                TaskType.MULTICLASS_CLASSIFICATION,
+                TaskType.MULTILABEL_CLASSIFICATION,
+            )
+            else 10
+        )
 
         try:
             import pyarrow.dataset as pds
-            df = pds.dataset(train_table_job_path).head(
-                sample_limit).to_pandas()
+
+            df = pds.dataset(train_table_job_path).head(sample_limit).to_pandas()
             samples_map: Dict[str, Any] = {
-                column: df[column].tolist()
-                for column in df.columns
+                column: df[column].tolist() for column in df.columns
             }
             pred_samples = SuggestPredictionSamples()
-            return pred_samples.suggest_col_samples_by_task_type(
-                task_type, samples_map)
+            return pred_samples.suggest_col_samples_by_task_type(task_type, samples_map)
         except Exception as e:
-            logger.warning(f"Error while loading training table samples: {e}.")
+            logger.warning(f'Error while loading training table samples: {e}.')
             return []
 
     async def prediction_to_sdk(
@@ -408,34 +416,34 @@ class JobsDriver:
         bp_config = bp_job.config
 
         if is_diskgraph_forecasting_batch_prediction_sdk_unsupported(
-                deploy_env().is_diskgraph, bp_config.task_type,
-                bp_config.forecast_length):
+            deploy_env().is_diskgraph, bp_config.task_type, bp_config.forecast_length
+        ):
             return generate_unsupported_diskgraph_forecasting_bp_sdk_script()
 
         pred_table_plan: Dict[str, Any] = {
-            "anchor_time": bp_config.prediction_time,
-            "forecast_length": bp_config.forecast_length,
-            "lag_timesteps": bp_config.lag_timesteps,
-            "year_over_year": bp_config.year_over_year,
+            'anchor_time': bp_config.prediction_time,
+            'forecast_length': bp_config.forecast_length,
+            'lag_timesteps': bp_config.lag_timesteps,
+            'year_over_year': bp_config.year_over_year,
         }
 
-        if not pred_table_plan["anchor_time"]:
-            pred_table_plan["anchor_time"] = "inferred"
+        if not pred_table_plan['anchor_time']:
+            pred_table_plan['anchor_time'] = 'inferred'
 
         predict_options = {
-            "binary_classification_threshold":
-            bp_config.binary_classification_threshold,
-            "num_classes_to_return": bp_config.num_classes_to_return,
-            "num_workers": bp_config.num_parallel_workers_limit,
+            'binary_classification_threshold': bp_config.binary_classification_threshold,
+            'num_classes_to_return': bp_config.num_classes_to_return,
+            'num_workers': bp_config.num_parallel_workers_limit,
         }
 
-        output_config, bp_connector_config = bp_job_ouput_conf(
-            bp_config.outputs)
+        output_config, bp_connector_config = bp_job_ouput_conf(bp_config.outputs)
 
-        export_connector_conf = await self._connector_driver.get_bp_connector_metadata_for_sdk(
-            bp_connector_config,
-            ProjectID(bp_job.project_id),
-            ctx.user_authorization,
+        export_connector_conf = (
+            await self._connector_driver.get_bp_connector_metadata_for_sdk(
+                bp_connector_config,
+                ProjectID(bp_job.project_id),
+                ctx.user_authorization,
+            )
         )
 
         pq_bp_resource = await self._pquery_driver.get_predictive_query_v2(
@@ -444,12 +452,15 @@ class JobsDriver:
         )
         graph_def = GraphDefinition(**dataclasses.asdict(pq_bp_resource.graph))
         _, table_refs, _ = await self._graph_driver.get_graph_metadata_for_sdk(
-            graph_def.fpid, ProjectID(bp_job.project_id))
+            graph_def.fpid, ProjectID(bp_job.project_id)
+        )
 
         # Generate header + load existing trained model
-        header_and_model_script = generate_header(str(
-            bp_job.project_id)) + generate_prediction_only_sdk_script(
-                str(bp_config.training_job_id), )
+        header_and_model_script = generate_header(
+            str(bp_job.project_id)
+        ) + generate_prediction_only_sdk_script(
+            str(bp_config.training_job_id),
+        )
 
         # Check if training and bp queries are different
         pq_config: Optional[Dict[str, str]] = None
@@ -458,18 +469,20 @@ class JobsDriver:
             table_refs,
         )
         training_pq_id = await self._pquery_driver.get_training_job_pquery_id_v2(
-            ctx, bp_config.training_job_id)
+            ctx, bp_config.training_job_id
+        )
         if training_pq_id:
             training_pq_resource = await self._pquery_driver.get_predictive_query_v2(
-                training_pq_id, ProjectID(bp_job.project_id))
+                training_pq_id, ProjectID(bp_job.project_id)
+            )
             cleaned_training_pq_str = clean_up_pquery_string(
                 training_pq_resource.query_string,
                 table_refs,
             )
             if cleaned_bp_pq_str != cleaned_training_pq_str:
                 pq_config = {
-                    "graph": "\\" + "graph" + "\\",
-                    "query_string": cleaned_bp_pq_str,
+                    'graph': '\\' + 'graph' + '\\',
+                    'query_string': cleaned_bp_pq_str,
                 }
 
         return header_and_model_script + make_stype_and_dtype_sdk_compat(
@@ -481,4 +494,5 @@ class JobsDriver:
                 bp_config.generate_pred_table_job_id,
                 pq_config,
                 project_id=str(bp_job.project_id),
-            ))
+            )
+        )

@@ -57,8 +57,7 @@ def _num_irrational(ser: pd.Series, **kwargs) -> float:
     if not pd.api.types.is_numeric_dtype(ser):
         # in this case, return na count only
         return kwargs['original_len'] - len(ser)
-    return len(
-        ser[~np.isfinite(ser.values)]) + kwargs['original_len'] - len(ser)
+    return len(ser[~np.isfinite(ser.values)]) + kwargs['original_len'] - len(ser)
 
 
 def _num_na(ser: pd.Series, **kwargs) -> float:
@@ -149,8 +148,9 @@ def _kurtosis(ser: pd.Series, **kwargs) -> float:
     return filtered_ser.kurtosis()
 
 
-def _histogram_half_month(ser: pd.Series,
-                          **kwargs) -> List[Tuple[datetime.date, float]]:
+def _histogram_half_month(
+    ser: pd.Series, **kwargs
+) -> List[Tuple[datetime.date, float]]:
     # Coerce out-of-range Snowflake timestamps to NaT and drop them so the
     # histogram is best-effort over the in-range portion rather than raising
     # OutOfBoundsDatetime.
@@ -163,8 +163,11 @@ def _histogram_half_month(ser: pd.Series,
     maxdate = coerced.max()
 
     month_diff = (maxdate.to_period('M') - mindate.to_period('M')).n
-    min_bin = pd.Timestamp(month=mindate.month, year=mindate.year,
-                           day=1 + 15 * math.floor(mindate.day / 16))
+    min_bin = pd.Timestamp(
+        month=mindate.month,
+        year=mindate.year,
+        day=1 + 15 * math.floor(mindate.day / 16),
+    )
     bins = [
         min_bin + pd.offsets.SemiMonthBegin(m, day_of_month=16)
         for m in range(2 * month_diff + 3)
@@ -180,9 +183,7 @@ def _histogram_half_month(ser: pd.Series,
     # hist requires max of last bin included, but we drop in return zip
     hist = np.histogram(timestamp_ser, bins=bins_numeric)
     # create a cleaned up set of bins w/out a freq field
-    bins_final = [
-        datetime.date(year=b.year, month=b.month, day=b.day) for b in bins
-    ]
+    bins_final = [datetime.date(year=b.year, month=b.month, day=b.day) for b in bins]
     # return hist values but using timestamp bins
     return list(zip(bins_final[:-1], hist[0]))
 
@@ -190,9 +191,9 @@ def _histogram_half_month(ser: pd.Series,
 def _histogram(ser: pd.Series, **kwargs) -> HistogramValueType:
     # Filter out non-numerical values
     if is_data_int := pd.api.types.is_integer_dtype(ser):
-        arr = ser.to_numpy(dtype="long")
+        arr = ser.to_numpy(dtype='long')
     else:
-        arr = ser.to_numpy(dtype="float")
+        arr = ser.to_numpy(dtype='float')
         arr = arr[np.isfinite(arr)]
 
     # For short arrays, match the spark behavior
@@ -207,7 +208,8 @@ def _histogram(ser: pd.Series, **kwargs) -> HistogramValueType:
 
     if is_data_int:
         bin_width, num_bins = calc_histogram_integer_bin_width_and_num_bins(
-            range_to_cover)
+            range_to_cover
+        )
 
         # need to precompute integer bin edges, otherwise np.histogram will
         # return whole-number float bin edges
@@ -245,8 +247,7 @@ def _category_counts(ser: pd.Series, **kwargs) -> List[Tuple[Any, Any]]:
     # Sort by index then use an in-place method to preserve index order on tied
     # values - result in descending by value but alphabetical by index within
     # groups of same value
-    sort_value = counts.sort_index().sort_values(ascending=False,
-                                                 kind='mergesort')
+    sort_value = counts.sort_index().sort_values(ascending=False, kind='mergesort')
 
     # Apply MIN_CATEGORY_FREQUENCY_FRAC
     min_count = MIN_CATEGORY_FREQUENCY_FRAC * len(ser)
@@ -261,10 +262,13 @@ def _category_counts(ser: pd.Series, **kwargs) -> List[Tuple[Any, Any]]:
         return False
 
     from kumo.data import MAX_NUM_CLASSES
+
     return [
-        item for (i, item) in enumerate(list(sort_value.items()))
-        if ((i < MAX_NUM_CLASSES or item[1] >= min_count)
-            and not _is_empty_str(item[0]))
+        item
+        for (i, item) in enumerate(list(sort_value.items()))
+        if (
+            (i < MAX_NUM_CLASSES or item[1] >= min_count) and not _is_empty_str(item[0])
+        )
     ]
 
 
@@ -286,8 +290,11 @@ def _multi_category_counts(ser: pd.Series, **kwargs) -> List[Tuple[str, int]]:
 
     # ser is already with na's dropped
     kumo_dtype = to_dtype(ser.dtype, ser=ser)
-    if (isinstance(ser.iloc[0], list) or isinstance(ser.iloc[0], np.ndarray)
-            or kumo_dtype.is_list()):  # for array targets
+    if (
+        isinstance(ser.iloc[0], list)
+        or isinstance(ser.iloc[0], np.ndarray)
+        or kumo_dtype.is_list()
+    ):  # for array targets
         flattened_categories = []
         for s in ser:
             for category in s:
@@ -298,28 +305,41 @@ def _multi_category_counts(ser: pd.Series, **kwargs) -> List[Tuple[str, int]]:
                     continue
                 flattened_categories.append(category)
         item_count = len(flattened_categories)
-        counts_list = pd.Series(
-            flattened_categories).value_counts().sort_index().sort_values(
-                ascending=False, kind='mergesort').items()
+        counts_list = (
+            pd.Series(flattened_categories)
+            .value_counts()
+            .sort_index()
+            .sort_values(ascending=False, kind='mergesort')
+            .items()
+        )
     else:
         # if column is object but above condition wasn't true,
         # object might still be processable as a string containing a list
-        if ser.dtype != "string":
-            ser = ser.astype("string")
+        if ser.dtype != 'string':
+            ser = ser.astype('string')
 
         counts_list = ser.value_counts().items()
         sep = _multi_categories_separator(ser, **kwargs)
         if sep is None:
             # Quoted multicat case
-            if ser.dropna().apply(lambda x: isinstance(x, str) and x.strip(
-            ).startswith('[') and x.strip().endswith(']')).all():
+            if (
+                ser.dropna()
+                .apply(
+                    lambda x: (
+                        isinstance(x, str)
+                        and x.strip().startswith('[')
+                        and x.strip().endswith(']')
+                    )
+                )
+                .all()
+            ):
                 counts = defaultdict(int)
                 item_count = 0
                 for s in ser:
                     # Removes outer [ and ]
                     s = s.strip()[1:-1]
                     # Split and remove surrounding whitespace and ""
-                    for category in s.split(","):
+                    for category in s.split(','):
                         category = category.strip().strip('"')
                         if len(category) == 0 or pd.isna(category):
                             continue
@@ -345,8 +365,10 @@ def _multi_category_counts(ser: pd.Series, **kwargs) -> List[Tuple[str, int]]:
     if 'all_categories' in kwargs and kwargs['all_categories']:
         return full_count_list
     from kumo.data import MAX_NUM_CLASSES
+
     return [
-        item for i, item in enumerate(full_count_list)
+        item
+        for i, item in enumerate(full_count_list)
         if i < MAX_NUM_CLASSES or item[1] >= min_count
     ]
 
@@ -464,15 +486,17 @@ def _string_glove_overlap(ser: pd.Series, **kwargs) -> float:
     if len(ser) == 0:
         return 0
     # The dispatcher catches ``GloveDisabledError``.
-    if os.environ.get("KUMO_ENABLE_GLOVE", "true").lower() == "false":
+    if os.environ.get('KUMO_ENABLE_GLOVE', 'true').lower() == 'false':
         raise GloveDisabledError(
-            "STRING_GLOVE_OVERLAP skipped: KUMO_ENABLE_GLOVE is False.")
+            'STRING_GLOVE_OVERLAP skipped: KUMO_ENABLE_GLOVE is False.'
+        )
     try:
         model = resolve_encoder(TextEmbedding(), embedding_model_store())
     except EmbeddingModelNotFoundError as error:
         raise GloveDisabledError(
-            "STRING_GLOVE_OVERLAP skipped: the default text embedding model "
-            "is not installed.") from error
+            'STRING_GLOVE_OVERLAP skipped: the default text embedding model '
+            'is not installed.'
+        ) from error
     tokenizer = Tokenizer()
     flat_tokens = []
     for i, sentence in enumerate(ser):
@@ -524,15 +548,17 @@ def refine_list_dtype(ser: pd.Series, kumo_dtype: Dtype) -> Dtype:
     return kumo_dtype
 
 
-_HEAVY_OR_UPSTREAM_STATS: 'frozenset[ColStatType]' = frozenset({
-    ColStatType.INVALID_FRACTION,
-    ColStatType.SUMMARY_STATS_BY_CLASS,
-    ColStatType.DROPPED_ROWS,
-    ColStatType.STRING_AVG_TOKENS,
-    ColStatType.STRING_MAX_TOKENS,
-    ColStatType.STRING_GLOVE_OVERLAP,
-    ColStatType.STRING_AVG_NON_CHAR,
-})
+_HEAVY_OR_UPSTREAM_STATS: 'frozenset[ColStatType]' = frozenset(
+    {
+        ColStatType.INVALID_FRACTION,
+        ColStatType.SUMMARY_STATS_BY_CLASS,
+        ColStatType.DROPPED_ROWS,
+        ColStatType.STRING_AVG_TOKENS,
+        ColStatType.STRING_MAX_TOKENS,
+        ColStatType.STRING_GLOVE_OVERLAP,
+        ColStatType.STRING_AVG_NON_CHAR,
+    }
+)
 
 # Subset of ``_HEAVY_OR_UPSTREAM_STATS`` that is genuinely Python-computable
 # by ``compute_col_stats_python`` (per-series text/token NLP stats) and is
@@ -547,16 +573,19 @@ _HEAVY_OR_UPSTREAM_STATS: 'frozenset[ColStatType]' = frozenset({
 # column, which the single-Series API cannot express; the DG Rust producer
 # does not emit it either), nor the vestigial cast-phase stats
 # (``INVALID_FRACTION`` / ``DROPPED_ROWS``).
-_PYTHON_COMPUTABLE_NLP_STATS: 'frozenset[ColStatType]' = frozenset({
-    ColStatType.STRING_AVG_TOKENS,
-    ColStatType.STRING_MAX_TOKENS,
-    ColStatType.STRING_GLOVE_OVERLAP,
-    ColStatType.STRING_AVG_NON_CHAR,
-})
+_PYTHON_COMPUTABLE_NLP_STATS: 'frozenset[ColStatType]' = frozenset(
+    {
+        ColStatType.STRING_AVG_TOKENS,
+        ColStatType.STRING_MAX_TOKENS,
+        ColStatType.STRING_GLOVE_OVERLAP,
+        ColStatType.STRING_AVG_NON_CHAR,
+    }
+)
 
 
 def supported_supplemental_stats_for_dtype(
-        dtype: Dtype, include_heavy_nlp: bool = False) -> List[ColStatType]:
+    dtype: Dtype, include_heavy_nlp: bool = False
+) -> List[ColStatType]:
     """Return the ColStatType set DG-side seed helpers emit for a dtype.
 
     ``compute_col_stats_python`` raises if asked for a stat it cannot
@@ -576,8 +605,7 @@ def supported_supplemental_stats_for_dtype(
     if include_heavy_nlp:
         excluded = excluded - _PYTHON_COMPUTABLE_NLP_STATS
     return [
-        stat for stat in ColStatType
-        if stat not in excluded and stat.supports(dtype)
+        stat for stat in ColStatType if stat not in excluded and stat.supports(dtype)
     ]
 
 
@@ -614,7 +642,8 @@ def compute_supplemental_col_stats_from_series(
     kumo_dtype = to_dtype(ser.dtype, ser=ser)
     kumo_dtype = refine_list_dtype(ser, kumo_dtype)
     wanted = supported_supplemental_stats_for_dtype(
-        kumo_dtype, include_heavy_nlp=include_heavy_nlp)
+        kumo_dtype, include_heavy_nlp=include_heavy_nlp
+    )
     if not wanted:
         return kumo_dtype, {}
     stats_for_col = compute_col_stats_python(
@@ -691,8 +720,9 @@ def compute_col_stats_python(
     # `INVALID_FRACTION` is handled at higher layer and we can't group by
     # column in python.
     skip_stats = [
-        ColStatType.INVALID_FRACTION, ColStatType.SUMMARY_STATS_BY_CLASS,
-        ColStatType.DROPPED_ROWS
+        ColStatType.INVALID_FRACTION,
+        ColStatType.SUMMARY_STATS_BY_CLASS,
+        ColStatType.DROPPED_ROWS,
     ]
     stats = [stat for stat in stats if stat not in skip_stats]
 
@@ -700,7 +730,7 @@ def compute_col_stats_python(
 
     for stat_type in stats:
         if stat_type not in col_methods:
-            raise ValueError(f"Inappropriate statistic type {stat_type}.")
+            raise ValueError(f'Inappropriate statistic type {stat_type}.')
         if stat_type.supports(dtype):
             try:
                 value = col_methods[stat_type](valid_ser, original_len=len(ser))
@@ -726,8 +756,7 @@ def compute_col_stats_python(
                 timestamp=None,
             )
         else:
-            raise ValueError(
-                f"Cannot calculate stat {stat_type} for dtype {dtype}.")
+            raise ValueError(f'Cannot calculate stat {stat_type} for dtype {dtype}.')
 
     return out
 
@@ -817,9 +846,10 @@ def compute_edge_stats_python(
 
     for stat_type in BASE_FKEY_STATS:
         if stat_type not in edge_methods:
-            raise ValueError(f"Inappropriate statistic type {stat_type}.")
-        val = edge_methods[stat_type](edge_index, num_src_nodes=num_src_nodes,
-                                      num_dst_nodes=num_dst_nodes)
+            raise ValueError(f'Inappropriate statistic type {stat_type}.')
+        val = edge_methods[stat_type](
+            edge_index, num_src_nodes=num_src_nodes, num_dst_nodes=num_dst_nodes
+        )
 
         out[stat_type] = Stats(
             value=val,
@@ -830,8 +860,9 @@ def compute_edge_stats_python(
         )
 
     # TODO: implement degree distribution analysis here
-    out[EdgeStatType.IN_DEGREE_PERCENTILE_LIST] = Stats(value=[], approx=False,
-                                                        data_version=None)
+    out[EdgeStatType.IN_DEGREE_PERCENTILE_LIST] = Stats(
+        value=[], approx=False, data_version=None
+    )
 
     # Since edge stats via python doesn't take an argument of which stats
     # to compute, pass ALL_EDGE_STAT_TYPES so the derived method adds all

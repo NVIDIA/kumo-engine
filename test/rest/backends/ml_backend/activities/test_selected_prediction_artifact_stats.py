@@ -15,8 +15,7 @@ from kumo_core.types import PredictionArtifactType
 
 from io_utils import fsutil, parquet_util
 from rest.backends.ml_backend import prediction_artifacts
-from rest.backends.ml_backend.activities import \
-    parquet_io_activities as activity_module
+from rest.backends.ml_backend.activities import parquet_io_activities as activity_module
 from rest.backends.ml_backend.activities.parquet_io_activities import (
     _get_selected_parquet_metadata,
     get_artifact_stats,
@@ -52,15 +51,23 @@ def test_selected_stats_reads_only_files_from_selected_roots(
     monkeypatch.setattr(
         activity_module,
         'load_prediction_selection',
-        lambda value, **_kwargs: SimpleNamespace(artifacts=(SimpleNamespace(
-            artifact_type=PredictionArtifactType.PREDICTIONS,
-            root=str(first_root),
-            roots=(str(first_root), str(second_root)),
-            file_count=2,
-            num_rows=None,
-            num_cols=None,
-            size_bytes=None,
-        ), )) if value is selection_ref else pytest.fail('wrong selection'),
+        lambda value, **_kwargs: (
+            SimpleNamespace(
+                artifacts=(
+                    SimpleNamespace(
+                        artifact_type=PredictionArtifactType.PREDICTIONS,
+                        root=str(first_root),
+                        roots=(str(first_root), str(second_root)),
+                        file_count=2,
+                        num_rows=None,
+                        num_cols=None,
+                        size_bytes=None,
+                    ),
+                )
+            )
+            if value is selection_ref
+            else pytest.fail('wrong selection')
+        ),
     )
     stats = get_artifact_stats(
         {},
@@ -82,15 +89,23 @@ def test_selected_producer_stats_skip_all_parquet_reads(
     monkeypatch.setattr(
         activity_module,
         'load_prediction_selection',
-        lambda value, **_kwargs: SimpleNamespace(artifacts=(SimpleNamespace(
-            artifact_type=PredictionArtifactType.PREDICTIONS,
-            root=str(selected),
-            roots=(str(selected), ),
-            file_count=1,
-            num_rows=123,
-            num_cols=3,
-            size_bytes=4567,
-        ), )) if value is selection_ref else pytest.fail('wrong selection'),
+        lambda value, **_kwargs: (
+            SimpleNamespace(
+                artifacts=(
+                    SimpleNamespace(
+                        artifact_type=PredictionArtifactType.PREDICTIONS,
+                        root=str(selected),
+                        roots=(str(selected),),
+                        file_count=1,
+                        num_rows=123,
+                        num_cols=3,
+                        size_bytes=4567,
+                    ),
+                )
+            )
+            if value is selection_ref
+            else pytest.fail('wrong selection')
+        ),
     )
     monkeypatch.setattr(
         activity_module,
@@ -118,13 +133,17 @@ def test_selected_producer_stats_skip_all_parquet_reads(
 
 
 def test_selected_producer_stats_1800_file_path_is_metadata_only(
-        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     selection_ref = object()
     expected = {
-        PredictionArtifactType.PREDICTIONS:
-        (1700, 26_628_349_900, 3, 1_740_136_037_615),
-        PredictionArtifactType.EMBEDDINGS:
-        (100, 266_288_665, 3, 84_933_302_279),
+        PredictionArtifactType.PREDICTIONS: (
+            1700,
+            26_628_349_900,
+            3,
+            1_740_136_037_615,
+        ),
+        PredictionArtifactType.EMBEDDINGS: (100, 266_288_665, 3, 84_933_302_279),
     }
     artifacts = []
     for artifact_type, (count, rows, cols, size_bytes) in expected.items():
@@ -133,17 +152,21 @@ def test_selected_producer_stats_1800_file_path_is_metadata_only(
             SimpleNamespace(
                 artifact_type=artifact_type,
                 root=str(root),
-                roots=(str(root), ),
+                roots=(str(root),),
                 file_count=count,
                 num_rows=rows,
                 num_cols=cols,
                 size_bytes=size_bytes,
-            ))
+            )
+        )
     monkeypatch.setattr(
         activity_module,
         'load_prediction_selection',
-        lambda value, **_kwargs: SimpleNamespace(artifacts=tuple(artifacts))
-        if value is selection_ref else pytest.fail('wrong selection'),
+        lambda value, **_kwargs: (
+            SimpleNamespace(artifacts=tuple(artifacts))
+            if value is selection_ref
+            else pytest.fail('wrong selection')
+        ),
     )
     monkeypatch.setattr(
         activity_module,
@@ -155,11 +178,20 @@ def test_selected_producer_stats_1800_file_path_is_metadata_only(
         'get_parquet_metadata',
         lambda *_args, **_kwargs: pytest.fail('must not read Parquet'),
     )
-    monkeypatch.setattr(fsutil, 'listdir', lambda root: [
-        f'{root}/part-{index:05d}-00000.parquet'
-        for index in range(next(artifact.file_count for artifact in artifacts
-                                if artifact.root == root))
-    ])
+    monkeypatch.setattr(
+        fsutil,
+        'listdir',
+        lambda root: [
+            f'{root}/part-{index:05d}-00000.parquet'
+            for index in range(
+                next(
+                    artifact.file_count
+                    for artifact in artifacts
+                    if artifact.root == root
+                )
+            )
+        ],
+    )
     monkeypatch.setattr(
         fsutil,
         'get_binary_handle',
@@ -200,20 +232,23 @@ def test_finalizer_uses_temporal_attempt_for_selection_ownership(
         activity_module.PredictionConfig,
         'load',
         lambda _path: SimpleNamespace(
-            output_dir=str(tmp_path / 'output'), num_partitions=1,
-            output_num_partitions=97, effective_output_num_partitions=97,
-            diskgraph_task_dataset_bundle_dir=('/tmp/bundle')),
+            output_dir=str(tmp_path / 'output'),
+            num_partitions=1,
+            output_num_partitions=97,
+            effective_output_num_partitions=97,
+            diskgraph_task_dataset_bundle_dir=('/tmp/bundle'),
+        ),
     )
-    monkeypatch.setattr(activity_module.activity, 'info',
-                        lambda: SimpleNamespace(attempt=2))
+    monkeypatch.setattr(
+        activity_module.activity, 'info', lambda: SimpleNamespace(attempt=2)
+    )
 
     def publish(refs, **kwargs):
         captured.update(kwargs)
         assert refs == []
         return expected
 
-    monkeypatch.setattr(activity_module, 'publish_prediction_selection',
-                        publish)
+    monkeypatch.setattr(activity_module, 'publish_prediction_selection', publish)
     actual = activity_module.finalize_prediction_job_output(
         SimpleNamespace(id='bp-job-1'),
         str(config_path),
@@ -239,30 +274,39 @@ def test_finalizer_reports_mixed_producers_as_rerun(
     config_path = tmp_path / 'prediction-config.json'
     config_path.write_text('{}')
     monkeypatch.setattr(
-        activity_module.PredictionConfig, 'load',
+        activity_module.PredictionConfig,
+        'load',
         lambda _path: SimpleNamespace(
-            output_dir=str(tmp_path / 'output'), num_partitions=2,
+            output_dir=str(tmp_path / 'output'),
+            num_partitions=2,
             effective_output_num_partitions=2,
-            diskgraph_task_dataset_bundle_dir='/tmp/bundle'))
-    monkeypatch.setattr(activity_module.activity, 'info',
-                        lambda: SimpleNamespace(attempt=1))
+            diskgraph_task_dataset_bundle_dir='/tmp/bundle',
+        ),
+    )
+    monkeypatch.setattr(
+        activity_module.activity, 'info', lambda: SimpleNamespace(attempt=1)
+    )
 
     def publish(_refs, **_kwargs):
         raise PredictionProducerMismatchError()
 
-    monkeypatch.setattr(activity_module, 'publish_prediction_selection',
-                        publish)
-    with pytest.raises(PredictionOutputProcessingError,
-                       match='Re-run') as raised:
+    monkeypatch.setattr(activity_module, 'publish_prediction_selection', publish)
+    with pytest.raises(PredictionOutputProcessingError, match='Re-run') as raised:
         activity_module.finalize_prediction_job_output(
-            SimpleNamespace(id='bp-job-1'), str(config_path),
-            'graph@version', 'selection', [], 2)
+            SimpleNamespace(id='bp-job-1'),
+            str(config_path),
+            'graph@version',
+            'selection',
+            [],
+            2,
+        )
     assert raised.value.non_retryable
 
 
 @pytest.mark.asyncio
 async def test_selected_artifact_validation_never_blocks_event_loop(
-        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from kumo.home import HomeDirManager
     from rest.backends.ml_backend import prediction_artifacts as module
 
@@ -277,11 +321,14 @@ async def test_selected_artifact_validation_never_blocks_event_loop(
             raise TimeoutError('test did not release resolver')
         return SimpleNamespace(artifacts=())
 
-    monkeypatch.setattr(module, 'load_current_prediction_selection_metadata',
-                        blocking_selection)
+    monkeypatch.setattr(
+        module, 'load_current_prediction_selection_metadata', blocking_selection
+    )
     task = asyncio.create_task(
         prediction_artifacts.resolve_prediction_artifact.coroutine(
-            home, PredictionArtifactType.PREDICTIONS))
+            home, PredictionArtifactType.PREDICTIONS
+        )
+    )
     assert await asyncio.to_thread(started.wait, 2)
 
     # A direct provider scan on this event loop would prevent this yield.

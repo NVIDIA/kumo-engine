@@ -19,8 +19,9 @@ def test_mlops_needs_an_artifact_root_it_can_write_files_to(tmp_path):
         kumo.MLOps()
     with pytest.raises(ValueError, match='artifact_root'):
         kumo.MLOps(artifact_root='')
-    table_only = SimpleNamespace(sink_backend=SimpleNamespace(
-        holds_files=lambda c, p: False, filesystem=None))
+    table_only = SimpleNamespace(
+        sink_backend=SimpleNamespace(holds_files=lambda c, p: False, filesystem=None)
+    )
     with pytest.raises(ValueError, match='file location'):
         kumo.MLOps(artifact_root=(table_only, 'DB.SCHEMA'))
     with pytest.raises(ValueError, match='needs its connector'):
@@ -36,24 +37,33 @@ def test_the_tracker_registers_and_its_registry_checks_the_name(tmp_path):
         if '-' in location.model_name:
             raise ValueError('bad name')
 
-    tracker = SimpleNamespace(connector=SimpleNamespace(
-        sink_backend=SimpleNamespace(
-            check_model_location=check_model_location)))
+    tracker = SimpleNamespace(
+        connector=SimpleNamespace(
+            sink_backend=SimpleNamespace(check_model_location=check_model_location)
+        )
+    )
     good = kumo.ModelRegistryLocation('USERS_CHURN', alias='candidate')
     kumo.MLOps(str(tmp_path), tracking=tracker, registry=good)
     with pytest.raises(ValueError, match='bad name'):
-        kumo.MLOps(str(tmp_path), tracking=tracker,
-                   registry=kumo.ModelRegistryLocation('users-churn'))
+        kumo.MLOps(
+            str(tmp_path),
+            tracking=tracker,
+            registry=kumo.ModelRegistryLocation('users-churn'),
+        )
     with pytest.raises(ValueError, match='model alias'):
-        kumo.MLOps(str(tmp_path), tracking=tracker,
-                   registry=kumo.ModelRegistryLocation('USERS_CHURN',
-                                                       alias='LATEST'))
+        kumo.MLOps(
+            str(tmp_path),
+            tracking=tracker,
+            registry=kumo.ModelRegistryLocation('USERS_CHURN', alias='LATEST'),
+        )
     with pytest.raises(ValueError, match='registry= needs tracking'):
         kumo.MLOps(str(tmp_path), registry=good)
     with pytest.raises(TypeError, match='ModelRegistryLocation'):
-        kumo.MLOps(str(tmp_path), tracking=tracker,
-                   registry=kumo.ModelOutputConfig(tracker.connector,
-                                                   location=good))
+        kumo.MLOps(
+            str(tmp_path),
+            tracking=tracker,
+            registry=kumo.ModelOutputConfig(tracker.connector, location=good),
+        )
 
 
 def test_a_root_is_a_uri_or_a_connector_and_path(tmp_path):
@@ -64,25 +74,29 @@ def test_a_root_is_a_uri_or_a_connector_and_path(tmp_path):
     assert uri.kinds == {'snapshot', 'training_table', 'model', 'prediction'}
 
     connector = kumo.FileConnector(root_dir=str(tmp_path))
-    pair = kumo.MLOps(artifact_root=(connector, 'volume/kumo/'),
-                      store={'model'})
+    pair = kumo.MLOps(artifact_root=(connector, 'volume/kumo/'), store={'model'})
     assert pair.root.connector is connector
     assert pair.root.location('models/m') == 'volume/kumo/models/m'
     assert pair.wants('model') and not pair.wants('snapshot')
     assert not kumo.MLOps(artifact_root=str(tmp_path), store=False).kinds
     assert uri.snapshot_uri('ab12@cd34') == f'{tmp_path}/snapshots/ab12/cd34'
-    assert kumo.MLOps('s3://bucket/kumo', store=False).snapshot_uri(
-        SimpleNamespace(id='ab12@cd34')) == 's3://bucket/kumo/snapshots/ab12/cd34'
+    assert (
+        kumo.MLOps('s3://bucket/kumo', store=False).snapshot_uri(
+            SimpleNamespace(id='ab12@cd34')
+        )
+        == 's3://bucket/kumo/snapshots/ab12/cd34'
+    )
 
 
 def test_a_connector_root_outside_its_root_dir_fails_when_built():
     data = kumo.S3Connector(root_dir='s3://bucket/data')
-    assert kumo.MLOps(artifact_root=(data, 's3://bucket/data/kumo'),
-                      store=False).root
+    assert kumo.MLOps(artifact_root=(data, 's3://bucket/data/kumo'), store=False).root
     with pytest.raises(
-            ValueError, match=r"Invalid artifact_root "
-            r"'s3://bucket/kumo' for S3Connector "
-            r"\(root_dir s3://bucket/data\):"):
+        ValueError,
+        match=r'Invalid artifact_root '
+        r"'s3://bucket/kumo' for S3Connector "
+        r'\(root_dir s3://bucket/data\):',
+    ):
         kumo.MLOps(artifact_root=(data, 's3://bucket/kumo'), store=False)
 
 
@@ -93,8 +107,7 @@ def test_a_root_that_cannot_be_written_fails_when_built(tmp_path):
     read_only.mkdir()
     read_only.chmod(0o500)
     try:
-        with pytest.raises(PermissionError, match='cannot write under '
-                           'artifact_root'):
+        with pytest.raises(PermissionError, match='cannot write under artifact_root'):
             kumo.MLOps(artifact_root=str(read_only / 'kumo'))
         assert kumo.MLOps(artifact_root=str(read_only), store=False)
     finally:
@@ -126,16 +139,21 @@ def test_a_call_argument_beats_the_nearest_block(tmp_path):
 
 
 def test_stubs_stand_in_for_parents_without_a_manifest():
-    assert stub('snapshot', 'abc@0123') == SnapshotManifest(id='abc@0123',
-                                                            reconstructed=True)
+    assert stub('snapshot', 'abc@0123') == SnapshotManifest(
+        id='abc@0123', reconstructed=True
+    )
 
 
-@pytest.mark.parametrize('kind,root', [
-    (kumo.S3Connector, 's3://bucket/data'),
-    (kumo.GCSConnector, 'gs://bucket/data'),
-])
+@pytest.mark.parametrize(
+    'kind,root',
+    [
+        (kumo.S3Connector, 's3://bucket/data'),
+        (kumo.GCSConnector, 'gs://bucket/data'),
+    ],
+)
 def test_empty_object_store_root_reports_invalid_path_without_claiming_escape(
-        kind, root):
+    kind, root
+):
     with pytest.raises(ValueError, match='Invalid artifact_root') as caught:
         kumo.MLOps((kind(root_dir=root), ''), store=False)
     assert 'outside' not in str(caught.value)

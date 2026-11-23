@@ -67,9 +67,9 @@ def new_manifest(
     owner_token: Optional[str] = None,
 ) -> DevserverManifest:
     """Build a validated initial manifest without writing it to disk."""
-    manifest = DevserverManifest(phase=phase,
-                                 owner_token=owner_token or new_owner_token(),
-                                 children=children)
+    manifest = DevserverManifest(
+        phase=phase, owner_token=owner_token or new_owner_token(), children=children
+    )
     _validate_manifest(manifest)
     return manifest
 
@@ -77,10 +77,12 @@ def new_manifest(
 def _validate_manifest(manifest: DevserverManifest) -> None:
     if manifest.version != _MANIFEST_VERSION:
         raise DevserverLifecycleError(
-            f'unsupported devserver manifest version {manifest.version}')
+            f'unsupported devserver manifest version {manifest.version}'
+        )
     if manifest.phase not in _PHASES:
         raise DevserverLifecycleError(
-            f'manifest phase must be one of {sorted(_PHASES)}')
+            f'manifest phase must be one of {sorted(_PHASES)}'
+        )
     if not isinstance(manifest.owner_token, str) or not manifest.owner_token:
         raise DevserverLifecycleError('manifest owner_token must be non-empty')
     if not isinstance(manifest.children, Mapping):
@@ -91,23 +93,27 @@ def _validate_manifest(manifest: DevserverManifest) -> None:
             raise DevserverLifecycleError('manifest child IDs must be non-empty')
         if not isinstance(child, Mapping):
             raise DevserverLifecycleError(
-                f'manifest child {child_id!r} must be an object')
+                f'manifest child {child_id!r} must be an object'
+            )
         resources = child.get('resources', {})
         if not isinstance(resources, Mapping):
             raise DevserverLifecycleError(
-                f'manifest child {child_id!r}.resources must be an object')
+                f'manifest child {child_id!r}.resources must be an object'
+            )
         for resource_name, resource in resources.items():
             if not isinstance(resource_name, str) or not resource_name:
                 raise DevserverLifecycleError(
-                    f'manifest child {child_id!r} has invalid resource name')
+                    f'manifest child {child_id!r} has invalid resource name'
+                )
             if not isinstance(resource, Mapping):
                 raise DevserverLifecycleError(
-                    f'manifest resource {child_id}/{resource_name} must be an '
-                    'object')
+                    f'manifest resource {child_id}/{resource_name} must be an object'
+                )
             if resource.get('owner_token') != manifest.owner_token:
                 raise DevserverLifecycleError(
                     f'manifest resource {child_id}/{resource_name} does not '
-                    'carry the manifest owner token')
+                    'carry the manifest owner token'
+                )
 
 
 def write_manifest_atomic(path: Path, manifest: DevserverManifest) -> None:
@@ -121,11 +127,14 @@ def write_manifest_atomic(path: Path, manifest: DevserverManifest) -> None:
     path = Path(path)
     if not path.parent.is_dir():
         raise DevserverLifecycleError(
-            f'manifest parent directory does not exist: {path.parent}')
-    payload = (json.dumps(manifest.to_dict(), sort_keys=True,
-                          separators=(',', ':')) + '\n').encode('utf-8')
+            f'manifest parent directory does not exist: {path.parent}'
+        )
+    payload = (
+        json.dumps(manifest.to_dict(), sort_keys=True, separators=(',', ':')) + '\n'
+    ).encode('utf-8')
     temporary = path.with_name(
-        f'.{path.name}.{manifest.owner_token[:16]}.{os.getpid()}.tmp')
+        f'.{path.name}.{manifest.owner_token[:16]}.{os.getpid()}.tmp'
+    )
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     descriptor = os.open(temporary, flags, 0o600)
     try:
@@ -155,17 +164,21 @@ def read_manifest(path: Path) -> DevserverManifest:
         data = json.loads(Path(path).read_text(encoding='utf-8'))
     except (OSError, json.JSONDecodeError) as error:
         raise DevserverLifecycleError(
-            f'cannot read valid devserver manifest {path}') from error
+            f'cannot read valid devserver manifest {path}'
+        ) from error
     if not isinstance(data, dict):
         raise DevserverLifecycleError('manifest top-level value must be an object')
     try:
-        manifest = DevserverManifest(version=data['version'],
-                                     phase=data['phase'],
-                                     owner_token=data['owner_token'],
-                                     children=data['children'])
+        manifest = DevserverManifest(
+            version=data['version'],
+            phase=data['phase'],
+            owner_token=data['owner_token'],
+            children=data['children'],
+        )
     except KeyError as error:
         raise DevserverLifecycleError(
-            f'manifest is missing required key {error.args[0]!r}') from error
+            f'manifest is missing required key {error.args[0]!r}'
+        ) from error
     _validate_manifest(manifest)
     return manifest
 
@@ -176,22 +189,23 @@ def advisory_lock(path: Path) -> Iterator[None]:
     path = Path(path)
     if not path.parent.is_dir():
         raise DevserverLifecycleError(
-            f'lock parent directory does not exist: {path.parent}')
+            f'lock parent directory does not exist: {path.parent}'
+        )
     descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
     try:
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
             raise DevserverLifecycleLockError(
-                f'lifecycle lock is already held: {path}') from error
+                f'lifecycle lock is already held: {path}'
+            ) from error
         yield
     finally:
         os.close(descriptor)
 
 
 @contextlib.contextmanager
-def coordinator_locks(lock_directory: Path,
-                      child_ids: Sequence[str]) -> Iterator[None]:
+def coordinator_locks(lock_directory: Path, child_ids: Sequence[str]) -> Iterator[None]:
     """Acquire the global coordinator lock followed by sorted child locks.
 
     Sorting makes simultaneous operations involving multiple child devservers
@@ -203,9 +217,11 @@ def coordinator_locks(lock_directory: Path,
         raise DevserverLifecycleError('child IDs for lifecycle locks are duplicate')
     if any(not _CHILD_ID_RE.fullmatch(child_id) for child_id in child_ids):
         raise DevserverLifecycleError(
-            'child IDs for lifecycle locks must be normalized safe IDs')
-    child_paths = [lock_directory / f'child-{child_id}.lock'
-                   for child_id in sorted(child_ids)]
+            'child IDs for lifecycle locks must be normalized safe IDs'
+        )
+    child_paths = [
+        lock_directory / f'child-{child_id}.lock' for child_id in sorted(child_ids)
+    ]
     with advisory_lock(lock_directory / 'coordinator.lock'):
         with contextlib.ExitStack() as stack:
             for child_path in child_paths:
@@ -245,8 +261,9 @@ def inspect_stale_manifest(
     try:
         _validate_manifest(manifest)
     except DevserverLifecycleError as error:
-        return StaleManifestInspection(StaleManifestStatus.AMBIGUOUS,
-                                       f'invalid manifest: {error}')
+        return StaleManifestInspection(
+            StaleManifestStatus.AMBIGUOUS, f'invalid manifest: {error}'
+        )
 
     resources = []
     for child_id, child in manifest.children.items():
@@ -255,7 +272,8 @@ def inspect_stale_manifest(
     if resources and verifier is None:
         return StaleManifestInspection(
             StaleManifestStatus.AMBIGUOUS,
-            'recorded resources require an owner-token verifier')
+            'recorded resources require an owner-token verifier',
+        )
 
     verified = []
     for resource_id, resource in resources:
@@ -265,13 +283,17 @@ def inspect_stale_manifest(
             return StaleManifestInspection(
                 StaleManifestStatus.AMBIGUOUS,
                 f'owner-token verification raised for {resource_id}: {error}',
-                tuple(verified))
+                tuple(verified),
+            )
         if not owned:
             return StaleManifestInspection(
                 StaleManifestStatus.AMBIGUOUS,
                 f'owner-token verification failed for {resource_id}',
-                tuple(verified))
+                tuple(verified),
+            )
         verified.append(resource_id)
-    return StaleManifestInspection(StaleManifestStatus.VERIFIED,
-                                   'all recorded resources are owner-token verified',
-                                   tuple(verified))
+    return StaleManifestInspection(
+        StaleManifestStatus.VERIFIED,
+        'all recorded resources are owner-token verified',
+        tuple(verified),
+    )

@@ -25,14 +25,14 @@ from io_utils.fsutil import s3_filesystem
 
 def run(path: str) -> None:
     if 'kumo-prod-dataplane-bucket' in path:
-        print("PATH cannot be a production path:", path)
+        print('PATH cannot be a production path:', path)
         exit(1)
     s3_filesystem.rmdir(path)
 
 
 if __name__ == '__main__':
     logging.basicConfig()
-    logging.getLogger("io_utils.fsutil").setLevel(logging.DEBUG)
+    logging.getLogger('io_utils.fsutil').setLevel(logging.DEBUG)
 
     parser = argparse.ArgumentParser()
     parser.add_argument('PATH')

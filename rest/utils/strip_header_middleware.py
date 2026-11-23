@@ -16,6 +16,7 @@ class StripHeaderMiddleware:
         app: The ASGI application callable to forward requests to.
         exclude_paths: HTTP routes to exclude from header stripping
     """
+
     def __init__(
         self,
         app,
@@ -34,10 +35,14 @@ class StripHeaderMiddleware:
             receive: An awaitable callable yielding dictionaries
             send: An awaitable callable taking a single dictionary as argument.
         """
+
         async def send_wrapper(message: Message) -> None:
-            if ('path' in scope and scope['path'] not in self.exclude_paths
-                    and 'type' in message
-                    and message['type'] == "http.response.start"):
+            if (
+                'path' in scope
+                and scope['path'] not in self.exclude_paths
+                and 'type' in message
+                and message['type'] == 'http.response.start'
+            ):
                 response_headers = MutableHeaders(scope=message)
                 for header in self.headers:
                     if header in response_headers:

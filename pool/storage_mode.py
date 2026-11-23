@@ -6,6 +6,7 @@
 This replaces the older lifetime-only classification with the storage
 contract the worker is responsible for.
 """
+
 from enum import Enum
 
 

@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Stub: io_utils.logging.getLogger → logging.getLogger."""
+
 import logging as _stdlib_logging
 
 

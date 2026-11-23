@@ -84,9 +84,9 @@ logger = logging.getLogger(__name__)
 # Centralized so the reclassification logic and its tests stay in sync if the
 # upstream messages are ever reworded.
 _DISKGRAPH_ZERO_ROWS_MARKERS = (
-    "diskgraph execute_tt_plan returned zero rows",
-    "empty training table dataset",
-    "parquet file too small. size is 0",
+    'diskgraph execute_tt_plan returned zero rows',
+    'empty training table dataset',
+    'parquet file too small. size is 0',
 )
 
 
@@ -105,23 +105,25 @@ def _diskgraph_empty_train_table_error_message(
     is_diskgraph_error = (
         _is_instance_of_optional_error(error, DiskgraphConfigError)
         or _is_instance_of_optional_error(error, DiskgraphDataError)
-        or _is_instance_of_optional_error(error, DiskgraphSystemError))
+        or _is_instance_of_optional_error(error, DiskgraphSystemError)
+    )
     if not is_diskgraph_error:
         return None
-    if not any(marker in detail_lower
-               for marker in _DISKGRAPH_ZERO_ROWS_MARKERS):
+    if not any(marker in detail_lower for marker in _DISKGRAPH_ZERO_ROWS_MARKERS):
         return None
 
-    anchor_context = (f"across {timestamp_count} anchor timestamps"
-                      if timestamp_count > 0 else
-                      "without temporal anchor timestamps")
+    anchor_context = (
+        f'across {timestamp_count} anchor timestamps'
+        if timestamp_count > 0
+        else 'without temporal anchor timestamps'
+    )
     return (
-        "DiskGraph materialized zero training rows for "
-        f"entity table {entity_table!r} {anchor_context}. "
-        "This can happen when the PQuery filters, "
-        "target window, split boundaries, or ingested graph edges leave "
-        "no valid training examples. Inspect DiskGraph ingest, edge, and "
-        f"column stats for dropped rows or zero required edges. Detail: {detail}"
+        'DiskGraph materialized zero training rows for '
+        f'entity table {entity_table!r} {anchor_context}. '
+        'This can happen when the PQuery filters, '
+        'target window, split boundaries, or ingested graph edges leave '
+        'no valid training examples. Inspect DiskGraph ingest, edge, and '
+        f'column stats for dropped rows or zero required edges. Detail: {detail}'
     )
 
 
@@ -140,27 +142,28 @@ def _raise_training_table_generation_error_for_diskgraph_empty_result(
         return
 
     raise TrainingTableGenerationError(
-        title="Empty training table",
+        title='Empty training table',
         message=message,
     ) from error
 
 
 def _raise_training_table_generation_error_for_target_category_limit(
-    error: Exception, ) -> None:
+    error: Exception,
+) -> None:
     """Classify DiskGraph's exact-target vocabulary limit as terminal."""
-    if not _is_instance_of_optional_error(error,
-                                          DiskgraphTargetCategoryLimitError):
+    if not _is_instance_of_optional_error(error, DiskgraphTargetCategoryLimitError):
         return
 
     detail = str(error)
     raise TrainingTableGenerationError(
-        title="Train-table target category limit exceeded",
+        title='Train-table target category limit exceeded',
         message=(
-            "DiskGraph could not collect the complete exact target vocabulary, "
-            "so no usable train table statistics artifact was published. "
-            "Retrying with unchanged data cannot succeed; reduce target "
-            "cardinality, model this as link prediction when appropriate, or "
-            f"contact Kumo support. Detail: {detail}"),
+            'DiskGraph could not collect the complete exact target vocabulary, '
+            'so no usable train table statistics artifact was published. '
+            'Retrying with unchanged data cannot succeed; reduce target '
+            'cardinality, model this as link prediction when appropriate, or '
+            f'contact Kumo support. Detail: {detail}'
+        ),
     ) from error
 
 
@@ -182,8 +185,9 @@ def _invoke_diskgraph_train_table_seam(
     try:
         return seam_call()
     except GenerationValidationError as error:
-        raise TrainingTableGenerationError(error.error.title,
-                                           error.error.message) from error
+        raise TrainingTableGenerationError(
+            error.error.title, error.error.message
+        ) from error
     except Exception as e:
         _raise_training_table_generation_error_for_diskgraph_empty_result(
             e,
@@ -209,18 +213,23 @@ def _check_diskgraph_train_table_parity(
     """
     if weight_spec is not None:
         raise UnsupportedInDiskgraphError(
-            "Weighted training tables are not yet supported in "
-            "DiskGraph. DiskGraphPlanCompiler has no weight parameters, "
-            "so sample weights would be silently dropped. Remove this "
-            "guard once DG Rust weight plumbing lands.")
-    if (query_type == QueryType.STATIC and task_type.is_node_pred
-            and isinstance(split, TimeSplit)):
+            'Weighted training tables are not yet supported in '
+            'DiskGraph. DiskGraphPlanCompiler has no weight parameters, '
+            'so sample weights would be silently dropped. Remove this '
+            'guard once DG Rust weight plumbing lands.'
+        )
+    if (
+        query_type == QueryType.STATIC
+        and task_type.is_node_pred
+        and isinstance(split, TimeSplit)
+    ):
         raise UnsupportedInDiskgraphError(
-            "Static node-prediction with TimeSplit "
-            "is not yet supported in DiskGraph. The Spark path filters "
-            "rows to split boundaries via filter_static_split; DG "
-            "would include out-of-split rows. Remove this guard once "
-            "DG implements static split filtering.")
+            'Static node-prediction with TimeSplit '
+            'is not yet supported in DiskGraph. The Spark path filters '
+            'rows to split boundaries via filter_static_split; DG '
+            'would include out-of-split rows. Remove this guard once '
+            'DG implements static split filtering.'
+        )
 
 
 def _check_diskgraph_downsampling_parity(enabled: bool) -> None:
@@ -234,10 +243,11 @@ def _check_diskgraph_downsampling_parity(enabled: bool) -> None:
     """
     if enabled:
         raise UnsupportedInDiskgraphError(
-            "DISKGRAPH_PRODUCER_DOWNSAMPLING_ENABLED=1 is set, but "
-            "DiskGraph downsampling is not yet wired through "
-            "DiskGraphPlanCompiler to the Rust executor. Remove this "
-            "guard once DG Rust downsampling lands.")
+            'DISKGRAPH_PRODUCER_DOWNSAMPLING_ENABLED=1 is set, but '
+            'DiskGraph downsampling is not yet wired through '
+            'DiskGraphPlanCompiler to the Rust executor. Remove this '
+            'guard once DG Rust downsampling lands.'
+        )
 
 
 # Frequency of entity target pair for static and temporal link prediction
@@ -281,17 +291,17 @@ class TrainingTableGeneratorV2:
         self.split = split
         self.train_start_offset = None
         if train_start_offset is not None:
-            self.train_start_offset = self.get_date_offset(
-                int(train_start_offset))
+            self.train_start_offset = self.get_date_offset(int(train_start_offset))
         if train_end_offset is not None and isinstance(train_end_offset, int):
             train_end_offset = self.get_date_offset(int(train_end_offset))
-        assert (train_end_offset is None
-                or isinstance(train_end_offset, DateOffset))
+        assert train_end_offset is None or isinstance(train_end_offset, DateOffset)
         self.train_end_offset = train_end_offset
 
         self.use_decoupled_splits = (
             _use_decoupled_splits()
-            if use_decoupled_splits is None else use_decoupled_splits)
+            if use_decoupled_splits is None
+            else use_decoupled_splits
+        )
         start_bound: int | str | DateOffset | None = start_time
         end_bound: int | str | DateOffset | None = end_time
         if self.use_decoupled_splits:
@@ -312,14 +322,14 @@ class TrainingTableGeneratorV2:
         self.weight_col = normalize_weight_col(weight_col)
 
         self.task_type: core_types.TaskType = get_task_type(
-            self.graph, self.query, self.forecast_length).task_type
+            self.graph, self.query, self.forecast_length
+        ).task_type
         self.list_distinct_target_is_array = allow_array_targets()
 
         self._train_table_stats = None
 
         self.validate_train_table_response = ValidationResponse()
-        self.stats_manager = StatsManager(self.task_type, self.query,
-                                          self.graph)
+        self.stats_manager = StatsManager(self.task_type, self.query, self.graph)
         self.train_table_validator = TrainTableValidator(
             self.stats_manager,
             self.split,
@@ -352,10 +362,10 @@ class TrainingTableGeneratorV2:
 
     def _sync_list_distinct_target_is_array(self) -> bool:
         list_distinct_target_is_array = bool(self.list_distinct_target_is_array)
-        self.stats_manager.list_distinct_target_is_array = (
-            list_distinct_target_is_array)
+        self.stats_manager.list_distinct_target_is_array = list_distinct_target_is_array
         self.train_table_validator.list_distinct_target_is_array = (
-            list_distinct_target_is_array)
+            list_distinct_target_is_array
+        )
         return list_distinct_target_is_array
 
     def _build_diskgraph_downsampling_config(
@@ -363,16 +373,14 @@ class TrainingTableGeneratorV2:
         list_distinct_target_is_array: bool,
     ) -> dict[str, Any]:
         """Build nested downsampling config passed to diskgraph producer."""
-        enabled = os.getenv('DISKGRAPH_PRODUCER_DOWNSAMPLING_ENABLED',
-                            '0') == '1'
+        enabled = os.getenv('DISKGRAPH_PRODUCER_DOWNSAMPLING_ENABLED', '0') == '1'
         _check_diskgraph_downsampling_parity(enabled)
         return {
             'enabled': enabled,
             'max_rows': int(get_max_train_rows()),
             'preserve_pre_downsample_tt': True,
             'is_link_prediction': bool(self.task_type.is_link_pred),
-            'list_distinct_target_is_array':
-            bool(list_distinct_target_is_array),
+            'list_distinct_target_is_array': bool(list_distinct_target_is_array),
             'uses_arl_labels': bool(self.task_type.uses_arl_labels),
         }
 
@@ -391,7 +399,8 @@ class TrainingTableGeneratorV2:
 
     @blocking_method()
     def get_default_target_time_range(
-            self) -> Tuple[Timestamp, Timestamp, Optional[Timedelta]]:
+        self,
+    ) -> Tuple[Timestamp, Timestamp, Optional[Timedelta]]:
         r"""Determine the total time range that can be used to generate
         targets. Unless overriden with `train_start_offset` or
         `train_end_offset`, target data will be taken from this range.
@@ -405,43 +414,54 @@ class TrainingTableGeneratorV2:
 
     def _timestamp_inputs(self):
         original_start, original_end, filter_buffer = (
-            self.get_default_target_time_range())
+            self.get_default_target_time_range()
+        )
         offset_range = self.query.get_combined_date_offset_range()
         assert offset_range.start_date_offset is not None
         timeframe = DateOffsetRange.date_offset_subtract(
-            offset_range.end_date_offset, offset_range.start_date_offset)
+            offset_range.end_date_offset, offset_range.start_date_offset
+        )
         step = timeframe if self.timeframe_step is None else self.timeframe_step
-        return (original_start, original_end, filter_buffer, offset_range,
-                timeframe, step)
+        return (
+            original_start,
+            original_end,
+            filter_buffer,
+            offset_range,
+            timeframe,
+            step,
+        )
 
     def generate_timestamps(self) -> List[Timestamp]:
         r"""Generate legacy split-aware training-table timestamps."""
         values = self._timestamp_inputs()
-        (original_start, original_end, filter_buffer, offset_range, timeframe,
-         step) = values
+        (original_start, original_end, filter_buffer, offset_range, timeframe, step) = (
+            values
+        )
         window = None
         if self.task_type.is_node_pred:
             window = resolve_training_window(
-                self.start_time, self.end_time, original_start, original_end)
+                self.start_time, self.end_time, original_start, original_end
+            )
         start_time = self.start_time if window is None else window.start
         end_time = self.end_time if window is None else window.end
         logger.info(
-            f"For raw data, the min_date is {original_start} and the max_date "
-            f"is {original_end}.")
+            f'For raw data, the min_date is {original_start} and the max_date '
+            f'is {original_end}.'
+        )
         split_family = None
         descriptor = None
         if isinstance(self.split, DateOffsetSplit):
-            split_family = "DateOffsetSplit"
+            split_family = 'DateOffsetSplit'
             descriptor = {
-                "offsets": self.split.offsets,
-                "unit": self.split.unit.value,
+                'offsets': self.split.offsets,
+                'unit': self.split.unit.value,
             }
         elif isinstance(self.split, TimeRangeSplit):
-            split_family = "TimeRangeSplit"
-            descriptor = {"ranges": self.split.ranges}
+            split_family = 'TimeRangeSplit'
+            descriptor = {'ranges': self.split.ranges}
         elif isinstance(self.split, BacktestingSplit):
-            split_family = "BacktestingSplit"
-            descriptor = {"timestamp": self.split.timestamp}
+            split_family = 'BacktestingSplit'
+            descriptor = {'timestamp': self.split.timestamp}
 
         def fix_boundaries() -> None:
             if self.split.flexible_boundaries:
@@ -449,7 +469,8 @@ class TrainingTableGeneratorV2:
                 logger.warning(
                     'Split flexible boundaries has been set to True but '
                     'the split is used for sampling. Flexible boundaries '
-                    'have been reset to False.')
+                    'have been reset to False.'
+                )
 
         timestamps, _, short_window = generate_legacy_timestamps(
             original_start=original_start,
@@ -469,8 +490,11 @@ class TrainingTableGeneratorV2:
             on_fixed_boundaries=fix_boundaries,
         )
         if short_window:
-            return [] if window is None else window.filter(
-                timestamps, offset_range.end_date_offset)
+            return (
+                []
+                if window is None
+                else window.filter(timestamps, offset_range.end_date_offset)
+            )
         if window is not None:
             timestamps = window.filter(timestamps, offset_range.end_date_offset)
         logger.info(f'Generated {len(timestamps)} timestamps:')
@@ -480,22 +504,24 @@ class TrainingTableGeneratorV2:
 
     def generate_timestamps_v2(self) -> List[Timestamp]:
         r"""Generate decoupled training-table timestamps."""
-        if (self.train_start_offset is not None
-                or self.train_end_offset is not None):
+        if self.train_start_offset is not None or self.train_end_offset is not None:
             raise ValidationException(
-                title="Deprecated training offsets",
+                title='Deprecated training offsets',
                 message=(
-                    "train_start_offset and train_end_offset are deprecated "
-                    "for generate_timestamps_v2 function. Please use "
-                    "start_time and end_time parameters instead."),
+                    'train_start_offset and train_end_offset are deprecated '
+                    'for generate_timestamps_v2 function. Please use '
+                    'start_time and end_time parameters instead.'
+                ),
             )
         values = self._timestamp_inputs()
-        (original_start, original_end, filter_buffer, offset_range, timeframe,
-         step) = values
+        (original_start, original_end, filter_buffer, offset_range, timeframe, step) = (
+            values
+        )
         window = None
         if self.task_type.is_node_pred:
             window = resolve_training_window(
-                self.start_time, self.end_time, original_start, original_end)
+                self.start_time, self.end_time, original_start, original_end
+            )
         timestamps = generate_decoupled_timestamps(
             original_start=original_start,
             original_end=original_end,
@@ -567,7 +593,8 @@ class TrainingTableGeneratorV2:
         return anchor_time, train_table_min_date, train_table_max_date
 
     def validate_pre_train_table_generate(
-            self, skip_timestamp_validation: bool = True) -> ValidationResponse:
+        self, skip_timestamp_validation: bool = True
+    ) -> ValidationResponse:
         r"""Validate any checks that can be done before the train table
         generation, such as checking timestamps and start/end offsets for
         temporal queries.
@@ -585,21 +612,27 @@ class TrainingTableGeneratorV2:
 
         validation_response.merge(
             self.pre_train_table_validator.validate_forecasting_task_type(
-                self.lag_timesteps, self.forecast_length))
+                self.lag_timesteps, self.forecast_length
+            )
+        )
 
         if not validation_response.ok:
             return validation_response
 
         if self.query_type == QueryType.TEMPORAL:
             validation_response.merge(
-                self.pre_train_table_validator.validate_temporal_splits())
+                self.pre_train_table_validator.validate_temporal_splits()
+            )
 
             validation_response.merge(
-                self.pre_train_table_validator.validate_time_bounds())
+                self.pre_train_table_validator.validate_time_bounds()
+            )
 
             validation_response.merge(
                 self.pre_train_table_validator.validate_train_offsets(
-                    self.train_start_offset, self.train_end_offset))
+                    self.train_start_offset, self.train_end_offset
+                )
+            )
             if not validation_response.ok:
                 return validation_response
 
@@ -609,28 +642,32 @@ class TrainingTableGeneratorV2:
                 else:
                     timestamps = self.generate_timestamps()
                 _, train_table_min_date, train_table_max_date = (
-                    self.get_train_table_min_max_date(timestamps))
+                    self.get_train_table_min_max_date(timestamps)
+                )
 
                 validation_response.merge(
                     self.pre_train_table_validator.validate_timestamps(
-                        timestamps, train_table_min_date, train_table_max_date))
+                        timestamps, train_table_min_date, train_table_max_date
+                    )
+                )
                 if self.task_type == core_types.TaskType.FORECASTING:
                     assert self.lag_timesteps is not None
                     if isinstance(self.split, TimeSplit):
                         validation_response.merge(
-                            self.pre_train_table_validator.
-                            validate_timestamps_for_forecasting_v2(
-                                timestamps, self.forecast_length,
-                                self.lag_timesteps))
+                            self.pre_train_table_validator.validate_timestamps_for_forecasting_v2(
+                                timestamps, self.forecast_length, self.lag_timesteps
+                            )
+                        )
                     else:
                         validation_response.merge(
-                            self.pre_train_table_validator.
-                            validate_timestamps_for_forecasting(
-                                timestamps, self.forecast_length,
-                                self.lag_timesteps))
+                            self.pre_train_table_validator.validate_timestamps_for_forecasting(
+                                timestamps, self.forecast_length, self.lag_timesteps
+                            )
+                        )
 
                 validation_response.merge(
-                    self.pre_train_table_validator.validate_limits(timestamps))
+                    self.pre_train_table_validator.validate_limits(timestamps)
+                )
 
         return validation_response
 
@@ -686,19 +723,23 @@ class TrainingTableGeneratorV2:
         del op_id
         # Honor the runtime list_distinct_target_is_array override and sync
         # it onto the stats manager / validator.
-        list_distinct_target_is_array = (self.set_list_distinct_target_is_array(
-            list_distinct_target_is_array))
+        list_distinct_target_is_array = self.set_list_distinct_target_is_array(
+            list_distinct_target_is_array
+        )
 
         # Run validation before generating the table
         validation_response = self.validate_pre_train_table_generate(
-            skip_timestamp_validation=False)
+            skip_timestamp_validation=False
+        )
         if not validation_response.ok:
             raise TrainingTableGenerationError(
-                title="Training table generation failed",
-                message=validation_response.error_message())
+                title='Training table generation failed',
+                message=validation_response.error_message(),
+            )
 
-        intermediate_train_table_dir = (intermediate_train_table_dir
-                                        or INTERMEDIATE_TRAIN_TABLE_DIR)
+        intermediate_train_table_dir = (
+            intermediate_train_table_dir or INTERMEDIATE_TRAIN_TABLE_DIR
+        )
 
         # Generate timestamps that will define timeframes for temporal queries
         logger.info('Generating timestamps')
@@ -713,9 +754,10 @@ class TrainingTableGeneratorV2:
         # thread ``diskgraph_index_path`` through.
         if not diskgraph_index_path:
             raise UnsupportedInDiskgraphError(
-                "TrainingTableGeneratorV2.generate_table requires "
-                "diskgraph_index_path; legacy pquery producer was retired "
-                "in the DG cutover.")
+                'TrainingTableGeneratorV2.generate_table requires '
+                'diskgraph_index_path; legacy pquery producer was retired '
+                'in the DG cutover.'
+            )
 
         _check_diskgraph_train_table_parity(
             weight_spec=self._get_weight_spec(),
@@ -733,7 +775,7 @@ class TrainingTableGeneratorV2:
         if entity_table.time_col is not None:
             entity_time_col = entity_table.time_col.name
 
-        include_frequency = (self.task_type.is_link_pred)
+        include_frequency = self.task_type.is_link_pred
         output_path = osp.join(
             destination or get_home_dir(),
             intermediate_train_table_dir,
@@ -764,12 +806,10 @@ class TrainingTableGeneratorV2:
         # after the artifacts are copied to their final location.
         self._diskgraph_staging_dir = None
         if not fsutil.is_local(output_path):
-            self._diskgraph_staging_dir = tempfile.mkdtemp(
-                prefix='diskgraph_tt_')
-            output_path = osp.join(self._diskgraph_staging_dir,
-                                   'train_table.parquet')
+            self._diskgraph_staging_dir = tempfile.mkdtemp(prefix='diskgraph_tt_')
+            output_path = osp.join(self._diskgraph_staging_dir, 'train_table.parquet')
             logger.info(
-                "Remote home_dir; staging diskgraph TT locally: %s",
+                'Remote home_dir; staging diskgraph TT locally: %s',
                 self._diskgraph_staging_dir,
             )
 
@@ -786,10 +826,13 @@ class TrainingTableGeneratorV2:
         # below also enforces non-None job_id (see the
         # ``train stats cache`` assertion).
         if not job_id:
-            raise RuntimeError('diskgraph TT-NG path requires non-empty job_id '
-                               '(passed through to execute_tt_gen as tt_id)')
+            raise RuntimeError(
+                'diskgraph TT-NG path requires non-empty job_id '
+                '(passed through to execute_tt_gen as tt_id)'
+            )
         generate_train_table = (
-            diskgraph_train_table.generate_train_table_via_diskgraph_ttng)
+            diskgraph_train_table.generate_train_table_via_diskgraph_ttng
+        )
         output_path, manifest_path = _invoke_diskgraph_train_table_seam(
             lambda: generate_train_table(
                 query=self.query,
@@ -818,8 +861,11 @@ class TrainingTableGeneratorV2:
                 # kumo builds/threads no edge config here.
                 input_timestamp_unit=TimeUnit.Nanoseconds,
                 target_stype=self.query.target_stype.value,
-                start_time=(self.start_time.value if isinstance(
-                    self.start_time, Timestamp) else None),
+                start_time=(
+                    self.start_time.value
+                    if isinstance(self.start_time, Timestamp)
+                    else None
+                ),
             ),
             entity_table=self.entity_table_name,
             timestamp_count=len(timestamp_nanos),
@@ -836,12 +882,14 @@ class TrainingTableGeneratorV2:
 
         if self.query_type == QueryType.TEMPORAL and job_id is not None:
             anchor_time, train_table_min_date, train_table_max_date = (
-                self.get_train_table_min_max_date(timestamps))
+                self.get_train_table_min_max_date(timestamps)
+            )
             assert train_table_min_date is not None
             assert train_table_max_date is not None
             assert anchor_time is not None
             self.stats_manager.update_min_max_anchor_date_cache(
-                job_id, train_table_min_date, train_table_max_date, anchor_time)
+                job_id, train_table_min_date, train_table_max_date, anchor_time
+            )
 
         row_count = None
         if isinstance(manifest, dict):
@@ -854,14 +902,15 @@ class TrainingTableGeneratorV2:
                 row_count = maybe_total
         if row_count is not None and row_count <= 0:
             raise TrainingTableGenerationError(
-                "Empty training table",
-                "Diskgraph returned an empty training table.",
+                'Empty training table',
+                'Diskgraph returned an empty training table.',
             )
 
         if not isinstance(parsed_stats, dict):
             raise RuntimeError(
                 'diskgraph path requires parsed diskgraph stats artifact '
-                'but none were available from manifest validation')
+                'but none were available from manifest validation'
+            )
         if job_id is None:
             raise RuntimeError(
                 'diskgraph path requires non-empty job_id to seed train stats cache'
@@ -874,9 +923,11 @@ class TrainingTableGeneratorV2:
         if missing_stats:
             raise RuntimeError(
                 'diskgraph path requires complete diskgraph train stats payload; '
-                f'missing expected stats keys: {missing_stats}')
-        logger.info('Seeded train stats cache from diskgraph artifact '
-                    '(native_full strict mode)')
+                f'missing expected stats keys: {missing_stats}'
+            )
+        logger.info(
+            'Seeded train stats cache from diskgraph artifact (native_full strict mode)'
+        )
         # Caller persists the producer parquet directly via
         # self._diskgraph_last_output_path; no Spark parquet readback.
         return None  # type: ignore[return-value]
@@ -886,8 +937,7 @@ class TrainingTableGeneratorV2:
         Validates that the generated training table is valid after collecting
         all training table statistics.
         """
-        response = self.train_table_validator.\
-            validate_post_train_table_generate()
+        response = self.train_table_validator.validate_post_train_table_generate()
         self.validate_train_table_response.merge(response)
         return response
 
@@ -942,14 +992,13 @@ class TrainingTableGeneratorV2:
         time = train_table_time(
             self.task_type,
             self.query_type,
-            list_distinct_target_is_array=bool(
-                self.list_distinct_target_is_array),
+            list_distinct_target_is_array=bool(self.list_distinct_target_is_array),
             entity_table_has_time_col=self.graph.table(
-                entity_table_name).has_time_col(),
+                entity_table_name
+            ).has_time_col(),
         )
         if time == TrainTableTime.PSEUDO:
-            return TimeColumn(PSEUDO_TIME_COL_NAME, dtype=Dtype.int64,
-                              is_pseudo=True)
+            return TimeColumn(PSEUDO_TIME_COL_NAME, dtype=Dtype.int64, is_pseudo=True)
         if time == TrainTableTime.REAL:
             return TimeColumn(name=self.TIMESTAMP)
         return None
@@ -961,8 +1010,9 @@ class TrainingTableGeneratorV2:
             BoolColumn(optional): The ENTITY_INCLUDE_BIT column.
         """
         if self.task_type == core_types.TaskType.FORECASTING and (
-                isinstance(self.query.entity_ast, Filter)
-                or self.query.whatif_ast is not None):
+            isinstance(self.query.entity_ast, Filter)
+            or self.query.whatif_ast is not None
+        ):
             return BoolColumn(ENTITY_INCLUDE_BIT)
         return None
 

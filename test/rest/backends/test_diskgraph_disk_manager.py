@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Tests for diskgraph disk space management."""
+
 import json
 import os
 import time
@@ -49,8 +50,9 @@ def test_check_diskgraph_output_touches_success_mtime(tmp_path):
 
     mtime_after = success_path.stat().st_mtime
     assert mtime_after > mtime_before, (
-        f"Expected _SUCCESS mtime to be updated on cache hit: "
-        f"before={mtime_before}, after={mtime_after}")
+        f'Expected _SUCCESS mtime to be updated on cache hit: '
+        f'before={mtime_before}, after={mtime_after}'
+    )
 
 
 def test_check_diskgraph_output_no_success_no_touch(tmp_path):
@@ -98,6 +100,7 @@ def data_root(tmp_path):
 def test_disk_manager_scan_indexes(data_root):
     """DiskManager.scan_indexes() finds valid and orphan indexes."""
     import diskgraph
+
     dm = diskgraph.DiskManager(str(data_root))
     result = json.loads(dm.scan_indexes())
 
@@ -115,6 +118,7 @@ def test_disk_manager_scan_indexes(data_root):
 def test_disk_manager_ensure_space_enough(data_root):
     """When enough space is available, no eviction happens."""
     import diskgraph
+
     dm = diskgraph.DiskManager(str(data_root))
     result = json.loads(dm.ensure_space(100, 'graph-C', 'v1'))
     assert result['evicted'] == []
@@ -124,6 +128,7 @@ def test_disk_manager_ensure_space_enough(data_root):
 def test_disk_manager_disk_usage(data_root):
     """disk_usage() returns non-zero values."""
     import diskgraph
+
     dm = diskgraph.DiskManager(str(data_root))
     result = json.loads(dm.disk_usage())
     assert result['total_bytes'] > 0
@@ -133,6 +138,7 @@ def test_disk_manager_disk_usage(data_root):
 def test_estimate_ingest_size_bad_json():
     """estimate_ingest_size with invalid JSON raises config error."""
     import diskgraph
+
     with pytest.raises(diskgraph.DiskgraphConfigError):
         diskgraph.estimate_ingest_size('not valid json')
 
@@ -212,8 +218,9 @@ def test_check_diskgraph_output_touch_failure_logs_warning(
     monkeypatch.setattr(
         diskgraph,
         'touch_success_marker',
-        lambda *_args, **_kwargs:
-        (_ for _ in ()).throw(PermissionError('mocked permission denied')),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            PermissionError('mocked permission denied')
+        ),
     )
 
     # Should NOT raise — returns the cached result with a warning

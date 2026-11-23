@@ -14,32 +14,32 @@ MAX_DATA_BACKEND_WORKER_PROCESSES = 'MAX_DATA_BACKEND_WORKER_PROCESSES'
 # Data Platform Env variables #################################################
 # refresh timeout used for whole graph and individual table refreshes
 DATA_BACKEND_REFRESH_TIMEOUT_HOURS = EnvVar(
-    name="DATA_BACKEND_REFRESH_TIMEOUT",
+    name='DATA_BACKEND_REFRESH_TIMEOUT',
     type=int,
     default_value=7,
-    description="Data backend refresh timeout in hours",
+    description='Data backend refresh timeout in hours',
 ).parse_value()
 DATA_BACKEND_INGEST_TIMEOUT_HOURS = EnvVar(
-    name="DATA_BACKEND_INGEST_TIMEOUT",
+    name='DATA_BACKEND_INGEST_TIMEOUT',
     type=int,
     default_value=7,
-    description="Data backend ingest timeout in hours",
+    description='Data backend ingest timeout in hours',
 ).parse_value()
 DATA_BACKEND_IO_TIMEOUT_HOURS = 1
 # Native DiskGraph ingestion previously used a hard-coded four-hour timeout.
 # Keep its shorter activity budget independently configurable while the
 # enclosing workflow retains the existing ingest timeout.
 DATA_BACKEND_DISKGRAPH_WORKFLOW_TIMEOUT_HOURS = EnvVar(
-    name="DATA_BACKEND_DISKGRAPH_WORKFLOW_TIMEOUT",
+    name='DATA_BACKEND_DISKGRAPH_WORKFLOW_TIMEOUT',
     type=int,
     default_value=6,
-    description="DiskGraph native ingestion activity timeout in hours",
+    description='DiskGraph native ingestion activity timeout in hours',
 ).parse_value()
-if (DATA_BACKEND_DISKGRAPH_WORKFLOW_TIMEOUT_HOURS >=
-        DATA_BACKEND_INGEST_TIMEOUT_HOURS):
+if DATA_BACKEND_DISKGRAPH_WORKFLOW_TIMEOUT_HOURS >= DATA_BACKEND_INGEST_TIMEOUT_HOURS:
     raise ValueError(
         'DATA_BACKEND_DISKGRAPH_WORKFLOW_TIMEOUT must be less than '
-        'DATA_BACKEND_INGEST_TIMEOUT')
+        'DATA_BACKEND_INGEST_TIMEOUT'
+    )
 DATA_BACKEND_TEXT_EMBEDDING_TIMEOUT_HOURS = 2
 # materialize timeout used for generating train/pred tables and materialize
 DATA_BACKEND_MATERIALIZE_TIMEOUT_HOURS = 7
@@ -66,10 +66,10 @@ TRAINING_AND_PREDICTION_TIMEOUT_HOURS = 24 * 21
 CUSTOM_SQL_MAX_STALENESS_HOURS = max(
     1,
     EnvVar(
-        name="CUSTOM_SQL_MAX_STALENESS",
+        name='CUSTOM_SQL_MAX_STALENESS',
         type=int,
         default_value=24,
-        description="Max hours a Custom SQL table may go without re-ingest, "
-        "regardless of detected referenced-table change",
+        description='Max hours a Custom SQL table may go without re-ingest, '
+        'regardless of detected referenced-table change',
     ).parse_value(),
 )

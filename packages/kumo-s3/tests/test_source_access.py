@@ -19,12 +19,12 @@ from pyarrow.fs import AwsDefaultS3RetryStrategy
 
 class Rotating:
     """Session credentials whose frozen value can be rotated."""
+
     def __init__(self, token='first'):
         self.token = token
 
     def get_frozen_credentials(self):
-        return SimpleNamespace(access_key='key', secret_key='secret',
-                               token=self.token)
+        return SimpleNamespace(access_key='key', secret_key='secret', token=self.token)
 
 
 @pytest.fixture
@@ -42,18 +42,17 @@ def bucket(tmp_path, monkeypatch):
 
     def identity(source, path):
         import hashlib
+
         with source.open_input_file(path) as stream:
             contents = stream.read()
         return (hashlib.sha256(contents).hexdigest(), '', str(len(contents)))
 
     monkeypatch.setattr('kumo_s3.access._object_identity', identity)
-    return SimpleNamespace(root=tmp_path / 'bucket', built=built,
-                           out=tmp_path / 'out')
+    return SimpleNamespace(root=tmp_path / 'bucket', built=built, out=tmp_path / 'out')
 
 
 def session_with(credentials):
-    return SimpleNamespace(get_credentials=lambda: credentials,
-                           region_name='us-west-2')
+    return SimpleNamespace(get_credentials=lambda: credentials, region_name='us-west-2')
 
 
 def test_an_object_is_copied_whole_through_the_filesystem(bucket):
@@ -117,18 +116,16 @@ def test_no_credentials_without_anonymous_access_is_refused(monkeypatch):
         source_access('bucket', session=session_with(None))
 
 
-@pytest.mark.parametrize('anonymous, options', [
-    (False, {}),
-    (True, {}),
-    (False, {
-        'tls_ca_file_path': '/trusted/ca.pem'
-    }),
-    (True, {
-        'endpoint_override': 'https://override.private'
-    }),
-])
-def test_an_explicit_endpoint_reaches_the_filesystem(monkeypatch, anonymous,
-                                                     options):
+@pytest.mark.parametrize(
+    'anonymous, options',
+    [
+        (False, {}),
+        (True, {}),
+        (False, {'tls_ca_file_path': '/trusted/ca.pem'}),
+        (True, {'endpoint_override': 'https://override.private'}),
+    ],
+)
+def test_an_explicit_endpoint_reaches_the_filesystem(monkeypatch, anonymous, options):
     built = {}
 
     def filesystem(**kwargs):
@@ -136,14 +133,20 @@ def test_an_explicit_endpoint_reaches_the_filesystem(monkeypatch, anonymous,
         return SimpleNamespace(region=kwargs['region'])
 
     monkeypatch.setattr('kumo_s3.session.fs.S3FileSystem', filesystem)
-    monkeypatch.setattr(kumo_s3, 'bucket_region',
-                        Mock(side_effect=AssertionError('AWS region lookup')))
+    monkeypatch.setattr(
+        kumo_s3, 'bucket_region', Mock(side_effect=AssertionError('AWS region lookup'))
+    )
     session = session_with(None if anonymous else Rotating())
-    source_access('bucket', session=session,
-                  endpoint_url='https://default.private', options=options,
-                  allow_anonymous=anonymous)
-    assert built['endpoint_override'] == options.get('endpoint_override',
-                                                     'https://default.private')
+    source_access(
+        'bucket',
+        session=session,
+        endpoint_url='https://default.private',
+        options=options,
+        allow_anonymous=anonymous,
+    )
+    assert built['endpoint_override'] == options.get(
+        'endpoint_override', 'https://default.private'
+    )
     assert built['force_virtual_addressing'] is True
     assert isinstance(built['retry_strategy'], AwsDefaultS3RetryStrategy)
     assert built.get('anonymous', False) is anonymous
@@ -167,8 +170,10 @@ def test_connection_options_keep_the_authorized_credentials(monkeypatch):
 
     monkeypatch.setattr('kumo_s3.session.fs.S3FileSystem', filesystem)
     source_access(
-        'bucket', session=session_with(Rotating(token='token')),
-        endpoint_url='https://s3.private', options={
+        'bucket',
+        session=session_with(Rotating(token='token')),
+        endpoint_url='https://s3.private',
+        options={
             'access_key': 'unrelated-key',
             'secret_key': 'unrelated-secret',
             'session_token': 'unrelated-token',
@@ -178,7 +183,8 @@ def test_connection_options_keep_the_authorized_credentials(monkeypatch):
             'scheme': 'https',
             'tls_ca_file_path': '/trusted/ca.pem',
             'force_virtual_addressing': False,
-        })
+        },
+    )
     retry = built.pop('retry_strategy')
     assert isinstance(retry, AwsDefaultS3RetryStrategy)
     assert built == {
@@ -193,8 +199,7 @@ def test_connection_options_keep_the_authorized_credentials(monkeypatch):
     }
 
 
-def test_rotated_credentials_re_sign_a_projected_read_midway(
-        bucket, monkeypatch):
+def test_rotated_credentials_re_sign_a_projected_read_midway(bucket, monkeypatch):
     import pyarrow as pa
     import pyarrow.parquet as pq
     from kumo_core.sources import object_store
@@ -204,10 +209,10 @@ def test_rotated_credentials_re_sign_a_projected_read_midway(
 
     (bucket.root / 'events').mkdir()
     for part in range(2):
-        pq.write_table(pa.table({
-            'id': [part],
-            'unread': ['x']
-        }), bucket.root / 'events' / f'part-{part}.parquet')
+        pq.write_table(
+            pa.table({'id': [part], 'unread': ['x']}),
+            bucket.root / 'events' / f'part-{part}.parquet',
+        )
     credentials = Rotating()
     access = source_access('bucket', session=session_with(credentials))
     read = object_store._parquet_batches
@@ -221,16 +226,22 @@ def test_rotated_credentials_re_sign_a_projected_read_midway(
 
     monkeypatch.setattr(object_store, '_parquet_batches', rotating)
     staged = ObjectStoreSourceReader(
-        access.filesystem, root='bucket', fetch=access.fetch,
-        object_identity=access.object_identity).prepare(
-            'events', str(bucket.out), columns={'id': Dtype.int64},
-            mode=ReadMode.STREAMED, worker_ceiling=1)
+        access.filesystem,
+        root='bucket',
+        fetch=access.fetch,
+        object_identity=access.object_identity,
+    ).prepare(
+        'events',
+        str(bucket.out),
+        columns={'id': Dtype.int64},
+        mode=ReadMode.STREAMED,
+        worker_ceiling=1,
+    )
     assert staged.num_rows == 2
     assert bucket.built == ['first', 'second']
 
 
-def test_a_failed_copy_rechecks_identity_and_preserves_target(
-        bucket, monkeypatch):
+def test_a_failed_copy_rechecks_identity_and_preserves_target(bucket, monkeypatch):
     source = bucket.root / 'key'
     source.write_bytes(b'old')
     bucket.out.mkdir()

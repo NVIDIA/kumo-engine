@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Retain explicit run files and verify an archive before restoring it."""
+
 from __future__ import annotations
 
 import hashlib
@@ -25,8 +26,11 @@ def _relative(name):
         raise ValueError('Expected a nonempty relative POSIX path')
     path = PurePosixPath(name)
     # A drive-qualified name (C:/x) is relative to POSIX but absolute on Windows.
-    if (path.is_absolute() or PureWindowsPath(name).drive
-            or any(part in ('', '.', '..') for part in name.split('/'))):
+    if (
+        path.is_absolute()
+        or PureWindowsPath(name).drive
+        or any(part in ('', '.', '..') for part in name.split('/'))
+    ):
         raise ValueError(f'Unsafe relative path: {name!r}')
     if name == 'retention-manifest.json':
         raise ValueError('Reserved manifest name')
@@ -44,8 +48,10 @@ def create_archive(root, relative_files, archive):
     for name in names:
         relative = _relative(name)
         source = root.joinpath(*relative.parts)
-        if any(root.joinpath(*relative.parts[:i]).is_symlink()
-               for i in range(1, len(relative.parts) + 1)):
+        if any(
+            root.joinpath(*relative.parts[:i]).is_symlink()
+            for i in range(1, len(relative.parts) + 1)
+        ):
             raise ValueError(f'Symlink not permitted: {name}')
         source.resolve(strict=True).relative_to(root)
         if not source.is_file():
@@ -63,13 +69,20 @@ def create_archive(root, relative_files, archive):
                     # Hash the exact bytes streamed into the archive.
                     digest = hashlib.sha256()
                     size = 0
-                    with source.open('rb') as inp, bundle.open(name, 'w', force_zip64=True) as out:
+                    with (
+                        source.open('rb') as inp,
+                        bundle.open(name, 'w', force_zip64=True) as out,
+                    ):
                         for block in iter(lambda: inp.read(1024 * 1024), b''):
                             out.write(block)
                             digest.update(block)
                             size += len(block)
-                    manifest.append(dict(path=name, size=size, sha256=digest.hexdigest()))
-                bundle.writestr('retention-manifest.json', json.dumps(manifest, sort_keys=True))
+                    manifest.append(
+                        dict(path=name, size=size, sha256=digest.hexdigest())
+                    )
+                bundle.writestr(
+                    'retention-manifest.json', json.dumps(manifest, sort_keys=True)
+                )
         return sha256(archive)
     except BaseException:
         if created:
@@ -109,7 +122,11 @@ def restore_archive(archive, destination, expected_sha256, *, max_bytes=10 * 102
             if name in expected or type(entry['size']) is not int or entry['size'] < 0:
                 raise ValueError('Duplicate path or invalid size')
             digest = entry['sha256']
-            if not isinstance(digest, str) or len(digest) != 64 or any(c not in '0123456789abcdef' for c in digest):
+            if (
+                not isinstance(digest, str)
+                or len(digest) != 64
+                or any(c not in '0123456789abcdef' for c in digest)
+            ):
                 raise ValueError('Invalid file checksum')
             expected[name] = entry
         if set(names) != set(expected) | {'retention-manifest.json'}:
@@ -121,7 +138,9 @@ def restore_archive(archive, destination, expected_sha256, *, max_bytes=10 * 102
             if bundle.getinfo(name).file_size != expected[name]['size']:
                 raise ValueError(f'Size mismatch: {name}')
         destination.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(dir=destination.parent, prefix='.restore-') as tmp:
+        with tempfile.TemporaryDirectory(
+            dir=destination.parent, prefix='.restore-'
+        ) as tmp:
             staging = Path(tmp) / 'files'
             staging.mkdir()
             for name, entry in expected.items():

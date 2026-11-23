@@ -9,17 +9,17 @@ there are 200 rows with NAs.
 """
 
 dropped_rows_no_na_args = {
-    "source_name": "articles",
-    "table_name": "dropped_rows_no_na",
-    "pkey": "article_id1",
-    "time_cols": "time_col1",
-    "expected_dropped_rows": 0,
+    'source_name': 'articles',
+    'table_name': 'dropped_rows_no_na',
+    'pkey': 'article_id1',
+    'time_cols': 'time_col1',
+    'expected_dropped_rows': 0,
 }
 
 dropped_rows_200_na_args = {
-    "source_name": "articles",
-    "table_name": "dropped_rows_200_na",
-    "pkey": "article_id2",
-    "time_cols": "time_col2",
-    "expected_dropped_rows": 200,
+    'source_name': 'articles',
+    'table_name': 'dropped_rows_200_na',
+    'pkey': 'article_id2',
+    'time_cols': 'time_col2',
+    'expected_dropped_rows': 200,
 }

@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Live ADLS range-read filesystem coverage."""
+
 import io
 
 import pyarrow as pa
@@ -19,12 +20,12 @@ from .common import random_name
 @withADLSCredentials
 def test_real_adls_parquet_dataset_range_reads():
     """Live ABFS: schema and bounded preview through the range-read filesystem."""
-    table = pa.table({
-        'id':
-        pa.array(range(1000), type=pa.int64()),
-        'name':
-        pa.array((f'row-{i}' for i in range(1000)), type=pa.string()),
-    })
+    table = pa.table(
+        {
+            'id': pa.array(range(1000), type=pa.int64()),
+            'name': pa.array((f'row-{i}' for i in range(1000)), type=pa.string()),
+        }
+    )
     buffer = io.BytesIO()
     pq.write_table(table, buffer)
     test_prefix = f'{adls_test_base_uri()}/{random_name()}'
@@ -32,8 +33,8 @@ def test_real_adls_parquet_dataset_range_reads():
     try:
         fsutil.write_binary(uri, buffer.getvalue())
         dataset = pq.ParquetDataset(
-            ParseURI(uri).path, pre_buffer=False,
-            filesystem=pyarrow_filesystem(uri))
+            ParseURI(uri).path, pre_buffer=False, filesystem=pyarrow_filesystem(uri)
+        )
         assert dataset.schema.names == ['id', 'name']
         head = read_bounded_dataset(dataset, None, 3)
         assert head.column('id').to_pylist() == [0, 1, 2]

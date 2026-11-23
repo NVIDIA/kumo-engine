@@ -14,6 +14,7 @@ success-marker probe/write now run inside the pool daemon via
 ``DiskgraphService`` directly, so none of those Temporal wrappers were
 dispatched by any workflow.
 """
+
 import shutil
 
 from temporalio import activity
@@ -33,11 +34,10 @@ def cleanup_source_files(snapshot_id: str) -> None:
     """Rmtree the per-snapshot ingest tmp dir (no-op if absent)."""
     path = get_diskgraph_snapshot_ingest_dir(snapshot_id)
     if fsutil.exists(path):
-        assert fsutil.isdir(path), (
-            f'cleanup_source_files: expected directory at {path}')
-        log.info('cleanup_source_files: removing snapshot=%s path=%s',
-                 snapshot_id, path)
+        assert fsutil.isdir(path), f'cleanup_source_files: expected directory at {path}'
+        log.info(
+            'cleanup_source_files: removing snapshot=%s path=%s', snapshot_id, path
+        )
         shutil.rmtree(path)
     else:
-        log.info('cleanup_source_files: noop snapshot=%s (nothing staged)',
-                 snapshot_id)
+        log.info('cleanup_source_files: noop snapshot=%s (nothing staged)', snapshot_id)

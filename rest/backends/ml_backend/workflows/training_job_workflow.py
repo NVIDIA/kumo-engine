@@ -32,7 +32,7 @@ log = logging.getLogger(__name__)
 class TrainingJobWorkflow:
     @staticmethod
     def generate_wf_id(job_id: str) -> str:
-        return f"training-job-workflow-{job_id}"
+        return f'training-job-workflow-{job_id}'
 
     async def _save_output(self, output: TrainingJobOutput):
         await workflow.execute_activity(
@@ -62,7 +62,8 @@ class TrainingJobWorkflow:
         if poll_result.state == JobState.SUCCEEDED:
             snapshot_id = DataSnapshot.GRAPH.canonicalize(
                 f'{_graph_key_to_v2(graph_compute_input.graph_key)}@'
-                f'{graph_version_info.graph_data_version}')
+                f'{graph_version_info.graph_data_version}'
+            )
             output = await workflow.execute_activity(
                 TrainingJobActivities.postprocess_job_output,
                 args=[
@@ -71,9 +72,9 @@ class TrainingJobWorkflow:
                     graph_compute_input.connectors,
                     snapshot_id,
                 ],
-                retry_policy=RetryPolicy(non_retryable_error_types=[
-                    BestTrainerCfgFileMissingError.__name__
-                ]),
+                retry_policy=RetryPolicy(
+                    non_retryable_error_types=[BestTrainerCfgFileMissingError.__name__]
+                ),
                 schedule_to_close_timeout=timedelta(minutes=100),
             )
             # postprocess_job_output computes the result in the (CPU-heavy)
@@ -87,12 +88,13 @@ class TrainingJobWorkflow:
             saved = await workflow.execute_activity(
                 TrainingJobActivities.log_failed_job,
                 args=[job_input.id, job_config_path, poll_result.warning_msg],
-                schedule_to_close_timeout=timedelta(minutes=10))
+                schedule_to_close_timeout=timedelta(minutes=10),
+            )
 
             output = TrainingJobOutput.failed(
                 err_msg=(saved and saved.err_msg) or poll_result.err_msg,
-                stacktrace=(saved and saved.stacktrace)
-                or poll_result.stacktrace)
+                stacktrace=(saved and saved.stacktrace) or poll_result.stacktrace,
+            )
             await self._save_output(output)
 
     async def _run_via_pool(
@@ -106,20 +108,26 @@ class TrainingJobWorkflow:
         shared 21-day cap and five-minute heartbeat; the coordinator
         allows up to 63 days of activity execution across three attempts, and
         retries do not resume checkpoints."""
-        log.info("Pool training_job=%s predictive_query=%s graph=%s",
-                 self._input.id, self._input.spec.predictive_query.name,
-                 self._input.spec.predictive_query.graph.name)
+        log.info(
+            'Pool training_job=%s predictive_query=%s graph=%s',
+            self._input.id,
+            self._input.spec.predictive_query.name,
+            self._input.spec.predictive_query.graph.name,
+        )
 
         if self._settings.raise_fake_error:
             output = TrainingJobOutput.failed(
-                err_msg="Encountered fake error",
-                exception=Exception("Fake error was raised during training"))
+                err_msg='Encountered fake error',
+                exception=Exception('Fake error was raised during training'),
+            )
             await self._save_output(output)
-            return PollJobResult(state=JobState.FAILED, err_msg="fake error")
+            return PollJobResult(state=JobState.FAILED, err_msg='fake error')
 
         await self._save_output(
-            TrainingJobOutput(status=JobStatus.RUNNING,
-                              log=JobEventLogEntry.provisioning_resources()))
+            TrainingJobOutput(
+                status=JobStatus.RUNNING, log=JobEventLogEntry.provisioning_resources()
+            )
+        )
 
         # By the time TrainingJobWorkflow runs, refresh has populated
         # graph_version_info on the parent's job_input. The canonical
@@ -129,30 +137,45 @@ class TrainingJobWorkflow:
         graph_compute_input = job_input.graph_data_compute_input
         graph_version_info = job_input.graph_version_info
         assert graph_compute_input is not None, (
-            'graph_data_compute_input is required for pool training')
+            'graph_data_compute_input is required for pool training'
+        )
         assert graph_version_info is not None, (
             'graph_version_info must be populated by graph refresh before '
-            'TrainingJobWorkflow runs')
+            'TrainingJobWorkflow runs'
+        )
         snapshot_id = DataSnapshot.GRAPH.canonicalize(
             f'{_graph_key_to_v2(graph_compute_input.graph_key)}@'
-            f'{graph_version_info.graph_data_version}')
+            f'{graph_version_info.graph_data_version}'
+        )
         await self._save_output(
-            TrainingJobOutput(status=JobStatus.RUNNING,
-                              log=JobEventLogEntry.loading_materialized_data()))
+            TrainingJobOutput(
+                status=JobStatus.RUNNING,
+                log=JobEventLogEntry.loading_materialized_data(),
+            )
+        )
         state: JobState = await run_pooled_activity(
-            snapshot_id=snapshot_id, activity=SnapshotActivity.TRAIN,
-            activity_fn=SnapshotActivities.train, args=[
+            snapshot_id=snapshot_id,
+            activity=SnapshotActivity.TRAIN,
+            activity_fn=SnapshotActivities.train,
+            args=[
                 snapshot_id,
                 job_input.id,
                 job_config_path,
-            ], schedule_to_close_timeout=timedelta(
-                hours=TRAINING_AND_PREDICTION_TIMEOUT_HOURS),
-            heartbeat_timeout=timedelta(minutes=5))
+            ],
+            schedule_to_close_timeout=timedelta(
+                hours=TRAINING_AND_PREDICTION_TIMEOUT_HOURS
+            ),
+            heartbeat_timeout=timedelta(minutes=5),
+        )
 
         # The exit reason is not in workflow history. Surface a pointer in
         # err_msg for failures without a curated kumo-auto message;
         # log_failed_job logs the saved traceback on the ML workflow worker.
-        err_msg = (f'kumo-auto subprocess exited non-zero for job '
-                   f'{job_input.id}; see the ML workflow worker logs for '
-                   f'details' if state == JobState.FAILED else None)
+        err_msg = (
+            f'kumo-auto subprocess exited non-zero for job '
+            f'{job_input.id}; see the ML workflow worker logs for '
+            f'details'
+            if state == JobState.FAILED
+            else None
+        )
         return PollJobResult(state=state, err_msg=err_msg)

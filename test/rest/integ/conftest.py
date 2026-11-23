@@ -36,9 +36,8 @@ from temporalio_commons.temporal_client import TemporalClient, asyncio
 logging.initialize_logging()
 
 
-@pytest.fixture(scope="session")
-def ml_backend_settings(
-        deploy_env_config: DeployEnvConfig) -> MLBackendSettings:
+@pytest.fixture(scope='session')
+def ml_backend_settings(deploy_env_config: DeployEnvConfig) -> MLBackendSettings:
     # integ overrides the unit fixture: it uses the REAL ML backend
     # (use_fake_job_backend=False), built the way production builds it — via
     # parse_from_env(). In TEST mode parse_from_env() defaults the ML StateDB
@@ -47,7 +46,7 @@ def ml_backend_settings(
     return MLBackendSettings.parse_from_env()
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope='session')
 def ml_state_db(
     deploy_env_config: DeployEnvConfig,
     ml_backend_settings: MLBackendSettings,
@@ -57,7 +56,8 @@ def ml_state_db(
         open_state_db_from_deploy_config(
             deploy_env_config,
             state_root=get_db_storage_root(),
-        ))
+        )
+    )
 
 
 # For all integ tests, data backend async ingestion will always be enabled.
@@ -75,7 +75,7 @@ async def clean_temporal_state(deploy_env_config: DeployEnvConfig) -> None:
     await integration.terminate_and_confirm_no_open_workflows(deploy_env_config)
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope='session')
 def temporal_workers_ready(
     deploy_env_config: DeployEnvConfig,
     rest_state_db: StateDB,
@@ -87,7 +87,7 @@ def temporal_workers_ready(
     )
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope='session')
 def ml_backend(
     deploy_env_config: DeployEnvConfig,
     temporal_workers_ready: bool,
@@ -169,23 +169,23 @@ def public_api_client(
 
     # Inject the shared StateServices (backed by the same StateDB the rest of
     # the e2e topology uses) so the public app reads/writes the same metadata.
-    app = _build_public_api_app(rest_api_driver_settings, ml_backend,
-                                data_backend_ctx, state_services)
+    app = _build_public_api_app(
+        rest_api_driver_settings, ml_backend, data_backend_ctx, state_services
+    )
     with TestClient(app) as public_client:
         public_client.headers['X-API-KEY'] = api_key['value']
         public_client.state_services = state_services
         try:
             yield public_client
         finally:
-            delete_response = client.delete(f"/v0/api-keys/{api_key['id']}")
+            delete_response = client.delete(f'/v0/api-keys/{api_key["id"]}')
             assert delete_response.status_code == 204, delete_response.text
 
 
 # Return a list of test cases where each test case is formatted as
 # "<test fixture json file path>:<pquery name>"
 def scan_test_cases() -> List[str]:
-    dir = os.path.join(os.path.dirname(os.path.realpath(__file__)),
-                       'test_cases')
+    dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'test_cases')
     tests_file = []
     for test_file in fsutil.listdir(dir):
         if not test_file.endswith('.json'):
@@ -195,7 +195,7 @@ def scan_test_cases() -> List[str]:
     for test_file in tests_file:
         fixture = load_json(test_file, FixtureDefinition)
         for pquery in fixture.queries:
-            graph_name = f"graph_{pquery.graph_fpid[:8]}"
+            graph_name = f'graph_{pquery.graph_fpid[:8]}'
             graph_name = re.sub(r'_[0-9a-f]+$', '', graph_name)
             test_cases.append(f'{test_file}:{graph_name}:{pquery.pquery_name}')
     return test_cases
@@ -211,9 +211,7 @@ def pquery_db_dump(request) -> FixtureDefinition:
     # Load parametrized fixture cases for the active public-API E2E suites.
     fixture_json_file, _, pquery_id = request.param.rsplit(':', 2)
     fixture = load_json(fixture_json_file, FixtureDefinition)
-    fixture.queries = [
-        pq for pq in fixture.queries if pq.pquery_name == pquery_id
-    ]
+    fixture.queries = [pq for pq in fixture.queries if pq.pquery_name == pquery_id]
     return fixture
 
 
@@ -227,15 +225,16 @@ def pquery_db_dump(request) -> FixtureDefinition:
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(scope="session", params=["local", "s3"])
+@pytest.fixture(scope='session', params=['local', 's3'])
 def storage_backend(request):
     """Parametrize diskgraph tests over local and S3 storage backends."""
     return request.param
 
 
-@pytest.fixture(scope="session")
-def _diskgraph_deploy_config(tmp_path_factory, storage_backend, request,
-                             temporal_workflow_env):
+@pytest.fixture(scope='session')
+def _diskgraph_deploy_config(
+    tmp_path_factory, storage_backend, request, temporal_workflow_env
+):
     """Load diskgraph JSON config, override storage root, and set
     DEPLOY_ENV_CONFIG_JSON so deploy_env() picks it up.
 
@@ -256,8 +255,12 @@ def _diskgraph_deploy_config(tmp_path_factory, storage_backend, request,
     config_file = os.environ.get('DEPLOY_ENV_CONFIG_FILE')
     if not config_file:
         config_file = str(
-            Path(__file__).resolve().parents[3] / 'rest' / 'devserver' /
-            'configs' / 'diskgraph-test.json')
+            Path(__file__).resolve().parents[3]
+            / 'rest'
+            / 'devserver'
+            / 'configs'
+            / 'diskgraph-test.json'
+        )
         os.environ['DEPLOY_ENV_CONFIG_FILE'] = config_file
     with open(config_file) as f:
         config = json.load(f)
@@ -275,9 +278,11 @@ def _diskgraph_deploy_config(tmp_path_factory, storage_backend, request,
         # local/dataplane copy mid-test.
         data_compute = config.setdefault('data_compute', {})
         data_compute['pool_max_ssd_idle_secs'] = max(
-            data_compute.get('pool_max_ssd_idle_secs') or 0, 1800)
+            data_compute.get('pool_max_ssd_idle_secs') or 0, 1800
+        )
         data_compute['pool_max_dataplane_retention_secs'] = max(
-            data_compute.get('pool_max_dataplane_retention_secs') or 0, 1800)
+            data_compute.get('pool_max_dataplane_retention_secs') or 0, 1800
+        )
 
         # 6-hour age guard avoids racing concurrent CI jobs sharing the bucket.
         # Compare in epoch seconds: fsutil.get_last_modified_time() returns a
@@ -300,12 +305,12 @@ def _diskgraph_deploy_config(tmp_path_factory, storage_backend, request,
             newest = 0.0
             try:
                 from io_utils.fsutil.s3_filesystem import listdir_recursive
+
                 bucket = prefix.split('/')[2]
                 for key in listdir_recursive(prefix):
                     # listdir_recursive yields bucket-relative keys; restore
                     # the scheme so get_last_modified_time hits S3, not local.
-                    full = key if key.startswith('s3://') \
-                        else f's3://{bucket}/{key}'
+                    full = key if key.startswith('s3://') else f's3://{bucket}/{key}'
                     m = fsutil.get_last_modified_time(full)
                     if m > newest:
                         newest = m
@@ -328,8 +333,7 @@ def _diskgraph_deploy_config(tmp_path_factory, storage_backend, request,
         except Exception:
             pass  # best-effort
 
-        s3_root = (f'{_s3_test_prefix}'
-                   f'ci-diskgraph-e2e-{uuid.uuid4().hex[:12]}/')
+        s3_root = f'{_s3_test_prefix}ci-diskgraph-e2e-{uuid.uuid4().hex[:12]}/'
         # Marker so set_home_dir()'s fsutil.exists() check passes on S3.
         fsutil.write_text(s3_root + '.marker', '')
         config.setdefault('storage', {})['data_plane_storage_root'] = s3_root
@@ -339,7 +343,7 @@ def _diskgraph_deploy_config(tmp_path_factory, storage_backend, request,
 
         request.addfinalizer(cleanup_s3)
     else:
-        tmp_root = str(tmp_path_factory.mktemp("diskgraph-storage"))
+        tmp_root = str(tmp_path_factory.mktemp('diskgraph-storage'))
         config.setdefault('storage', {})['data_plane_storage_root'] = tmp_root
 
     # Per-session data_root avoids stale _SUCCESS markers cache-hitting
@@ -347,7 +351,7 @@ def _diskgraph_deploy_config(tmp_path_factory, storage_backend, request,
     # stale ``.job_slot_holder`` from a previous (crashed) pytest run
     # that would otherwise make ``recover_occupied_slot`` block on an
     # AutoRPC call to a non-existent ml-backend service worker.
-    dg_data_root = str(tmp_path_factory.mktemp("diskgraph-data-root"))
+    dg_data_root = str(tmp_path_factory.mktemp('diskgraph-data-root'))
     config.setdefault('data_compute', {})['data_root'] = dg_data_root
 
     # Make ``bin/`` and the active venv first on PATH so worker subprocesses
@@ -357,12 +361,12 @@ def _diskgraph_deploy_config(tmp_path_factory, storage_backend, request,
     repo_root = Path(__file__).resolve().parents[3]
     venv_bin = Path(sys.executable).parent
     extra_path = [str(venv_bin), str(repo_root / 'bin')]
-    os.environ['PATH'] = os.pathsep.join(extra_path +
-                                         [os.environ.get('PATH', '')])
+    os.environ['PATH'] = os.pathsep.join(extra_path + [os.environ.get('PATH', '')])
 
     os.environ['DEPLOY_ENV_CONFIG_JSON'] = json.dumps(config)
     os.environ.pop('DEPLOY_ENV_CONFIG_FILE', None)
     from service_framework.deploy_env_config import _reset_deploy_env
+
     _reset_deploy_env()
 
     # This fixture just reset deploy_env() above. The data persist dir is
@@ -371,6 +375,7 @@ def _diskgraph_deploy_config(tmp_path_factory, storage_backend, request,
     # otherwise source exports land under the old KUMO_HOME while Rust resolves
     # them under this fixture's storage root.
     from kumo.data import reset_active_cache_for_test
+
     reset_active_cache_for_test()
 
     # Clear stale slot holder from a prior crashed pytest run.
@@ -394,15 +399,14 @@ _POOL_SUBPROCESSES_LIVE: List = []
 
 
 def _free_tcp_port() -> str:
-    for family, host in ((socket.AF_INET6, "::"), (socket.AF_INET,
-                                                   "127.0.0.1")):
+    for family, host in ((socket.AF_INET6, '::'), (socket.AF_INET, '127.0.0.1')):
         try:
             with socket.socket(family, socket.SOCK_STREAM) as sock:
                 sock.bind((host, 0))
                 return str(sock.getsockname()[1])
         except OSError:
             continue
-    raise RuntimeError("Unable to reserve a free TCP port")
+    raise RuntimeError('Unable to reserve a free TCP port')
 
 
 def _free_tcp_ports(count: int) -> List[str]:
@@ -415,6 +419,7 @@ def _free_tcp_ports(count: int) -> List[str]:
 def _kill_pool_subprocesses(procs: List, log) -> None:
     import signal
     import subprocess
+
     for proc in procs:
         if proc.poll() is None:
             proc.send_signal(signal.SIGTERM)
@@ -422,8 +427,7 @@ def _kill_pool_subprocesses(procs: List, log) -> None:
         try:
             proc.wait(timeout=15)
         except subprocess.TimeoutExpired:
-            log.warning('pool subprocess %s did not exit on SIGTERM; killing',
-                        proc.pid)
+            log.warning('pool subprocess %s did not exit on SIGTERM; killing', proc.pid)
             proc.kill()
             try:
                 proc.wait(timeout=5)
@@ -431,7 +435,7 @@ def _kill_pool_subprocesses(procs: List, log) -> None:
                 pass
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope='session')
 def _pool_subprocesses(_diskgraph_deploy_config, request):
     """Spawn the pool controller AutoRPC server and a singlehost pool
     worker as long-running subprocesses for the duration of the session.
@@ -457,8 +461,10 @@ def _pool_subprocesses(_diskgraph_deploy_config, request):
     # storage_backend parametrize before spawning fresh ones with the
     # current DEPLOY_ENV_CONFIG_JSON.
     if _POOL_SUBPROCESSES_LIVE:
-        log.info('Tearing down %d stale pool subprocess(es) before respawn',
-                 len(_POOL_SUBPROCESSES_LIVE))
+        log.info(
+            'Tearing down %d stale pool subprocess(es) before respawn',
+            len(_POOL_SUBPROCESSES_LIVE),
+        )
         _kill_pool_subprocesses(list(_POOL_SUBPROCESSES_LIVE), log)
         _POOL_SUBPROCESSES_LIVE.clear()
 
@@ -474,14 +480,19 @@ def _pool_subprocesses(_diskgraph_deploy_config, request):
         return proc
 
     def _check_started() -> None:
-        exited = [(proc.pid, proc.returncode) for proc in procs
-                  if proc.poll() is not None]
+        exited = [
+            (proc.pid, proc.returncode) for proc in procs if proc.poll() is not None
+        ]
         if exited:
             raise RuntimeError(
-                f"Pool subprocess startup failed; exited processes: {exited}")
+                f'Pool subprocess startup failed; exited processes: {exited}'
+            )
 
-    controller_pool_metrics_port, controller_worker_metrics_port, \
-        worker_metrics_port = _free_tcp_ports(3)
+    (
+        controller_pool_metrics_port,
+        controller_worker_metrics_port,
+        worker_metrics_port,
+    ) = _free_tcp_ports(3)
 
     # Controller subprocess. Override POOL_METRICS_PORT (the var its
     # Prometheus exporter actually reads, see ``pool/controller_main.py``)

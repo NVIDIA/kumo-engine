@@ -11,6 +11,7 @@ Every fixture names its columns the way DiskGraph reads them --
 ``ENTITY1``, ``TARGET1``, ``TIMESTAMP`` -- because that is now the only
 naming either backend accepts.
 """
+
 import math
 import os
 import sys
@@ -44,16 +45,13 @@ def _write_parquet(path: str, columns: dict) -> None:
     parquet directory at ``path``."""
     os.makedirs(path, exist_ok=True)
     table = pa.table(columns)
-    pq.write_table(table, os.path.join(path, "part-0.parquet"))
+    pq.write_table(table, os.path.join(path, 'part-0.parquet'))
 
 
 def _custom_source(name: str) -> S3SourceTable:
     return S3SourceTable(
         connector_id='connector_00000000000000000000000000000000',
-        source={
-            'mode': 'relative',
-            'path': name
-        },
+        source={'mode': 'relative', 'path': name},
         file_type=FileType.PARQUET,
     )
 
@@ -61,11 +59,11 @@ def _custom_source(name: str) -> S3SourceTable:
 def _generated(tmp_path, **overrides) -> str:
     """A three-row generated table, named as DiskGraph reads it."""
     columns = {
-        "ENTITY1": pa.array([1, 2, 3], type=pa.int64()),
-        "TARGET1": pa.array([0.1, 0.2, 0.3], type=pa.float64()),
+        'ENTITY1': pa.array([1, 2, 3], type=pa.int64()),
+        'TARGET1': pa.array([0.1, 0.2, 0.3], type=pa.float64()),
     }
     columns.update(overrides)
-    path = str(tmp_path / "generated")
+    path = str(tmp_path / 'generated')
     _write_parquet(path, columns)
     return path
 
@@ -73,15 +71,12 @@ def _generated(tmp_path, **overrides) -> str:
 def _supplied(tmp_path, **overrides) -> str:
     """The same three rows, supplied, with whatever this test changes."""
     columns = {
-        "ENTITY1": pa.array([1, 2, 3], type=pa.int64()),
-        "TARGET1": pa.array([0.1, 0.2, 0.3], type=pa.float64()),
+        'ENTITY1': pa.array([1, 2, 3], type=pa.int64()),
+        'TARGET1': pa.array([0.1, 0.2, 0.3], type=pa.float64()),
     }
     columns.update(overrides)
-    columns = {
-        name: value
-        for name, value in columns.items() if value is not None
-    }
-    path = str(tmp_path / "supplied")
+    columns = {name: value for name, value in columns.items() if value is not None}
+    path = str(tmp_path / 'supplied')
     _write_parquet(path, columns)
     return path
 
@@ -97,19 +92,22 @@ def test_a_singular_entity_column_is_refused_by_the_name_it_needs(tmp_path):
     """The one behaviour change this validator exists to make: ``ENTITY`` is
     not a spelling of ``ENTITY1``, on any connector."""
     generated = _generated(tmp_path)
-    supplied = str(tmp_path / "supplied")
+    supplied = str(tmp_path / 'supplied')
     _write_parquet(
-        supplied, {
-            "ENTITY": pa.array([1, 2, 3], type=pa.int64()),
-            "TARGET1": pa.array([0.1, 0.2, 0.3], type=pa.float64()),
-        })
+        supplied,
+        {
+            'ENTITY': pa.array([1, 2, 3], type=pa.int64()),
+            'TARGET1': pa.array([0.1, 0.2, 0.3], type=pa.float64()),
+        },
+    )
 
-    resp = _validate_supplied_train_table(generated, supplied, None,
-                                          TaskType.REGRESSION)
+    resp = _validate_supplied_train_table(
+        generated, supplied, None, TaskType.REGRESSION
+    )
 
     assert not resp.ok
-    assert "Required column not found" in _titles(resp)
-    assert "missing ENTITY1" in resp.errors[0].message
+    assert 'Required column not found' in _titles(resp)
+    assert 'missing ENTITY1' in resp.errors[0].message
 
 
 def test_a_singular_target_column_is_refused_the_same_way(tmp_path):
@@ -121,39 +119,46 @@ def test_a_singular_target_column_is_refused_the_same_way(tmp_path):
     generated one behind it is refused the same way.
     """
     generated = _generated(tmp_path)
-    supplied = str(tmp_path / "supplied")
+    supplied = str(tmp_path / 'supplied')
     _write_parquet(
-        supplied, {
-            "ENTITY1": pa.array([1, 2, 3], type=pa.int64()),
-            "TARGET": pa.array([0.1, 0.2, 0.3], type=pa.float64()),
-        })
+        supplied,
+        {
+            'ENTITY1': pa.array([1, 2, 3], type=pa.int64()),
+            'TARGET': pa.array([0.1, 0.2, 0.3], type=pa.float64()),
+        },
+    )
 
-    resp = _validate_supplied_train_table(generated, supplied, None,
-                                          TaskType.REGRESSION)
+    resp = _validate_supplied_train_table(
+        generated, supplied, None, TaskType.REGRESSION
+    )
 
     assert not resp.ok
-    assert "Required column not found" in _titles(resp)
-    assert "TARGET1" in resp.errors[0].message
+    assert 'Required column not found' in _titles(resp)
+    assert 'TARGET1' in resp.errors[0].message
 
 
 def test_a_singular_target_is_refused_for_a_link_task_by_name(tmp_path):
     """A link task looks ``TARGET1`` up directly, so it is named as required
     rather than only missed against the generated table."""
     list_t = pa.list_(pa.float64())
-    generated = _generated(tmp_path, TARGET1=pa.array([[0.1], [0.2], [0.3]],
-                                                      type=list_t))
-    supplied = str(tmp_path / "supplied")
+    generated = _generated(
+        tmp_path, TARGET1=pa.array([[0.1], [0.2], [0.3]], type=list_t)
+    )
+    supplied = str(tmp_path / 'supplied')
     _write_parquet(
-        supplied, {
-            "ENTITY1": pa.array([1, 2, 3], type=pa.int64()),
-            "TARGET": pa.array([[0.1], [0.2], [0.3]], type=list_t),
-        })
+        supplied,
+        {
+            'ENTITY1': pa.array([1, 2, 3], type=pa.int64()),
+            'TARGET': pa.array([[0.1], [0.2], [0.3]], type=list_t),
+        },
+    )
 
-    resp = _validate_supplied_train_table(generated, supplied, None,
-                                          TaskType.TEMPORAL_LINK_PREDICTION)
+    resp = _validate_supplied_train_table(
+        generated, supplied, None, TaskType.TEMPORAL_LINK_PREDICTION
+    )
 
     assert not resp.ok
-    assert "missing TARGET1" in resp.errors[0].message
+    assert 'missing TARGET1' in resp.errors[0].message
 
 
 def test_the_source_check_refuses_a_singular_name_before_the_export(tmp_path):
@@ -161,8 +166,7 @@ def test_the_source_check_refuses_a_singular_name_before_the_export(tmp_path):
     refused before anybody pays to export it."""
     generated = _generated(tmp_path)
 
-    errors = missing_source_column_errors(['ENTITY', 'TARGET1'], generated,
-                                          None)
+    errors = missing_source_column_errors(['ENTITY', 'TARGET1'], generated, None)
 
     assert [error.title for error in errors] == ['Required column not found']
     assert 'missing ENTITY1' in errors[0].message
@@ -174,8 +178,9 @@ def test_the_source_check_refuses_a_missing_split_column(tmp_path):
     caught after the export."""
     generated = _generated(tmp_path)
 
-    errors = missing_source_column_errors(['ENTITY1', 'TARGET1'], generated,
-                                          None, 'SPLIT')
+    errors = missing_source_column_errors(
+        ['ENTITY1', 'TARGET1'], generated, None, 'SPLIT'
+    )
 
     assert [error.title for error in errors] == ['Column not found']
     assert 'SPLIT' in errors[0].message
@@ -185,21 +190,20 @@ def test_the_source_check_lets_the_anchor_be_synthesized(tmp_path):
     """A static query's anchor is a sentinel ingest writes, so a source is
     not expected to carry one yet."""
     generated = _generated(
-        tmp_path, TIMESTAMP=pa.array([1, 2, 3], type=pa.timestamp("ns")))
+        tmp_path, TIMESTAMP=pa.array([1, 2, 3], type=pa.timestamp('ns'))
+    )
 
-    assert missing_source_column_errors(['ENTITY1', 'TARGET1'], generated,
-                                        None) == []
+    assert missing_source_column_errors(['ENTITY1', 'TARGET1'], generated, None) == []
 
 
 def test_weight_column_missing(tmp_path):
     generated = _generated(tmp_path)
     supplied = _supplied(tmp_path)
 
-    resp = _validate_supplied_train_table(generated, supplied, "w",
-                                          TaskType.REGRESSION)
+    resp = _validate_supplied_train_table(generated, supplied, 'w', TaskType.REGRESSION)
 
     assert not resp.ok
-    assert "Column not found" in _titles(resp)
+    assert 'Column not found' in _titles(resp)
 
 
 def test_a_table_naming_no_weight_column_passes_every_other_check(tmp_path):
@@ -208,72 +212,79 @@ def test_a_table_naming_no_weight_column_passes_every_other_check(tmp_path):
     Nothing about it is weighted, so nothing weight-shaped is checked -- and
     everything else is, unchanged.
     """
-    resp = _validate_supplied_train_table(_generated(tmp_path),
-                                          _supplied(tmp_path), None,
-                                          TaskType.REGRESSION)
+    resp = _validate_supplied_train_table(
+        _generated(tmp_path), _supplied(tmp_path), None, TaskType.REGRESSION
+    )
 
-    assert resp.ok, f"unexpected errors: {resp.errors}"
+    assert resp.ok, f'unexpected errors: {resp.errors}'
 
 
 def test_an_unweighted_table_is_still_gated_on_its_row_count(tmp_path):
     """The parity checks do not read weights, so naming none keeps them."""
     generated = _generated(tmp_path)  # 3 rows
-    supplied = _supplied(tmp_path, ENTITY1=pa.array([1, 2], type=pa.int64()),
-                         TARGET1=pa.array([0.1, 0.2], type=pa.float64()))
+    supplied = _supplied(
+        tmp_path,
+        ENTITY1=pa.array([1, 2], type=pa.int64()),
+        TARGET1=pa.array([0.1, 0.2], type=pa.float64()),
+    )
 
-    resp = _validate_supplied_train_table(generated, supplied, None,
-                                          TaskType.REGRESSION)
+    resp = _validate_supplied_train_table(
+        generated, supplied, None, TaskType.REGRESSION
+    )
 
     assert not resp.ok
-    assert "Row count mismatch" in _titles(resp)
+    assert 'Row count mismatch' in _titles(resp)
 
 
 def test_an_unweighted_table_is_still_gated_on_its_column_types(tmp_path):
     generated = _generated(tmp_path)
-    supplied = _supplied(tmp_path, ENTITY1=pa.array(["1", "2", "3"],
-                                                    type=pa.string()))
+    supplied = _supplied(tmp_path, ENTITY1=pa.array(['1', '2', '3'], type=pa.string()))
 
-    resp = _validate_supplied_train_table(generated, supplied, None,
-                                          TaskType.REGRESSION)
+    resp = _validate_supplied_train_table(
+        generated, supplied, None, TaskType.REGRESSION
+    )
 
     assert not resp.ok
-    assert "Column type mismatch" in _titles(resp)
+    assert 'Column type mismatch' in _titles(resp)
 
 
 def test_an_unweighted_table_is_still_gated_on_its_columns(tmp_path):
-    generated = _generated(tmp_path, extra=pa.array(["a", "b", "c"],
-                                                    type=pa.string()))
+    generated = _generated(tmp_path, extra=pa.array(['a', 'b', 'c'], type=pa.string()))
     supplied = _supplied(tmp_path)
 
-    resp = _validate_supplied_train_table(generated, supplied, None,
-                                          TaskType.REGRESSION)
+    resp = _validate_supplied_train_table(
+        generated, supplied, None, TaskType.REGRESSION
+    )
 
     assert not resp.ok
-    assert "Column missing in the supplied table" in _titles(resp)
+    assert 'Column missing in the supplied table' in _titles(resp)
 
 
 # Types ######################################################################
 
 
-@pytest.mark.parametrize(("column", "value"), [
-    ("ENTITY1", pa.array([True, False, True], type=pa.bool_())),
-    ("ENTITY1", pa.array([1, 2, 3], type=pa.int32())),
-    ("TARGET1", pa.array([b"a", b"b", b"c"], type=pa.binary())),
-    ("TIMESTAMP", pa.array([1, 2, 3], type=pa.date32())),
-])
-def test_a_column_diskgraph_cannot_read_is_refused_by_type(
-        tmp_path, column, value):
+@pytest.mark.parametrize(
+    ('column', 'value'),
+    [
+        ('ENTITY1', pa.array([True, False, True], type=pa.bool_())),
+        ('ENTITY1', pa.array([1, 2, 3], type=pa.int32())),
+        ('TARGET1', pa.array([b'a', b'b', b'c'], type=pa.binary())),
+        ('TIMESTAMP', pa.array([1, 2, 3], type=pa.date32())),
+    ],
+)
+def test_a_column_diskgraph_cannot_read_is_refused_by_type(tmp_path, column, value):
     """DiskGraph refuses none of these itself: an entity key it cannot read
     resolves to no node, an anchor it cannot read reads as null, and the run
     reports success over whatever survived."""
     generated = _generated(tmp_path, **{column: value})
     supplied = _supplied(tmp_path, **{column: value})
 
-    resp = _validate_supplied_train_table(generated, supplied, None,
-                                          TaskType.REGRESSION)
+    resp = _validate_supplied_train_table(
+        generated, supplied, None, TaskType.REGRESSION
+    )
 
     assert not resp.ok
-    assert "Column type cannot be read" in _titles(resp)
+    assert 'Column type cannot be read' in _titles(resp)
     assert column in resp.errors[0].message
 
 
@@ -281,14 +292,17 @@ def test_a_boolean_entity_is_refused_where_a_boolean_target_is_not(tmp_path):
     """`cell_to_value` reads a boolean and `value_to_pk_key` does not, so an
     entity key is narrower than a target."""
     generated = _generated(
-        tmp_path, TARGET1=pa.array([True, False, True], type=pa.bool_()))
-    supplied = _supplied(tmp_path, TARGET1=pa.array([True, False, True],
-                                                    type=pa.bool_()))
+        tmp_path, TARGET1=pa.array([True, False, True], type=pa.bool_())
+    )
+    supplied = _supplied(
+        tmp_path, TARGET1=pa.array([True, False, True], type=pa.bool_())
+    )
 
-    resp = _validate_supplied_train_table(generated, supplied, None,
-                                          TaskType.REGRESSION)
+    resp = _validate_supplied_train_table(
+        generated, supplied, None, TaskType.REGRESSION
+    )
 
-    assert resp.ok, f"unexpected errors: {resp.errors}"
+    assert resp.ok, f'unexpected errors: {resp.errors}'
 
 
 # Weights ####################################################################
@@ -296,44 +310,36 @@ def test_a_boolean_entity_is_refused_where_a_boolean_target_is_not(tmp_path):
 
 def test_null_weights_deferred_to_ingestion(tmp_path):
     generated = _generated(tmp_path)
-    supplied = _supplied(tmp_path, w=pa.array([1.0, None, 2.0],
-                                              type=pa.float64()))
+    supplied = _supplied(tmp_path, w=pa.array([1.0, None, 2.0], type=pa.float64()))
 
-    resp = _validate_supplied_train_table(generated, supplied, "w",
-                                          TaskType.REGRESSION)
+    resp = _validate_supplied_train_table(generated, supplied, 'w', TaskType.REGRESSION)
 
     assert resp.ok
 
 
 def test_infinite_weights_deferred_to_ingestion(tmp_path):
     generated = _generated(tmp_path)
-    supplied = _supplied(tmp_path, w=pa.array([1.0, math.inf, 2.0],
-                                              type=pa.float64()))
+    supplied = _supplied(tmp_path, w=pa.array([1.0, math.inf, 2.0], type=pa.float64()))
 
-    resp = _validate_supplied_train_table(generated, supplied, "w",
-                                          TaskType.REGRESSION)
+    resp = _validate_supplied_train_table(generated, supplied, 'w', TaskType.REGRESSION)
 
     assert resp.ok
 
 
 def test_non_positive_weights_deferred_to_ingestion(tmp_path):
     generated = _generated(tmp_path)
-    supplied = _supplied(tmp_path, w=pa.array([0.0, -1.0, -2.0],
-                                              type=pa.float64()))
+    supplied = _supplied(tmp_path, w=pa.array([0.0, -1.0, -2.0], type=pa.float64()))
 
-    resp = _validate_supplied_train_table(generated, supplied, "w",
-                                          TaskType.REGRESSION)
+    resp = _validate_supplied_train_table(generated, supplied, 'w', TaskType.REGRESSION)
 
     assert resp.ok
 
 
 def test_negative_weights_deferred_to_ingestion(tmp_path):
     generated = _generated(tmp_path)
-    supplied = _supplied(tmp_path, w=pa.array([1.0, -1.0, 2.0],
-                                              type=pa.float64()))
+    supplied = _supplied(tmp_path, w=pa.array([1.0, -1.0, 2.0], type=pa.float64()))
 
-    resp = _validate_supplied_train_table(generated, supplied, "w",
-                                          TaskType.REGRESSION)
+    resp = _validate_supplied_train_table(generated, supplied, 'w', TaskType.REGRESSION)
 
     assert resp.ok
 
@@ -342,14 +348,17 @@ def test_negative_weights_temporal_lp_no_error(tmp_path):
     list_t = pa.list_(pa.float64())
     targets = pa.array([[0.1], [0.2, 0.3], [0.4]], type=list_t)
     generated = _generated(tmp_path, TARGET1=targets)
-    supplied = _supplied(tmp_path, TARGET1=targets,
-                         w=pa.array([[1.0], [-1.0, 2.0], [3.0]], type=list_t))
+    supplied = _supplied(
+        tmp_path, TARGET1=targets, w=pa.array([[1.0], [-1.0, 2.0], [3.0]], type=list_t)
+    )
 
-    resp = _validate_supplied_train_table(generated, supplied, "w",
-                                          TaskType.TEMPORAL_LINK_PREDICTION)
+    resp = _validate_supplied_train_table(
+        generated, supplied, 'w', TaskType.TEMPORAL_LINK_PREDICTION
+    )
 
-    assert all("negative" not in (error.title or "")
-               for error in resp.errors), f"unexpected errors: {resp.errors}"
+    assert all('negative' not in (error.title or '') for error in resp.errors), (
+        f'unexpected errors: {resp.errors}'
+    )
 
 
 def test_int_weights_happy_path(tmp_path):
@@ -357,22 +366,19 @@ def test_int_weights_happy_path(tmp_path):
     generated = _generated(tmp_path)
     supplied = _supplied(tmp_path, w=pa.array([1, 2, 3], type=pa.int64()))
 
-    resp = _validate_supplied_train_table(generated, supplied, "w",
-                                          TaskType.REGRESSION)
+    resp = _validate_supplied_train_table(generated, supplied, 'w', TaskType.REGRESSION)
 
-    assert resp.ok, f"unexpected errors: {resp.errors}"
+    assert resp.ok, f'unexpected errors: {resp.errors}'
 
 
 def test_a_weight_type_diskgraph_cannot_read_is_refused(tmp_path):
     generated = _generated(tmp_path)
-    supplied = _supplied(tmp_path, w=pa.array(["1", "2", "3"],
-                                              type=pa.string()))
+    supplied = _supplied(tmp_path, w=pa.array(['1', '2', '3'], type=pa.string()))
 
-    resp = _validate_supplied_train_table(generated, supplied, "w",
-                                          TaskType.REGRESSION)
+    resp = _validate_supplied_train_table(generated, supplied, 'w', TaskType.REGRESSION)
 
     assert not resp.ok
-    assert "Column type cannot be read" in _titles(resp)
+    assert 'Column type cannot be read' in _titles(resp)
 
 
 # Array targets ##############################################################
@@ -382,40 +388,42 @@ def test_array_target_scalar_weight_mismatch(tmp_path):
     list_t = pa.list_(pa.float64())
     targets = pa.array([[0.1], [0.2, 0.3], [0.4]], type=list_t)
     generated = _generated(tmp_path, TARGET1=targets)
-    supplied = _supplied(tmp_path, TARGET1=targets,
-                         w=pa.array([1.0, 2.0, 3.0], type=pa.float64()))
+    supplied = _supplied(
+        tmp_path, TARGET1=targets, w=pa.array([1.0, 2.0, 3.0], type=pa.float64())
+    )
 
-    resp = _validate_supplied_train_table(generated, supplied, "w",
-                                          TaskType.TEMPORAL_LINK_PREDICTION)
+    resp = _validate_supplied_train_table(
+        generated, supplied, 'w', TaskType.TEMPORAL_LINK_PREDICTION
+    )
 
     assert not resp.ok
-    assert "Weight column type mismatch for array target" in _titles(resp)
+    assert 'Weight column type mismatch for array target' in _titles(resp)
 
 
 def test_scalar_target_array_weight_mismatch(tmp_path):
     list_t = pa.list_(pa.float64())
     generated = _generated(tmp_path)
-    supplied = _supplied(tmp_path, w=pa.array([[1.0], [2.0], [3.0]],
-                                              type=list_t))
+    supplied = _supplied(tmp_path, w=pa.array([[1.0], [2.0], [3.0]], type=list_t))
 
-    resp = _validate_supplied_train_table(generated, supplied, "w",
-                                          TaskType.REGRESSION)
+    resp = _validate_supplied_train_table(generated, supplied, 'w', TaskType.REGRESSION)
 
     assert not resp.ok
-    assert "Weight column type mismatch for array target" in _titles(resp)
+    assert 'Weight column type mismatch for array target' in _titles(resp)
 
 
 def test_array_target_array_weight_happy_path(tmp_path):
     list_t = pa.list_(pa.float64())
     targets = pa.array([[0.1], [0.2, 0.3], [0.4]], type=list_t)
     generated = _generated(tmp_path, TARGET1=targets)
-    supplied = _supplied(tmp_path, TARGET1=targets,
-                         w=pa.array([[1.0], [2.0, 4.0], [3.0]], type=list_t))
+    supplied = _supplied(
+        tmp_path, TARGET1=targets, w=pa.array([[1.0], [2.0, 4.0], [3.0]], type=list_t)
+    )
 
-    resp = _validate_supplied_train_table(generated, supplied, "w",
-                                          TaskType.TEMPORAL_LINK_PREDICTION)
+    resp = _validate_supplied_train_table(
+        generated, supplied, 'w', TaskType.TEMPORAL_LINK_PREDICTION
+    )
 
-    assert resp.ok, f"unexpected errors: {resp.errors}"
+    assert resp.ok, f'unexpected errors: {resp.errors}'
 
 
 def test_infinite_list_weights_deferred_to_ingestion(tmp_path):
@@ -424,11 +432,14 @@ def test_infinite_list_weights_deferred_to_ingestion(tmp_path):
     targets = pa.array([[0.1], [0.2, 0.3], [0.4]], type=list_t)
     generated = _generated(tmp_path, TARGET1=targets)
     supplied = _supplied(
-        tmp_path, TARGET1=targets, w=pa.array([[1.0], [2.0, math.inf], [3.0]],
-                                              type=list_t))
+        tmp_path,
+        TARGET1=targets,
+        w=pa.array([[1.0], [2.0, math.inf], [3.0]], type=list_t),
+    )
 
-    resp = _validate_supplied_train_table(generated, supplied, "w",
-                                          TaskType.TEMPORAL_LINK_PREDICTION)
+    resp = _validate_supplied_train_table(
+        generated, supplied, 'w', TaskType.TEMPORAL_LINK_PREDICTION
+    )
 
     assert resp.ok
 
@@ -437,11 +448,13 @@ def test_weight_list_lengths_deferred_to_ingestion(tmp_path):
     list_t = pa.list_(pa.float64())
     targets = pa.array([[0.1], [0.2, 0.3], [0.4]], type=list_t)
     generated = _generated(tmp_path, TARGET1=targets)
-    supplied = _supplied(tmp_path, TARGET1=targets,
-                         w=pa.array([[1.0], [2.0], [3.0]], type=list_t))
+    supplied = _supplied(
+        tmp_path, TARGET1=targets, w=pa.array([[1.0], [2.0], [3.0]], type=list_t)
+    )
 
-    resp = _validate_supplied_train_table(generated, supplied, "w",
-                                          TaskType.TEMPORAL_LINK_PREDICTION)
+    resp = _validate_supplied_train_table(
+        generated, supplied, 'w', TaskType.TEMPORAL_LINK_PREDICTION
+    )
 
     assert resp.ok
 
@@ -452,36 +465,42 @@ def test_weight_list_lengths_deferred_to_ingestion(tmp_path):
 def test_null_entity_keys_deferred_to_ingestion(tmp_path):
     """DiskGraph applies the row policy to null keys."""
     generated = _generated(tmp_path)
-    supplied = _supplied(tmp_path, ENTITY1=pa.array([1, None, 3],
-                                                    type=pa.int64()))
+    supplied = _supplied(tmp_path, ENTITY1=pa.array([1, None, 3], type=pa.int64()))
 
-    resp = _validate_supplied_train_table(generated, supplied, None,
-                                          TaskType.REGRESSION)
+    resp = _validate_supplied_train_table(
+        generated, supplied, None, TaskType.REGRESSION
+    )
 
     assert resp.ok
 
 
 def test_null_targets_deferred_to_ingestion(tmp_path):
     generated = _generated(tmp_path)
-    supplied = _supplied(tmp_path, TARGET1=pa.array([0.1, None, 0.3],
-                                                    type=pa.float64()))
+    supplied = _supplied(
+        tmp_path, TARGET1=pa.array([0.1, None, 0.3], type=pa.float64())
+    )
 
-    resp = _validate_supplied_train_table(generated, supplied, None,
-                                          TaskType.REGRESSION)
+    resp = _validate_supplied_train_table(
+        generated, supplied, None, TaskType.REGRESSION
+    )
 
     assert resp.ok
 
 
 def test_an_empty_table_is_refused(tmp_path):
     generated = _generated(tmp_path)
-    supplied = _supplied(tmp_path, ENTITY1=pa.array([], type=pa.int64()),
-                         TARGET1=pa.array([], type=pa.float64()))
+    supplied = _supplied(
+        tmp_path,
+        ENTITY1=pa.array([], type=pa.int64()),
+        TARGET1=pa.array([], type=pa.float64()),
+    )
 
-    resp = _validate_supplied_train_table(generated, supplied, None,
-                                          TaskType.REGRESSION)
+    resp = _validate_supplied_train_table(
+        generated, supplied, None, TaskType.REGRESSION
+    )
 
     assert not resp.ok
-    assert "Row count mismatch" in _titles(resp)
+    assert 'Row count mismatch' in _titles(resp)
 
 
 # Correspondence #############################################################
@@ -491,60 +510,64 @@ def test_dtype_mismatch_is_error(tmp_path):
     generated = _generated(tmp_path)
     # A type DiskGraph reads perfectly well, and not the one generation
     # wrote: exact Arrow parity is its own rule.
-    supplied = _supplied(tmp_path, TARGET1=pa.array([1, 2, 3], type=pa.int64()),
-                         w=pa.array([1.0, 2.0, 3.0], type=pa.float64()))
+    supplied = _supplied(
+        tmp_path,
+        TARGET1=pa.array([1, 2, 3], type=pa.int64()),
+        w=pa.array([1.0, 2.0, 3.0], type=pa.float64()),
+    )
 
-    resp = _validate_supplied_train_table(generated, supplied, "w",
-                                          TaskType.REGRESSION)
+    resp = _validate_supplied_train_table(generated, supplied, 'w', TaskType.REGRESSION)
 
     assert not resp.ok
-    assert "Column type mismatch" in _titles(resp)
+    assert 'Column type mismatch' in _titles(resp)
 
 
 def test_generated_column_missing_in_supplied_is_error(tmp_path):
-    generated = _generated(tmp_path, extra=pa.array(["a", "b", "c"],
-                                                    type=pa.string()))
-    supplied = _supplied(tmp_path, w=pa.array([1.0, 2.0, 3.0],
-                                              type=pa.float64()))
+    generated = _generated(tmp_path, extra=pa.array(['a', 'b', 'c'], type=pa.string()))
+    supplied = _supplied(tmp_path, w=pa.array([1.0, 2.0, 3.0], type=pa.float64()))
 
-    resp = _validate_supplied_train_table(generated, supplied, "w",
-                                          TaskType.REGRESSION)
+    resp = _validate_supplied_train_table(generated, supplied, 'w', TaskType.REGRESSION)
 
     assert not resp.ok
-    assert "Column missing in the supplied table" in _titles(resp)
+    assert 'Column missing in the supplied table' in _titles(resp)
 
 
 @pytest.mark.parametrize(
-    "supplied_timestamp",
+    'supplied_timestamp',
     [
-        pa.array([1, 2, 3], type=pa.timestamp("us", tz="Etc/UTC")),
+        pa.array([1, 2, 3], type=pa.timestamp('us', tz='Etc/UTC')),
         pa.array([1, 2, 3], type=pa.int64()),
     ],
 )
 def test_happy_path(tmp_path, supplied_timestamp):
     generated = _generated(
-        tmp_path, TIMESTAMP=pa.array([1, 2, 3], type=pa.timestamp("ns")))
-    supplied = _supplied(tmp_path, TIMESTAMP=supplied_timestamp,
-                         w=pa.array([1.0, 2.0, 3.0], type=pa.float64()))
+        tmp_path, TIMESTAMP=pa.array([1, 2, 3], type=pa.timestamp('ns'))
+    )
+    supplied = _supplied(
+        tmp_path,
+        TIMESTAMP=supplied_timestamp,
+        w=pa.array([1.0, 2.0, 3.0], type=pa.float64()),
+    )
 
-    resp = _validate_supplied_train_table(generated, supplied, "w",
-                                          TaskType.REGRESSION)
+    resp = _validate_supplied_train_table(generated, supplied, 'w', TaskType.REGRESSION)
 
-    assert resp.ok, f"unexpected errors: {resp.errors}"
+    assert resp.ok, f'unexpected errors: {resp.errors}'
     assert resp.warnings == []
 
 
 def test_row_count_mismatch_error(tmp_path):
     generated = _generated(tmp_path)  # 3 rows
-    supplied = _supplied(tmp_path, ENTITY1=pa.array([1, 2], type=pa.int64()),
-                         TARGET1=pa.array([0.1, 0.2], type=pa.float64()),
-                         w=pa.array([1.0, 2.0], type=pa.float64()))
+    supplied = _supplied(
+        tmp_path,
+        ENTITY1=pa.array([1, 2], type=pa.int64()),
+        TARGET1=pa.array([0.1, 0.2], type=pa.float64()),
+        w=pa.array([1.0, 2.0], type=pa.float64()),
+    )
 
-    resp = _validate_supplied_train_table(generated, supplied, "w",
-                                          TaskType.REGRESSION)
+    resp = _validate_supplied_train_table(generated, supplied, 'w', TaskType.REGRESSION)
 
     assert not resp.ok
-    assert "Row count mismatch" in _titles(resp)
+    assert 'Row count mismatch' in _titles(resp)
 
 
 def test_row_count_mismatch_can_be_explicitly_allowed(tmp_path, monkeypatch):
@@ -556,34 +579,40 @@ def test_row_count_mismatch_can_be_explicitly_allowed(tmp_path, monkeypatch):
         lambda: True,
     )
     generated = _generated(tmp_path)  # 3 rows
-    supplied = _supplied(tmp_path, ENTITY1=pa.array([1, 2], type=pa.int64()),
-                         TARGET1=pa.array([0.1, 0.2], type=pa.float64()),
-                         w=pa.array([1.0, 2.0], type=pa.float64()))
+    supplied = _supplied(
+        tmp_path,
+        ENTITY1=pa.array([1, 2], type=pa.int64()),
+        TARGET1=pa.array([0.1, 0.2], type=pa.float64()),
+        w=pa.array([1.0, 2.0], type=pa.float64()),
+    )
 
-    resp = _validate_supplied_train_table(generated, supplied, "w",
-                                          TaskType.REGRESSION)
+    resp = _validate_supplied_train_table(generated, supplied, 'w', TaskType.REGRESSION)
 
-    assert resp.ok, f"unexpected errors: {resp.errors}"
-    assert [warning.title
-            for warning in resp.warnings] == ['Row count mismatch allowed']
+    assert resp.ok, f'unexpected errors: {resp.errors}'
+    assert [warning.title for warning in resp.warnings] == [
+        'Row count mismatch allowed'
+    ]
 
 
 def test_timestamp_values_deferred_to_ingestion(tmp_path):
     """An integer anchor carries no unit and is read as nanoseconds, so one
     written in seconds dates every row wrongly without failing."""
     nanos = [
-        1_700_000_000_000_000_000, 1_700_000_001_000_000_000,
-        1_700_000_002_000_000_000
+        1_700_000_000_000_000_000,
+        1_700_000_001_000_000_000,
+        1_700_000_002_000_000_000,
     ]
-    generated = _generated(tmp_path,
-                           TIMESTAMP=pa.array(nanos, type=pa.timestamp("ns")))
+    generated = _generated(tmp_path, TIMESTAMP=pa.array(nanos, type=pa.timestamp('ns')))
     supplied = _supplied(
         tmp_path,
-        TIMESTAMP=pa.array([value // 1_000_000_000 for value in nanos],
-                           type=pa.int64()))
+        TIMESTAMP=pa.array(
+            [value // 1_000_000_000 for value in nanos], type=pa.int64()
+        ),
+    )
 
-    resp = _validate_supplied_train_table(generated, supplied, None,
-                                          TaskType.REGRESSION)
+    resp = _validate_supplied_train_table(
+        generated, supplied, None, TaskType.REGRESSION
+    )
 
     assert resp.ok
 
@@ -596,16 +625,19 @@ def test_validate_reads_only_footers(tmp_path):
     from rest.backends.data_backend.activities import custom_train_table as m
 
     generated = _generated(tmp_path)
-    supplied = _supplied(tmp_path, w=pa.array([1.0, 2.0, 3.0],
-                                              type=pa.float64()),
-                         feature=pa.array(["a", "b", "c"]))
+    supplied = _supplied(
+        tmp_path,
+        w=pa.array([1.0, 2.0, 3.0], type=pa.float64()),
+        feature=pa.array(['a', 'b', 'c']),
+    )
 
     def _boom_dataset(*args, **kwargs):
         raise AssertionError(
-            "validator must not materialize parquet via ParquetDataset")
+            'validator must not materialize parquet via ParquetDataset'
+        )
 
     def _boom_read_table(*args, **kwargs):
-        raise AssertionError("validator must not read a table whole")
+        raise AssertionError('validator must not read a table whole')
 
     real_parquet_file = pq.ParquetFile
     opens = []
@@ -620,16 +652,18 @@ def test_validate_reads_only_footers(tmp_path):
             iter_batches_calls.append((args, kwargs))
             return super().iter_batches(*args, **kwargs)
 
-    with mock.patch.object(m.pq, 'ParquetDataset', _boom_dataset), \
-            mock.patch.object(m.pq, 'read_table', _boom_read_table), \
-            mock.patch.object(m.pq, 'ParquetFile', _SpyParquetFile):
-        resp = _validate_supplied_train_table(generated, supplied, "w",
-                                              TaskType.REGRESSION)
+    with (
+        mock.patch.object(m.pq, 'ParquetDataset', _boom_dataset),
+        mock.patch.object(m.pq, 'read_table', _boom_read_table),
+        mock.patch.object(m.pq, 'ParquetFile', _SpyParquetFile),
+    ):
+        resp = _validate_supplied_train_table(
+            generated, supplied, 'w', TaskType.REGRESSION
+        )
 
-    assert resp.ok, f"unexpected errors: {resp.errors}"
+    assert resp.ok, f'unexpected errors: {resp.errors}'
     # Footer-only opens happened (once per table = 2 opens min).
-    assert len(opens) >= 2, (
-        f"expected footer-only ParquetFile opens, got {len(opens)}")
+    assert len(opens) >= 2, f'expected footer-only ParquetFile opens, got {len(opens)}'
     assert iter_batches_calls == []
 
 
@@ -642,11 +676,11 @@ _ = Optional
 # ---------------------------------------------------------------------------
 
 _activity_module = sys.modules[
-    'rest.backends.data_backend.activities.custom_train_table']
+    'rest.backends.data_backend.activities.custom_train_table'
+]
 
 
-def _make_parquet_connector(tmp_path, table_name: str,
-                            df: pd.DataFrame) -> tuple:
+def _make_parquet_connector(tmp_path, table_name: str, df: pd.DataFrame) -> tuple:
     """Write ``df`` as ``<tmp_path>/<table_name>.parquet`` and return
     ``(ParquetConnector, source_path)``.
 
@@ -655,6 +689,7 @@ def _make_parquet_connector(tmp_path, table_name: str,
     return the on-disk parquet file path for that table.
     """
     from kumo.connector.parquet_connector import ParquetConnector
+
     src = tmp_path / f'{table_name}.parquet'
     df.to_parquet(src)
     connector = ParquetConnector(name='test', root_dir=str(tmp_path))
@@ -667,11 +702,13 @@ def test_ingest_custom_train_table_returns_dir_for_file_connector(tmp_path):
 
     Downstream ``materialize_training_table`` requires a directory of
     parquet parts. A single-file source must become a Parquet part inside that directory."""
-    df = pd.DataFrame({
-        'id': [1, 2, 3],
-        'TARGET': [0.1, 0.2, 0.3],
-        'WEIGHT': [1.0, 2.0, 3.0],
-    })
+    df = pd.DataFrame(
+        {
+            'id': [1, 2, 3],
+            'TARGET': [0.1, 0.2, 0.3],
+            'WEIGHT': [1.0, 2.0, 3.0],
+        }
+    )
     connector, _ = _make_parquet_connector(tmp_path, 'custom_tt', df)
 
     spec = mock.Mock()
@@ -680,8 +717,9 @@ def test_ingest_custom_train_table_returns_dir_for_file_connector(tmp_path):
 
     dest = str(tmp_path / 'dest_dir')
 
-    with mock.patch.object(_activity_module, 'get_connector_from_spec',
-                           return_value=connector):
+    with mock.patch.object(
+        _activity_module, 'get_connector_from_spec', return_value=connector
+    ):
         result_path, response = custom_train_table.ingest_custom_train_table(
             custom_train_table_spec=spec,
             custom_train_table_path=dest,
@@ -693,17 +731,19 @@ def test_ingest_custom_train_table_returns_dir_for_file_connector(tmp_path):
         )
 
     assert result_path == dest
-    assert response.ok, f"unexpected errors: {response.errors}"
+    assert response.ok, f'unexpected errors: {response.errors}'
     assert os.path.isdir(dest)
     assert any(name.endswith('.parquet') for name in os.listdir(dest))
     out = pd.read_parquet(dest)
     pd.testing.assert_frame_equal(
         out.sort_values('id').reset_index(drop=True),
-        df.sort_values('id').reset_index(drop=True))
+        df.sort_values('id').reset_index(drop=True),
+    )
 
 
 def test_ingest_custom_train_table_connector_error_returns_validation_error(
-        tmp_path, caplog):
+    tmp_path, caplog
+):
     """If ``_get_path`` raises on a FileConnector (e.g. mis-configured
     root_dir / missing file in connector internals), the activity must
     surface a ValidationError on the response rather than propagating
@@ -714,15 +754,17 @@ def test_ingest_custom_train_table_connector_error_returns_validation_error(
     # downstream connector internals (e.g. listing a missing remote dir)
     # raising under the FileConnector branch.
     provider_secret = 'custom-table-provider-secret-must-not-escape'
-    with mock.patch.object(connector, '_get_path',
-                           side_effect=RuntimeError(provider_secret)):
+    with mock.patch.object(
+        connector, '_get_path', side_effect=RuntimeError(provider_secret)
+    ):
         spec = mock.Mock()
         spec.source_table = _custom_source('custom_tt')
         spec.connector_spec = mock.Mock()
         dest = str(tmp_path / 'unused_dest_dir')
 
-        with mock.patch.object(_activity_module, 'get_connector_from_spec',
-                               return_value=connector):
+        with mock.patch.object(
+            _activity_module, 'get_connector_from_spec', return_value=connector
+        ):
             result_path, response = custom_train_table.ingest_custom_train_table(
                 custom_train_table_spec=spec,
                 custom_train_table_path=dest,
@@ -737,15 +779,15 @@ def test_ingest_custom_train_table_connector_error_returns_validation_error(
     # unchanged (matches the warehouse-unload error branch).
     assert result_path == dest
     assert not response.ok
-    assert any(e.title == "Failed to ingest custom training table"
-               for e in response.errors)
+    assert any(
+        e.title == 'Failed to ingest custom training table' for e in response.errors
+    )
     rendered_errors = ' '.join(e.message for e in response.errors)
     assert provider_secret not in rendered_errors
     assert provider_secret not in caplog.text
 
 
-def test_custom_train_table_connector_resolution_error_is_sanitized(
-        tmp_path, caplog):
+def test_custom_train_table_connector_resolution_error_is_sanitized(tmp_path, caplog):
     provider_secret = 'custom-table-resolution-token-must-not-escape'
     spec = mock.Mock()
     spec.source_table = _custom_source('custom_tt')
@@ -753,9 +795,9 @@ def test_custom_train_table_connector_resolution_error_is_sanitized(
     dest = str(tmp_path / 'unused_dest_dir')
 
     with mock.patch.object(
-            _activity_module,
-            'get_connector_from_spec',
-            side_effect=RuntimeError(provider_secret),
+        _activity_module,
+        'get_connector_from_spec',
+        side_effect=RuntimeError(provider_secret),
     ):
         result_path, response = custom_train_table.ingest_custom_train_table(
             custom_train_table_spec=spec,
@@ -768,8 +810,9 @@ def test_custom_train_table_connector_resolution_error_is_sanitized(
         )
 
     assert result_path == dest
-    assert [error.message for error in response.errors
-            ] == [custom_train_table.SAFE_TABLE_INGESTION_ERROR_MESSAGE]
+    assert [error.message for error in response.errors] == [
+        custom_train_table.SAFE_TABLE_INGESTION_ERROR_MESSAGE
+    ]
     assert provider_secret not in caplog.text
 
 
@@ -793,19 +836,20 @@ def test_ingest_custom_train_table_warehouse_branch(tmp_path):
 
     class _FakeWarehouseConnector:
         def open(self):
-            calls.append(('open', ))
+            calls.append(('open',))
 
-        def export_table_to_blob_storage(self, table_name: str,
-                                         out_path: str) -> None:
+        def export_table_to_blob_storage(self, table_name: str, out_path: str) -> None:
             calls.append(('export', table_name, out_path))
             # Write a part to the dest so the synthesize step has
             # something to inspect.
             os.makedirs(out_path, exist_ok=True)
             pq.write_table(
-                pa.table({
-                    'ENTITY': pa.array([0, 1, 2], type=pa.int64()),
-                    'TARGET': pa.array([1, 2, 3], type=pa.int64()),
-                }),
+                pa.table(
+                    {
+                        'ENTITY': pa.array([0, 1, 2], type=pa.int64()),
+                        'TARGET': pa.array([1, 2, 3], type=pa.int64()),
+                    }
+                ),
                 os.path.join(out_path, 'part-00000.parquet'),
             )
 
@@ -814,8 +858,9 @@ def test_ingest_custom_train_table_warehouse_branch(tmp_path):
     spec.source_table = _custom_source('wh_table')
     spec.connector_spec = mock.Mock()
 
-    with mock.patch.object(_activity_module, 'get_connector_from_spec',
-                           return_value=connector):
+    with mock.patch.object(
+        _activity_module, 'get_connector_from_spec', return_value=connector
+    ):
         # Use a task-shape that triggers TIMESTAMP synthesis (static
         # node-pred, no entity_time_col) so the post-export step runs.
         result_path, response = custom_train_table.ingest_custom_train_table(
@@ -830,14 +875,15 @@ def test_ingest_custom_train_table_warehouse_branch(tmp_path):
         )
 
     assert result_path == dest
-    assert response.ok, f"unexpected errors: {response.errors}"
+    assert response.ok, f'unexpected errors: {response.errors}'
 
     # Pre-clean must have removed the stale file before export ran.
     assert not os.path.exists(stale), (
-        "warehouse branch did not pre-clean stale parquet before export")
+        'warehouse branch did not pre-clean stale parquet before export'
+    )
 
     # Call order: open() then export_table_to_blob_storage().
-    assert calls[0] == ('open', )
+    assert calls[0] == ('open',)
     assert calls[1] == ('export', 'wh_table', dest)
 
     # Synthesize must have run AFTER export — the part now has a
@@ -852,14 +898,18 @@ def test_custom_train_table_snowflake_uses_shared_reader(tmp_path):
     from kumoapi.typing import Dtype
 
     from kumo.connector.snowflake_connector import SnowflakeConnector
-    connector = SnowflakeConnector('snowflake', 'account', 'warehouse',
-                                   'database', 'schema')
+
+    connector = SnowflakeConnector(
+        'snowflake', 'account', 'warehouse', 'database', 'schema'
+    )
     connector._context = mock.Mock()
     cursor = mock.Mock()
-    source = pa.table({
-        'ENTITY': pa.array([1, 2], type=pa.int64()),
-        'TARGET': pa.array([None, 3], type=pa.int64()),
-    })
+    source = pa.table(
+        {
+            'ENTITY': pa.array([1, 2], type=pa.int64()),
+            'TARGET': pa.array([None, 3], type=pa.int64()),
+        }
+    )
     connector._context.cursor.return_value = cursor
     connector.get_query_metadata = mock.Mock(return_value=mock.Mock(cols=[]))
     for name in source.column_names:
@@ -869,20 +919,25 @@ def test_custom_train_table_snowflake_uses_shared_reader(tmp_path):
 
     def prepare(reader, table, dest, **kwargs):
         from kumo_core.sources.types import ReadMode, StagedTable
+
         os.makedirs(dest, exist_ok=True)
         path = os.path.join(dest, 'part-00000.parquet')
         pq.write_table(source, path)
-        return StagedTable(directory=dest, paths=(path, ),
-                           version='custom-source',
-                           source_size=os.path.getsize(path), num_rows=2,
-                           mode_used=ReadMode.STAGED)
+        return StagedTable(
+            directory=dest,
+            paths=(path,),
+            version='custom-source',
+            source_size=os.path.getsize(path),
+            num_rows=2,
+            mode_used=ReadMode.STAGED,
+        )
 
     connector.export_table_to_blob_storage = mock.Mock(
-        side_effect=AssertionError('warehouse COPY must not run'))
+        side_effect=AssertionError('warehouse COPY must not run')
+    )
     spec = mock.Mock(
         source_table=SnowflakeSourceTable(
-            snowflake_connector_id=(
-                'connector_00000000000000000000000000000000'),
+            snowflake_connector_id=('connector_00000000000000000000000000000000'),
             database='DATABASE',
             schema_name='SCHEMA',
             table='CUSTOM_TT',
@@ -891,10 +946,16 @@ def test_custom_train_table_snowflake_uses_shared_reader(tmp_path):
     )
     destination = str(tmp_path / 'snowflake')
 
-    with mock.patch.object(_activity_module, 'get_connector_from_spec',
-                           return_value=connector), mock.patch(
-                               'kumo_snowflake.SnowflakeSourceReader.prepare',
-                               autospec=True, side_effect=prepare) as acquire:
+    with (
+        mock.patch.object(
+            _activity_module, 'get_connector_from_spec', return_value=connector
+        ),
+        mock.patch(
+            'kumo_snowflake.SnowflakeSourceReader.prepare',
+            autospec=True,
+            side_effect=prepare,
+        ) as acquire,
+    ):
         result_path, response = custom_train_table.ingest_custom_train_table(
             custom_train_table_spec=spec,
             custom_train_table_path=destination,
@@ -909,7 +970,8 @@ def test_custom_train_table_snowflake_uses_shared_reader(tmp_path):
     assert result_path == destination
     connector.export_table_to_blob_storage.assert_not_called()
     assert acquire.call_args.kwargs['sql'] == (
-        'SELECT * FROM "DATABASE"."SCHEMA"."CUSTOM_TT"')
+        'SELECT * FROM "DATABASE"."SCHEMA"."CUSTOM_TT"'
+    )
     result = pq.read_table(os.path.join(destination, 'part-00000.parquet'))
     assert result.schema == source.schema
     assert result.to_pydict() == source.to_pydict()
@@ -920,17 +982,21 @@ def _write_one_row(_name, path, **_kwargs):
     nothing leaves an empty destination, which the emptiness check correctly
     reports as an empty source."""
     os.makedirs(path, exist_ok=True)
-    pq.write_table(pa.table({'ENTITY': pa.array([1], type=pa.int64())}),
-                   os.path.join(path, 'part-00000.parquet'))
+    pq.write_table(
+        pa.table({'ENTITY': pa.array([1], type=pa.int64())}),
+        os.path.join(path, 'part-00000.parquet'),
+    )
 
 
 @pytest.mark.parametrize('custom_sql', [False, True])
 def test_custom_train_table_databricks_is_staged_like_any_warehouse(
-        tmp_path, custom_sql):
+    tmp_path, custom_sql
+):
     """Databricks takes the same warehouse branch as Snowflake and BigQuery:
     the connector exports to Kumo-owned parquet and the engine is handed a
     path, never a source spec or a credential file."""
     from kumo.connector.databricks_connector import DatabricksConnector
+
     connector = DatabricksConnector(
         'databricks',
         host='https://workspace.example.com',
@@ -956,15 +1022,16 @@ def test_custom_train_table_databricks_is_staged_like_any_warehouse(
     destination = str(tmp_path / 'databricks')
 
     with (
-            mock.patch.object(_activity_module, 'get_connector_from_spec',
-                              return_value=connector),
-            mock.patch.object(connector, 'open'),
-            mock.patch.object(connector, 'close'),
-            mock.patch.object(connector, 'export_table_read_only',
-                              side_effect=_write_one_row) as export,
-            mock.patch.object(_activity_module,
-                              '_synthesize_sentinel_timestamp'),
-            mock.patch('kumo.data.custom_sql.validate_connector_sql_scope'),
+        mock.patch.object(
+            _activity_module, 'get_connector_from_spec', return_value=connector
+        ),
+        mock.patch.object(connector, 'open'),
+        mock.patch.object(connector, 'close'),
+        mock.patch.object(
+            connector, 'export_table_read_only', side_effect=_write_one_row
+        ) as export,
+        mock.patch.object(_activity_module, '_synthesize_sentinel_timestamp'),
+        mock.patch('kumo.data.custom_sql.validate_connector_sql_scope'),
     ):
         path, response = custom_train_table.ingest_custom_train_table(
             custom_train_table_spec=spec,
@@ -999,6 +1066,7 @@ def test_ingest_custom_train_table_unsupported_connector_raises(tmp_path):
     # Sanity-check the contract assumption: a PandasConnector is neither
     # a FileConnector nor exposes ``export_table_to_blob_storage``.
     from kumo.connector.file_connector import FileConnector as _FC
+
     assert not isinstance(connector, _FC)
     assert not hasattr(connector, 'export_table_to_blob_storage')
 
@@ -1007,8 +1075,9 @@ def test_ingest_custom_train_table_unsupported_connector_raises(tmp_path):
     spec.connector_spec = mock.Mock()
     dest = str(tmp_path / 'unused_dest_dir')
 
-    with mock.patch.object(_activity_module, 'get_connector_from_spec',
-                           return_value=connector):
+    with mock.patch.object(
+        _activity_module, 'get_connector_from_spec', return_value=connector
+    ):
         with pytest.raises(UnsupportedInDiskgraphError):
             custom_train_table.ingest_custom_train_table(
                 custom_train_table_spec=spec,
@@ -1027,11 +1096,13 @@ def test_ingest_custom_train_table_idempotent_on_retry(tmp_path):
     and produce identical content. Exercises both the pre-clean of stale
     files in dest and the ``overwrite=True`` on ``copy_file`` for the
     single-file FileConnector branch."""
-    df = pd.DataFrame({
-        'id': [1, 2, 3],
-        'TARGET': [0.1, 0.2, 0.3],
-        'WEIGHT': [1.0, 2.0, 3.0],
-    })
+    df = pd.DataFrame(
+        {
+            'id': [1, 2, 3],
+            'TARGET': [0.1, 0.2, 0.3],
+            'WEIGHT': [1.0, 2.0, 3.0],
+        }
+    )
     connector, _ = _make_parquet_connector(tmp_path, 'custom_tt', df)
 
     spec = mock.Mock()
@@ -1039,8 +1110,9 @@ def test_ingest_custom_train_table_idempotent_on_retry(tmp_path):
     spec.connector_spec = mock.Mock()
     dest = str(tmp_path / 'dest_dir')
 
-    with mock.patch.object(_activity_module, 'get_connector_from_spec',
-                           return_value=connector):
+    with mock.patch.object(
+        _activity_module, 'get_connector_from_spec', return_value=connector
+    ):
         # First attempt — populates dest.
         result1, resp1 = custom_train_table.ingest_custom_train_table(
             custom_train_table_spec=spec,
@@ -1051,17 +1123,19 @@ def test_ingest_custom_train_table_idempotent_on_retry(tmp_path):
             query_type=QueryType.TEMPORAL,
             list_distinct_target_is_array=False,
         )
-        assert resp1.ok, f"first call errors: {resp1.errors}"
+        assert resp1.ok, f'first call errors: {resp1.errors}'
         first_out = pd.read_parquet(dest)
 
         # Drop a stale parquet under dest that the second attempt must
         # pre-clean. This simulates a partial-failure state from a prior
         # Temporal attempt.
         pq.write_table(
-            pa.table({
-                'id': pa.array([99], type=pa.int64()),
-                'STALE_COL': pa.array(['x'], type=pa.string()),
-            }),
+            pa.table(
+                {
+                    'id': pa.array([99], type=pa.int64()),
+                    'STALE_COL': pa.array(['x'], type=pa.string()),
+                }
+            ),
             os.path.join(dest, 'part-stale.parquet'),
         )
 
@@ -1079,11 +1153,12 @@ def test_ingest_custom_train_table_idempotent_on_retry(tmp_path):
         )
 
     assert result1 == result2 == dest
-    assert resp2.ok, f"second call errors: {resp2.errors}"
+    assert resp2.ok, f'second call errors: {resp2.errors}'
     second_out = pd.read_parquet(dest)
     pd.testing.assert_frame_equal(
         first_out.sort_values('id').reset_index(drop=True),
-        second_out.sort_values('id').reset_index(drop=True))
+        second_out.sort_values('id').reset_index(drop=True),
+    )
     # Stale file must be gone after the pre-clean.
     assert not os.path.exists(os.path.join(dest, 'part-stale.parquet'))
 
@@ -1105,15 +1180,17 @@ def _schema_names(parquet_path: str) -> list:
 def test_synthesize_sentinel_timestamp_temporal_is_noop(tmp_path):
     """Temporal queries already carry real ``TIMESTAMP``; synthesis must
     not touch the file even if for some reason TIMESTAMP is missing."""
-    parquet_dir = str(tmp_path / "tt")
+    parquet_dir = str(tmp_path / 'tt')
     os.makedirs(parquet_dir)
-    part = os.path.join(parquet_dir, "part-00000.parquet")
+    part = os.path.join(parquet_dir, 'part-00000.parquet')
     _write_synth_parquet(
-        part, {
-            "ENTITY": pa.array([0, 1, 2], type=pa.int64()),
-            "TARGET": pa.array([1.0, 2.0, 3.0], type=pa.float64()),
-        })
-    original_bytes = open(part, "rb").read()
+        part,
+        {
+            'ENTITY': pa.array([0, 1, 2], type=pa.int64()),
+            'TARGET': pa.array([1.0, 2.0, 3.0], type=pa.float64()),
+        },
+    )
+    original_bytes = open(part, 'rb').read()
 
     custom_train_table._synthesize_sentinel_timestamp(
         parquet_dir,
@@ -1124,21 +1201,23 @@ def test_synthesize_sentinel_timestamp_temporal_is_noop(tmp_path):
     )
 
     # Temporal → no-op: file must be byte-identical.
-    assert open(part, "rb").read() == original_bytes
-    assert "TIMESTAMP" not in _schema_names(part)
+    assert open(part, 'rb').read() == original_bytes
+    assert 'TIMESTAMP' not in _schema_names(part)
 
 
 def test_synthesize_sentinel_timestamp_static_node_pred_no_time_synth(tmp_path):
     """Static node-pred without entity_time_col → synthesize zero-filled
     int64 ``TIMESTAMP``."""
-    parquet_dir = str(tmp_path / "tt")
+    parquet_dir = str(tmp_path / 'tt')
     os.makedirs(parquet_dir)
-    part = os.path.join(parquet_dir, "part-00000.parquet")
+    part = os.path.join(parquet_dir, 'part-00000.parquet')
     _write_synth_parquet(
-        part, {
-            "ENTITY": pa.array([10, 20, 30], type=pa.int64()),
-            "TARGET": pa.array([0.5, 0.6, 0.7], type=pa.float64()),
-        })
+        part,
+        {
+            'ENTITY': pa.array([10, 20, 30], type=pa.int64()),
+            'TARGET': pa.array([0.5, 0.6, 0.7], type=pa.float64()),
+        },
+    )
 
     custom_train_table._synthesize_sentinel_timestamp(
         parquet_dir,
@@ -1149,28 +1228,29 @@ def test_synthesize_sentinel_timestamp_static_node_pred_no_time_synth(tmp_path):
     )
 
     schema = pq.read_schema(part)
-    assert "TIMESTAMP" in schema.names
-    assert schema.field("TIMESTAMP").type == pa.int64()
+    assert 'TIMESTAMP' in schema.names
+    assert schema.field('TIMESTAMP').type == pa.int64()
     table = pq.read_table(part)
-    assert table.column("TIMESTAMP").to_pylist() == [0, 0, 0]
+    assert table.column('TIMESTAMP').to_pylist() == [0, 0, 0]
     # Other columns must be preserved.
-    assert table.column("ENTITY").to_pylist() == [10, 20, 30]
+    assert table.column('ENTITY').to_pylist() == [10, 20, 30]
 
 
 def test_synthesize_sentinel_timestamp_static_lp_array_synth(tmp_path):
     """Static LP with ``list_distinct_target_is_array=True`` → synthesize
     zero-filled ``TIMESTAMP`` (matches DG's static-LP-array emission)."""
-    parquet_dir = str(tmp_path / "tt")
+    parquet_dir = str(tmp_path / 'tt')
     os.makedirs(parquet_dir)
-    part = os.path.join(parquet_dir, "part-00000.parquet")
+    part = os.path.join(parquet_dir, 'part-00000.parquet')
     _write_synth_parquet(
-        part, {
-            "ENTITY":
-            pa.array([0, 1, 2], type=pa.int64()),
-            "TARGET":
-            pa.array([["a", "b"], ["c"], ["d", "e"]], type=pa.list_(
-                pa.string())),
-        })
+        part,
+        {
+            'ENTITY': pa.array([0, 1, 2], type=pa.int64()),
+            'TARGET': pa.array(
+                [['a', 'b'], ['c'], ['d', 'e']], type=pa.list_(pa.string())
+            ),
+        },
+    )
 
     custom_train_table._synthesize_sentinel_timestamp(
         parquet_dir,
@@ -1181,9 +1261,9 @@ def test_synthesize_sentinel_timestamp_static_lp_array_synth(tmp_path):
     )
 
     table = pq.read_table(part)
-    assert "TIMESTAMP" in table.schema.names
-    assert table.schema.field("TIMESTAMP").type == pa.int64()
-    assert table.column("TIMESTAMP").to_pylist() == [0, 0, 0]
+    assert 'TIMESTAMP' in table.schema.names
+    assert table.schema.field('TIMESTAMP').type == pa.int64()
+    assert table.column('TIMESTAMP').to_pylist() == [0, 0, 0]
 
 
 def test_synthesize_sentinel_timestamp_already_present_is_noop(tmp_path):
@@ -1191,16 +1271,18 @@ def test_synthesize_sentinel_timestamp_already_present_is_noop(tmp_path):
     ``TIMESTAMP`` (e.g. customer's source includes it, or a previous
     Temporal attempt synthesized it), the helper must skip without
     rewriting the file."""
-    parquet_dir = str(tmp_path / "tt")
+    parquet_dir = str(tmp_path / 'tt')
     os.makedirs(parquet_dir)
-    part = os.path.join(parquet_dir, "part-00000.parquet")
+    part = os.path.join(parquet_dir, 'part-00000.parquet')
     _write_synth_parquet(
-        part, {
-            "ENTITY": pa.array([0, 1], type=pa.int64()),
-            "TARGET": pa.array([0.1, 0.2], type=pa.float64()),
-            "TIMESTAMP": pa.array([42, 43], type=pa.int64()),
-        })
-    original_bytes = open(part, "rb").read()
+        part,
+        {
+            'ENTITY': pa.array([0, 1], type=pa.int64()),
+            'TARGET': pa.array([0.1, 0.2], type=pa.float64()),
+            'TIMESTAMP': pa.array([42, 43], type=pa.int64()),
+        },
+    )
+    original_bytes = open(part, 'rb').read()
 
     custom_train_table._synthesize_sentinel_timestamp(
         parquet_dir,
@@ -1212,37 +1294,43 @@ def test_synthesize_sentinel_timestamp_already_present_is_noop(tmp_path):
 
     # Byte-identical: no rewrite happened. Crucially, the existing
     # TIMESTAMP values (42, 43) are NOT overwritten by zeros.
-    assert open(part, "rb").read() == original_bytes
-    assert pq.read_table(part).column("TIMESTAMP").to_pylist() == [42, 43]
+    assert open(part, 'rb').read() == original_bytes
+    assert pq.read_table(part).column('TIMESTAMP').to_pylist() == [42, 43]
 
 
 def test_synthesize_sentinel_timestamp_multi_part_directory(tmp_path):
     """Multi-part directory layout (Spark/Hive style): synthesize must
     process every ``part-*.parquet`` independently, skipping files that
     already have ``TIMESTAMP`` and rewriting only those that don't."""
-    parquet_dir = str(tmp_path / "tt")
+    parquet_dir = str(tmp_path / 'tt')
     os.makedirs(parquet_dir)
-    part0 = os.path.join(parquet_dir, "part-00000.parquet")
-    part1 = os.path.join(parquet_dir, "part-00001.parquet")
-    part2 = os.path.join(parquet_dir, "part-00002.parquet")
+    part0 = os.path.join(parquet_dir, 'part-00000.parquet')
+    part1 = os.path.join(parquet_dir, 'part-00001.parquet')
+    part2 = os.path.join(parquet_dir, 'part-00002.parquet')
     _write_synth_parquet(
-        part0, {
-            "ENTITY": pa.array([0, 1], type=pa.int64()),
-            "TARGET": pa.array([0.1, 0.2], type=pa.float64()),
-        })
+        part0,
+        {
+            'ENTITY': pa.array([0, 1], type=pa.int64()),
+            'TARGET': pa.array([0.1, 0.2], type=pa.float64()),
+        },
+    )
     _write_synth_parquet(
-        part1, {
-            "ENTITY": pa.array([2, 3], type=pa.int64()),
-            "TARGET": pa.array([0.3, 0.4], type=pa.float64()),
-        })
+        part1,
+        {
+            'ENTITY': pa.array([2, 3], type=pa.int64()),
+            'TARGET': pa.array([0.3, 0.4], type=pa.float64()),
+        },
+    )
     # Pre-populate part2 with TIMESTAMP — must remain untouched.
     _write_synth_parquet(
-        part2, {
-            "ENTITY": pa.array([4, 5], type=pa.int64()),
-            "TARGET": pa.array([0.5, 0.6], type=pa.float64()),
-            "TIMESTAMP": pa.array([100, 200], type=pa.int64()),
-        })
-    part2_bytes = open(part2, "rb").read()
+        part2,
+        {
+            'ENTITY': pa.array([4, 5], type=pa.int64()),
+            'TARGET': pa.array([0.5, 0.6], type=pa.float64()),
+            'TIMESTAMP': pa.array([100, 200], type=pa.int64()),
+        },
+    )
+    part2_bytes = open(part2, 'rb').read()
 
     custom_train_table._synthesize_sentinel_timestamp(
         parquet_dir,
@@ -1252,28 +1340,30 @@ def test_synthesize_sentinel_timestamp_multi_part_directory(tmp_path):
         entity_time_col=None,
     )
 
-    assert pq.read_table(part0).column("TIMESTAMP").to_pylist() == [0, 0]
-    assert pq.read_table(part1).column("TIMESTAMP").to_pylist() == [0, 0]
+    assert pq.read_table(part0).column('TIMESTAMP').to_pylist() == [0, 0]
+    assert pq.read_table(part1).column('TIMESTAMP').to_pylist() == [0, 0]
     # part2 was not rewritten — original values preserved byte-for-byte.
-    assert open(part2, "rb").read() == part2_bytes
-    assert pq.read_table(part2).column("TIMESTAMP").to_pylist() == [100, 200]
+    assert open(part2, 'rb').read() == part2_bytes
+    assert pq.read_table(part2).column('TIMESTAMP').to_pylist() == [100, 200]
 
 
 def test_synthesize_sentinel_timestamp_atomicity_on_failure(tmp_path):
     """If the parquet write to the tmp path raises mid-stream, the
     original parquet at ``parquet_path`` MUST be byte-identical and no
     stale ``.tmp`` file is left behind."""
-    from rest.backends.data_backend.activities import \
-        custom_train_table as _ct_mod
-    parquet_dir = str(tmp_path / "tt")
+    from rest.backends.data_backend.activities import custom_train_table as _ct_mod
+
+    parquet_dir = str(tmp_path / 'tt')
     os.makedirs(parquet_dir)
-    part = os.path.join(parquet_dir, "part-00000.parquet")
+    part = os.path.join(parquet_dir, 'part-00000.parquet')
     _write_synth_parquet(
-        part, {
-            "ENTITY": pa.array([0, 1, 2], type=pa.int64()),
-            "TARGET": pa.array([0.1, 0.2, 0.3], type=pa.float64()),
-        })
-    original_bytes = open(part, "rb").read()
+        part,
+        {
+            'ENTITY': pa.array([0, 1, 2], type=pa.int64()),
+            'TARGET': pa.array([0.1, 0.2, 0.3], type=pa.float64()),
+        },
+    )
+    original_bytes = open(part, 'rb').read()
 
     # The streaming helper writes batches through pq.ParquetWriter — patch
     # write_table on the writer instance so we exercise the cleanup branch
@@ -1283,13 +1373,13 @@ def test_synthesize_sentinel_timestamp_atomicity_on_failure(tmp_path):
     class _BoomWriter:
         def __init__(self, dest, *a, **kw):
             # Drop a partial tmp so we can verify the cleanup branch.
-            if isinstance(dest, str) and dest.endswith(".tmp"):
-                with open(dest, "wb") as fh:
-                    fh.write(b"PARTIAL")
+            if isinstance(dest, str) and dest.endswith('.tmp'):
+                with open(dest, 'wb') as fh:
+                    fh.write(b'PARTIAL')
             self._dest = dest
 
         def write_table(self, *a, **kw):
-            raise IOError("simulated mid-write crash")
+            raise IOError('simulated mid-write crash')
 
         def __enter__(self):
             return self
@@ -1298,8 +1388,8 @@ def test_synthesize_sentinel_timestamp_atomicity_on_failure(tmp_path):
             return False
 
     assert real_writer_cls is not None  # silence unused-binding lint
-    with mock.patch.object(_ct_mod.pq, "ParquetWriter", _BoomWriter):
-        with pytest.raises(IOError, match="simulated mid-write crash"):
+    with mock.patch.object(_ct_mod.pq, 'ParquetWriter', _BoomWriter):
+        with pytest.raises(IOError, match='simulated mid-write crash'):
             custom_train_table._synthesize_sentinel_timestamp(
                 parquet_dir,
                 task_type=TaskType.REGRESSION,
@@ -1309,9 +1399,9 @@ def test_synthesize_sentinel_timestamp_atomicity_on_failure(tmp_path):
             )
 
     # Original parquet untouched.
-    assert open(part, "rb").read() == original_bytes
+    assert open(part, 'rb').read() == original_bytes
     # Stale tmp must have been cleaned up by the helper.
-    assert not os.path.exists(part + ".tmp")
+    assert not os.path.exists(part + '.tmp')
 
 
 def test_synthesize_sentinel_timestamp_static_lp_non_array_is_noop(tmp_path):
@@ -1320,15 +1410,17 @@ def test_synthesize_sentinel_timestamp_static_lp_non_array_is_noop(tmp_path):
     under approach B's current scope. The customer's parquet will lack
     ``PSEUDO_TIMESTAMP`` and downstream consumers will fail naturally
     — we explicitly do not synthesize ``PSEUDO_TIMESTAMP`` here."""
-    parquet_dir = str(tmp_path / "tt")
+    parquet_dir = str(tmp_path / 'tt')
     os.makedirs(parquet_dir)
-    part = os.path.join(parquet_dir, "part-00000.parquet")
+    part = os.path.join(parquet_dir, 'part-00000.parquet')
     _write_synth_parquet(
-        part, {
-            "ENTITY": pa.array([0, 1, 2], type=pa.int64()),
-            "TARGET": pa.array([0, 1, 2], type=pa.int64()),
-        })
-    original_bytes = open(part, "rb").read()
+        part,
+        {
+            'ENTITY': pa.array([0, 1, 2], type=pa.int64()),
+            'TARGET': pa.array([0, 1, 2], type=pa.int64()),
+        },
+    )
+    original_bytes = open(part, 'rb').read()
 
     custom_train_table._synthesize_sentinel_timestamp(
         parquet_dir,
@@ -1340,42 +1432,42 @@ def test_synthesize_sentinel_timestamp_static_lp_non_array_is_noop(tmp_path):
 
     # No-op: file must be byte-identical, no TIMESTAMP and no
     # PSEUDO_TIMESTAMP appended.
-    assert open(part, "rb").read() == original_bytes
+    assert open(part, 'rb').read() == original_bytes
     schema_names = _schema_names(part)
-    assert "TIMESTAMP" not in schema_names
-    assert "PSEUDO_TIMESTAMP" not in schema_names
+    assert 'TIMESTAMP' not in schema_names
+    assert 'PSEUDO_TIMESTAMP' not in schema_names
 
 
-def test_synthesize_sentinel_timestamp_static_np_with_entity_time_is_noop(
-        tmp_path):
+def test_synthesize_sentinel_timestamp_static_np_with_entity_time_is_noop(tmp_path):
     """Static node-pred WITH ``entity_time_col`` set: the customer
     supplies real per-row time via the entity column; synthesis must
     not overwrite that with zeros."""
-    parquet_dir = str(tmp_path / "tt")
+    parquet_dir = str(tmp_path / 'tt')
     os.makedirs(parquet_dir)
-    part = os.path.join(parquet_dir, "part-00000.parquet")
+    part = os.path.join(parquet_dir, 'part-00000.parquet')
     _write_synth_parquet(
-        part, {
-            "ENTITY": pa.array([0, 1, 2], type=pa.int64()),
-            "TARGET": pa.array([0.1, 0.2, 0.3], type=pa.float64()),
-        })
-    original_bytes = open(part, "rb").read()
+        part,
+        {
+            'ENTITY': pa.array([0, 1, 2], type=pa.int64()),
+            'TARGET': pa.array([0.1, 0.2, 0.3], type=pa.float64()),
+        },
+    )
+    original_bytes = open(part, 'rb').read()
 
     custom_train_table._synthesize_sentinel_timestamp(
         parquet_dir,
         task_type=TaskType.REGRESSION,
         query_type=QueryType.STATIC,
         list_distinct_target_is_array=False,
-        entity_time_col="event_ts",
+        entity_time_col='event_ts',
     )
 
     # No-op: file untouched, TIMESTAMP not synthesized.
-    assert open(part, "rb").read() == original_bytes
-    assert "TIMESTAMP" not in _schema_names(part)
+    assert open(part, 'rb').read() == original_bytes
+    assert 'TIMESTAMP' not in _schema_names(part)
 
 
-def test_filesystem_and_path_routes_s3_through_arrow_cloud_filesystem(
-        monkeypatch):
+def test_filesystem_and_path_routes_s3_through_arrow_cloud_filesystem(monkeypatch):
     # S3 / GCS return the credentialed choke-point filesystem plus a
     # scheme-stripped path; the tuple shape callers expect is preserved.
     from rest.backends.data_backend.activities import custom_train_table as ctt
@@ -1425,8 +1517,7 @@ def test_filesystem_and_path_adls_unchanged(monkeypatch):
 
     monkeypatch.setattr(ctt, 'arrow_cloud_filesystem', boom)
     monkeypatch.setattr(ctt, 'FileSystem', _FakeFS)
-    fs, bare = ctt._filesystem_and_path(
-        'abfss://c@acct.dfs.core.windows.net/key')
+    fs, bare = ctt._filesystem_and_path('abfss://c@acct.dfs.core.windows.net/key')
     assert fs == 'adls-fs'
     assert bare == 'container/key'
 
@@ -1456,8 +1547,10 @@ def test_custom_sql_on_snowflake_is_refused_not_forwarded(tmp_path):
     ``except Exception``, which reports it as the generic sanitized ingest
     failure and tells the user nothing."""
     from kumo.connector.snowflake_connector import SnowflakeConnector
-    connector = SnowflakeConnector('snowflake', 'account', 'warehouse',
-                                   'database', 'schema')
+
+    connector = SnowflakeConnector(
+        'snowflake', 'account', 'warehouse', 'database', 'schema'
+    )
     connector._context = mock.Mock()
     # The capability this test exists to protect. Asserted on the declared
     # flag, not on `inspect.signature`: `@blocking_method()` erases every
@@ -1466,15 +1559,17 @@ def test_custom_sql_on_snowflake_is_refused_not_forwarded(tmp_path):
     assert connector.exports_custom_sql is False
 
     spec = mock.Mock(
-        source_table=_custom_sql_source(
-            'connector_00000000000000000000000000000000'),
+        source_table=_custom_sql_source('connector_00000000000000000000000000000000'),
         connector_spec=mock.Mock(),
     )
 
-    with mock.patch.object(_activity_module, 'get_connector_from_spec',
-                           return_value=connector):
-        with pytest.raises(UnsupportedInDiskgraphError,
-                           match='SnowflakeConnector cannot export a query'):
+    with mock.patch.object(
+        _activity_module, 'get_connector_from_spec', return_value=connector
+    ):
+        with pytest.raises(
+            UnsupportedInDiskgraphError,
+            match='SnowflakeConnector cannot export a query',
+        ):
             custom_train_table.ingest_custom_train_table(
                 custom_train_table_spec=spec,
                 custom_train_table_path=str(tmp_path / 'snowflake'),
@@ -1490,21 +1585,23 @@ def test_custom_sql_on_bigquery_is_refused_not_forwarded(tmp_path):
     """BigQuery reaches the same branch through ``export_table_to_blob_storage
     (table_name, dest_path, columns)``, which also has no ``sql``."""
     from kumo.connector.bigquery_connector import BigQueryConnector
+
     connector = BigQueryConnector('bigquery', 'project', 'dataset')
     connector._context = mock.Mock()
     assert not hasattr(connector, 'export_table_read_only')
     assert connector.exports_custom_sql is False
 
     spec = mock.Mock(
-        source_table=_custom_sql_source(
-            'connector_00000000000000000000000000000001'),
+        source_table=_custom_sql_source('connector_00000000000000000000000000000001'),
         connector_spec=mock.Mock(),
     )
 
-    with mock.patch.object(_activity_module, 'get_connector_from_spec',
-                           return_value=connector):
-        with pytest.raises(UnsupportedInDiskgraphError,
-                           match='BigQueryConnector cannot export a query'):
+    with mock.patch.object(
+        _activity_module, 'get_connector_from_spec', return_value=connector
+    ):
+        with pytest.raises(
+            UnsupportedInDiskgraphError, match='BigQueryConnector cannot export a query'
+        ):
             custom_train_table.ingest_custom_train_table(
                 custom_train_table_spec=spec,
                 custom_train_table_path=str(tmp_path / 'bigquery'),
@@ -1517,35 +1614,40 @@ def test_custom_sql_on_bigquery_is_refused_not_forwarded(tmp_path):
 
 
 @pytest.mark.parametrize('has_file', [False, True])
-def test_an_empty_custom_training_table_is_named_not_mismatched(
-        tmp_path, has_file):
+def test_an_empty_custom_training_table_is_named_not_mismatched(tmp_path, has_file):
     """The training twin of `EmptyPredictionTableError`. An empty source
     otherwise reaches `_validate_weighted_tt_pyarrow` as a row-count
     mismatch, and says nothing at all once
     `CUSTOM_TT_ALLOW_ROW_COUNT_MISMATCH` is set."""
     from kumo.connector.snowflake_connector import SnowflakeConnector
-    connector = SnowflakeConnector('snowflake', 'account', 'warehouse',
-                                   'database', 'schema')
+
+    connector = SnowflakeConnector(
+        'snowflake', 'account', 'warehouse', 'database', 'schema'
+    )
     connector._context = mock.Mock()
     destination = str(tmp_path / 'empty')
 
     def write_schema_only_parquet(_name, path, **_kwargs):
         if not has_file:
             from kumo.connector.connector import ExportMetrics
+
             return ExportMetrics(num_rows=0, source_size=0)
         # What a streamed read of a zero-row result actually lands: one
         # part with the schema and no rows.
         os.makedirs(path, exist_ok=True)
         pq.write_table(
-            pa.table({
-                'ENTITY': pa.array([], type=pa.int64()),
-                'TARGET': pa.array([], type=pa.int64()),
-            }), os.path.join(path, 'part-00000.parquet'))
+            pa.table(
+                {
+                    'ENTITY': pa.array([], type=pa.int64()),
+                    'TARGET': pa.array([], type=pa.int64()),
+                }
+            ),
+            os.path.join(path, 'part-00000.parquet'),
+        )
 
     spec = mock.Mock(
         source_table=SnowflakeSourceTable(
-            snowflake_connector_id=(
-                'connector_00000000000000000000000000000000'),
+            snowflake_connector_id=('connector_00000000000000000000000000000000'),
             database='DATABASE',
             schema_name='SCHEMA',
             table='CUSTOM_TT',
@@ -1554,12 +1656,14 @@ def test_an_empty_custom_training_table_is_named_not_mismatched(
     )
 
     with (
-            mock.patch.object(_activity_module, 'get_connector_from_spec',
-                              return_value=connector),
-            mock.patch.object(connector, 'open'),
-            mock.patch.object(connector, 'close'),
-            mock.patch.object(connector, 'export_table_read_only',
-                              side_effect=write_schema_only_parquet),
+        mock.patch.object(
+            _activity_module, 'get_connector_from_spec', return_value=connector
+        ),
+        mock.patch.object(connector, 'open'),
+        mock.patch.object(connector, 'close'),
+        mock.patch.object(
+            connector, 'export_table_read_only', side_effect=write_schema_only_parquet
+        ),
     ):
         _path, response = custom_train_table.ingest_custom_train_table(
             custom_train_table_spec=spec,
@@ -1580,8 +1684,10 @@ def test_an_empty_custom_training_table_is_named_not_mismatched(
     assert 'CUSTOM_TT' in response.errors[0].message
     # Not the generic sanitized text: an empty result is the user's, and
     # nothing about it needs hiding.
-    assert (response.errors[0].message
-            != custom_train_table.SAFE_TABLE_INGESTION_ERROR_MESSAGE)
+    assert (
+        response.errors[0].message
+        != custom_train_table.SAFE_TABLE_INGESTION_ERROR_MESSAGE
+    )
 
 
 # The two the hosted side used to be alone in skipping #######################
@@ -1591,9 +1697,9 @@ def test_a_split_column_the_supplied_table_lacks_is_refused_here_too(tmp_path):
     """Before this, the hosted presence check was never given the split
     column: a source lacking it was accepted and ``build_split_spec`` then
     resolved a ``ManualSplit`` on a column that is not there."""
-    resp = _validate_supplied_train_table(_generated(tmp_path),
-                                          _supplied(tmp_path), None,
-                                          TaskType.REGRESSION, 'SPLIT')
+    resp = _validate_supplied_train_table(
+        _generated(tmp_path), _supplied(tmp_path), None, TaskType.REGRESSION, 'SPLIT'
+    )
 
     assert _titles(resp) == ['Column not found']
     assert "'SPLIT'" in resp.errors[0].message
@@ -1602,10 +1708,12 @@ def test_a_split_column_the_supplied_table_lacks_is_refused_here_too(tmp_path):
 def test_split_values_deferred_to_ingestion(tmp_path):
     """DiskGraph applies the row policy to unmatched split values."""
     supplied = _supplied(
-        tmp_path, SPLIT=pa.array(['train', 'val', 'test'], type=pa.string()))
+        tmp_path, SPLIT=pa.array(['train', 'val', 'test'], type=pa.string())
+    )
 
-    resp = _validate_supplied_train_table(_generated(tmp_path), supplied, None,
-                                          TaskType.REGRESSION, 'SPLIT')
+    resp = _validate_supplied_train_table(
+        _generated(tmp_path), supplied, None, TaskType.REGRESSION, 'SPLIT'
+    )
 
     assert resp.ok
 
@@ -1616,13 +1724,16 @@ def test_a_dictionary_encoded_column_is_gated_on_what_the_file_stores(tmp_path):
     generated ``int64`` exactly, and DiskGraph then drops every row."""
     supplied = str(tmp_path / 'supplied')
     _write_parquet(
-        supplied, {
+        supplied,
+        {
             'ENTITY1': pa.array([1, 2, 3], type=pa.int64()).dictionary_encode(),
             'TARGET1': pa.array([0.1, 0.2, 0.3], type=pa.float64()),
-        })
+        },
+    )
 
-    resp = _validate_supplied_train_table(_generated(tmp_path), supplied, None,
-                                          TaskType.REGRESSION)
+    resp = _validate_supplied_train_table(
+        _generated(tmp_path), supplied, None, TaskType.REGRESSION
+    )
 
     assert _titles(resp) == ['Column type cannot be read']
     assert 'ENTITY1' in resp.errors[0].message
@@ -1632,39 +1743,59 @@ def test_generated_parts_with_no_anchor_have_an_unknown_span(tmp_path):
     generated = tmp_path / 'generated-parts'
     generated.mkdir()
     nanos = [
-        1_700_000_000_000_000_000, 1_700_000_001_000_000_000,
-        1_700_000_002_000_000_000
+        1_700_000_000_000_000_000,
+        1_700_000_001_000_000_000,
+        1_700_000_002_000_000_000,
     ]
     pq.write_table(
-        pa.table({
-            'ENTITY1': [1, 2],
-            'TIMESTAMP': pa.array(nanos[:2], type=pa.timestamp('ns')),
-            'TARGET1': [0.1, 0.2],
-        }), generated / 'part-00000.parquet')
-    pq.write_table(pa.table({
-        'ENTITY1': [3],
-        'TARGET1': [0.3],
-    }), generated / 'part-00001.parquet')
+        pa.table(
+            {
+                'ENTITY1': [1, 2],
+                'TIMESTAMP': pa.array(nanos[:2], type=pa.timestamp('ns')),
+                'TARGET1': [0.1, 0.2],
+            }
+        ),
+        generated / 'part-00000.parquet',
+    )
+    pq.write_table(
+        pa.table(
+            {
+                'ENTITY1': [3],
+                'TARGET1': [0.3],
+            }
+        ),
+        generated / 'part-00001.parquet',
+    )
     supplied = _supplied(
         tmp_path,
-        TIMESTAMP=pa.array([value // 1_000_000_000 for value in nanos],
-                           type=pa.int64()))
+        TIMESTAMP=pa.array(
+            [value // 1_000_000_000 for value in nanos], type=pa.int64()
+        ),
+    )
 
-    response = _validate_supplied_train_table(str(generated), supplied, None,
-                                              TaskType.REGRESSION)
+    response = _validate_supplied_train_table(
+        str(generated), supplied, None, TaskType.REGRESSION
+    )
 
     assert response.ok
 
 
-@pytest.mark.parametrize(('second', 'title'), [
-    ({
-        'ENTITY1': pa.array([4], pa.int64())
-    }, 'Column missing in a part of the supplied table'),
-    ({
-        'ENTITY1': pa.array(['4'], pa.string()),
-        'TARGET1': pa.array([0.4], pa.float64()),
-    }, 'Column type differs between parts'),
-])
+@pytest.mark.parametrize(
+    ('second', 'title'),
+    [
+        (
+            {'ENTITY1': pa.array([4], pa.int64())},
+            'Column missing in a part of the supplied table',
+        ),
+        (
+            {
+                'ENTITY1': pa.array(['4'], pa.string()),
+                'TARGET1': pa.array([0.4], pa.float64()),
+            },
+            'Column type differs between parts',
+        ),
+    ],
+)
 def test_every_part_is_gated_and_not_only_the_first(tmp_path, second, title):
     """The schema is read off part zero and the rows off every part, and a
     projected read of a part that lacks a requested column omits it silently
@@ -1676,13 +1807,17 @@ def test_every_part_is_gated_and_not_only_the_first(tmp_path, second, title):
     the generated table has 4 rows too, so the only thing that can fail is
     what part-1 diverges on.
     """
-    generated = _generated(tmp_path, ENTITY1=pa.array([1, 2, 3, 4], pa.int64()),
-                           TARGET1=pa.array([0.1, 0.2, 0.3, 0.4], pa.float64()))
+    generated = _generated(
+        tmp_path,
+        ENTITY1=pa.array([1, 2, 3, 4], pa.int64()),
+        TARGET1=pa.array([0.1, 0.2, 0.3, 0.4], pa.float64()),
+    )
     supplied = _supplied(tmp_path)
     pq.write_table(pa.table(second), os.path.join(supplied, 'part-1.parquet'))
 
-    resp = _validate_supplied_train_table(generated, supplied, None,
-                                          TaskType.REGRESSION)
+    resp = _validate_supplied_train_table(
+        generated, supplied, None, TaskType.REGRESSION
+    )
 
     assert _titles(resp) == [title]
 
@@ -1694,10 +1829,10 @@ def test_a_registration_is_gated_with_no_generated_table_to_compare(tmp_path):
     it decides whether that table needs one."""
     supplied = _supplied(tmp_path)
 
-    resp = _validate_supplied_train_table(None, supplied, None,
-                                          TaskType.REGRESSION, anchored=False)
+    resp = _validate_supplied_train_table(
+        None, supplied, None, TaskType.REGRESSION, anchored=False
+    )
     assert resp.ok, f'unexpected errors: {resp.errors}'
 
-    resp = _validate_supplied_train_table(None, supplied, None,
-                                          TaskType.REGRESSION)
+    resp = _validate_supplied_train_table(None, supplied, None, TaskType.REGRESSION)
     assert _titles(resp) == ['Required column not found']

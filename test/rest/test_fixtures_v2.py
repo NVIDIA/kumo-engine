@@ -41,26 +41,30 @@ def _create_local_roundtrip_pquery(
 ) -> tuple[PredictiveQueryID, ProjectID]:
     root = tmp_path / 'fixture_roundtrip'
     root.mkdir()
-    pd.DataFrame({
-        'customer_id': ['customer-1'],
-    }).to_parquet(root / 'customers.parquet')
-    pd.DataFrame({
-        't_dat': pd.to_datetime(['2024-01-01']),
-        'customer_id': ['customer-1'],
-    }).to_parquet(root / 'transactions.parquet')
+    pd.DataFrame(
+        {
+            'customer_id': ['customer-1'],
+        }
+    ).to_parquet(root / 'customers.parquet')
+    pd.DataFrame(
+        {
+            't_dat': pd.to_datetime(['2024-01-01']),
+            'customer_id': ['customer-1'],
+        }
+    ).to_parquet(root / 'transactions.parquet')
 
     async def create_project_connector() -> tuple[ProjectID, str]:
         services = rest_api_driver._require_state_services()
         _, project = await services.groups.ensure_default_resources()
         connector_id = await services.connectors.register_project_upload_connector(
-            project.id, str(root))
+            project.id, str(root)
+        )
         return project.id, str(connector_id)
 
     project_id, connector_id = asyncio.run(create_project_connector())
     graph = ApiGraphDefinition(
         tables={
-            'customers':
-            table_api.TableDefinition(
+            'customers': table_api.TableDefinition(
                 cols=[
                     table_api.Column(
                         name='customer_id',
@@ -75,8 +79,7 @@ def _create_local_roundtrip_pquery(
                 ),
                 pkey='customer_id',
             ),
-            'transactions':
-            table_api.TableDefinition(
+            'transactions': table_api.TableDefinition(
                 cols=[
                     table_api.Column(
                         name='t_dat',
@@ -98,20 +101,23 @@ def _create_local_roundtrip_pquery(
             ),
         },
         col_groups=[
-            ColumnKeyGroup(columns=(
-                ColumnKey(
-                    table_name='transactions',
-                    col_name='customer_id',
-                ),
-                ColumnKey(
-                    table_name='customers',
-                    col_name='customer_id',
-                ),
-            )),
+            ColumnKeyGroup(
+                columns=(
+                    ColumnKey(
+                        table_name='transactions',
+                        col_name='customer_id',
+                    ),
+                    ColumnKey(
+                        table_name='customers',
+                        col_name='customer_id',
+                    ),
+                )
+            ),
         ],
     )
-    post_and_expect_success(client, f'/v1/graphs/?project_id={project_id}',
-                            graph, IDResponse)
+    post_and_expect_success(
+        client, f'/v1/graphs/?project_id={project_id}', graph, IDResponse
+    )
     pquery_id = PredictiveQueryID('fixture_roundtrip_query')
     post_and_expect_success(
         client,
@@ -135,7 +141,8 @@ def test_save_and_load_json_uses_existing_project_connectors(
     tmp_path,
 ):
     pquery_id, project_id = _create_local_roundtrip_pquery(
-        client, rest_api_driver, tmp_path)
+        client, rest_api_driver, tmp_path
+    )
     json_file_path = post_and_expect_success(
         client,
         '/v0/fixtures/save_json',
@@ -157,8 +164,11 @@ def test_save_and_load_json_uses_existing_project_connectors(
         for table in graph.tables.values()
     }
     assert len(connector_ids) == 1
-    assert all(not hasattr(table.source_table, 's3_path')
-               for graph in saved.graphs for table in graph.tables.values())
+    assert all(
+        not hasattr(table.source_table, 's3_path')
+        for graph in saved.graphs
+        for table in graph.tables.values()
+    )
 
     post_and_expect_success(
         client,
@@ -175,7 +185,8 @@ def test_save_and_load_json_uses_existing_project_connectors(
 
 
 def test_fixture_to_pquery_resources_v2_preserves_model_planner_yaml(
-    graph_definition_v2, ):
+    graph_definition_v2,
+):
     graph_def = GraphDefinition(**dataclasses.asdict(graph_definition_v2))
     model_plan_yaml = 'training_table_generation:\n  lag_timesteps: 3'
     table_defs = [
@@ -203,13 +214,13 @@ def test_fixture_to_pquery_resources_v2_preserves_model_planner_yaml(
 
 
 def test_randomize_fixture_ids_v2_generates_canonical_connector_ids(
-    graph_definition_v2, ):
+    graph_definition_v2,
+):
     # Checked-in integration fixtures predate durable connector IDs and carry
     # descriptive import aliases.  The importer must canonicalize those raw
     # references before any runtime code validates ConnectorID.
     legacy_tables = {
-        table_name:
-        dataclasses.replace(
+        table_name: dataclasses.replace(
             table,
             source_table=dataclasses.replace(
                 table.source_table,
@@ -218,8 +229,11 @@ def test_randomize_fixture_ids_v2_generates_canonical_connector_ids(
         )
         for table_name, table in graph_definition_v2.tables.items()
     }
-    graph_def = GraphDefinition(**dataclasses.asdict(
-        dataclasses.replace(graph_definition_v2, tables=legacy_tables)))
+    graph_def = GraphDefinition(
+        **dataclasses.asdict(
+            dataclasses.replace(graph_definition_v2, tables=legacy_tables)
+        )
+    )
     fixture = FixtureDefinition(
         tables=[
             TableDefinition(**dataclasses.asdict(table))
@@ -237,14 +251,14 @@ def test_randomize_fixture_ids_v2_generates_canonical_connector_ids(
     )
     randomized = randomize_fixture_ids_v2(fixture)
     randomized_ids = {
-        str(table.get_connector_id())
-        for table in randomized.graphs[0].tables.values()
+        str(table.get_connector_id()) for table in randomized.graphs[0].tables.values()
     }
 
     assert 'financial_csv_local_connector' not in randomized_ids
     assert all(
         re.fullmatch(r'connector_[a-f0-9]{32}', connector_id)
-        for connector_id in randomized_ids)
+        for connector_id in randomized_ids
+    )
 
     created_connector_id = f'connector_{"a" * 32}'
     remapped = remap_fixture_connector_ids_v2(
@@ -252,8 +266,7 @@ def test_randomize_fixture_ids_v2_generates_canonical_connector_ids(
         {next(iter(randomized_ids)): created_connector_id},
     )
     assert {
-        str(table.get_connector_id())
-        for table in remapped.graphs[0].tables.values()
+        str(table.get_connector_id()) for table in remapped.graphs[0].tables.values()
     } == {created_connector_id}
     assert remapped.graphs[0].fpid != randomized.graphs[0].fpid
     assert remapped.queries[0].graph_fpid == remapped.graphs[0].fpid

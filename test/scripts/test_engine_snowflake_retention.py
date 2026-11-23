@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Retention admission uses provider proof, not age or names alone."""
+
 import importlib
 import json
 from datetime import datetime, timezone
@@ -28,20 +29,32 @@ def state(retention):
     targets = retention.resources(ATTEMPT)
     value = retention.ledger(
         dict(
-            attempt=ATTEMPT, bundle=targets['bundle'],
-            stage_prefix=targets['submission'].rstrip('/'), mode='lifecycle',
-            execute_sql='EXECUTE CODE BUNDLE ' + targets['bundle'] +
-            " ENTRYPOINT = 'lifecycle.ipynb'"), created=NOW - 3 * retention.TTL)
-    query = dict(query_id='query-id', query_tag=value['query_tag'],
-                 user_name=retention.launch.USER,
-                 role_name=retention.launch.ROLE,
-                 query_text=value['execute_sql'], execution_status='SUCCESS',
-                 end_time=date(NOW - 2 * retention.TTL))
-    obj = dict(name=targets['model'].rsplit('.',
-                                            1)[1], owner=retention.launch.ROLE,
-               database_name=retention.launch.DATABASE,
-               schema_name=retention.launch.SCHEMA,
-               created_on=date(value['created_unix'] + 1))
+            attempt=ATTEMPT,
+            bundle=targets['bundle'],
+            stage_prefix=targets['submission'].rstrip('/'),
+            mode='lifecycle',
+            execute_sql='EXECUTE CODE BUNDLE '
+            + targets['bundle']
+            + " ENTRYPOINT = 'lifecycle.ipynb'",
+        ),
+        created=NOW - 3 * retention.TTL,
+    )
+    query = dict(
+        query_id='query-id',
+        query_tag=value['query_tag'],
+        user_name=retention.launch.USER,
+        role_name=retention.launch.ROLE,
+        query_text=value['execute_sql'],
+        execution_status='SUCCESS',
+        end_time=date(NOW - 2 * retention.TTL),
+    )
+    obj = dict(
+        name=targets['model'].rsplit('.', 1)[1],
+        owner=retention.launch.ROLE,
+        database_name=retention.launch.DATABASE,
+        schema_name=retention.launch.SCHEMA,
+        created_on=date(value['created_unix'] + 1),
+    )
     return value, query, obj
 
 
@@ -63,8 +76,7 @@ class Cursor:
             returned = [self.obj] if self.obj else []
         else:
             returned = []
-        self.description = [(name, )
-                            for name in returned[0]] if returned else []
+        self.description = [(name,) for name in returned[0]] if returned else []
         self.returned = [tuple(row.values()) for row in returned]
         return self
 
@@ -74,8 +86,7 @@ class Cursor:
     @property
     def mutations(self):
         return [
-            sql for sql in self.commands
-            if sql.startswith(('DROP ', 'REMOVE ', 'PUT '))
+            sql for sql in self.commands if sql.startswith(('DROP ', 'REMOVE ', 'PUT '))
         ]
 
 
@@ -90,17 +101,29 @@ def test_plan_never_mutates_and_expire_removes_only_exact_resources(retention):
     assert cursor.mutations == [
         'DROP MODEL ' + target['model'],
         'DROP EXPERIMENT ' + target['experiment'],
-        'REMOVE ' + target['submission'], 'REMOVE ' + target['artifacts'],
-        'REMOVE ' + retention.CONTROL + ATTEMPT + '/'
+        'REMOVE ' + target['submission'],
+        'REMOVE ' + target['artifacts'],
+        'REMOVE ' + retention.CONTROL + ATTEMPT + '/',
     ]
     assert not any('payload-cache' in sql for sql in cursor.mutations)
 
 
-@pytest.mark.parametrize('change', [
-    'active', 'foreign_user', 'foreign_role', 'foreign_tag', 'different_query',
-    'missing', 'ambiguous', 'recent_end', 'old_window', 'recent_attempt',
-    'truncated'
-])
+@pytest.mark.parametrize(
+    'change',
+    [
+        'active',
+        'foreign_user',
+        'foreign_role',
+        'foreign_tag',
+        'different_query',
+        'missing',
+        'ambiguous',
+        'recent_end',
+        'old_window',
+        'recent_attempt',
+        'truncated',
+    ],
+)
 def test_uncertain_query_always_preserves_all_resources(retention, change):
     value, query, obj = state(retention)
     history = [query]
@@ -133,14 +156,16 @@ def test_uncertain_query_always_preserves_all_resources(retention, change):
 
 
 @pytest.mark.parametrize(
-    'change', ['owner', 'database_name', 'schema_name', 'before', 'after'])
+    'change', ['owner', 'database_name', 'schema_name', 'before', 'after']
+)
 def test_replaced_or_foreign_objects_preserve_entire_attempt(retention, change):
     value, query, obj = state(retention)
     if change in ('owner', 'database_name', 'schema_name'):
         obj[change] = 'OTHER'
     else:
-        obj['created_on'] = date(value['created_unix'] -
-                                 1 if change == 'before' else NOW)
+        obj['created_on'] = date(
+            value['created_unix'] - 1 if change == 'before' else NOW
+        )
     cursor = Cursor([query], obj)
     with pytest.raises(ValueError):
         retention.expire(cursor, value, execute=True, now=NOW)
@@ -161,8 +186,7 @@ def test_shortened_retention_is_rejected(retention):
     assert not cursor.commands
 
 
-def test_changed_object_between_plan_and_delete_is_preserved(
-        retention, monkeypatch):
+def test_changed_object_between_plan_and_delete_is_preserved(retention, monkeypatch):
     value, query, obj = state(retention)
     cursor = Cursor([query], obj)
     original = retention.inspect
@@ -183,35 +207,39 @@ def test_changed_object_between_plan_and_delete_is_preserved(
 
 
 def test_notebook_attempt_binding_does_not_change_other_platforms(
-        monkeypatch, tmp_path):
+    monkeypatch, tmp_path
+):
     monkeypatch.syspath_prepend(str(DIRECTORY))
     platform = importlib.import_module('wheel_mlops_platform')
-    config = json.loads(
-        (DIRECTORY / 'mlops_platforms/snowflake.json').read_text())
+    config = json.loads((DIRECTORY / 'mlops_platforms/snowflake.json').read_text())
     config.update(
         schema='KUMO_TEST',
-        artifact_root='@KUMO_TEST_DB.KUMO_TEST.TEST_STAGE/mlops-validation')
+        artifact_root='@KUMO_TEST_DB.KUMO_TEST.TEST_STAGE/mlops-validation',
+    )
     path = tmp_path / 'profile.json'
     path.write_text(json.dumps(config))
     monkeypatch.setenv(platform.NOTEBOOK_ATTEMPT, ATTEMPT)
     platform.prepare(tmp_path, path)
-    assert json.loads(
-        (tmp_path / 'platform.json').read_text())['attempt'] == ATTEMPT
+    assert json.loads((tmp_path / 'platform.json').read_text())['attempt'] == ATTEMPT
     monkeypatch.setenv(platform.NOTEBOOK_ATTEMPT, '../foreign')
     with pytest.raises(ValueError, match='attempt'):
         platform.prepare(tmp_path, path)
 
 
-def test_old_unprovable_ledgers_cannot_starve_eligible_attempts(
-        retention, monkeypatch):
+def test_old_unprovable_ledgers_cannot_starve_eligible_attempts(retention, monkeypatch):
     prefix = 'test_stage/mlops-validation/retention/'
     old = [
-        dict(name=prefix + f'{i:012x}/retention-ledger.json',
-             last_modified=date(NOW - 7 * retention.TTL)) for i in range(120)
+        dict(
+            name=prefix + f'{i:012x}/retention-ledger.json',
+            last_modified=date(NOW - 7 * retention.TTL),
+        )
+        for i in range(120)
     ]
     eligible = [
-        dict(name=prefix + f'{i:012x}/retention-ledger.json',
-             last_modified=date(NOW - 2 * retention.TTL))
+        dict(
+            name=prefix + f'{i:012x}/retention-ledger.json',
+            last_modified=date(NOW - 2 * retention.TTL),
+        )
         for i in range(200, 320)
     ]
     cursor = Cursor([], None)
@@ -219,7 +247,7 @@ def test_old_unprovable_ledgers_cannot_starve_eligible_attempts(
 
     def execute(sql):
         if sql.startswith('LIST '):
-            cursor.description = [('name', ), ('last_modified', )]
+            cursor.description = [('name',), ('last_modified',)]
             cursor.returned = [tuple(row.values()) for row in old + eligible]
         else:
             original_execute(sql)
@@ -239,8 +267,8 @@ def test_old_unprovable_ledgers_cannot_starve_eligible_attempts(
     monkeypatch.setattr(retention.time, 'time', lambda: NOW)
     monkeypatch.setattr(retention.launch, 'download_file', download)
     monkeypatch.setattr(
-        retention, 'expire',
-        lambda cursor, value, **kw: seen.append(value['attempt']))
+        retention, 'expire', lambda cursor, value, **kw: seen.append(value['attempt'])
+    )
     result = retention.sweep(connection, execute=True)
     assert result['expired'] == len(seen) == 100
     assert result['outside_history'] == 120
@@ -248,16 +276,23 @@ def test_old_unprovable_ledgers_cannot_starve_eligible_attempts(
 
 
 def test_durable_ledger_failure_blocks_notebook_submission(
-        retention, tmp_path, monkeypatch):
+    retention, tmp_path, monkeypatch
+):
     target = retention.resources(ATTEMPT)
     manifest = dict(
-        attempt=ATTEMPT, bundle=target['bundle'],
+        attempt=ATTEMPT,
+        bundle=target['bundle'],
         stage_prefix=target['submission'].rstrip('/'),
-        execute_sql='EXECUTE CODE BUNDLE ' + target['bundle'] +
-        " ENTRYPOINT = 'probe.ipynb'")
+        execute_sql='EXECUTE CODE BUNDLE '
+        + target['bundle']
+        + " ENTRYPOINT = 'probe.ipynb'",
+    )
     cursor = Cursor([], None)
-    monkeypatch.setattr(retention.launch, 'download_file',
-                        lambda *a: pytest.fail('GET after failed PUT'))
+    monkeypatch.setattr(
+        retention.launch,
+        'download_file',
+        lambda *a: pytest.fail('GET after failed PUT'),
+    )
     with pytest.raises(RuntimeError, match='upload failed'):
         retention.write(cursor, tmp_path, manifest)
     assert len(cursor.mutations) == 1
@@ -269,37 +304,46 @@ def test_ledger_admission_rejects_foreign_bundle(retention):
     target = retention.resources(ATTEMPT)
     with pytest.raises(ValueError, match='non-attempt'):
         retention.ledger(
-            dict(attempt=ATTEMPT, bundle='PROD.PUBLIC.MODEL',
-                 stage_prefix=target['submission'].rstrip('/')))
+            dict(
+                attempt=ATTEMPT,
+                bundle='PROD.PUBLIC.MODEL',
+                stage_prefix=target['submission'].rstrip('/'),
+            )
+        )
 
 
 @pytest.mark.parametrize('prefix', ['submission', 'artifacts'])
 def test_retention_never_removes_a_pinned_shared_archive(
-        retention, monkeypatch, prefix):
+    retention, monkeypatch, prefix
+):
     value, query, obj = state(retention)
     cursor = Cursor([query], obj)
-    location = retention.resources(
-        value['attempt'])[prefix] + 'payload/wheelhouse.tar'
-    monkeypatch.setattr(retention, 'protected_locations', lambda: (location, ))
+    location = retention.resources(value['attempt'])[prefix] + 'payload/wheelhouse.tar'
+    monkeypatch.setattr(retention, 'protected_locations', lambda: (location,))
     with pytest.raises(ValueError, match='protected shared cache'):
         retention.expire(cursor, value, execute=True, now=NOW)
     assert not cursor.commands
 
 
-@pytest.mark.parametrize('status', [
-    'SUCCESS', 'FAILED_WITH_ERROR', 'FAILED_WITH_INCIDENT', 'success',
-    'failed_with_error', 'failed_with_incident'
-])
+@pytest.mark.parametrize(
+    'status',
+    [
+        'SUCCESS',
+        'FAILED_WITH_ERROR',
+        'FAILED_WITH_INCIDENT',
+        'success',
+        'failed_with_error',
+        'failed_with_incident',
+    ],
+)
 def test_terminal_status_uses_provider_case_insensitively(retention, status):
     value, query, obj = state(retention)
     query['execution_status'] = status
-    assert retention.expire(Cursor([query], obj), value,
-                            now=NOW)['status'] == 'planned'
+    assert retention.expire(Cursor([query], obj), value, now=NOW)['status'] == 'planned'
 
 
 @pytest.mark.parametrize('status', ['RUNNING', 'QUEUED', 'BLOCKED', None, 1])
-def test_nonterminal_or_malformed_provider_status_is_preserved(
-        retention, status):
+def test_nonterminal_or_malformed_provider_status_is_preserved(retention, status):
     value, query, obj = state(retention)
     query['execution_status'] = status
     cursor = Cursor([query], obj)
@@ -315,7 +359,10 @@ def bundle_metadata(retention, value):
         schema_name=retention.launch.SCHEMA,
         created_on=date(value['created_unix'] + 1),
         updated_on=date(value['created_unix'] + 2),
-        owner_role=retention.launch.ROLE, owner_role_type='ROLE', comment=None)
+        owner_role=retention.launch.ROLE,
+        owner_role_type='ROLE',
+        comment=None,
+    )
 
 
 def test_code_bundle_uses_live_owner_role_metadata_shape(retention):
@@ -323,14 +370,23 @@ def test_code_bundle_uses_live_owner_role_metadata_shape(retention):
     bundle = bundle_metadata(retention, value)
     cursor = Cursor([query], obj, bundle=bundle)
     retention.expire(cursor, value, execute=True, now=NOW)
-    assert cursor.mutations[0] == 'DROP CODE BUNDLE ' + retention.resources(
-        ATTEMPT)['bundle']
+    assert (
+        cursor.mutations[0]
+        == 'DROP CODE BUNDLE ' + retention.resources(ATTEMPT)['bundle']
+    )
 
 
-@pytest.mark.parametrize('change', [
-    'different_owner', 'missing_owner', 'conflicting_owner', 'database_role',
-    'missing_role_type', 'unknown_role_type'
-])
+@pytest.mark.parametrize(
+    'change',
+    [
+        'different_owner',
+        'missing_owner',
+        'conflicting_owner',
+        'database_role',
+        'missing_role_type',
+        'unknown_role_type',
+    ],
+)
 def test_code_bundle_ownership_cannot_be_guessed(retention, change):
     value, query, obj = state(retention)
     bundle = bundle_metadata(retention, value)
@@ -362,8 +418,10 @@ def test_local_plan_accepts_cached_key_file(retention, monkeypatch, tmp_path):
     connection = object()
     monkeypatch.setattr(resources, 'require', lambda: {})
     monkeypatch.setattr(
-        retention.launch, 'connect',
-        lambda value: observed.append(value) or nullcontext(connection))
+        retention.launch,
+        'connect',
+        lambda value: observed.append(value) or nullcontext(connection),
+    )
 
     def plan(selected, **options):
         assert selected is connection
@@ -379,13 +437,17 @@ def test_local_plan_accepts_cached_key_file(retention, monkeypatch, tmp_path):
 def test_sweep_continues_after_provider_cleanup_error(retention, monkeypatch):
     from contextlib import nullcontext
     from types import SimpleNamespace
+
     prefix = 'test_stage/mlops-validation/retention/'
     attempts = ['a' * 12, 'b' * 12]
     cursor = SimpleNamespace(
-        description=[('name', ), ('last_modified', )], execute=lambda sql: None,
-        fetchall=lambda: [(prefix + attempt + '/retention-ledger.json',
-                           date(NOW - 2 * retention.TTL))
-                          for attempt in attempts])
+        description=[('name',), ('last_modified',)],
+        execute=lambda sql: None,
+        fetchall=lambda: [
+            (prefix + attempt + '/retention-ledger.json', date(NOW - 2 * retention.TTL))
+            for attempt in attempts
+        ],
+    )
     connection = SimpleNamespace(cursor=lambda: nullcontext(cursor))
 
     def download(cursor, location, folder):
@@ -405,8 +467,7 @@ def test_sweep_continues_after_provider_cleanup_error(retention, monkeypatch):
     monkeypatch.setattr(retention, 'expire', expire)
     report = retention.sweep(connection, execute=True)
     assert set(visited) == set(attempts)
-    assert report['expired'] == report['preserved'] == report[
-        'cleanup_errors'] == 1
+    assert report['expired'] == report['preserved'] == report['cleanup_errors'] == 1
 
 
 def test_code_bundle_accepts_documented_owner_column(retention):
@@ -420,12 +481,12 @@ def test_code_bundle_accepts_documented_owner_column(retention):
 
 
 @pytest.mark.parametrize('fault', ['foreign_owner', 'database_role'])
-def test_documented_code_bundle_owner_still_rejects_foreign_role(
-        retention, fault):
+def test_documented_code_bundle_owner_still_rejects_foreign_role(retention, fault):
     value, query, obj = state(retention)
     bundle = bundle_metadata(retention, value)
-    bundle[
-        'owner'] = 'OTHER_ROLE' if fault == 'foreign_owner' else retention.launch.ROLE
+    bundle['owner'] = (
+        'OTHER_ROLE' if fault == 'foreign_owner' else retention.launch.ROLE
+    )
     bundle.pop('owner_role')
     bundle.pop('owner_role_type')
     if fault == 'database_role':

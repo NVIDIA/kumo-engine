@@ -63,18 +63,20 @@ def _is_access_or_io_error(exc: BaseException) -> bool:
     if isinstance(exc, FileNotFoundError):
         return False
     module = getattr(type(exc), '__module__', '') or ''
-    if any(sdk in module
-           for sdk in ('botocore', 'boto3', 's3fs', 'aiobotocore')):
+    if any(sdk in module for sdk in ('botocore', 'boto3', 's3fs', 'aiobotocore')):
         return True
-    return isinstance(exc, (
-        ClientError,
-        NoCredentialsError,
-        ConnectTimeoutError,
-        ReadTimeoutError,
-        ConnectionError,
-        OSError,
-        TimeoutError,
-    ))
+    return isinstance(
+        exc,
+        (
+            ClientError,
+            NoCredentialsError,
+            ConnectTimeoutError,
+            ReadTimeoutError,
+            ConnectionError,
+            OSError,
+            TimeoutError,
+        ),
+    )
 
 
 # Hard timeout (seconds) for the isolation subprocess. Overridable per deploy.
@@ -139,14 +141,18 @@ def _run_in_isolated_subprocess(func, args):
         return result
     except multiprocessing.TimeoutError:
         logger.error(
-            "Isolated subprocess for %s timed out after %ss; tearing down the "
-            "pool and surfacing the timeout.", getattr(func, '__name__', func),
-            timeout_secs)
+            'Isolated subprocess for %s timed out after %ss; tearing down the '
+            'pool and surfacing the timeout.',
+            getattr(func, '__name__', func),
+            timeout_secs,
+        )
         pool.terminate()
         pool.join()
-        raise TimeoutError(f"Isolated subprocess for "
-                           f"{getattr(func, '__name__', func)} timed out after "
-                           f"{timeout_secs}s")
+        raise TimeoutError(
+            f'Isolated subprocess for '
+            f'{getattr(func, "__name__", func)} timed out after '
+            f'{timeout_secs}s'
+        )
     except Exception:
         pool.terminate()
         pool.join()
@@ -156,9 +162,7 @@ def _run_in_isolated_subprocess(func, args):
 # pyarrow's stubs don't re-export Dataset from pyarrow.dataset, though it is
 # available at runtime.
 @contextmanager
-def _get_dataset(
-        path: str,
-        **kwargs) -> Generator[pyarrow.dataset.Dataset]:  # type: ignore
+def _get_dataset(path: str, **kwargs) -> Generator[pyarrow.dataset.Dataset]:  # type: ignore
     # PyArrow doesn't recognize s3a:// (Spark/Hadoop scheme); convert to s3://.
     # Mirrors kumo/data/generic/edge_materialize.py:159,169,563. Without this,
     # `pyarrow.dataset.dataset` raises "Expected an S3 object path... got a URI"
@@ -166,39 +170,50 @@ def _get_dataset(
     # tables as empty.
     path = fsutil.s3a_as_s3(path)
     is_adls_path = fsutil.is_adls(path)
-    is_cloud_path = (fsutil.is_s3(path) or fsutil.is_gcs(path) or is_adls_path)
+    is_cloud_path = fsutil.is_s3(path) or fsutil.is_gcs(path) or is_adls_path
     filesystem = None
     if is_cloud_path:
-        filesystem = (fsutil.pyarrow_filesystem(path)
-                      if is_adls_path or has_filesystem_credential_scope() else
-                      arrow_cloud_filesystem(path))
+        filesystem = (
+            fsutil.pyarrow_filesystem(path)
+            if is_adls_path or has_filesystem_credential_scope()
+            else arrow_cloud_filesystem(path)
+        )
 
     if fsutil.is_local(path) or is_cloud_path:
-        path_without_scheme = (ParseURI(path).path if is_adls_path else
-                               path.removeprefix("s3://").removeprefix("gs://"))
-        if path.endswith("*"):
+        path_without_scheme = (
+            ParseURI(path).path
+            if is_adls_path
+            else path.removeprefix('s3://').removeprefix('gs://')
+        )
+        if path.endswith('*'):
             # no filesystem or wildcard character for string matching:
-            trimmed_path = path_without_scheme.removesuffix("*")
-            dataset = pyarrow.dataset.dataset(osp.dirname(path_without_scheme),
-                                              format="parquet",
-                                              filesystem=filesystem)
+            trimmed_path = path_without_scheme.removesuffix('*')
+            dataset = pyarrow.dataset.dataset(
+                osp.dirname(path_without_scheme),
+                format='parquet',
+                filesystem=filesystem,
+            )
             filtered_paths = [
-                f.path for f in dataset.get_fragments()
+                f.path
+                for f in dataset.get_fragments()
                 if f.path.startswith(trimmed_path)
             ]
             # Rebuild a dataset from those paths using the same filesystem
-            yield pyarrow.dataset.dataset(filtered_paths, format="parquet",
-                                          filesystem=dataset.filesystem)
+            yield pyarrow.dataset.dataset(
+                filtered_paths, format='parquet', filesystem=dataset.filesystem
+            )
         else:
-            yield pyarrow.dataset.dataset(path_without_scheme,
-                                          filesystem=filesystem, **kwargs)
+            yield pyarrow.dataset.dataset(
+                path_without_scheme, filesystem=filesystem, **kwargs
+            )
 
         return
 
-    assert not path.endswith(
-        "*"), "Wildcard is not supported for non-local/non-cloud paths"
+    assert not path.endswith('*'), (
+        'Wildcard is not supported for non-local/non-cloud paths'
+    )
     with fsutil.TemporaryDirectory() as temp_dir:
-        logger.info(f"Staging parquet data from {path} at {temp_dir}")
+        logger.info(f'Staging parquet data from {path} at {temp_dir}')
         fsutil.copy(path, temp_dir)
         yield pyarrow.dataset.dataset(temp_dir, **kwargs)
 
@@ -222,7 +237,7 @@ def read_parquet(
             rows from offset.
     """
     path = fsutil.s3a_as_s3(path)
-    logger.info(f"read_parquet: {path}, offset: {offset}, size: {size}")
+    logger.info(f'read_parquet: {path}, offset: {offset}, size: {size}')
 
     # Case 1: offset=0 and size=None - use current dataset approach
     if offset == 0 and size is None:
@@ -230,13 +245,14 @@ def read_parquet(
 
     # Case 2: size is not None - use file-by-file approach
     else:
-        return _read_with_file_iteration(path, exclude_invalid_files,
-                                         return_arrow, offset, size)
+        return _read_with_file_iteration(
+            path, exclude_invalid_files, return_arrow, offset, size
+        )
 
 
 def _read_full_dataset(
-        path: str, exclude_invalid_files: bool,
-        return_arrow: bool) -> Union[pd.DataFrame, pyarrow.Table]:
+    path: str, exclude_invalid_files: bool, return_arrow: bool
+) -> Union[pd.DataFrame, pyarrow.Table]:
     """Read the full dataset using the original approach."""
     with _get_dataset(path, exclude_invalid_files=exclude_invalid_files) as ds:
         table = ds.to_table()
@@ -260,8 +276,12 @@ def _read_full_dataset(
 
 
 def _read_with_file_iteration(
-        path: str, exclude_invalid_files: bool, return_arrow: bool, offset: int,
-        size: int | None) -> Union[pd.DataFrame, pyarrow.Table]:
+    path: str,
+    exclude_invalid_files: bool,
+    return_arrow: bool,
+    offset: int,
+    size: int | None,
+) -> Union[pd.DataFrame, pyarrow.Table]:
     """Read data file by file, respecting offset and size constraints."""
 
     # List all parquet files in the directory
@@ -291,8 +311,9 @@ def _read_with_file_iteration(
                     file_end_local = min(num_rows, offset + size - total_rows)
 
                 if file_offset > 0 or file_end_local < num_rows:
-                    file_table = file_table.slice(file_offset,
-                                                  file_end_local - file_offset)
+                    file_table = file_table.slice(
+                        file_offset, file_end_local - file_offset
+                    )
 
                 if len(file_table) > 0:
                     tables_to_concat.append(file_table)
@@ -332,12 +353,13 @@ def _read_with_file_iteration(
                     # AWS specific errors
                     'aws error',
                     'service error',
-                    'throttl'
+                    'throttl',
                 ]
 
                 # Check for critical S3 error patterns (case-insensitive)
-                is_s3_critical = any(pattern in error_msg
-                                     for pattern in s3_critical_patterns)
+                is_s3_critical = any(
+                    pattern in error_msg for pattern in s3_critical_patterns
+                )
 
                 # Check for specific exception types that indicate serious issues
                 is_critical_exception = isinstance(
@@ -350,33 +372,43 @@ def _read_with_file_iteration(
                         ConnectionError,
                         OSError,
                         IOError,  # Network and system errors
-                        TimeoutError  # General timeout errors
-                    ))
+                        TimeoutError,  # General timeout errors
+                    ),
+                )
 
                 # Check if the error is from botocore/boto3 (AWS SDK)
                 is_aws_sdk_error = any(
                     module in error_module
-                    for module in ['botocore', 'boto3', 's3fs', 'aiobotocore'])
+                    for module in ['botocore', 'boto3', 's3fs', 'aiobotocore']
+                )
 
                 # Check for PyArrow errors that might indicate S3 issues
                 is_pyarrow_error = 'pyarrow' in error_module
                 is_s3_error = any(
                     pattern in error_msg
-                    for pattern in ['aws error', 's3', 'connection', 'timeout'])
+                    for pattern in ['aws error', 's3', 'connection', 'timeout']
+                )
                 is_pyarrow_s3_error = is_pyarrow_error and is_s3_error
 
-                if (is_s3_critical or is_critical_exception or is_aws_sdk_error
-                        or is_pyarrow_s3_error):
-                    logger.error("[PARQUET_ERROR] CRITICAL ERROR in file "
-                                 f"{file_path} - {e}")
+                if (
+                    is_s3_critical
+                    or is_critical_exception
+                    or is_aws_sdk_error
+                    or is_pyarrow_s3_error
+                ):
+                    logger.error(
+                        f'[PARQUET_ERROR] CRITICAL ERROR in file {file_path} - {e}'
+                    )
                     raise e
                 else:
-                    logger.warning("[PARQUET_ERROR] Skipping invalid "
-                                   f"parquet file {file_path} - {e}")
+                    logger.warning(
+                        '[PARQUET_ERROR] Skipping invalid '
+                        f'parquet file {file_path} - {e}'
+                    )
                     continue
             else:
                 # exclude_invalid_files is False - always raise
-                logger.error(f"[PARQUET_ERROR] Error in file {file_path} - {e}")
+                logger.error(f'[PARQUET_ERROR] Error in file {file_path} - {e}')
                 raise e
 
     # Concatenate all relevant tables
@@ -479,8 +511,9 @@ def _is_empty_helper(path: str) -> bool:
         files = fsutil.listdir(path)
         if fsutil.is_s3(path) or fsutil.is_gcs(path):
             for file in files:
-                if (file.endswith('.parquet')
-                        or fsutil.isdir(file)) and not (_is_empty_helper(file)):
+                if (file.endswith('.parquet') or fsutil.isdir(file)) and not (
+                    _is_empty_helper(file)
+                ):
                     return False
             return True
         for file in files:
@@ -498,8 +531,7 @@ def _is_empty_helper(path: str) -> bool:
 
 @blocking_func()
 def is_empty(path: str) -> bool:
-    """Return true if the given parquet dataset is empty.
-    """
+    """Return true if the given parquet dataset is empty."""
     # For customers like roco running frequent BP jobs, occasionally
     # pyarrow.dataset.dataset results in the following AWS Error:
     # "AWS Error [code 99]: curlCode: 28, Timeout was reached".
@@ -508,7 +540,7 @@ def is_empty(path: str) -> bool:
     # issue, we run is_empty in a separate process.
     # Refer - https://github.com/kumo-ai/kumo/issues/12275#issuecomment-2127757914 # noqa: E501
     if fsutil.is_s3(path):
-        return _run_in_isolated_subprocess(_is_empty_helper, (path, ))
+        return _run_in_isolated_subprocess(_is_empty_helper, (path,))
     else:
         # GCS and UCV stay in-process. Forking a threaded process after a GCS
         # filesystem has been initialized can wedge PyArrow, while the
@@ -548,7 +580,7 @@ def _get_parquet_metadata_using_warehouse(path: str) -> ParquetMetadata:
         rows = get_num_rows_databricks(path)
         pyarrow_table = get_parquet_head_databricks(path)
     else:
-        raise ValueError(f"Invalid path: {path}. Expected UCV path.")
+        raise ValueError(f'Invalid path: {path}. Expected UCV path.')
 
     cols = pyarrow_table.schema.names
     columns = pyarrow_table.to_pandas().columns.size
@@ -567,7 +599,7 @@ def _get_parquet_metadata_using_warehouse(path: str) -> ParquetMetadata:
 
 
 def _get_parquet_metadata(
-        ds: pyarrow.dataset.Dataset,  # type: ignore
+    ds: pyarrow.dataset.Dataset,  # type: ignore
 ) -> ParquetMetadata:
     """Get the metadata of a parquet table using pyarrow.dataset.Dataset.
     Exclusively used for paths that are not from databricks or snowflake.
@@ -646,7 +678,8 @@ def to_batches(
         logger.warning(
             'Reading parquet to pandas shards with too large size: %d,'
             'which could lead to potential memory leaks!',
-            target_bytes_per_batch)
+            target_bytes_per_batch,
+        )
 
     # Compute batch sizing and resolve the concrete files to scan up front from
     # a short-lived metadata dataset, then stream each file through its own
@@ -655,7 +688,7 @@ def to_batches(
     # file re-acquires a filesystem with refreshed credentials.
     with _get_dataset(path, exclude_invalid_files=True) as ds:
         info = _get_parquet_metadata(ds)
-        logger.info("Parquet metdata for %s: %s", path, info)
+        logger.info('Parquet metdata for %s: %s', path, info)
 
         if info.avg_row_size == 0:
             logger.error('Error reading empty size parquet dataset: %s', path)
@@ -663,17 +696,24 @@ def to_batches(
 
         # Max row count per the batch.
         from kumo_core.artifact_export import artifact_rows_per_batch
-        rows_per_batch = artifact_rows_per_batch(info.avg_row_size,
-                                                 target_bytes_per_batch)
+
+        rows_per_batch = artifact_rows_per_batch(
+            info.avg_row_size, target_bytes_per_batch
+        )
 
         # Resolve the files to scan from the metadata dataset's own fragments
         # (recursive, name-agnostic - matches the previous single-dataset scan)
         # so a nested/partitioned layout is never silently truncated. Re-attach
         # the scheme so each path re-enters _get_dataset (and
         # arrow_cloud_filesystem). Sorted for deterministic output order.
-        if path.endswith("*") or fsutil.isdir(path):
-            scheme = ("s3://" if path.startswith("s3://") else
-                      "gs://" if path.startswith("gs://") else "")
+        if path.endswith('*') or fsutil.isdir(path):
+            scheme = (
+                's3://'
+                if path.startswith('s3://')
+                else 'gs://'
+                if path.startswith('gs://')
+                else ''
+            )
             files = sorted(scheme + f.path for f in ds.get_fragments())
         else:
             files = [path]
@@ -682,19 +722,24 @@ def to_batches(
         raise RuntimeError(f'No parquet file found in {path}')
 
     logger.info(
-        'Scanning parquet dataset %s: max %d rows per batch across '
-        '%d files.', path, rows_per_batch, len(files))
+        'Scanning parquet dataset %s: max %d rows per batch across %d files.',
+        path,
+        rows_per_batch,
+        len(files),
+    )
 
     batch_number = 0
     for file_path in files:
         with _get_dataset(file_path, exclude_invalid_files=True) as file_ds:
             for batch in file_ds.to_batches(
-                    batch_size=rows_per_batch,
-                    use_threads=False,
+                batch_size=rows_per_batch,
+                use_threads=False,
             ):
-                yield ParquetBatch(df=batch.to_pandas(),
-                                   batch_number=batch_number,
-                                   batch_size_bytes=batch.nbytes)
+                yield ParquetBatch(
+                    df=batch.to_pandas(),
+                    batch_number=batch_number,
+                    batch_size_bytes=batch.nbytes,
+                )
                 batch_number += 1
 
 
@@ -707,7 +752,7 @@ def _parquet_write_target(path: str):
             yield handle
     else:
         with fsutil.TemporaryDirectory() as temp_dir:
-            temp_file = osp.join(temp_dir, "temp_file")
+            temp_file = osp.join(temp_dir, 'temp_file')
             yield temp_file
             fsutil.copy_file(temp_file, path, overwrite=True)
 
@@ -720,6 +765,7 @@ class StreamingDataFrameParquetWriter:
     target under normal row-size estimates. The schema from the first slice is
     reused for every later slice and rotated file.
     """
+
     def __init__(
         self,
         path_prefix: str,
@@ -759,12 +805,10 @@ class StreamingDataFrameParquetWriter:
 
     def _open_file(self) -> None:
         assert self._schema is not None
-        output_path = (
-            f'{self.path_prefix}-{self._next_file_index:05d}.parquet')
+        output_path = f'{self.path_prefix}-{self._next_file_index:05d}.parquet'
         self._next_file_index += 1
         self._target_stack = ExitStack()
-        target = self._target_stack.enter_context(
-            _parquet_write_target(output_path))
+        target = self._target_stack.enter_context(_parquet_write_target(output_path))
         self._writer = pq.ParquetWriter(
             target,
             self._schema,
@@ -775,24 +819,28 @@ class StreamingDataFrameParquetWriter:
     def _to_table(self, df: pd.DataFrame) -> pyarrow.Table:
         if self.save_index:
             df = df.copy(deep=False)
-            df.index = pd.RangeIndex(self._index_offset,
-                                     self._index_offset + len(df))
+            df.index = pd.RangeIndex(self._index_offset, self._index_offset + len(df))
             self._index_offset += len(df)
         table = pyarrow.Table.from_pandas(df, preserve_index=self.save_index)
         if self._schema is None:
             self._schema = table.schema
             return table
         if table.schema.names != self._schema.names:
-            raise ValueError('Streaming Parquet schema columns changed from '
-                             f'{self._schema.names} to {table.schema.names}')
+            raise ValueError(
+                'Streaming Parquet schema columns changed from '
+                f'{self._schema.names} to {table.schema.names}'
+            )
         if not table.schema.equals(self._schema, check_metadata=False):
             table = table.cast(self._schema.remove_metadata())
         return table.replace_schema_metadata(self._schema.metadata)
 
     def _write_table(self, table: pyarrow.Table) -> None:
         table_size = max(1, table.nbytes)
-        if (self._writer is not None and self._current_file_size > 0
-                and self._current_file_size + table_size > self.max_file_size):
+        if (
+            self._writer is not None
+            and self._current_file_size > 0
+            and self._current_file_size + table_size > self.max_file_size
+        ):
             self._close_file()
         if self._writer is None:
             self._open_file()
@@ -815,7 +863,7 @@ class StreamingDataFrameParquetWriter:
             int(len(df) * self.max_buffer_size / memory_usage),
         )
         for start in range(0, len(df), rows_per_buffer):
-            chunk = df.iloc[start:start + rows_per_buffer]
+            chunk = df.iloc[start : start + rows_per_buffer]
             self._write_table(self._to_table(chunk))
 
     def close(self) -> None:
@@ -851,9 +899,12 @@ def write_in_chunks(
     """
     # Ensure the directory exists in case of non-s3/gcs paths:
     _, mapped_prefix = _rewrite_uri(path_prefix)
-    if (not fsutil.is_s3(path_prefix) and not fsutil.is_s3(mapped_prefix)
-            and not fsutil.is_gcs(path_prefix)
-            and not fsutil.is_gcs(mapped_prefix)):
+    if (
+        not fsutil.is_s3(path_prefix)
+        and not fsutil.is_s3(mapped_prefix)
+        and not fsutil.is_gcs(path_prefix)
+        and not fsutil.is_gcs(mapped_prefix)
+    ):
         assert fsutil.exists(osp.dirname(path_prefix))
     # Compute the number of chunks to split the dataframe into:
     # NOTE: We use dataframe.memory_usage function to get the size of the
@@ -864,23 +915,23 @@ def write_in_chunks(
     num_rows = len(df)
     num_chunks = max(1, math.ceil(memory_usage / max_chunk_size))
     chunk_size = int(math.ceil(num_rows / num_chunks))
-    logger.info(f"Splitting parquet file into {num_chunks} chunks of size: "
-                f"{chunk_size} rows")
+    logger.info(
+        f'Splitting parquet file into {num_chunks} chunks of size: {chunk_size} rows'
+    )
 
     # Write the dataframe:
     for i in range(num_chunks):
         start = i * chunk_size
         end = min((i + 1) * chunk_size, num_rows)
         chunk_df = df.iloc[start:end]
-        output_path = path_prefix + f"-{i:05d}.parquet"
-        logger.debug(
-            f"Writing {i+1} of {num_chunks} chunks to path: {output_path}")
+        output_path = path_prefix + f'-{i:05d}.parquet'
+        logger.debug(f'Writing {i + 1} of {num_chunks} chunks to path: {output_path}')
         with _parquet_write_target(output_path) as target:
             chunk_df.to_parquet(
                 target,
                 index=save_index,
                 row_group_size=fsutil.PARQUET_ROW_GROUP_SIZE,
-                flavor="spark",
+                flavor='spark',
             )
 
 
@@ -896,7 +947,7 @@ def write_df(df: pd.DataFrame, path: str):
     # Mirrors the read-path fix at _get_dataset.
     path = fsutil.s3a_as_s3(path)
     if path.endswith('/') or fsutil.isdir(path):
-        raise ValueError(f"expected filename, got directory {path}")
+        raise ValueError(f'expected filename, got directory {path}')
     table = pyarrow.Table.from_pandas(df)
     write_options = {
         'use_deprecated_int96_timestamps': True,
@@ -942,12 +993,16 @@ def _parquet_num_rows_helper(table_path, skip_check) -> int:
         except Exception as e:
             if _is_access_or_io_error(e) or isinstance(e, pyarrow.ArrowInvalid):
                 logger.error(
-                    "Failed to read num rows for %s (access/IO error or "
-                    "corrupt fragment); surfacing instead of reporting 0 "
-                    "rows: %s", table_path, e)
+                    'Failed to read num rows for %s (access/IO error or '
+                    'corrupt fragment); surfacing instead of reporting 0 '
+                    'rows: %s',
+                    table_path,
+                    e,
+                )
                 raise
-            logger.warning("Treating num rows for %s as 0 (empty/missing): %s",
-                           table_path, e)
+            logger.warning(
+                'Treating num rows for %s as 0 (empty/missing): %s', table_path, e
+            )
             return 0
 
     if not fsutil.exists(table_path):
@@ -993,8 +1048,9 @@ def _count_rows_per_file(table_path: str) -> int:
         max_workers = min(_NUM_ROWS_MAX_WORKERS.parse_value(), len(fragments))
         if max_workers <= 1:
             return sum(_cloud_parquet_file_num_rows(p) for p in fragments)
-        with ThreadPoolExecutor(max_workers=max_workers,
-                                thread_name_prefix='parquet_num_rows_') as ex:
+        with ThreadPoolExecutor(
+            max_workers=max_workers, thread_name_prefix='parquet_num_rows_'
+        ) as ex:
             return sum(ex.map(_cloud_parquet_file_num_rows, fragments))
 
     if not is_dir:
@@ -1006,19 +1062,22 @@ def _count_rows_per_file(table_path: str) -> int:
     # silently dropped and undercount the table.
     with _get_dataset(table_path) as ds:
         parquet_paths = [
-            fragment.path for fragment in ds.get_fragments()
+            fragment.path
+            for fragment in ds.get_fragments()
             if fragment.path.endswith('.parquet')
         ]
         if not parquet_paths:
             return 0
-        rebuilt = pyarrow.dataset.dataset(parquet_paths, format='parquet',
-                                          filesystem=ds.filesystem)
+        rebuilt = pyarrow.dataset.dataset(
+            parquet_paths, format='parquet', filesystem=ds.filesystem
+        )
         return rebuilt.count_rows()
 
 
 @blocking_func(tracing_options=TraceOptions(trace_params=True))
-def parquet_num_rows(table_path: str, skip_check: bool = False,
-                     use_new_process: bool = True) -> int:
+def parquet_num_rows(
+    table_path: str, skip_check: bool = False, use_new_process: bool = True
+) -> int:
     """
     Returns row count, or zero if the table file doesn't exist at all.
 
@@ -1038,5 +1097,6 @@ def parquet_num_rows(table_path: str, skip_check: bool = False,
     """
     if not use_new_process or not fsutil.is_s3(table_path):
         return _parquet_num_rows_helper(table_path, skip_check)
-    return _run_in_isolated_subprocess(_parquet_num_rows_helper,
-                                       (table_path, skip_check))
+    return _run_in_isolated_subprocess(
+        _parquet_num_rows_helper, (table_path, skip_check)
+    )

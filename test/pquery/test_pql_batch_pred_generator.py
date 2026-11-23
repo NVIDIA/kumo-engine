@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import pathlib
-from test.fixtures.dg_indexed_graph import materialize_bp_dg
 from typing import List
 from unittest.mock import patch
 
@@ -17,6 +16,7 @@ from kumo_core.train.autoregression import (
 
 from kumo.testing.pquery import get_validated_query
 from kumo.validation.train_table_validation import TrainingTableGenerationError
+from test.fixtures.dg_indexed_graph import materialize_bp_dg
 
 # The entity-dates node-pred + forecasting bp rows below are MIGRATED onto the
 # DG-indexed entity-dates fixture (`dg_indexed_entity_dates_graph`, test/
@@ -36,23 +36,25 @@ from kumo.validation.train_table_validation import TrainingTableGenerationError
 # Both are DG-side gaps; until an end-time slot lands in the unit DG ingest path
 # these LP variants cannot be reproduced faithfully, so they stay parked.
 _SKIP_REASON_NEEDS_DG_RHS_END_TIME = (
-    "Parked on the DG RHS/entity END-TIME ingest gap (NOT the entity-dates "
-    "fixture, which now exists: `dg_indexed_entity_dates_graph`). These "
-    "custom-pred-time LINK-pred rows parametrize over RHS PRODUCTS start/"
-    "end-date windows (`with_end_date_products`) to filter `valid_target_ids`, "
-    "but `_build_diskgraph_ingest_config` (test/fixtures/dg_indexed_graph.py) "
-    "emits only `time_column` and has no end-time slot -- the end-time column "
-    "is dropped from the emitted DG config. Same end-time gap B9c-ii cited for "
-    "the mismatched-rhs-dates / coupon static-LP rows. Separately, a LINK-pred "
-    "query with a custom pred_time over an entity table carrying a time_col "
-    "raises a DiskGraph plan error (`resolving entity time_col: column "
+    'Parked on the DG RHS/entity END-TIME ingest gap (NOT the entity-dates '
+    'fixture, which now exists: `dg_indexed_entity_dates_graph`). These '
+    'custom-pred-time LINK-pred rows parametrize over RHS PRODUCTS start/'
+    'end-date windows (`with_end_date_products`) to filter `valid_target_ids`, '
+    'but `_build_diskgraph_ingest_config` (test/fixtures/dg_indexed_graph.py) '
+    'emits only `time_column` and has no end-time slot -- the end-time column '
+    'is dropped from the emitted DG config. Same end-time gap B9c-ii cited for '
+    'the mismatched-rhs-dates / coupon static-LP rows. Separately, a LINK-pred '
+    'query with a custom pred_time over an entity table carrying a time_col '
+    'raises a DiskGraph plan error (`resolving entity time_col: column '
     "'JOINED' not found in rowpack context`). Both are DG-side gaps; the rows "
-    "cannot be reproduced faithfully until an end-time slot lands in the unit "
-    "DG ingest path. Per-test selective skip - not file-level.")
+    'cannot be reproduced faithfully until an end-time slot lands in the unit '
+    'DG ingest path. Per-test selective skip - not file-level.'
+)
 
 
-def test_static_node_pred_table_generation(dg_indexed_synthetic_node_pred_graph,
-                                           tmp_path: pathlib.Path):
+def test_static_node_pred_table_generation(
+    dg_indexed_synthetic_node_pred_graph, tmp_path: pathlib.Path
+):
     # DG-native migration. The legacy version drove
     # `PredictionTableGeneratorV2.generate_table()` (no DG index) over the
     # in-memory `create_static_node_pred_graph` and returned a DataFrame. On DG
@@ -80,7 +82,8 @@ def test_static_node_pred_table_generation(dg_indexed_synthetic_node_pred_graph,
 
 
 def test_temporal_node_pred_basic_with_stats(
-        dg_indexed_temporal_synthetic_node_pred_graph, tmp_path: pathlib.Path):
+    dg_indexed_temporal_synthetic_node_pred_graph, tmp_path: pathlib.Path
+):
     # DG-native migration. The legacy version drove
     # `PredictionTableGeneratorV2.generate_table()` (no DG index) over the
     # in-memory `small_temporal_graph_fixed` and asserted the returned
@@ -109,8 +112,9 @@ def test_temporal_node_pred_basic_with_stats(
     assert pred_df['TIMESTAMP'].tolist() == [pd.Timestamp('2023-01-15')] * 5
 
 
-def test_temporal_node_conversion(dg_indexed_node_pred_bank_graph,
-                                  tmp_path: pathlib.Path):
+def test_temporal_node_conversion(
+    dg_indexed_node_pred_bank_graph, tmp_path: pathlib.Path
+):
     # DG-native migration. The legacy body drove
     # `PredictionTableGeneratorV2.generate_table()` over the in-memory
     # `create_node_pred_graph` BANK_ID/TRANSACTIONS factory and asserted the
@@ -131,8 +135,10 @@ def test_temporal_node_conversion(dg_indexed_node_pred_bank_graph,
     graph, index_path = dg_indexed_node_pred_bank_graph()
     graph.infer_metadata()
     # Users who didn't transact on BANK_ID 0 in [-2, 0] but would in [0, 1].
-    entity_filter = ('(MIN(TRANSACTIONS.BANK_ID, -2, 0, days) = 1) '
-                     'AND (COUNT(TRANSACTIONS.*, -2, 0, days) = 2)')
+    entity_filter = (
+        '(MIN(TRANSACTIONS.BANK_ID, -2, 0, days) = 1) '
+        'AND (COUNT(TRANSACTIONS.*, -2, 0, days) = 2)'
+    )
     target = 'COUNT(TRANSACTIONS.* WHERE TRANSACTIONS.BANK_ID = 0, 0, 1, days)'
     query = f'PREDICT {target} FOR EACH USERS.USER_ID WHERE {entity_filter}'
     validated_query = get_validated_query(graph, query)
@@ -145,7 +151,8 @@ def test_temporal_node_conversion(dg_indexed_node_pred_bank_graph,
 
 
 def test_nested_target_with_invert(
-        dg_indexed_temporal_synthetic_node_pred_graph, tmp_path: pathlib.Path):
+    dg_indexed_temporal_synthetic_node_pred_graph, tmp_path: pathlib.Path
+):
     # DG-native migration. The legacy version drove a NESTED boolean target
     # (`SUM(...) > 30 OR COUNT(...) > 1`) over `create_node_pred_graph`
     # (USERS/TRANSACTIONS.AMOUNT) to exercise the nested/inverted target
@@ -159,8 +166,10 @@ def test_nested_target_with_invert(
     # SNOWFLAKE branch (legacy backend retired).
     graph, index_path = dg_indexed_temporal_synthetic_node_pred_graph
     graph.infer_metadata()
-    query = ('PREDICT SUM(ORDERS.ORDER_SCORE, 0, 3) > 5 OR '
-             'COUNT(ORDERS.ORDER_SCORE, 0, 3) > 1 FOR EACH USERS.USER_ID')
+    query = (
+        'PREDICT SUM(ORDERS.ORDER_SCORE, 0, 3) > 5 OR '
+        'COUNT(ORDERS.ORDER_SCORE, 0, 3) > 1 FOR EACH USERS.USER_ID'
+    )
     validated_query = get_validated_query(graph, query)
     pred_df = materialize_bp_dg(graph, validated_query, index_path, tmp_path)
 
@@ -171,7 +180,8 @@ def test_nested_target_with_invert(
 
 
 def test_positive_target_start_date(
-        dg_indexed_temporal_synthetic_node_pred_graph, tmp_path: pathlib.Path):
+    dg_indexed_temporal_synthetic_node_pred_graph, tmp_path: pathlib.Path
+):
     # DG-native migration (see `test_temporal_node_pred_basic_with_stats` for
     # the read-back rationale + dropped SNOWFLAKE scaffolding). A positive
     # target start-offset (`SUM(ORDERS.ORDER_SCORE, 1, 3)`) still produces one
@@ -191,8 +201,9 @@ def test_positive_target_start_date(
     assert pred_df['TIMESTAMP'].tolist() == [pd.Timestamp('2023-01-15')] * 5
 
 
-def test_empty_df(dg_indexed_temporal_synthetic_node_pred_graph,
-                  tmp_path: pathlib.Path):
+def test_empty_df(
+    dg_indexed_temporal_synthetic_node_pred_graph, tmp_path: pathlib.Path
+):
     # DG-native migration. The legacy test built `create_node_pred_graph`
     # (USERS/TRANSACTIONS) and asserted the in-process producer raised
     # `TrainingTableGenerationError("Empty batch prediction table")` when the
@@ -206,17 +217,19 @@ def test_empty_df(dg_indexed_temporal_synthetic_node_pred_graph,
     # match to the DG message; the assertion (empty-bp -> raise) is unchanged.
     graph, index_path = dg_indexed_temporal_synthetic_node_pred_graph
     graph.infer_metadata()
-    query = ('PREDICT SUM(ORDERS.ORDER_SCORE, 0, 2) FOR EACH USERS.USER_ID '
-             'WHERE USERS.AGE > 150')
+    query = (
+        'PREDICT SUM(ORDERS.ORDER_SCORE, 0, 2) FOR EACH USERS.USER_ID '
+        'WHERE USERS.AGE > 150'
+    )
     validated_query = get_validated_query(graph, query)
-    with pytest.raises(TrainingTableGenerationError,
-                       match="No rows to predict"):
+    with pytest.raises(TrainingTableGenerationError, match='No rows to predict'):
         materialize_bp_dg(graph, validated_query, index_path, tmp_path)
 
 
 @patch('kumo.pquery.AST.ast_node.ALLOW_ARRAY_TARGETS', new=False)
 def test_basic_temporal_link_pred_pred_table_generation(
-        dg_indexed_temporal_link_pred_graph, tmp_path: pathlib.Path):
+    dg_indexed_temporal_link_pred_graph, tmp_path: pathlib.Path
+):
     # TT-NG: the legacy HStack LP-BP layout (ENTITY x TARGET cross-product,
     # ALLOW_ARRAY_TARGETS=False) is REMOVED. TT-NG LP is FK-free / array-target
     # only -- the RHS candidate set is seeded at INGEST, never materialized as a
@@ -228,18 +241,22 @@ def test_basic_temporal_link_pred_pred_table_generation(
     # the only supported TT-NG LP-BP arm. DROPPED: the returned-hstack-DataFrame
     # assertion (that layout no longer exists) + `na_values` / SNOWFLAKE.
     graph, index_path = dg_indexed_temporal_link_pred_graph(
-        num_users=5, num_stores=3, num_edges=15)
+        num_users=5, num_stores=3, num_edges=15
+    )
     graph.infer_metadata()
-    query = ('PREDICT LIST_DISTINCT(ORDERS.STORE_ID, 0, 2) RANK TOP 10 '
-             'FOR EACH USERS.USER_ID')
+    query = (
+        'PREDICT LIST_DISTINCT(ORDERS.STORE_ID, 0, 2) RANK TOP 10 '
+        'FOR EACH USERS.USER_ID'
+    )
     validated_query = get_validated_query(graph, query)
-    with pytest.raises(NotImplementedError, match="separate|HStack|array"):
+    with pytest.raises(NotImplementedError, match='separate|HStack|array'):
         materialize_bp_dg(graph, validated_query, index_path, tmp_path)
 
 
 @patch('kumo.pquery.AST.ast_node.ALLOW_ARRAY_TARGETS', new=True)
 def test_basic_temporal_link_pred_pred_table_generation_array(
-        dg_indexed_temporal_link_pred_graph, tmp_path: pathlib.Path):
+    dg_indexed_temporal_link_pred_graph, tmp_path: pathlib.Path
+):
     # TT-NG array-target / FK-free LP BP -- the ONLY supported TT-NG LP-BP arm.
     # The bp producer gens ONLY the LHS predict seeds (ENTITY [+ TIMESTAMP], NO
     # TARGET) into the kept predict staging dir; the RHS candidate pool is
@@ -251,13 +268,17 @@ def test_basic_temporal_link_pred_pred_table_generation_array(
     # DROPPED: the RHS-pool `rhs_df['TARGET']` assertion (RHS is an ingest
     # concern on TT-NG, not a gen output) + na_values + SNOWFLAKE.
     graph, index_path = dg_indexed_temporal_link_pred_graph(
-        num_users=5, num_stores=3, num_edges=15)
+        num_users=5, num_stores=3, num_edges=15
+    )
     graph.infer_metadata()
-    query = ('PREDICT LIST_DISTINCT(ORDERS.STORE_ID, 0, 2) RANK TOP 10 '
-             'FOR EACH USERS.USER_ID')
+    query = (
+        'PREDICT LIST_DISTINCT(ORDERS.STORE_ID, 0, 2) RANK TOP 10 '
+        'FOR EACH USERS.USER_ID'
+    )
     validated_query = get_validated_query(graph, query)
-    lhs_df = materialize_bp_dg(graph, validated_query, index_path, tmp_path,
-                               list_distinct_target_is_array=True)
+    lhs_df = materialize_bp_dg(
+        graph, validated_query, index_path, tmp_path, list_distinct_target_is_array=True
+    )
 
     assert 'TARGET' not in lhs_df.columns
     assert {'ENTITY', 'TIMESTAMP'} <= set(lhs_df.columns)
@@ -267,7 +288,8 @@ def test_basic_temporal_link_pred_pred_table_generation_array(
 
 @patch('kumo.pquery.AST.ast_node.ALLOW_ARRAY_TARGETS', new=False)
 def test_basic_static_link_pred_pred_table_generation(
-        dg_indexed_static_link_pred_graph, tmp_path: pathlib.Path):
+    dg_indexed_static_link_pred_graph, tmp_path: pathlib.Path
+):
     # TT-NG: the legacy static-LP HStack layout (ENTITY x TARGET cross-product +
     # PSEUDO_TIMESTAMP sentinel, ALLOW_ARRAY_TARGETS=False) is REMOVED. TT-NG LP
     # is FK-free / array-target only, so the non-array request resolves to the
@@ -278,18 +300,21 @@ def test_basic_static_link_pred_pred_table_generation(
     # the 3 STORE_ID-filter parametrize variants + the returned-hstack-DataFrame
     # / PSEUDO_TIMESTAMP-sentinel assertions (that layout no longer exists).
     graph, index_path = dg_indexed_static_link_pred_graph(
-        num_entities=3, set_entity_time_col=False, set_trans_time_col=False)
+        num_entities=3, set_entity_time_col=False, set_trans_time_col=False
+    )
     graph.infer_metadata()
-    query = ('PREDICT LIST_DISTINCT(TRANS.PRODUCT_ID_FK) RANK TOP 2 '
-             'FOR EACH USERS.USER_ID')
+    query = (
+        'PREDICT LIST_DISTINCT(TRANS.PRODUCT_ID_FK) RANK TOP 2 FOR EACH USERS.USER_ID'
+    )
     validated_query = get_validated_query(graph, query)
-    with pytest.raises(NotImplementedError, match="separate|HStack|array"):
+    with pytest.raises(NotImplementedError, match='separate|HStack|array'):
         materialize_bp_dg(graph, validated_query, index_path, tmp_path)
 
 
 @patch('kumo.pquery.AST.ast_node.ALLOW_ARRAY_TARGETS', new=True)
 def test_basic_static_link_pred_pred_table_generation_array(
-        dg_indexed_static_link_pred_graph, tmp_path: pathlib.Path):
+    dg_indexed_static_link_pred_graph, tmp_path: pathlib.Path
+):
     # TT-NG array-target / FK-free static-LP BP -- the supported static-LP arm.
     # The bp producer gens ONLY the LHS predict seeds (ENTITY, NO TARGET) into
     # the kept predict staging dir; the RHS candidate pool is seeded at INGEST,
@@ -298,21 +323,23 @@ def test_basic_static_link_pred_pred_table_generation_array(
     # `rhs_df['TARGET']` assertion (RHS is an ingest concern on TT-NG) + the 3
     # STORE_ID-filter parametrize variants.
     graph, index_path = dg_indexed_static_link_pred_graph(
-        num_entities=3, set_entity_time_col=False, set_trans_time_col=False)
+        num_entities=3, set_entity_time_col=False, set_trans_time_col=False
+    )
     graph.infer_metadata()
-    query = ('PREDICT LIST_DISTINCT(TRANS.PRODUCT_ID_FK) RANK TOP 2 '
-             'FOR EACH USERS.USER_ID')
+    query = (
+        'PREDICT LIST_DISTINCT(TRANS.PRODUCT_ID_FK) RANK TOP 2 FOR EACH USERS.USER_ID'
+    )
     validated_query = get_validated_query(graph, query)
-    lhs_df = materialize_bp_dg(graph, validated_query, index_path, tmp_path,
-                               list_distinct_target_is_array=True)
+    lhs_df = materialize_bp_dg(
+        graph, validated_query, index_path, tmp_path, list_distinct_target_is_array=True
+    )
 
     assert 'TARGET' not in lhs_df.columns
     assert 'ENTITY' in lhs_df.columns
     assert set(lhs_df['ENTITY'].tolist()) == {0, 1, 2}
 
 
-def test_custom_batch_pred_time(dg_indexed_entity_dates_graph,
-                                tmp_path: pathlib.Path):
+def test_custom_batch_pred_time(dg_indexed_entity_dates_graph, tmp_path: pathlib.Path):
     # DG-native migration of the custom-prediction-time NODE-pred section of the
     # legacy test (the in-memory `graph_with_entity_dates` graph had no DG index;
     # `materialize_bp_dg` threads the real index + reads the written bp table
@@ -337,12 +364,14 @@ def test_custom_batch_pred_time(dg_indexed_entity_dates_graph,
     #     validation-layer check; it is out of scope for the entity-dates graph.
     graph, index_path = dg_indexed_entity_dates_graph(set_user_time=True)
     graph.infer_metadata()
-    query = ('PREDICT SUM(TRANS.AMOUNT, 0, 5) '
-             'FOR EACH USERS.USER_ID WHERE USERS.AGE < 30')
+    query = (
+        'PREDICT SUM(TRANS.AMOUNT, 0, 5) FOR EACH USERS.USER_ID WHERE USERS.AGE < 30'
+    )
     validated_query = get_validated_query(graph, query)
     pred_time = pd.Timestamp('2023-01-22')
-    pred_df = materialize_bp_dg(graph, validated_query, index_path, tmp_path,
-                                pred_time=pred_time)
+    pred_df = materialize_bp_dg(
+        graph, validated_query, index_path, tmp_path, pred_time=pred_time
+    )
 
     assert {'ENTITY', 'TIMESTAMP'} <= set(pred_df.columns)
     # AGE < 30 keeps USERS {0, 1}; both JOINED before the anchor (start-time
@@ -381,46 +410,78 @@ def test_custom_batch_pred_time_link_pred_array():
     [
         # Basic: SUM over all TRANS, lag=3 -> [5,5,5] per entity (1 txn/day,
         # 5-day window). All 3 entities present.
-        dict(lag_timesteps=3, target='SUM(TRANS.AMOUNT, 0, 5)',
-             entity='USERS.USER_ID', pred_time=None, num_entities=3,
-             lag_value=[5.0, 5.0, 5.0]),
+        dict(
+            lag_timesteps=3,
+            target='SUM(TRANS.AMOUNT, 0, 5)',
+            entity='USERS.USER_ID',
+            pred_time=None,
+            num_entities=3,
+            lag_value=[5.0, 5.0, 5.0],
+        ),
         # Target WHERE filter (PRODUCT_ID=5) applied correctly -> [2,2,1].
-        dict(lag_timesteps=3,
-             target='SUM(TRANS.AMOUNT WHERE TRANS.PRODUCT_ID=5, 0, 5)',
-             entity='USERS.USER_ID', pred_time=None, num_entities=3,
-             lag_value=[2.0, 2.0, 1.0]),
+        dict(
+            lag_timesteps=3,
+            target='SUM(TRANS.AMOUNT WHERE TRANS.PRODUCT_ID=5, 0, 5)',
+            entity='USERS.USER_ID',
+            pred_time=None,
+            num_entities=3,
+            lag_value=[2.0, 2.0, 1.0],
+        ),
         # lag_timesteps=1 works.
-        dict(lag_timesteps=1,
-             target='SUM(TRANS.AMOUNT WHERE TRANS.PRODUCT_ID=5, 0, 5)',
-             entity='USERS.USER_ID', pred_time=None, num_entities=3,
-             lag_value=[1.0]),
+        dict(
+            lag_timesteps=1,
+            target='SUM(TRANS.AMOUNT WHERE TRANS.PRODUCT_ID=5, 0, 5)',
+            entity='USERS.USER_ID',
+            pred_time=None,
+            num_entities=3,
+            lag_value=[1.0],
+        ),
         # Entity WHERE filter (AGE<30) -> only USERS {0,1}, lag=4.
-        dict(lag_timesteps=4,
-             target='SUM(TRANS.AMOUNT WHERE TRANS.PRODUCT_ID=5, 0, 5)',
-             entity='USERS.USER_ID WHERE USERS.AGE < 30', pred_time=None,
-             num_entities=2, lag_value=[1.0, 2.0, 2.0, 1.0]),
+        dict(
+            lag_timesteps=4,
+            target='SUM(TRANS.AMOUNT WHERE TRANS.PRODUCT_ID=5, 0, 5)',
+            entity='USERS.USER_ID WHERE USERS.AGE < 30',
+            pred_time=None,
+            num_entities=2,
+            lag_value=[1.0, 2.0, 2.0, 1.0],
+        ),
         # Non-None pred_time -> [5,5,5,5].
-        dict(lag_timesteps=4, target='SUM(TRANS.AMOUNT, 0, 5)',
-             entity='USERS.USER_ID', pred_time=pd.Timestamp('2023-01-22'),
-             num_entities=3, lag_value=[5.0, 5.0, 5.0, 5.0]),
+        dict(
+            lag_timesteps=4,
+            target='SUM(TRANS.AMOUNT, 0, 5)',
+            entity='USERS.USER_ID',
+            pred_time=pd.Timestamp('2023-01-22'),
+            num_entities=3,
+            lag_value=[5.0, 5.0, 5.0, 5.0],
+        ),
         # Lag values 0-filled when target table empty for early time periods.
-        dict(lag_timesteps=4,
-             target='SUM(TRANS.AMOUNT WHERE TRANS.PRODUCT_ID=5, 0, 5)',
-             entity='USERS.USER_ID', pred_time=pd.Timestamp('2023-01-02'),
-             num_entities=3, lag_value=[0.0, 0.0, 0.0, 1.0]),
+        dict(
+            lag_timesteps=4,
+            target='SUM(TRANS.AMOUNT WHERE TRANS.PRODUCT_ID=5, 0, 5)',
+            entity='USERS.USER_ID',
+            pred_time=pd.Timestamp('2023-01-02'),
+            num_entities=3,
+            lag_value=[0.0, 0.0, 0.0, 1.0],
+        ),
         # Target WHERE USER_ID=1 -> only entity 1 has data; others 0-filled
         # (per-entity lag dict).
         dict(
             lag_timesteps=4,
             target='SUM(TRANS.AMOUNT WHERE TRANS.USER_ID=1, 0, 5)',
-            entity='USERS.USER_ID', pred_time=None, num_entities=3, lag_value={
+            entity='USERS.USER_ID',
+            pred_time=None,
+            num_entities=3,
+            lag_value={
                 0: [0.0, 0.0, 0.0, 0.0],
                 1: [5.0, 5.0, 5.0, 5.0],
-                2: [0.0, 0.0, 0.0, 0.0]
-            }),
-    ])
-def test_batch_pred_forecast_table(kwargs, dg_indexed_entity_dates_graph,
-                                   tmp_path: pathlib.Path):
+                2: [0.0, 0.0, 0.0, 0.0],
+            },
+        ),
+    ],
+)
+def test_batch_pred_forecast_table(
+    kwargs, dg_indexed_entity_dates_graph, tmp_path: pathlib.Path
+):
     # DG-native migration of the 7-variant forecasting (autoregression /
     # lag-timestep) parametrize. Drives `forecast_length=3` bp tables through
     # `materialize_bp_dg` over the DG entity-dates fixture (USERS start-time only
@@ -438,22 +499,28 @@ def test_batch_pred_forecast_table(kwargs, dg_indexed_entity_dates_graph,
     # start-time as an eligibility filter, so that entity is emitted (same
     # 0-filled [0,0,0,1] lag vector), making `num_entities=3` the genuine DG
     # output.
-    graph, index_path = dg_indexed_entity_dates_graph(set_user_time=True,
-                                                      set_product_time=False)
+    graph, index_path = dg_indexed_entity_dates_graph(
+        set_user_time=True, set_product_time=False
+    )
     graph.infer_metadata()
-    query = f"PREDICT {kwargs['target']} FOR EACH {kwargs['entity']}"
+    query = f'PREDICT {kwargs["target"]} FOR EACH {kwargs["entity"]}'
     validated_query = get_validated_query(graph, query)
-    pred_df = materialize_bp_dg(graph, validated_query, index_path, tmp_path,
-                                forecast_length=3,
-                                lag_timesteps=kwargs['lag_timesteps'],
-                                pred_time=kwargs['pred_time'])
+    pred_df = materialize_bp_dg(
+        graph,
+        validated_query,
+        index_path,
+        tmp_path,
+        forecast_length=3,
+        lag_timesteps=kwargs['lag_timesteps'],
+        pred_time=kwargs['pred_time'],
+    )
 
     assert {'ENTITY', AUTOREGRESSION_COL, 'TIMESTAMP'} <= set(pred_df.columns)
     assert len(pred_df) == kwargs['num_entities']
     if isinstance(kwargs['lag_value'], dict):
         entity_lag = dict(
-            zip(pred_df['ENTITY'].tolist(),
-                pred_df[AUTOREGRESSION_COL].tolist()))
+            zip(pred_df['ENTITY'].tolist(), pred_df[AUTOREGRESSION_COL].tolist())
+        )
         for entity, expected in kwargs['lag_value'].items():
             assert list(entity_lag[entity]) == expected
     else:
@@ -462,7 +529,8 @@ def test_batch_pred_forecast_table(kwargs, dg_indexed_entity_dates_graph,
 
 
 def test_batch_pred_forecast_table_with_yoy_labels(
-        dg_indexed_entity_dates_graph, tmp_path: pathlib.Path):
+    dg_indexed_entity_dates_graph, tmp_path: pathlib.Path
+):
     # DG-native migration of the year-over-year forecasting-labels test. Builds
     # the entity-dates fixture with `add_year_ago_data=True` (every txn
     # duplicated 364 days earlier) and NO time columns on USERS/PRODUCTS
@@ -470,9 +538,9 @@ def test_batch_pred_forecast_table_with_yoy_labels(
     # `use_yoy_labels=True` bp tables at four pred_times. The exact 23-element
     # YOY vectors reproduce the legacy assertions EXACTLY (verified empirically).
     # DROPPED: the SNOWFLAKE backend branch (retired).
-    graph, index_path = dg_indexed_entity_dates_graph(set_user_time=False,
-                                                      set_product_time=False,
-                                                      add_year_ago_data=True)
+    graph, index_path = dg_indexed_entity_dates_graph(
+        set_user_time=False, set_product_time=False, add_year_ago_data=True
+    )
     graph.infer_metadata()
     query = 'PREDICT SUM(TRANS.AMOUNT, 0, 5) FOR EACH USERS.USER_ID'
     validated_query = get_validated_query(graph, query)
@@ -480,12 +548,19 @@ def test_batch_pred_forecast_table_with_yoy_labels(
     yoy_len = (PADDING_SIZE * 2) + 3  # 23
 
     def _yoy_table(pred_time):
-        pred_df = materialize_bp_dg(graph, validated_query, index_path,
-                                    tmp_path, forecast_length=3,
-                                    lag_timesteps=3, use_yoy_labels=True,
-                                    pred_time=pred_time)
-        assert {'ENTITY', AUTOREGRESSION_COL, 'TIMESTAMP',
-                YOY_COL} <= set(pred_df.columns)
+        pred_df = materialize_bp_dg(
+            graph,
+            validated_query,
+            index_path,
+            tmp_path,
+            forecast_length=3,
+            lag_timesteps=3,
+            use_yoy_labels=True,
+            pred_time=pred_time,
+        )
+        assert {'ENTITY', AUTOREGRESSION_COL, 'TIMESTAMP', YOY_COL} <= set(
+            pred_df.columns
+        )
         return pred_df
 
     # At the max timestamp: 30 days of $1 txns map to 6 timeframes of 5.
@@ -495,7 +570,29 @@ def test_batch_pred_forecast_table_with_yoy_labels(
         assert len(yoy) == yoy_len
         assert sum(yoy) == 30
         assert yoy == [
-            0, 0, 0, 0, 5, 5, 5, 5, 5, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+            0,
+            0,
+            0,
+            0,
+            5,
+            5,
+            5,
+            5,
+            5,
+            5,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
         ]
 
     # One day before the max: the leading timeframe loses 1 day, the next gains.
@@ -505,7 +602,29 @@ def test_batch_pred_forecast_table_with_yoy_labels(
         assert len(yoy) == yoy_len
         assert sum(yoy) == 30
         assert yoy == [
-            0, 0, 0, 0, 4, 5, 5, 5, 5, 5, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+            0,
+            0,
+            0,
+            0,
+            4,
+            5,
+            5,
+            5,
+            5,
+            5,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
         ]
 
     # Halfway through the period (offset 15 days): the window shifts wholesale.
@@ -515,7 +634,29 @@ def test_batch_pred_forecast_table_with_yoy_labels(
         assert len(yoy) == yoy_len
         assert sum(yoy) == 30
         assert yoy == [
-            0, 0, 0, 0, 0, 0, 0, 5, 5, 5, 5, 5, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            5,
+            5,
+            5,
+            5,
+            5,
+            5,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
         ]
 
     # A pred_time far before any data: all-zero YOY vector.
@@ -527,9 +668,9 @@ def test_batch_pred_forecast_table_with_yoy_labels(
         assert yoy == [0] * yoy_len
 
 
-def compare_dataframes_set_representation(df: pd.DataFrame,
-                                          expected_df: pd.DataFrame,
-                                          cols: List[str]):
+def compare_dataframes_set_representation(
+    df: pd.DataFrame, expected_df: pd.DataFrame, cols: List[str]
+):
     r"""Compare set representation of in certain columns between 2 dataframes.
 
     Args:

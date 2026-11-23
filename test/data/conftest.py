@@ -15,7 +15,7 @@ from kumo.testing.snowflake import SnowflakeTableConnector
 
 @pytest.fixture()
 def writable_snowflake_table(
-        snowflake_credentials
+    snowflake_credentials,
 ) -> Generator[SnowflakeTableConnector, None, None]:
     name = f'TEST_PREDICTION_{str(uuid.uuid1()).upper().replace("-", "")}'
     connector = writable_snowflake_config('snowflake').as_connector('xva19026')
@@ -42,33 +42,43 @@ def synthetic_data_for_weighted_tt() -> Callable:
     - 'array_target_weight_no_issues': array target with array weight has no issues
     - None: no issue
     """
+
     def _synthetic_data_for_weighted_tt(
-            issue: str | None) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        issue: str | None,
+    ) -> Tuple[pd.DataFrame, pd.DataFrame]:
         assert issue in [
-            'na_weight', 'missing_col', 'mismatched_dtype',
-            'all_negative_weight', 'some_negative_weight', None,
+            'na_weight',
+            'missing_col',
+            'mismatched_dtype',
+            'all_negative_weight',
+            'some_negative_weight',
+            None,
             'array_target_weight_has_negative_values',
-            'array_target_weight_no_issues'
+            'array_target_weight_no_issues',
         ]
-        orig_df = pd.DataFrame({
-            'TARGET': [1, 2, 3],
-            'TIMESTAMP': [
-                datetime.datetime(2022, 6, 30, 0, 0, 0),
-                datetime.datetime(2022, 6, 30, 0, 0, 0),
-                datetime.datetime(2022, 6, 30, 0, 0, 0)
-            ],
-            'ENTITY': [1, 2, 3]
-        })
-        weight_df = pd.DataFrame({
-            'TARGET': [1, 2, 3],
-            'TIMESTAMP': [
-                datetime.datetime(2022, 6, 30, 0, 0, 0),
-                datetime.datetime(2022, 6, 30, 0, 0, 0),
-                datetime.datetime(2022, 6, 30, 0, 0, 0)
-            ],
-            'ENTITY': [1, 2, 3],
-            'WEIGHT': [1, 2, 3]
-        })
+        orig_df = pd.DataFrame(
+            {
+                'TARGET': [1, 2, 3],
+                'TIMESTAMP': [
+                    datetime.datetime(2022, 6, 30, 0, 0, 0),
+                    datetime.datetime(2022, 6, 30, 0, 0, 0),
+                    datetime.datetime(2022, 6, 30, 0, 0, 0),
+                ],
+                'ENTITY': [1, 2, 3],
+            }
+        )
+        weight_df = pd.DataFrame(
+            {
+                'TARGET': [1, 2, 3],
+                'TIMESTAMP': [
+                    datetime.datetime(2022, 6, 30, 0, 0, 0),
+                    datetime.datetime(2022, 6, 30, 0, 0, 0),
+                    datetime.datetime(2022, 6, 30, 0, 0, 0),
+                ],
+                'ENTITY': [1, 2, 3],
+                'WEIGHT': [1, 2, 3],
+            }
+        )
         if issue == 'na_weight':
             weight_df['WEIGHT'] = [1, None, 3]
         if issue == 'missing_col':
@@ -80,11 +90,10 @@ def synthetic_data_for_weighted_tt() -> Callable:
         if issue == 'some_negative_weight':
             weight_df['WEIGHT'] = [1, -2, 3]
         if issue in [
-                'array_target_weight_has_negative_values',
-                'array_target_weight_no_issues'
+            'array_target_weight_has_negative_values',
+            'array_target_weight_no_issues',
         ]:
-            orig_df['TARGET'] = weight_df['TARGET'] = [[1, 2, 3], [4, 5, 6],
-                                                       [7, 8, 9]]
+            orig_df['TARGET'] = weight_df['TARGET'] = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
             weight_df['WEIGHT'] = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
             if issue == 'array_target_weight_has_negative_values':
                 weight_df['WEIGHT'] = [[1, 2, -3], [4, 5, 6], [7, 8, 9]]

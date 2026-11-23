@@ -44,6 +44,7 @@ def _parse_secret_string(name: str, raw: str) -> Dict[str, str]:
 
 class SecretProvider(ABC):
     """Abstract interface for secret management across cloud providers."""
+
     @abstractmethod
     def get_secret(self, name: str) -> Dict[str, str]:
         """Fetch a secret by name.
@@ -70,8 +71,10 @@ class SecretProvider(ABC):
 
 class AWSSecretProvider(SecretProvider):
     """AWS Secrets Manager implementation."""
+
     def __init__(self):
         from service_framework.aws_region import AWS_ACCOUNT_ID, AWS_REGION
+
         self.region = AWS_REGION
         self.account_id = AWS_ACCOUNT_ID
 
@@ -90,27 +93,29 @@ class AWSSecretProvider(SecretProvider):
         if secret is None:
             logger.debug('Fetching secret %s from AWS Secrets Manager', name)
             try:
-                client = boto3.client(service_name='secretsmanager',
-                                      region_name=self.region)
+                client = boto3.client(
+                    service_name='secretsmanager', region_name=self.region
+                )
 
                 secret_arn = self._to_arn(name)
-                get_secret_value_response = client.get_secret_value(
-                    SecretId=secret_arn)
+                get_secret_value_response = client.get_secret_value(SecretId=secret_arn)
 
                 if get_secret_value_response['SecretString'] is None:
                     raise SecretAccessException(
-                        'AWS Secrets Manager response did not include '
-                        'SecretString')
+                        'AWS Secrets Manager response did not include SecretString'
+                    )
                 secret = get_secret_value_response['SecretString']
                 logger.debug('Successfully fetched secret %s from AWS', name)
             except ClientError as e:
                 error_code = e.response.get('Error', {}).get('Code', '')
                 if error_code == 'ResourceNotFoundException':
                     raise SecretNotFoundException(
-                        f'Secret {name} not found in AWS') from None
+                        f'Secret {name} not found in AWS'
+                    ) from None
                 raise SecretAccessException(
                     f'Unable to access AWS secret {name}. Verify Secrets '
-                    'Manager permissions and credentials.') from None
+                    'Manager permissions and credentials.'
+                ) from None
             except NoCredentialsError:
                 raise SecretAccessException(
                     'AWS credentials are unavailable for secret access.'
@@ -129,33 +134,40 @@ class AWSSecretProvider(SecretProvider):
         secret_string = json.dumps(value)
 
         try:
-            client = boto3.client(service_name='secretsmanager',
-                                  region_name=self.region)
+            client = boto3.client(
+                service_name='secretsmanager', region_name=self.region
+            )
 
-            response = client.put_secret_value(SecretId=secret_arn,
-                                               SecretString=secret_string)
+            response = client.put_secret_value(
+                SecretId=secret_arn, SecretString=secret_string
+            )
 
             if response['Name'] != name:
                 raise SecretAccessException(
                     f'put_secret response returned invalid name: '
-                    f'{response["Name"]} (requested: {name})')
+                    f'{response["Name"]} (requested: {name})'
+                )
             logger.debug('Successfully stored secret %s in AWS', name)
             return response
         except ClientError as e:
             error_code = e.response.get('Error', {}).get('Code', '')
             if error_code == 'ResourceNotFoundException':
                 raise SecretNotFoundException(
-                    f'Secret {name} not found in AWS') from None
+                    f'Secret {name} not found in AWS'
+                ) from None
             raise SecretAccessException(
                 f'Unable to store AWS secret {name}. Verify Secrets Manager '
-                'permissions and credentials.') from None
+                'permissions and credentials.'
+            ) from None
         except NoCredentialsError:
             raise SecretAccessException(
-                'AWS credentials are unavailable for secret storage.') from None
+                'AWS credentials are unavailable for secret storage.'
+            ) from None
 
 
 class GCPSecretProvider(SecretProvider):
     """Google Cloud Secret Manager implementation."""
+
     def __init__(self, project_id: Optional[str] = None):
         """Initialize GCP Secret Provider.
 
@@ -167,6 +179,7 @@ class GCPSecretProvider(SecretProvider):
             # Try to get from google.auth (works with ADC and Workload Identity)
             try:
                 import google.auth
+
                 _, self.project_id = google.auth.default()
             except Exception:
                 pass
@@ -174,9 +187,11 @@ class GCPSecretProvider(SecretProvider):
             # Fallback: query GCP metadata server (works on GKE/GCE/Cloud Run)
             try:
                 import urllib.request
+
                 req = urllib.request.Request(
                     'http://metadata.google.internal/computeMetadata/v1/project/project-id',
-                    headers={'Metadata-Flavor': 'Google'})
+                    headers={'Metadata-Flavor': 'Google'},
+                )
                 with urllib.request.urlopen(req, timeout=2) as resp:
                     self.project_id = resp.read().decode('utf-8')
             except Exception:
@@ -184,11 +199,13 @@ class GCPSecretProvider(SecretProvider):
         if not self.project_id:
             raise RuntimeError(
                 'Could not determine GCP project ID. Set GCP_PROJECT_ID env var '
-                'or ensure Application Default Credentials are configured.')
+                'or ensure Application Default Credentials are configured.'
+            )
 
     def _get_client(self):
         """Get Secret Manager client."""
         from google.cloud import secretmanager
+
         return secretmanager.SecretManagerServiceClient()
 
     def _get_secret_path(self, name: str, version: str = 'latest') -> str:
@@ -203,26 +220,30 @@ class GCPSecretProvider(SecretProvider):
 
         if secret is None:
             logger.debug(
-                'Fetching secret %s from GCP Secret Manager '
-                '(project: %s)', name, self.project_id)
+                'Fetching secret %s from GCP Secret Manager (project: %s)',
+                name,
+                self.project_id,
+            )
             try:
                 client = self._get_client()
                 secret_path = self._get_secret_path(name)
-                response = client.access_secret_version(
-                    request={'name': secret_path})
+                response = client.access_secret_version(request={'name': secret_path})
                 secret = response.payload.data.decode('UTF-8')
                 logger.debug('Successfully fetched secret %s from GCP', name)
             except NotFound:
                 raise SecretNotFoundException(
-                    f'Secret {name} not found in GCP') from None
+                    f'Secret {name} not found in GCP'
+                ) from None
             except GoogleAPIError:
                 raise SecretAccessException(
                     f'Unable to access GCP secret {name}. Verify Secret '
-                    'Manager permissions and credentials.') from None
+                    'Manager permissions and credentials.'
+                ) from None
             except Exception:
                 raise SecretAccessException(
                     f'Unable to access GCP secret {name}. Verify Secret '
-                    'Manager configuration.') from None
+                    'Manager configuration.'
+                ) from None
         else:
             logger.debug('Using env var override for secret %s', name)
 
@@ -231,8 +252,11 @@ class GCPSecretProvider(SecretProvider):
     def put_secret(self, name: str, value: Dict[str, str]) -> Dict:
         from google.api_core.exceptions import GoogleAPIError, NotFound
 
-        logger.debug('Storing secret %s in GCP Secret Manager '
-                     '(project: %s)', name, self.project_id)
+        logger.debug(
+            'Storing secret %s in GCP Secret Manager (project: %s)',
+            name,
+            self.project_id,
+        )
         client = self._get_client()
         parent = f'projects/{self.project_id}'
         secret_string = json.dumps(value)
@@ -248,32 +272,30 @@ class GCPSecretProvider(SecretProvider):
                     request={
                         'parent': parent,
                         'secret_id': name,
-                        'secret': {
-                            'replication': {
-                                'automatic': {}
-                            }
-                        },
-                    })
+                        'secret': {'replication': {'automatic': {}}},
+                    }
+                )
 
             # Add new version
             response = client.add_secret_version(
                 request={
                     'parent': f'{parent}/secrets/{name}',
-                    'payload': {
-                        'data': secret_string.encode('UTF-8')
-                    },
-                })
+                    'payload': {'data': secret_string.encode('UTF-8')},
+                }
+            )
 
             logger.debug('Successfully stored secret %s in GCP', name)
             return {'name': name, 'version': response.name}
         except GoogleAPIError:
             raise SecretAccessException(
                 f'Unable to store GCP secret {name}. Verify Secret Manager '
-                'permissions and credentials.') from None
+                'permissions and credentials.'
+            ) from None
         except Exception:
             raise SecretAccessException(
                 f'Unable to store GCP secret {name}. Verify Secret Manager '
-                'configuration.') from None
+                'configuration.'
+            ) from None
 
 
 class EnvVarSecretProvider(SecretProvider):
@@ -282,16 +304,19 @@ class EnvVarSecretProvider(SecretProvider):
     Used in environments where secrets are injected as env vars by the
     platform (e.g. a host that injects Snowflake credentials as env vars).
     """
+
     def get_secret(self, name: str) -> Dict[str, str]:
         secret = os.getenv(name)
         if secret is None:
             raise SecretNotFoundException(
-                f'Secret {name} not found in environment variables')
+                f'Secret {name} not found in environment variables'
+            )
         return _parse_secret_string(name, secret)
 
     def put_secret(self, name: str, value: Dict[str, str]) -> Dict:
         raise SecretAccessException(
-            'EnvVarSecretProvider is read-only; cannot store secrets')
+            'EnvVarSecretProvider is read-only; cannot store secrets'
+        )
 
 
 _DEFAULT_SECRET_MOUNT_PATH = '/var/run/secrets/kumo'
@@ -305,6 +330,7 @@ class LocalFileSecretProvider(SecretProvider):
     a secret named ``db-password`` is read from
     ``{base_path}/db-password``.
     """
+
     def __init__(self) -> None:
         cfg = deploy_env().secrets
         self._base_path = cfg.mount_path or _DEFAULT_SECRET_MOUNT_PATH
@@ -323,15 +349,18 @@ class LocalFileSecretProvider(SecretProvider):
                 secret = f.read()
         except FileNotFoundError:
             raise SecretNotFoundException(
-                f'Secret {name} not found at {secret_path}') from None
+                f'Secret {name} not found at {secret_path}'
+            ) from None
         except OSError:
             raise SecretAccessException(
-                f'Unable to read secret file {secret_path}.') from None
+                f'Unable to read secret file {secret_path}.'
+            ) from None
         return _parse_secret_string(name, secret)
 
     def put_secret(self, name: str, value: Dict[str, str]) -> Dict:
         raise SecretAccessException(
-            'LocalFileSecretProvider is read-only; cannot store secrets')
+            'LocalFileSecretProvider is read-only; cannot store secrets'
+        )
 
 
 class ChainSecretProvider(SecretProvider):
@@ -347,10 +376,10 @@ class ChainSecretProvider(SecretProvider):
     Fallbacks are read-only by design — if the primary is read-only
     (e.g. ENV_VAR), writes will raise ``SecretAccessException``.
     """
+
     def __init__(self, providers: Sequence[SecretProvider]) -> None:
         if not providers:
-            raise ValueError(
-                'ChainSecretProvider requires at least one provider')
+            raise ValueError('ChainSecretProvider requires at least one provider')
         self._providers = list(providers)
 
     def get_secret(self, name: str) -> Dict[str, str]:
@@ -359,9 +388,11 @@ class ChainSecretProvider(SecretProvider):
             try:
                 return provider.get_secret(name)
             except SecretNotFoundException as e:
-                logger.debug('Secret %s not found in %s, trying next provider',
-                             name,
-                             type(provider).__name__)
+                logger.debug(
+                    'Secret %s not found in %s, trying next provider',
+                    name,
+                    type(provider).__name__,
+                )
                 last_exc = e
         raise last_exc  # type: ignore[misc]
 
@@ -396,8 +427,9 @@ def _get_provider() -> SecretProvider:
         primary = _build_secret_provider(secrets_cfg.backend)
         fallbacks = [_build_secret_provider(fb) for fb in secrets_cfg.fallbacks]
         chain = [primary] + fallbacks
-        logger.info('Secret provider chain: %s',
-                    ' -> '.join(type(p).__name__ for p in chain))
+        logger.info(
+            'Secret provider chain: %s', ' -> '.join(type(p).__name__ for p in chain)
+        )
         if len(chain) == 1:
             _secret_provider = primary
         else:

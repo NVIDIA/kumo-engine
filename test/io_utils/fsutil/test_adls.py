@@ -19,8 +19,11 @@ from .common import random_name
 def temp_prefix(k: int = 16) -> Generator[ADLSURI, None, None]:
     base_uri = ParseURI(adls_test_base_uri())
     assert isinstance(base_uri, ADLSURI)
-    uri = ADLSURI(storage_account=base_uri.storage_account,
-                  container=base_uri.container, path=random_name(k))
+    uri = ADLSURI(
+        storage_account=base_uri.storage_account,
+        container=base_uri.container,
+        path=random_name(k),
+    )
 
     fsutil.makedirs(uri)
     yield uri
@@ -41,13 +44,11 @@ def test_filesize():
     base_uri = adls_test_base_uri()
 
     assert fsutil.filesize(base_uri) is None
-    assert fsutil.filesize(f"{base_uri}/") is None
-    assert fsutil.filesize(f"{base_uri}/test_fixtures") is None
-    assert fsutil.filesize(f"{base_uri}/test_fixtures/") is None
-    assert fsutil.filesize(
-        f"{base_uri}/test_fixtures/hnm_10k_churn.json") == 7037
-    assert fsutil.filesize(
-        f"{base_uri}/test_fixtures/hnm_10k_churn.json/") is None
+    assert fsutil.filesize(f'{base_uri}/') is None
+    assert fsutil.filesize(f'{base_uri}/test_fixtures') is None
+    assert fsutil.filesize(f'{base_uri}/test_fixtures/') is None
+    assert fsutil.filesize(f'{base_uri}/test_fixtures/hnm_10k_churn.json') == 7037
+    assert fsutil.filesize(f'{base_uri}/test_fixtures/hnm_10k_churn.json/') is None
 
 
 @withADLSCredentials
@@ -63,8 +64,10 @@ def test_listdir(temp_prefix):
     # Ensure all previous state is deleted.
     fsutil.rm(prefix)
 
-    touch_all([f"{prefix}/{i}.txt" for i in range(10)] +
-              [f"{prefix}/subdir/{i}.txt" for i in range(10)])
+    touch_all(
+        [f'{prefix}/{i}.txt' for i in range(10)]
+        + [f'{prefix}/subdir/{i}.txt' for i in range(10)]
+    )
 
     entries = fsutil.listdir(prefix)
     assert len(entries) == 11
@@ -86,7 +89,7 @@ def test_listdir(temp_prefix):
 
     fsutil.rm(prefix)
 
-    touch_all([f"{prefix}/{i}.txt" for i in range(1005)])
+    touch_all([f'{prefix}/{i}.txt' for i in range(1005)])
 
     # Test that paginator returns all files.
     assert len(fsutil.listdir(prefix)) == 1005
@@ -114,4 +117,4 @@ def test_adls_generate_download_url(temp_prefix):
 def test_isdir_container_root():
     base_uri = adls_test_base_uri()
     assert fsutil.isdir(base_uri)
-    assert fsutil.isdir(f"{base_uri}/")
+    assert fsutil.isdir(f'{base_uri}/')

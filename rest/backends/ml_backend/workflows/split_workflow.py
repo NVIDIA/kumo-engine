@@ -13,7 +13,9 @@ from statedb.config.timestamp import now_utc
 # isort: off
 from rest.backends import DATA_BACKEND_MATERIALIZE_TIMEOUT_HOURS
 from rest.backends.common.activities.io_activities import (
-    save_validation_response, )
+    save_validation_response,
+)
+
 # isort: on
 from rest.backends.ml_backend.activities.split import (
     SplitWorkflowInput,
@@ -32,7 +34,9 @@ from rest.constants import (
 
 # isort: off
 from rest.backends.ml_backend.workflows.mixins import (
-    JobWorkflowCancellationMixin, )
+    JobWorkflowCancellationMixin,
+)
+
 # isort: on
 from kumo_core.types.schema import FPID
 
@@ -67,8 +71,7 @@ class SplitTrainingTableWorkflow(JobWorkflowCancellationMixin):
         self._ml_job_settings = ml_job_settings
         self._standalone_mode = standalone_mode
 
-        self._generate_train_table_job_id = (
-            job_input.generate_train_table_job_id)
+        self._generate_train_table_job_id = job_input.generate_train_table_job_id
         self._generate_train_table_home_dir = home_dir
         self._split_config = job_input.split_config
         self._split_fpid = generate_split_fpid(self._split_config)
@@ -79,7 +82,8 @@ class SplitTrainingTableWorkflow(JobWorkflowCancellationMixin):
         )
 
         return await self.run_until_canceled(
-            self._run(job_input, ml_job_settings, standalone_mode))
+            self._run(job_input, ml_job_settings, standalone_mode)
+        )
 
     def _get_split_dir(self, split_fpid: FPID) -> str:
         """Get the directory to where this split's data will be stored.
@@ -125,7 +129,8 @@ class SplitTrainingTableWorkflow(JobWorkflowCancellationMixin):
             # pool; runs on the thread-executor workflow worker.
             task_queue=DATA_BACKEND_TASK_QUEUE,
             schedule_to_close_timeout=timedelta(
-                hours=DATA_BACKEND_MATERIALIZE_TIMEOUT_HOURS),
+                hours=DATA_BACKEND_MATERIALIZE_TIMEOUT_HOURS
+            ),
             heartbeat_timeout=HEARTBEAT_TIMEOUT_COMPUTE_ACTIVITY,
             retry_policy=COMPUTE_ACTIVITY_RETRY_POLICY,
         )
@@ -137,8 +142,10 @@ class SplitTrainingTableWorkflow(JobWorkflowCancellationMixin):
         Returns:
             SplitWorkflowStatus: The status of the split.
         """
-        log.info("SplitTrainingTableWorkflow._split_training_table: Calling "
-                 "execute_split activity")
+        log.info(
+            'SplitTrainingTableWorkflow._split_training_table: Calling '
+            'execute_split activity'
+        )
         return await workflow.execute_activity(
             execute_split,
             args=[
@@ -151,7 +158,8 @@ class SplitTrainingTableWorkflow(JobWorkflowCancellationMixin):
             # process-pool queue.
             task_queue=DATA_BACKEND_TASK_QUEUE,
             schedule_to_close_timeout=timedelta(
-                hours=DATA_BACKEND_MATERIALIZE_TIMEOUT_HOURS),
+                hours=DATA_BACKEND_MATERIALIZE_TIMEOUT_HOURS
+            ),
             heartbeat_timeout=HEARTBEAT_TIMEOUT_TRAIN_TABLE_SPLIT,
             retry_policy=COMPUTE_ACTIVITY_RETRY_POLICY,
         )
@@ -175,8 +183,9 @@ class SplitTrainingTableWorkflow(JobWorkflowCancellationMixin):
         """
         try:
             log.info(
-                f"SplitTrainingTableWorkflow._run: received "
-                f"standalone_mode={standalone_mode}, job_id={self._job_id}")
+                f'SplitTrainingTableWorkflow._run: received '
+                f'standalone_mode={standalone_mode}, job_id={self._job_id}'
+            )
 
             result = await self._split_training_table()
         except BaseException:
@@ -188,8 +197,7 @@ class SplitTrainingTableWorkflow(JobWorkflowCancellationMixin):
                 msg = 'Successfully completed splitting training table.'
             else:
                 status = JobStatus.FAILED
-                msg = ('Split training table failed due to critical '
-                       'validation error.')
+                msg = 'Split training table failed due to critical validation error.'
                 await save_validation_response(
                     result.validation,
                     self._generate_train_table_home_dir,
@@ -204,5 +212,6 @@ class SplitTrainingTableWorkflow(JobWorkflowCancellationMixin):
                         msg,
                     ),
                     validation=result.validation,
-                ))
+                )
+            )
             return result

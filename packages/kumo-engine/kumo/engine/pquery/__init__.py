@@ -7,7 +7,7 @@ from kumo.engine.pquery.predictive_query import PredictiveQuery
 from kumo.engine.pquery.training_table import TrainingTable
 
 __all__ = [
-    "PredictiveQuery",
-    "TrainingTable",
-    "PredictionTable",
+    'PredictiveQuery',
+    'TrainingTable',
+    'PredictionTable',
 ]

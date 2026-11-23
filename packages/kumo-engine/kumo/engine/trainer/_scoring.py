@@ -23,8 +23,9 @@ class ScoringDefaults:
     num_classes_to_return: Optional[int] = None
 
 
-def normalized_scoring_defaults(defaults: ScoringDefaults,
-                                task_type: Any) -> ScoringDefaults:
+def normalized_scoring_defaults(
+    defaults: ScoringDefaults, task_type: Any
+) -> ScoringDefaults:
     from kumo_core.prediction_options import (
         resolve_classification_threshold,
         resolve_num_classes_to_return,
@@ -34,13 +35,16 @@ def normalized_scoring_defaults(defaults: ScoringDefaults,
     count = defaults.num_classes_to_return
     if threshold is not None:
         if isinstance(threshold, bool) or not isinstance(threshold, Real):
-            raise ValueError('binary_classification_threshold must be a '
-                             f'number, but got {threshold!r}')
+            raise ValueError(
+                'binary_classification_threshold must be a '
+                f'number, but got {threshold!r}'
+            )
         threshold = float(threshold)
         if resolve_classification_threshold(task_type, threshold) is None:
             raise ValueError(
                 'binary_classification_threshold applies only to binary and '
-                f'multilabel classification, not {task_type.value}')
+                f'multilabel classification, not {task_type.value}'
+            )
     if isinstance(count, Integral) and not isinstance(count, bool):
         count = int(count)
     if count is not None:
@@ -57,13 +61,14 @@ def write_scoring_defaults(bundle_dir: Path, defaults: ScoringDefaults) -> None:
         return
     atomic_write_bytes(
         bundle_dir / SCORING_DEFAULTS_FILE,
-        (json.dumps(asdict(defaults), indent=2, sort_keys=True) +
-         '\n').encode('utf-8'))
+        (json.dumps(asdict(defaults), indent=2, sort_keys=True) + '\n').encode('utf-8'),
+    )
     add_bundle_file(bundle_dir, SCORING_DEFAULTS_ROLE, SCORING_DEFAULTS_FILE)
 
 
-def read_scoring_defaults(bundle_dir: Path,
-                          artifact_paths: Mapping[str, str]) -> ScoringDefaults:
+def read_scoring_defaults(
+    bundle_dir: Path, artifact_paths: Mapping[str, str]
+) -> ScoringDefaults:
     from kumo_core.artifacts import bundle_task_type
 
     path = listed_file(bundle_dir, SCORING_DEFAULTS_ROLE)
@@ -72,10 +77,16 @@ def read_scoring_defaults(bundle_dir: Path,
     try:
         data = json.loads(path.read_text(encoding='utf-8'))
         return normalized_scoring_defaults(
-            ScoringDefaults(data.get('binary_classification_threshold'),
-                            data.get('num_classes_to_return')),
-            bundle_task_type(artifact_paths))
+            ScoringDefaults(
+                data.get('binary_classification_threshold'),
+                data.get('num_classes_to_return'),
+            ),
+            bundle_task_type(artifact_paths),
+        )
     except Exception as error:
-        warnings.warn(f'Ignoring the scoring defaults in {bundle_dir}: {error}',
-                      UserWarning, stacklevel=3)
+        warnings.warn(
+            f'Ignoring the scoring defaults in {bundle_dir}: {error}',
+            UserWarning,
+            stacklevel=3,
+        )
         return ScoringDefaults()

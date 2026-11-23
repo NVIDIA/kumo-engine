@@ -11,132 +11,133 @@ from scripts.check_public_references import scan_repository, scan_text
 
 
 def test_scan_reports_location_without_retaining_the_full_url() -> None:
-    host = "kumoai." + "grafana.net"
-    findings = scan_text("guide.md", f"See https://{host}/private?id=123")
+    host = 'kumoai.' + 'grafana.net'
+    findings = scan_text('guide.md', f'See https://{host}/private?id=123')
 
     assert len(findings) == 1
-    assert findings[0].path == "guide.md"
+    assert findings[0].path == 'guide.md'
     assert findings[0].line == 1
     assert findings[0].host == host
 
 
 def test_scan_allows_public_and_example_links() -> None:
-    text = "\n".join([
-        "https://docs.python.org/3/",
-        "https://monitoring.example.test/dashboard",
-        "https://github.com/kumo-ai/kumo",
-        "https://support.1password.com/",
-        "https://www.1password.com/",
-    ])
+    text = '\n'.join(
+        [
+            'https://docs.python.org/3/',
+            'https://monitoring.example.test/dashboard',
+            'https://github.com/kumo-ai/kumo',
+            'https://support.1password.com/',
+            'https://www.1password.com/',
+        ]
+    )
 
-    assert scan_text("README.md", text) == []
+    assert scan_text('README.md', text) == []
 
 
 def test_scan_reports_company_host_without_url_scheme() -> None:
-    host = "uat.staging." + "kumoai.cloud"
+    host = 'uat.staging.' + 'kumoai.cloud'
 
-    findings = scan_text("settings.py", f"SERVICE_HOST={host}")
+    findings = scan_text('settings.py', f'SERVICE_HOST={host}')
     assert len(findings) == 1
     assert findings[0].host == host
 
 
 def test_scan_reports_company_chat_reference() -> None:
-    reference = "get help in #ask-" + "infra-devops"
+    reference = 'get help in #ask-' + 'infra-devops'
 
-    findings = scan_text("README.md", reference)
+    findings = scan_text('README.md', reference)
     assert len(findings) == 1
-    assert findings[0].category == "company chat channel"
+    assert findings[0].category == 'company chat channel'
 
 
 def test_scan_reports_private_password_manager_item() -> None:
-    host = "start." + "1password.com"
+    host = 'start.' + '1password.com'
     text = f'"https://{host}/open/i?a=example-account"\n"&v=example-vault"'
 
-    findings = scan_text("scripts/debug/example.py", text)
+    findings = scan_text('scripts/debug/example.py', text)
 
     assert [(f.line, f.category) for f in findings] == [
-        (1, "private password-manager item")
+        (1, 'private password-manager item')
     ]
-    assert scan_text("guide.md", f"https://{host}/") == []
+    assert scan_text('guide.md', f'https://{host}/') == []
 
 
-@pytest.mark.parametrize("reference", ["https://{host}/", "h={host}"])
+@pytest.mark.parametrize('reference', ['https://{host}/', 'h={host}'])
 def test_scan_reports_private_password_manager_workspace(reference) -> None:
-    host = "team-kumo." + "1password.com"
+    host = 'team-kumo.' + '1password.com'
 
-    findings = scan_text("guide.md", reference.format(host=host))
+    findings = scan_text('guide.md', reference.format(host=host))
 
     assert [(f.host, f.category) for f in findings] == [
-        (host, "private password-manager workspace")
+        (host, 'private password-manager workspace')
     ]
 
 
 def test_scan_skips_malformed_url_shaped_text() -> None:
-    assert scan_text("example.txt", "http://[") == []
+    assert scan_text('example.txt', 'http://[') == []
 
 
 def test_strict_scan_reports_known_private_github_repository() -> None:
-    url = "https://github.com/" + "kumo-ai/" + "kumo-ml.git"
+    url = 'https://github.com/' + 'kumo-ai/' + 'kumo-ml.git'
 
-    assert scan_text("setup.py", url) == []
-    findings = scan_text("setup.py", url, strict=True)
+    assert scan_text('setup.py', url) == []
+    findings = scan_text('setup.py', url, strict=True)
     assert len(findings) == 1
-    assert findings[0].category == "private Kumo GitHub repository"
+    assert findings[0].category == 'private Kumo GitHub repository'
 
 
 def test_strict_scan_reports_scp_style_github_url() -> None:
-    url = "git@github.com:" + "kumo-ai/kumo-grafana.git"
+    url = 'git@github.com:' + 'kumo-ai/kumo-grafana.git'
 
-    findings = scan_text("monitoring.sh", url, strict=True)
+    findings = scan_text('monitoring.sh', url, strict=True)
     assert len(findings) == 1
-    assert findings[0].host == "github.com"
+    assert findings[0].host == 'github.com'
 
 
 def test_strict_scan_reports_mixed_case_github_references() -> None:
-    https_url = "https://github.com/" + "Kumo-AI/Kumo-ML.GIT"
-    scp_url = "git@GitHub.com:" + "Kumo-AI/Kumo-Grafana.GIT"
+    https_url = 'https://github.com/' + 'Kumo-AI/Kumo-ML.GIT'
+    scp_url = 'git@GitHub.com:' + 'Kumo-AI/Kumo-Grafana.GIT'
 
-    assert len(scan_text("setup.py", https_url, strict=True)) == 1
-    assert len(scan_text("monitoring.sh", scp_url, strict=True)) == 1
+    assert len(scan_text('setup.py', https_url, strict=True)) == 1
+    assert len(scan_text('monitoring.sh', scp_url, strict=True)) == 1
 
 
 def test_strict_scan_reports_github_hosts_with_trailing_dot() -> None:
-    https_url = "https://github.com./" + "kumo-ai/kumo-ml.git"
-    scp_url = "git@github.com.:" + "kumo-ai/kumo-grafana.git"
+    https_url = 'https://github.com./' + 'kumo-ai/kumo-ml.git'
+    scp_url = 'git@github.com.:' + 'kumo-ai/kumo-grafana.git'
 
-    assert len(scan_text("setup.py", https_url, strict=True)) == 1
-    assert len(scan_text("monitoring.sh", scp_url, strict=True)) == 1
+    assert len(scan_text('setup.py', https_url, strict=True)) == 1
+    assert len(scan_text('monitoring.sh', scp_url, strict=True)) == 1
 
 
 def test_repository_scan_rejects_a_new_private_dependency(tmp_path) -> None:
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    url = "https://github.com/" + "kumo-ai/" + "kumo-ml.git"
-    (tmp_path / "README.md").write_text(url)
+    subprocess.run(['git', 'init', '-q'], cwd=tmp_path, check=True)
+    url = 'https://github.com/' + 'kumo-ai/' + 'kumo-ml.git'
+    (tmp_path / 'README.md').write_text(url)
 
     findings = scan_repository(tmp_path)
     assert len(findings) == 1
-    assert findings[0].repository == "kumo-ml"
+    assert findings[0].repository == 'kumo-ml'
 
 
 def test_repository_scan_rejects_a_stale_private_dependency_allowance(
     tmp_path,
     monkeypatch,
 ) -> None:
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(['git', 'init', '-q'], cwd=tmp_path, check=True)
     monkeypatch.setattr(
         public_reference_scanner,
-        "KNOWN_PRIVATE_GITHUB_DEPENDENCIES",
-        {("README.md", "kumo-ml"): 1},
+        'KNOWN_PRIVATE_GITHUB_DEPENDENCIES',
+        {('README.md', 'kumo-ml'): 1},
     )
 
-    with pytest.raises(ValueError,
-                       match="Stale private-dependency baseline entries"):
+    with pytest.raises(ValueError, match='Stale private-dependency baseline entries'):
         scan_repository(tmp_path, validate_baseline=True)
 
 
 def _git(repo, *arguments: str) -> str:
     return subprocess.run(
-        ["git", *arguments],
+        ['git', *arguments],
         cwd=repo,
         check=True,
         capture_output=True,
@@ -145,83 +146,109 @@ def _git(repo, *arguments: str) -> str:
 
 
 def test_repository_scan_skips_the_mirrored_diskgraph_tree(tmp_path) -> None:
-    _git(tmp_path, "init", "--initial-branch=main")
-    _git(tmp_path, "config", "user.name", "Test User")
-    _git(tmp_path, "config", "user.email", "test@example.com")
-    (tmp_path / "base.md").write_text("public text")
-    _git(tmp_path, "add", ".")
-    _git(tmp_path, "commit", "-m", "base")
-    base = _git(tmp_path, "rev-parse", "HEAD")
+    _git(tmp_path, 'init', '--initial-branch=main')
+    _git(tmp_path, 'config', 'user.name', 'Test User')
+    _git(tmp_path, 'config', 'user.email', 'test@example.com')
+    (tmp_path / 'base.md').write_text('public text')
+    _git(tmp_path, 'add', '.')
+    _git(tmp_path, 'commit', '-m', 'base')
+    base = _git(tmp_path, 'rev-parse', 'HEAD')
 
-    mirrored = tmp_path / "packages" / "diskgraph" / "README.md"
+    mirrored = tmp_path / 'packages' / 'diskgraph' / 'README.md'
     mirrored.parent.mkdir(parents=True)
-    mirrored.write_text("https://www." + "notion.so/page")
-    _git(tmp_path, "add", ".")
-    _git(tmp_path, "commit", "-m", "mirror")
-    head = _git(tmp_path, "rev-parse", "HEAD")
+    mirrored.write_text('https://www.' + 'notion.so/page')
+    _git(tmp_path, 'add', '.')
+    _git(tmp_path, 'commit', '-m', 'mirror')
+    head = _git(tmp_path, 'rev-parse', 'HEAD')
 
     assert scan_repository(tmp_path, strict=True) == []
     assert scan_repository(tmp_path, diff=(base, head)) == []
 
 
 def test_diff_scan_reads_only_files_changed_after_base(tmp_path) -> None:
-    _git(tmp_path, "init", "--initial-branch=main")
-    _git(tmp_path, "config", "user.name", "Test User")
-    _git(tmp_path, "config", "user.email", "test@example.com")
-    private_host = "kumo." + "corp"
-    (tmp_path / "unchanged.md").write_text(f"https://{private_host}/old")
-    (tmp_path / "changed.md").write_text("https://example.test/public")
-    _git(tmp_path, "add", ".")
-    _git(tmp_path, "commit", "-m", "base")
-    base = _git(tmp_path, "rev-parse", "HEAD")
+    _git(tmp_path, 'init', '--initial-branch=main')
+    _git(tmp_path, 'config', 'user.name', 'Test User')
+    _git(tmp_path, 'config', 'user.email', 'test@example.com')
+    private_host = 'kumo.' + 'corp'
+    (tmp_path / 'unchanged.md').write_text(f'https://{private_host}/old')
+    (tmp_path / 'changed.md').write_text('https://example.test/public')
+    _git(tmp_path, 'add', '.')
+    _git(tmp_path, 'commit', '-m', 'base')
+    base = _git(tmp_path, 'rev-parse', 'HEAD')
 
-    (tmp_path / "changed.md").write_text(f"https://{private_host}/new")
-    _git(tmp_path, "add", "changed.md")
-    _git(tmp_path, "commit", "-m", "change")
-    head = _git(tmp_path, "rev-parse", "HEAD")
-    (tmp_path / "changed.md").write_text("working tree differs from head")
+    (tmp_path / 'changed.md').write_text(f'https://{private_host}/new')
+    _git(tmp_path, 'add', 'changed.md')
+    _git(tmp_path, 'commit', '-m', 'change')
+    head = _git(tmp_path, 'rev-parse', 'HEAD')
+    (tmp_path / 'changed.md').write_text('working tree differs from head')
 
     findings = scan_repository(tmp_path, diff=(base, head))
 
-    assert [(finding.path, finding.line)
-            for finding in findings] == [("changed.md", 1)]
+    assert [(finding.path, finding.line) for finding in findings] == [('changed.md', 1)]
 
 
 @pytest.mark.parametrize(
-    ("text", "category", "value"),
+    ('text', 'category', 'value'),
     [
-        ("arn:aws:iam::" + "210987654321:role/deploy", "cloud account ID",
-         "210987654321"),
-        ("FROM " + "210987654321.dkr.ecr.us-west-2.amazonaws.com/base",
-         "cloud account ID", "210987654321"),
-        ("https://ab12345." + "snowflakecomputing.com", "warehouse account",
-         "ab12345"),
-        ("https://app.snowflake.com/" + "us-west-2/ab12345/#/data",
-         "warehouse account", "ab12345"),
-        ("account='" + "ab12345'", "warehouse account", "ab12345"),
-        ('"account": "' + 'abc12345"', "warehouse account", "abc12345"),
-        ('project_id: "kumo-' + 'research",', "company cloud project",
-         "kumo-research"),
-        ('billing_project_id="kumo-' + 'research"', "company cloud project",
-         "kumo-research"),
-        ("GOOGLE_CLOUD_PROJECT=kumo-" + "research", "company cloud project",
-         "kumo-research"),
-        ('project: str = "kumo-' + 'research"', "company cloud project",
-         "kumo-research"),
-        ('os.environ.get("X_PROJECT", "kumo-' + 'research")',
-         "company cloud project", "kumo-research"),
-        ("account: ab" + "12345", "warehouse account", "ab12345"),
-        ('account: str = "ab' + '12345"', "warehouse account", "ab12345"),
-        ("projects/kumo-" + "research/datasets/x", "company cloud project",
-         "kumo-research"),
-        ("ci@kumo-" + "research.iam.gserviceaccount.com",
-         "company cloud project", "kumo-research"),
-        ("s3://" + "kumo-team-bucket/data.parquet", "company storage bucket",
-         "kumo-team-bucket"),
-        ("gs://" + "kumo/data", "company storage bucket", "kumo"),
-        ("/home/" + "someone/checkout/run.sh", "personal home directory",
-         "someone"),
-        ("/Users/" + "someone/data", "personal home directory", "someone"),
+        (
+            'arn:aws:iam::' + '210987654321:role/deploy',
+            'cloud account ID',
+            '210987654321',
+        ),
+        (
+            'FROM ' + '210987654321.dkr.ecr.us-west-2.amazonaws.com/base',
+            'cloud account ID',
+            '210987654321',
+        ),
+        ('https://ab12345.' + 'snowflakecomputing.com', 'warehouse account', 'ab12345'),
+        (
+            'https://app.snowflake.com/' + 'us-west-2/ab12345/#/data',
+            'warehouse account',
+            'ab12345',
+        ),
+        ("account='" + "ab12345'", 'warehouse account', 'ab12345'),
+        ('"account": "' + 'abc12345"', 'warehouse account', 'abc12345'),
+        ('project_id: "kumo-' + 'research",', 'company cloud project', 'kumo-research'),
+        (
+            'billing_project_id="kumo-' + 'research"',
+            'company cloud project',
+            'kumo-research',
+        ),
+        (
+            'GOOGLE_CLOUD_PROJECT=kumo-' + 'research',
+            'company cloud project',
+            'kumo-research',
+        ),
+        (
+            'project: str = "kumo-' + 'research"',
+            'company cloud project',
+            'kumo-research',
+        ),
+        (
+            'os.environ.get("X_PROJECT", "kumo-' + 'research")',
+            'company cloud project',
+            'kumo-research',
+        ),
+        ('account: ab' + '12345', 'warehouse account', 'ab12345'),
+        ('account: str = "ab' + '12345"', 'warehouse account', 'ab12345'),
+        (
+            'projects/kumo-' + 'research/datasets/x',
+            'company cloud project',
+            'kumo-research',
+        ),
+        (
+            'ci@kumo-' + 'research.iam.gserviceaccount.com',
+            'company cloud project',
+            'kumo-research',
+        ),
+        (
+            's3://' + 'kumo-team-bucket/data.parquet',
+            'company storage bucket',
+            'kumo-team-bucket',
+        ),
+        ('gs://' + 'kumo/data', 'company storage bucket', 'kumo'),
+        ('/home/' + 'someone/checkout/run.sh', 'personal home directory', 'someone'),
+        ('/Users/' + 'someone/data', 'personal home directory', 'someone'),
     ],
 )
 def test_scan_reports_company_infrastructure_identifiers(
@@ -229,107 +256,112 @@ def test_scan_reports_company_infrastructure_identifiers(
     category,
     value,
 ) -> None:
-    findings = scan_text("config.py", text)
+    findings = scan_text('config.py', text)
 
-    assert [(finding.category, finding.host)
-            for finding in findings] == [(category, value)]
+    assert [(finding.category, finding.host) for finding in findings] == [
+        (category, value)
+    ]
 
 
 @pytest.mark.parametrize(
-    "text",
+    'text',
     [
-        "arn:aws:iam::123456789012:role/example",
-        "arn:aws:s3:::bucket and arn:aws:iam::000000000000:root",
-        "111111111111.dkr.ecr.us-west-2.amazonaws.com/image",
-        "https://acct.snowflakecomputing.com",
+        'arn:aws:iam::123456789012:role/example',
+        'arn:aws:s3:::bucket and arn:aws:iam::000000000000:root',
+        '111111111111.dkr.ecr.us-west-2.amazonaws.com/image',
+        'https://acct.snowflakecomputing.com',
         "account='xy12345'",
         "project_id='example-project'",
         "project = 'kumopql'",
-        "accountant = 12345",
-        "gs://kumo-${DEPLOYMENT_NAME}/data",
-        "s3://kumo-{deploy_mode}-dataplane-bucket/",
-        "gs://kumo-<deployment-name>/",
+        'accountant = 12345',
+        'gs://kumo-${DEPLOYMENT_NAME}/data',
+        's3://kumo-{deploy_mode}-dataplane-bucket/',
+        'gs://kumo-<deployment-name>/',
         'import { Button } from "@kumo-ai/ui-catalog/button"',
-        "https://{account}.snowflakecomputing.com",
-        "https://app.snowflake.com/myaccount/#/data",
-        "https://app.snowflake.com/_deeplink/#/experiments",
-        "s3://kumo-public-datasets/movielens/ratings.parquet",
-        "s3://customer-bucket/data and gs://example-bucket/data",
-        "/home/runner/work and /home/ubuntu/.cache and ~/data and $HOME/x",
+        'https://{account}.snowflakecomputing.com',
+        'https://app.snowflake.com/myaccount/#/data',
+        'https://app.snowflake.com/_deeplink/#/experiments',
+        's3://kumo-public-datasets/movielens/ratings.parquet',
+        's3://customer-bucket/data and gs://example-bucket/data',
+        '/home/runner/work and /home/ubuntu/.cache and ~/data and $HOME/x',
     ],
 )
 def test_scan_ignores_placeholder_and_public_identifiers(text) -> None:
-    assert scan_text("config.py", text) == []
+    assert scan_text('config.py', text) == []
 
 
-@pytest.mark.parametrize("path", [
-    ".github/workflows/deploy.yml",
-    "docker/Dockerfile.kumo_backend_cpu",
-    "test/connector/test_snowflake_connector.py",
-    "service_framework/deploy_env.py",
-])
+@pytest.mark.parametrize(
+    'path',
+    [
+        '.github/workflows/deploy.yml',
+        'docker/Dockerfile.kumo_backend_cpu',
+        'test/connector/test_snowflake_connector.py',
+        'service_framework/deploy_env.py',
+    ],
+)
 def test_identifier_rules_skip_exempt_paths(path) -> None:
-    text = "arn:aws:iam::" + "210987654321:role/deploy"
+    text = 'arn:aws:iam::' + '210987654321:role/deploy'
 
     assert scan_text(path, text) == []
-    assert len(scan_text("kumo/config.py", text)) == 1
+    assert len(scan_text('kumo/config.py', text)) == 1
 
 
-@pytest.mark.parametrize("story", ["Alert", "CopyToClipboard", "OutputCard"])
+@pytest.mark.parametrize('story', ['Alert', 'CopyToClipboard', 'OutputCard'])
 def test_ui_examples_reject_private_identifiers(story) -> None:
-    path = ("packages/kumo-ui-catalog/src/stories/components/ui/"
-            f"{story}.stories.tsx")
-    findings = scan_text(path, "/home/" + "someone/project/error.py")
+    path = f'packages/kumo-ui-catalog/src/stories/components/ui/{story}.stories.tsx'
+    findings = scan_text(path, '/home/' + 'someone/project/error.py')
 
-    assert [finding.category
-            for finding in findings] == ["personal home directory"]
+    assert [finding.category for finding in findings] == ['personal home directory']
 
 
 def test_diff_scan_works_in_a_blobless_clone_without_lazy_fetch(
     tmp_path,
     monkeypatch,
 ) -> None:
-    origin = tmp_path / "origin"
+    origin = tmp_path / 'origin'
     origin.mkdir()
-    _git(origin, "init", "--initial-branch=main")
-    _git(origin, "config", "user.name", "Test User")
-    _git(origin, "config", "user.email", "test@example.com")
-    _git(origin, "config", "uploadpack.allowFilter", "true")
-    (origin / "removed.md").write_text("content that only the base has\n")
-    _git(origin, "add", ".")
-    _git(origin, "commit", "-m", "base")
-    base = _git(origin, "rev-parse", "HEAD")
-    _git(origin, "rm", "-q", "removed.md")
-    (origin / "added.md").write_text("https://example.test/public\n")
-    _git(origin, "add", ".")
-    _git(origin, "commit", "-m", "head")
-    head = _git(origin, "rev-parse", "HEAD")
+    _git(origin, 'init', '--initial-branch=main')
+    _git(origin, 'config', 'user.name', 'Test User')
+    _git(origin, 'config', 'user.email', 'test@example.com')
+    _git(origin, 'config', 'uploadpack.allowFilter', 'true')
+    (origin / 'removed.md').write_text('content that only the base has\n')
+    _git(origin, 'add', '.')
+    _git(origin, 'commit', '-m', 'base')
+    base = _git(origin, 'rev-parse', 'HEAD')
+    _git(origin, 'rm', '-q', 'removed.md')
+    (origin / 'added.md').write_text('https://example.test/public\n')
+    _git(origin, 'add', '.')
+    _git(origin, 'commit', '-m', 'head')
+    head = _git(origin, 'rev-parse', 'HEAD')
 
-    clone = tmp_path / "clone"
+    clone = tmp_path / 'clone'
     subprocess.run(
         [
-            "git", "clone", "-q", "--filter=blob:none",
+            'git',
+            'clone',
+            '-q',
+            '--filter=blob:none',
             origin.resolve().as_uri(),
-            str(clone)
+            str(clone),
         ],
         check=True,
     )
     # CI cannot fetch file contents after checkout; fail instead of fetching.
-    monkeypatch.setenv("GIT_NO_LAZY_FETCH", "1")
+    monkeypatch.setenv('GIT_NO_LAZY_FETCH', '1')
 
     assert scan_repository(clone, diff=(base, head)) == []
 
 
 def test_scan_reports_account_locator_in_notebook_identity_tuple():
-    findings = scan_text("notebook.py", "identity == ('" + "abc54321', 'TEST_USER')")
-    assert any(f.category == 'warehouse account' and f.host == 'abc54321'
-               for f in findings)
+    findings = scan_text('notebook.py', "identity == ('" + "abc54321', 'TEST_USER')")
+    assert any(
+        f.category == 'warehouse account' and f.host == 'abc54321' for f in findings
+    )
 
 
 def test_notebook_cell_ids_are_not_accounts():
     locator = 'bea' + '90923'
-    assert scan_text('example.ipynb',
-                     '{"cells":[{"id":"' + locator + '"}]}') == []
+    assert scan_text('example.ipynb', '{"cells":[{"id":"' + locator + '"}]}') == []
     assert scan_text('example.ipynb', f'  "account": "{locator}",')
     assert scan_text('settings.py', f'account = "{locator}"')
 
@@ -337,22 +369,27 @@ def test_notebook_cell_ids_are_not_accounts():
 @pytest.mark.parametrize('indent', [None, 2])
 def test_only_structural_notebook_cell_ids_are_exempt(indent):
     import json
+
     locator = 'bea' + '90923'
     notebook = dict(
         cells=[
-            dict(id=locator, source=[f'account = "{locator}"'], outputs=[{
-                'id':
-                locator
-            }])
-        ], metadata={'id': locator})
+            dict(
+                id=locator, source=[f'account = "{locator}"'], outputs=[{'id': locator}]
+            )
+        ],
+        metadata={'id': locator},
+    )
     text = json.dumps(notebook, indent=indent)
     found = scan_text('example.ipynb', text)
     assert len([f for f in found if f.host == locator]) == 3
-    assert scan_text('example.ipynb',
-                     '{"cells":[{"id":"' + locator + '"}]}') == []
+    assert scan_text('example.ipynb', '{"cells":[{"id":"' + locator + '"}]}') == []
 
 
 def test_notebook_masking_preserves_source_line_numbers():
-    text = '{\n  "cells": [{"id": "bea' + '90923",\n"outputs": [{"account": "zz' + '98765"}]}]\n}'
+    text = (
+        '{\n  "cells": [{"id": "bea'
+        + '90923",\n"outputs": [{"account": "zz'
+        + '98765"}]}]\n}'
+    )
     found = scan_text('example.ipynb', text)
     assert [(f.host, f.line) for f in found] == [('zz' + '98765', 3)]

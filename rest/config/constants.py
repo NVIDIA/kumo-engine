@@ -73,10 +73,14 @@ class FeatureFlags:
         ).parse_value()
 
         ambient_gcp = getattr(deploy_env(), 'ambient_gcp', None)
-        gcp_ambient_emails = (ambient_gcp.approved_service_account_emails
-                              if ambient_gcp is not None else ())
+        gcp_ambient_emails = (
+            ambient_gcp.approved_service_account_emails
+            if ambient_gcp is not None
+            else ()
+        )
         ambient_gcp_developer_credentials = (
-            developer_credentials.dev_gcp_user_credentials_enabled())
+            developer_credentials.dev_gcp_user_credentials_enabled()
+        )
 
         return cls(
             ENABLE_COLUMN_ANALYSIS=ENABLE_COLUMN_ANALYSIS,
@@ -90,14 +94,16 @@ class FeatureFlags:
             ALLOW_ARRAY_TARGETS=allow_array_targets(),
             IS_DISKGRAPH_DEPLOY=True,
             ENABLE_FILE_UPLOAD=supports_backend_file_upload(
-                deploy_env().data_plane_storage_root, ),
+                deploy_env().data_plane_storage_root,
+            ),
             GCP_WORKLOAD_EXCHANGE_ENABLED=GCP_WORKLOAD_EXCHANGE_ENABLED,
-            GCP_AMBIENT_ENABLED=(ambient_gcp is not None
-                                 or ambient_gcp_developer_credentials),
-            GCP_AMBIENT_SERVICE_ACCOUNT_EMAIL=(gcp_ambient_emails[0]
-                                               if gcp_ambient_emails else None),
-            GCP_AMBIENT_DEVELOPER_CREDENTIALS=(
-                ambient_gcp_developer_credentials),
+            GCP_AMBIENT_ENABLED=(
+                ambient_gcp is not None or ambient_gcp_developer_credentials
+            ),
+            GCP_AMBIENT_SERVICE_ACCOUNT_EMAIL=(
+                gcp_ambient_emails[0] if gcp_ambient_emails else None
+            ),
+            GCP_AMBIENT_DEVELOPER_CREDENTIALS=(ambient_gcp_developer_credentials),
         )
 
 
@@ -113,8 +119,7 @@ class JobDebugInfo:
     # Metadata
     query_id: Optional[PredictiveQueryID] = None
     job_id: Optional[str] = None
-    job_status: Optional[Union[TrainingJobOutput,
-                               BatchPredictionJobOutput]] = None
+    job_status: Optional[Union[TrainingJobOutput, BatchPredictionJobOutput]] = None
 
     # Debug Information
     files: List[ConfigFile] = Field(default_factory=list)
@@ -128,7 +133,8 @@ class DebugInfo:
     # py3.14 stdlib dataclasses reject mutable instance defaults; use a
     # default_factory.
     feature_flags: FeatureFlags = Field(
-        default_factory=FeatureFlags.parse_from_env_vars)
+        default_factory=FeatureFlags.parse_from_env_vars
+    )
     job_queue_status: str = ''
 
 

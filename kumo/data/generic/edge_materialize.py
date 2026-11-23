@@ -44,12 +44,13 @@ def get_materialized_num_nodes(table_dir: str) -> int:
         table_dir (str): directory table was persisted to
     """
     attr_path = osp.join(table_dir, 'attributes.json')
-    attributes = load_json(attr_path, Dict, default=None,
-                           raise_on_missing=False)
+    attributes = load_json(attr_path, Dict, default=None, raise_on_missing=False)
     if attributes is not None:
         return attributes['num_nodes']
-    raise RuntimeError(f"Cannot determine num_nodes for table at {table_dir} — "
-                       "attributes.json is missing.")
+    raise RuntimeError(
+        f'Cannot determine num_nodes for table at {table_dir} — '
+        'attributes.json is missing.'
+    )
 
 
 def _write_edge_attributes(edge_dir: str, count: int):
@@ -90,9 +91,7 @@ def _consolidate_sharded_parquet(base_dir: str):
             if not dirname.endswith('.parquet'):
                 continue
             parquet_dir = osp.join(dirpath, dirname)
-            parts = [
-                f for f in os.listdir(parquet_dir) if f.startswith('part-')
-            ]
+            parts = [f for f in os.listdir(parquet_dir) if f.startswith('part-')]
             if len(parts) <= 1:
                 continue
 
@@ -104,8 +103,11 @@ def _consolidate_sharded_parquet(base_dir: str):
             # Atomically replace directory with the single file.
             shutil.rmtree(parquet_dir)
             os.rename(tmp_file, parquet_dir)
-            logger.info("Consolidated %d parquet parts into single file: %s",
-                        len(parts), osp.relpath(parquet_dir, base_dir))
+            logger.info(
+                'Consolidated %d parquet parts into single file: %s',
+                len(parts),
+                osp.relpath(parquet_dir, base_dir),
+            )
 
 
 def _resolve_edge_dst_dir(
@@ -137,7 +139,7 @@ def _resolve_edge_dst_dir(
             e_dst_name = e_dst.split('.')[-1]
             b_dst_name = b_dst.split('.')[-1]
             if e_dst_name.startswith('custom_'):
-                e_dst_name = e_dst_name[len('custom_'):]
+                e_dst_name = e_dst_name[len('custom_') :]
             if e_dst_name != b_dst_name:
                 continue
             candidates.append((expected_key, expected_path))
@@ -148,13 +150,15 @@ def _resolve_edge_dst_dir(
             raise RuntimeError(
                 'diskgraph strict path found ambiguous edge persist path '
                 f'for bundle key {bundle_edge_key!r}: '
-                f'{[key for key, _ in candidates]!r}')
+                f'{[key for key, _ in candidates]!r}'
+            )
 
     if edge_persist_paths:
         raise RuntimeError(
             'diskgraph strict path could not resolve edge persist path for '
             f'bundle key {bundle_edge_key!r}; expected one of '
-            f'{list(edge_persist_paths.keys())!r}')
+            f'{list(edge_persist_paths.keys())!r}'
+        )
 
     return osp.join(graph_path, bundle_edge_key)
 
@@ -189,8 +193,7 @@ def _bundle_destination_already_materialized(
     for edge_key in reverse_edges:
         if not isinstance(edge_key, str) or not edge_key:
             return False
-        edge_dst_dir = _resolve_edge_dst_dir(edge_key, edge_persist_paths,
-                                             graph_path)
+        edge_dst_dir = _resolve_edge_dst_dir(edge_key, edge_persist_paths, graph_path)
         if not fsutil.exists(osp.join(edge_dst_dir, _GRAPHSTORE_SUCCESS_FILE)):
             return False
     return True
@@ -212,10 +215,14 @@ def _try_short_circuit_bundle_materialize(
     artifact files live on a different pod's local SSD).
     """
     if not _bundle_destination_already_materialized(
-            parsed_bundle, table, graph_path, edge_persist_paths):
+        parsed_bundle, table, graph_path, edge_persist_paths
+    ):
         return False
-    logger.info('%s already materialized for %s; skipping bundle re-copy',
-                artifact_label, table.name)
+    logger.info(
+        '%s already materialized for %s; skipping bundle re-copy',
+        artifact_label,
+        table.name,
+    )
     return True
 
 
@@ -241,7 +248,8 @@ def _materialize_edges_from_bundle(
             raise RuntimeError(
                 f'diskgraph strict path requires non-empty '
                 f'{artifact_label}.reverse_edges bundle when '
-                f'{artifact_label.split("_")[0]}-table fkeys are present')
+                f'{artifact_label.split("_")[0]}-table fkeys are present'
+            )
         logger.info(
             'No %s edge artifacts declared for %s (no fkeys); '
             'skipping edge materialization',
@@ -258,7 +266,8 @@ def _materialize_edges_from_bundle(
     fkey_cols_src = fkey_cols.get('path')
     if not isinstance(fkey_cols_src, str) or not fkey_cols_src:
         raise RuntimeError(
-            f'diskgraph strict path requires {artifact_label}.fkey_cols.path')
+            f'diskgraph strict path requires {artifact_label}.fkey_cols.path'
+        )
     fkey_cols_dst = osp.join(graph_path, f'{table.name}_{_FKEY_COLS_FILE}')
     if fsutil.exists(fkey_cols_dst):
         fsutil.rm(fkey_cols_dst, ignore_errors=True)
@@ -267,13 +276,15 @@ def _materialize_edges_from_bundle(
     mask = edges_bundle.get('mask')
     if not isinstance(mask, dict):
         raise RuntimeError(
-            f'diskgraph strict path requires {artifact_label}.mask object')
+            f'diskgraph strict path requires {artifact_label}.mask object'
+        )
     mask_dst = osp.join(graph_path, f'{table.name}_{_MASK_PARQUET_FILE}')
     if bool(mask.get('present')):
         mask_src = mask.get('path')
         if not isinstance(mask_src, str) or not mask_src:
             raise RuntimeError(
-                f'diskgraph strict path requires {artifact_label}.mask.path')
+                f'diskgraph strict path requires {artifact_label}.mask.path'
+            )
         if fsutil.exists(mask_dst):
             fsutil.rm(mask_dst, ignore_errors=True)
         fsutil.copy(mask_src, mask_dst, overwrite=True)
@@ -295,8 +306,7 @@ def _materialize_edges_from_bundle(
                 f'diskgraph strict path {artifact_label}[{edge_key!r}].path missing'
             )
 
-        edge_dst_dir = _resolve_edge_dst_dir(edge_key, edge_persist_paths,
-                                             graph_path)
+        edge_dst_dir = _resolve_edge_dst_dir(edge_key, edge_persist_paths, graph_path)
         fsutil.makedirs(edge_dst_dir, exist_ok=True)
 
         edge_dst = osp.join(edge_dst_dir, _EDGE_PARQUET_FILE)
@@ -344,10 +354,11 @@ def _materialize_prediction_table_edges_from_bundle(
     # pod's local SSD (pool BP cross-pod), that walk raises
     # FileNotFoundError before we ever get to consult the destination.
     parsed = parse_prediction_table_edges_artifact(
-        json.loads(fsutil.read_text(bundle_path)))
-    if _try_short_circuit_bundle_materialize(parsed, table, graph_path,
-                                             edge_persist_paths,
-                                             'prediction_table_edges'):
+        json.loads(fsutil.read_text(bundle_path))
+    )
+    if _try_short_circuit_bundle_materialize(
+        parsed, table, graph_path, edge_persist_paths, 'prediction_table_edges'
+    ):
         return True
 
     bundle = get_validated_prediction_edge_bundle(bundle_path)
@@ -389,10 +400,9 @@ def _materialize_train_table_edges_from_manifest_bundle(
         except Exception:
             parsed_peek = None
         if isinstance(parsed_peek, dict):
-            if _try_short_circuit_bundle_materialize(parsed_peek, table,
-                                                     graph_path,
-                                                     edge_persist_paths,
-                                                     'train_table_edges'):
+            if _try_short_circuit_bundle_materialize(
+                parsed_peek, table, graph_path, edge_persist_paths, 'train_table_edges'
+            ):
                 return True
 
     manifest = get_validated_artifact_bundle(manifest_path)

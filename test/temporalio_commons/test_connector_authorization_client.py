@@ -54,8 +54,7 @@ class _ConnectorSamplingEnvelope:
     num_neighbors: NumNeighborsConfig
 
 
-def test_replace_connector_authorization_tokens_preserves_pydantic_extras(
-) -> None:
+def test_replace_connector_authorization_tokens_preserves_pydantic_extras() -> None:
     envelope = _ConnectorSamplingEnvelope(
         reference=_reference(),
         num_neighbors=NumNeighborsConfig(
@@ -76,7 +75,8 @@ def test_replace_connector_authorization_tokens_preserves_pydantic_extras(
     )
 
     replaced = replace_connector_authorization_tokens(
-        envelope, {PARENT_TOKEN: CHILD_TOKEN})
+        envelope, {PARENT_TOKEN: CHILD_TOKEN}
+    )
 
     assert replaced.reference.authorization_token == CHILD_TOKEN
     hop1 = replaced.num_neighbors.hop1
@@ -107,8 +107,7 @@ def test_replace_connector_authorization_tokens_preserves_pydantic_extras(
         'TrainingJobWorkflow',
     ],
 )
-def test_connector_child_workflow_has_closed_action_scope(
-        workflow_type) -> None:
+def test_connector_child_workflow_has_closed_action_scope(workflow_type) -> None:
     assert _actions_for_child_workflow(workflow_type)
 
 
@@ -140,23 +139,31 @@ def _start_input():
 
 @pytest.mark.asyncio
 async def test_root_ambiguous_start_failure_retains_bound_capabilities(
-    monkeypatch, ) -> None:
+    monkeypatch,
+) -> None:
     state_db = object()
     services = object()
-    bind = AsyncMock(return_value=(state_db, services, (PARENT_TOKEN, )))
+    bind = AsyncMock(return_value=(state_db, services, (PARENT_TOKEN,)))
     revoke = AsyncMock(side_effect=RuntimeError('cleanup failed'))
     close = AsyncMock()
     monkeypatch.setattr(
         'rest.backends.data_backend.connector_authorization_client.'
-        'bind_connector_authorizations_for_start', bind)
+        'bind_connector_authorizations_for_start',
+        bind,
+    )
     monkeypatch.setattr(
         'rest.backends.data_backend.connector_authorization_client.'
-        'revoke_bound_connector_authorizations', revoke)
+        'revoke_bound_connector_authorizations',
+        revoke,
+    )
     monkeypatch.setattr(
         'rest.backends.data_backend.connector_authorization_client.'
-        'close_connector_authorization_state', close)
-    next_interceptor = SimpleNamespace(start_workflow=AsyncMock(
-        side_effect=RuntimeError('start failed')))
+        'close_connector_authorization_state',
+        close,
+    )
+    next_interceptor = SimpleNamespace(
+        start_workflow=AsyncMock(side_effect=RuntimeError('start failed'))
+    )
     interceptor = ClientOutboundInterceptor(_client_config(), next_interceptor)
 
     with pytest.raises(RuntimeError, match='start failed'):
@@ -168,52 +175,68 @@ async def test_root_ambiguous_start_failure_retains_bound_capabilities(
 
 @pytest.mark.asyncio
 async def test_root_already_started_revokes_loser_capabilities(
-    monkeypatch, ) -> None:
+    monkeypatch,
+) -> None:
     state_db = object()
     services = object()
-    bind = AsyncMock(return_value=(state_db, services, (PARENT_TOKEN, )))
+    bind = AsyncMock(return_value=(state_db, services, (PARENT_TOKEN,)))
     revoke = AsyncMock(side_effect=RuntimeError('cleanup failed'))
     close = AsyncMock()
     monkeypatch.setattr(
         'rest.backends.data_backend.connector_authorization_client.'
-        'bind_connector_authorizations_for_start', bind)
+        'bind_connector_authorizations_for_start',
+        bind,
+    )
     monkeypatch.setattr(
         'rest.backends.data_backend.connector_authorization_client.'
-        'revoke_bound_connector_authorizations', revoke)
+        'revoke_bound_connector_authorizations',
+        revoke,
+    )
     monkeypatch.setattr(
         'rest.backends.data_backend.connector_authorization_client.'
-        'close_connector_authorization_state', close)
-    next_interceptor = SimpleNamespace(start_workflow=AsyncMock(side_effect=(
-        WorkflowAlreadyStartedError('root-workflow', 'Workflow'))))
+        'close_connector_authorization_state',
+        close,
+    )
+    next_interceptor = SimpleNamespace(
+        start_workflow=AsyncMock(
+            side_effect=(WorkflowAlreadyStartedError('root-workflow', 'Workflow'))
+        )
+    )
     interceptor = ClientOutboundInterceptor(_client_config(), next_interceptor)
 
     with pytest.raises(WorkflowAlreadyStartedError):
         await interceptor.start_workflow(_start_input())
 
-    revoke.assert_awaited_once_with(state_db, services, (PARENT_TOKEN, ))
+    revoke.assert_awaited_once_with(state_db, services, (PARENT_TOKEN,))
     close.assert_awaited_once_with(None)
 
 
 @pytest.mark.asyncio
 async def test_root_start_success_closes_state_without_revoking(
-    monkeypatch, ) -> None:
+    monkeypatch,
+) -> None:
     state_db = object()
     services = object()
-    bind = AsyncMock(return_value=(state_db, services, (PARENT_TOKEN, )))
+    bind = AsyncMock(return_value=(state_db, services, (PARENT_TOKEN,)))
     revoke = AsyncMock()
     close = AsyncMock()
     monkeypatch.setattr(
         'rest.backends.data_backend.connector_authorization_client.'
-        'bind_connector_authorizations_for_start', bind)
+        'bind_connector_authorizations_for_start',
+        bind,
+    )
     monkeypatch.setattr(
         'rest.backends.data_backend.connector_authorization_client.'
-        'revoke_bound_connector_authorizations', revoke)
+        'revoke_bound_connector_authorizations',
+        revoke,
+    )
     monkeypatch.setattr(
         'rest.backends.data_backend.connector_authorization_client.'
-        'close_connector_authorization_state', close)
+        'close_connector_authorization_state',
+        close,
+    )
     expected = object()
-    next_interceptor = SimpleNamespace(start_workflow=AsyncMock(
-        return_value=expected))
+    next_interceptor = SimpleNamespace(start_workflow=AsyncMock(return_value=expected))
     interceptor = ClientOutboundInterceptor(_client_config(), next_interceptor)
 
     assert await interceptor.start_workflow(_start_input()) is expected
@@ -224,9 +247,7 @@ async def test_root_start_success_closes_state_without_revoking(
 
 def _child_input():
     return SimpleNamespace(
-        args=[{
-            'connector': _reference()
-        }],
+        args=[{'connector': _reference()}],
         id='child-workflow-id',
         workflow='TableRefreshWorkflow',
         task_queue='task-queue',
@@ -238,27 +259,30 @@ def _child_input():
 
 @pytest.mark.asyncio
 async def test_child_start_delegates_via_activity_and_replaces_token(
-    monkeypatch, ) -> None:
+    monkeypatch,
+) -> None:
     execute_activity = AsyncMock(return_value={PARENT_TOKEN: CHILD_TOKEN})
     monkeypatch.setattr(
         'temporalio_commons.worker_interceptors.workflow.execute_activity',
         execute_activity,
     )
     expected = object()
-    next_interceptor = SimpleNamespace(start_child_workflow=AsyncMock(
-        return_value=expected))
+    next_interceptor = SimpleNamespace(
+        start_child_workflow=AsyncMock(return_value=expected)
+    )
     interceptor = KumoWorkflowOutboundInterceptor(next_interceptor)
-    interceptor.info = MagicMock(return_value=SimpleNamespace(
-        search_attributes=None,
-        raw_memo={},
-        task_timeout=timedelta(seconds=10),
-    ))
+    interceptor.info = MagicMock(
+        return_value=SimpleNamespace(
+            search_attributes=None,
+            raw_memo={},
+            task_timeout=timedelta(seconds=10),
+        )
+    )
     child_input = _child_input()
 
     assert await interceptor.start_child_workflow(child_input) is expected
 
-    assert execute_activity.await_args.args[0] == (
-        'delegate_connector_authorizations')
+    assert execute_activity.await_args.args[0] == ('delegate_connector_authorizations')
     delegated = child_input.args[0]['connector']
     assert delegated.authorization_token == CHILD_TOKEN
     assert PARENT_TOKEN not in repr(delegated)
@@ -266,22 +290,24 @@ async def test_child_start_delegates_via_activity_and_replaces_token(
 
 @pytest.mark.asyncio
 async def test_child_ambiguous_start_failure_retains_delegated_tokens(
-    monkeypatch, ) -> None:
-    execute_activity = AsyncMock(side_effect=[{
-        PARENT_TOKEN: CHILD_TOKEN
-    }, None])
+    monkeypatch,
+) -> None:
+    execute_activity = AsyncMock(side_effect=[{PARENT_TOKEN: CHILD_TOKEN}, None])
     monkeypatch.setattr(
         'temporalio_commons.worker_interceptors.workflow.execute_activity',
         execute_activity,
     )
-    next_interceptor = SimpleNamespace(start_child_workflow=AsyncMock(
-        side_effect=RuntimeError('child start failed')))
+    next_interceptor = SimpleNamespace(
+        start_child_workflow=AsyncMock(side_effect=RuntimeError('child start failed'))
+    )
     interceptor = KumoWorkflowOutboundInterceptor(next_interceptor)
-    interceptor.info = MagicMock(return_value=SimpleNamespace(
-        search_attributes=None,
-        raw_memo={},
-        task_timeout=timedelta(seconds=10),
-    ))
+    interceptor.info = MagicMock(
+        return_value=SimpleNamespace(
+            search_attributes=None,
+            raw_memo={},
+            task_timeout=timedelta(seconds=10),
+        )
+    )
 
     with pytest.raises(RuntimeError, match='child start failed'):
         await interceptor.start_child_workflow(_child_input())
@@ -291,29 +317,36 @@ async def test_child_ambiguous_start_failure_retains_delegated_tokens(
 
 @pytest.mark.asyncio
 async def test_child_already_started_revokes_loser_delegated_tokens(
-    monkeypatch, ) -> None:
-    execute_activity = AsyncMock(side_effect=[{
-        PARENT_TOKEN: CHILD_TOKEN
-    }, RuntimeError('cleanup failed')])
+    monkeypatch,
+) -> None:
+    execute_activity = AsyncMock(
+        side_effect=[{PARENT_TOKEN: CHILD_TOKEN}, RuntimeError('cleanup failed')]
+    )
     monkeypatch.setattr(
         'temporalio_commons.worker_interceptors.workflow.execute_activity',
         execute_activity,
     )
-    next_interceptor = SimpleNamespace(start_child_workflow=AsyncMock(
-        side_effect=WorkflowAlreadyStartedError('child', 'Workflow')))
+    next_interceptor = SimpleNamespace(
+        start_child_workflow=AsyncMock(
+            side_effect=WorkflowAlreadyStartedError('child', 'Workflow')
+        )
+    )
     interceptor = KumoWorkflowOutboundInterceptor(next_interceptor)
-    interceptor.info = MagicMock(return_value=SimpleNamespace(
-        search_attributes=None,
-        raw_memo={},
-        task_timeout=timedelta(seconds=10),
-    ))
+    interceptor.info = MagicMock(
+        return_value=SimpleNamespace(
+            search_attributes=None,
+            raw_memo={},
+            task_timeout=timedelta(seconds=10),
+        )
+    )
 
     with pytest.raises(WorkflowAlreadyStartedError):
         await interceptor.start_child_workflow(_child_input())
 
     assert execute_activity.await_count == 2
     assert execute_activity.await_args_list[1].args[0] == (
-        'revoke_connector_authorizations')
+        'revoke_connector_authorizations'
+    )
     assert execute_activity.await_args_list[1].kwargs['args'] == [[CHILD_TOKEN]]
 
 
@@ -323,10 +356,7 @@ async def _history_delegate_connector_authorizations(
     _child_workflow_id: str,
     _child_workflow_type: str,
 ) -> dict[str, str]:
-    return {
-        reference.authorization_token: CHILD_TOKEN
-        for reference in references
-    }
+    return {reference.authorization_token: CHILD_TOKEN for reference in references}
 
 
 @workflow.defn(name='TrainingJobWorkflow')
@@ -344,7 +374,7 @@ class _CapabilityDelegationChildWorkflow:
 async def _history_postprocess_training_job_output(
     references: dict[ConnectorID, ConnectorExecutionRef],
 ) -> str:
-    reference, = references.values()
+    (reference,) = references.values()
     return reference.authorization_token
 
 
@@ -366,7 +396,8 @@ class _CapabilityDelegationParentWorkflow:
 
 @pytest.mark.asyncio
 async def test_child_delegation_activity_precedes_child_start_in_history(
-    temporal_config: DeployEnvConfig, ) -> None:
+    temporal_config: DeployEnvConfig,
+) -> None:
     raw_task_queue = f'capability-child-history-{uuid4().hex}'
     client = await TemporalClient(temporal_config).get()
     worker = Worker(
@@ -380,8 +411,7 @@ async def test_child_delegation_activity_precedes_child_start_in_history(
             _history_delegate_connector_authorizations,
             _history_postprocess_training_job_output,
         ],
-        interceptors=[KumoActivityInterceptor(),
-                      KumoWorkflowInterceptor()],
+        interceptors=[KumoActivityInterceptor(), KumoWorkflowInterceptor()],
         workflow_runner=UnsandboxedWorkflowRunner(),
     )
     async with worker:
@@ -395,37 +425,43 @@ async def test_child_delegation_activity_precedes_child_start_in_history(
 
     events = [event async for event in handle.fetch_history_events()]
     delegation_index = next(
-        index for index, event in enumerate(events)
-        if (event.event_type == EventType.EVENT_TYPE_ACTIVITY_TASK_SCHEDULED
-            and event.activity_task_scheduled_event_attributes.activity_type.
-            name == 'delegate_connector_authorizations'))
+        index
+        for index, event in enumerate(events)
+        if (
+            event.event_type == EventType.EVENT_TYPE_ACTIVITY_TASK_SCHEDULED
+            and event.activity_task_scheduled_event_attributes.activity_type.name
+            == 'delegate_connector_authorizations'
+        )
+    )
     child_index = next(
-        index for index, event in enumerate(events) if event.event_type == (
-            EventType.EVENT_TYPE_START_CHILD_WORKFLOW_EXECUTION_INITIATED))
+        index
+        for index, event in enumerate(events)
+        if event.event_type
+        == (EventType.EVENT_TYPE_START_CHILD_WORKFLOW_EXECUTION_INITIATED)
+    )
     assert delegation_index < child_index
 
     child_handle = client.get_workflow_handle(
-        temporal_config.workflow_id('capability-child'))
-    child_events = [
-        event async for event in child_handle.fetch_history_events()
-    ]
+        temporal_config.workflow_id('capability-child')
+    )
+    child_events = [event async for event in child_handle.fetch_history_events()]
     scheduled = next(
-        event for event in child_events
-        if event.event_type == EventType.EVENT_TYPE_ACTIVITY_TASK_SCHEDULED)
+        event
+        for event in child_events
+        if event.event_type == EventType.EVENT_TYPE_ACTIVITY_TASK_SCHEDULED
+    )
     scheduled_input = await client.data_converter.decode(
         scheduled.activity_task_scheduled_event_attributes.input.payloads,
         [dict[ConnectorID, ConnectorExecutionRef]],
     )
     assert scheduled_input == [
         {
-            CONNECTOR_ID:
-            ConnectorExecutionRef(
+            CONNECTOR_ID: ConnectorExecutionRef(
                 project_id=PROJECT_ID,
                 connector_id=CONNECTOR_ID,
                 authorization_token=CHILD_TOKEN,
             )
         }
     ]
-    child_history = b''.join(
-        event.SerializeToString() for event in child_events)
+    child_history = b''.join(event.SerializeToString() for event in child_events)
     assert PARENT_TOKEN.encode() not in child_history

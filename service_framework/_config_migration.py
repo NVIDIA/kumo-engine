@@ -26,8 +26,7 @@ from service_framework.deploy_stage import DeployStage
 from service_framework.env_var import EnvVar
 
 _IS_GCP_DEPLOY = EnvVar('IS_GCP_DEPLOY', bool, default_value=False)
-_DISABLE_REMOTE_INGESTION = EnvVar('DISABLE_REMOTE_INGESTION', bool,
-                                   default_value=True)
+_DISABLE_REMOTE_INGESTION = EnvVar('DISABLE_REMOTE_INGESTION', bool, default_value=True)
 
 
 class ConfigMigrationHelper:
@@ -40,6 +39,7 @@ class ConfigMigrationHelper:
     when no custom bucket is set.  Final resolution of None values happens
     in ``DeployEnvConfig.parse_from_env()``.
     """
+
     def __init__(self, deploy_mode: DeployStage, instance_id: str) -> None:
         self._deploy_mode = deploy_mode
         self._instance_id = instance_id
@@ -83,8 +83,11 @@ class ConfigMigrationHelper:
         return None
 
     def _resolve_orchestration(self) -> OrchestrationConfig:
-        default = ('localhost' if self._deploy_mode
-                   in (DeployStage.DEV_LOCAL, DeployStage.TEST) else 'cloud')
+        default = (
+            'localhost'
+            if self._deploy_mode in (DeployStage.DEV_LOCAL, DeployStage.TEST)
+            else 'cloud'
+        )
         temporal_server = os.environ.get('TEMPORAL_SERVER', default).lower()
         namespace = self._resolve_temporal_namespace()
 

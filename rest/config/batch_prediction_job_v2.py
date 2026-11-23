@@ -61,8 +61,7 @@ class BatchPredictionInternalRequest:
     # (*default:* ``"inferred"``). Only supported for Temporal queries.
     anchor_time: Union[int, InferredType, datetime.datetime] = Field(
         default=InferredType.VALUE,
-        metadata=plan_api.Metadata(
-            valid_query_types=[pquery_api.QueryType.TEMPORAL]),
+        metadata=plan_api.Metadata(valid_query_types=[pquery_api.QueryType.TEMPORAL]),
     )
 
     # Filter overrides supplied from the UI. This interaction is different in
@@ -107,6 +106,7 @@ class SuggestPredictionSamples:
     A class of methods used to generate a preview of the
     final prediction schema for a prediction job.
     """
+
     def suggest_col_samples_by_task_type(
         self,
         task_type: TaskType,
@@ -134,31 +134,32 @@ class SuggestPredictionSamples:
             return []
 
         entity_column_summary = PredictionTableSchemaSampleColumn(
-            name="ENTITY",
-            sample_rows=samples_rows_dict["ENTITY"],
+            name='ENTITY',
+            sample_rows=samples_rows_dict['ENTITY'],
         )
 
-        response: List[PredictionTableSchemaSampleColumn] = [
-            entity_column_summary
-        ]
+        response: List[PredictionTableSchemaSampleColumn] = [entity_column_summary]
 
-        if task_type == TaskType.REGRESSION or \
-            task_type == TaskType.FORECASTING:
+        if task_type == TaskType.REGRESSION or task_type == TaskType.FORECASTING:
             target_column_summary = self._regression_and_forcecast_col_summary(
-                samples_rows_dict)
+                samples_rows_dict
+            )
             response.extend(target_column_summary)
 
         elif task_type == TaskType.BINARY_CLASSIFICATION:
             bc_column_summary = self._binary_classification_col_summary(
-                samples_rows_dict)
+                samples_rows_dict
+            )
             response.extend(bc_column_summary)
 
-        elif task_type == TaskType.MULTILABEL_CLASSIFICATION \
-            or task_type == TaskType.MULTICLASS_CLASSIFICATION:
+        elif (
+            task_type == TaskType.MULTILABEL_CLASSIFICATION
+            or task_type == TaskType.MULTICLASS_CLASSIFICATION
+        ):
             mc_column_summary = self._multiclass_classification_col_summary(
-                samples_rows_dict)
-            if response[0].name == "ENTITY" and len(
-                    response[0].sample_rows) > 10:
+                samples_rows_dict
+            )
+            if response[0].name == 'ENTITY' and len(response[0].sample_rows) > 10:
                 samples_set = response[0].sample_rows
                 response[0].sample_rows = list(samples_set)[:10]
             response.extend(mc_column_summary)
@@ -168,8 +169,7 @@ class SuggestPredictionSamples:
             response.extend(rank_column_summary)
 
         else:
-            log.error('Invalid task type for Batch Prediction stats: %s',
-                      task_type)
+            log.error('Invalid task type for Batch Prediction stats: %s', task_type)
             return []
 
         return response
@@ -178,12 +178,11 @@ class SuggestPredictionSamples:
         self,
         samples_rows_dict,
     ) -> List[PredictionTableSchemaSampleColumn]:
-        min_val = min(samples_rows_dict["TARGET"])
-        max_val = max(samples_rows_dict["TARGET"])
-        vals = numpy.round(numpy.random.uniform(min_val, max_val, 10),
-                           3).tolist()  # type: ignore
+        min_val = min(samples_rows_dict['TARGET'])
+        max_val = max(samples_rows_dict['TARGET'])
+        vals = numpy.round(numpy.random.uniform(min_val, max_val, 10), 3).tolist()  # type: ignore
         column_summary = PredictionTableSchemaSampleColumn(
-            name="TARGET_PRED",
+            name='TARGET_PRED',
             sample_rows=vals,
         )
 
@@ -193,32 +192,30 @@ class SuggestPredictionSamples:
         self,
         samples_rows_dict,
     ) -> List[PredictionTableSchemaSampleColumn]:
-        target_vals = samples_rows_dict["TARGET"]
+        target_vals = samples_rows_dict['TARGET']
 
         target_column_summary = PredictionTableSchemaSampleColumn(
-            name="TARGET_PRED",
+            name='TARGET_PRED',
             sample_rows=target_vals,
         )
 
         # Create a random distribution for negative samples
         false_sample_rows = numpy.round(
-            numpy.linspace(0.5, 1, num=len(target_vals)), 3).tolist()
+            numpy.linspace(0.5, 1, num=len(target_vals)), 3
+        ).tolist()
         false_column_summary = PredictionTableSchemaSampleColumn(
-            name="False_PROB",
+            name='False_PROB',
             sample_rows=false_sample_rows,
         )
 
         # values are oppostite of false_prob values
-        true_prob_vals = numpy.round([1 - val for val in false_sample_rows],
-                                     3).tolist()
+        true_prob_vals = numpy.round([1 - val for val in false_sample_rows], 3).tolist()
         true_column_summary = PredictionTableSchemaSampleColumn(
-            name="True_PROB",
+            name='True_PROB',
             sample_rows=true_prob_vals,
         )
 
-        return [
-            target_column_summary, false_column_summary, true_column_summary
-        ]
+        return [target_column_summary, false_column_summary, true_column_summary]
 
     def _multiclass_classification_col_summary(
         self,
@@ -226,29 +223,31 @@ class SuggestPredictionSamples:
     ) -> List[PredictionTableSchemaSampleColumn]:
         target_samples = [
             # sample if sample != "" else "NA"
-            sample for sample in samples_rows_dict["TARGET"] if sample != ""
+            sample
+            for sample in samples_rows_dict['TARGET']
+            if sample != ''
         ]
         # keep only the first 10 valid samples
         num_samples = len(target_samples) if len(target_samples) <= 10 else 10
-        target_samples = target_samples[:10] if len(
-            target_samples) > 10 else target_samples
+        target_samples = (
+            target_samples[:10] if len(target_samples) > 10 else target_samples
+        )
 
         pred_column_summary = PredictionTableSchemaSampleColumn(
-            name="PREDICTED",
+            name='PREDICTED',
             sample_rows=numpy.round(
-                numpy.random.choice([0, 1], size=num_samples, p=[.8, .2]),
-                3).tolist(),
+                numpy.random.choice([0, 1], size=num_samples, p=[0.8, 0.2]), 3
+            ).tolist(),
         )
 
         class_column_summary = PredictionTableSchemaSampleColumn(
-            name="CLASS",
+            name='CLASS',
             sample_rows=target_samples,  # type: ignore
         )
 
-        score_samples = numpy.round(numpy.random.uniform(0.2, 5.4, num_samples),
-                                    3)
+        score_samples = numpy.round(numpy.random.uniform(0.2, 5.4, num_samples), 3)
         score_column_summary = PredictionTableSchemaSampleColumn(
-            name="SCORE",
+            name='SCORE',
             sample_rows=score_samples.tolist(),
         )
 
@@ -260,13 +259,13 @@ class SuggestPredictionSamples:
     ) -> List[PredictionTableSchemaSampleColumn]:
 
         class_column_summary = PredictionTableSchemaSampleColumn(
-            name="CLASS",
-            sample_rows=samples_rows_dict["TARGET"],
+            name='CLASS',
+            sample_rows=samples_rows_dict['TARGET'],
         )
 
         score_samples = numpy.round(numpy.random.uniform(0.2, 5.4, 10), 3)
         score_column_summary = PredictionTableSchemaSampleColumn(
-            name="SCORE",
+            name='SCORE',
             sample_rows=score_samples.tolist(),
         )
 
@@ -274,10 +273,10 @@ class SuggestPredictionSamples:
 
     def verify_input_data(self, samples_rows_dict: Dict[Any, Any]) -> bool:
         keys = set(samples_rows_dict.keys())
-        if "TARGET" not in keys or "ENTITY" not in keys:
+        if 'TARGET' not in keys or 'ENTITY' not in keys:
             log.error(
-                "Sampled data doesn't contain the necessary columns." +
-                f"It should contain both TARGET and ENTITY columns (got {samples_rows_dict})"
+                "Sampled data doesn't contain the necessary columns."
+                + f'It should contain both TARGET and ENTITY columns (got {samples_rows_dict})'
             )
             return False
         else:

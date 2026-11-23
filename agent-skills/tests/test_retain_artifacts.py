@@ -10,8 +10,13 @@ from pathlib import Path
 
 import pytest
 
-SCRIPT = (Path(__file__).resolve().parents[1] / 'skills' / 'kumo-model-persistence' / 'scripts' /
-          'retain_artifacts.py')
+SCRIPT = (
+    Path(__file__).resolve().parents[1]
+    / 'skills'
+    / 'kumo-model-persistence'
+    / 'scripts'
+    / 'retain_artifacts.py'
+)
 spec = importlib.util.spec_from_file_location('retain_artifacts', SCRIPT)
 assert spec and spec.loader
 retain = importlib.util.module_from_spec(spec)
@@ -31,8 +36,10 @@ def run(tmp_path: Path) -> Path:
 def forge(path: Path, members: dict[str, bytes], manifest: object = None) -> str:
     """Write an archive by hand, bypassing create_archive's checks, and return its SHA256."""
     if manifest is None:
-        manifest = [dict(path=n, size=len(b), sha256=hashlib.sha256(b).hexdigest())
-                    for n, b in members.items()]
+        manifest = [
+            dict(path=n, size=len(b), sha256=hashlib.sha256(b).hexdigest())
+            for n, b in members.items()
+        ]
     with zipfile.ZipFile(path, 'w') as bundle:
         for name, data in members.items():
             bundle.writestr(name, data)
@@ -49,10 +56,21 @@ def test_round_trip(run: Path, tmp_path: Path) -> None:
     assert not (out / 'retention-manifest.json').exists()
 
 
-@pytest.mark.parametrize('name', [
-    '../escape.txt', 'a/../../escape.txt', '/etc/passwd', './metrics.json', 'a//b',
-    'C:/temp/payload', 'C:payload', 'a\\b', '', 'retention-manifest.json',
-])
+@pytest.mark.parametrize(
+    'name',
+    [
+        '../escape.txt',
+        'a/../../escape.txt',
+        '/etc/passwd',
+        './metrics.json',
+        'a//b',
+        'C:/temp/payload',
+        'C:payload',
+        'a\\b',
+        '',
+        'retention-manifest.json',
+    ],
+)
 def test_unsafe_names_are_rejected(name: str) -> None:
     with pytest.raises(ValueError):
         retain._relative(name)
@@ -77,7 +95,9 @@ def test_create_rejects_symlink_and_escape(run: Path, tmp_path: Path) -> None:
     assert not (tmp_path / 'a.zip').exists() and not (tmp_path / 'b.zip').exists()
 
 
-def test_create_rejects_duplicates_and_existing_archive(run: Path, tmp_path: Path) -> None:
+def test_create_rejects_duplicates_and_existing_archive(
+    run: Path, tmp_path: Path
+) -> None:
     with pytest.raises(ValueError, match='duplicates'):
         retain.create_archive(run, ['metrics.json', 'metrics.json'], tmp_path / 'a.zip')
     (tmp_path / 'exists.zip').write_bytes(b'keep')
@@ -108,7 +128,9 @@ def test_unlisted_member_and_size_budget(tmp_path: Path) -> None:
         retain.restore_archive(tmp_path / 'extra.zip', tmp_path / 'out', digest)
     digest = forge(tmp_path / 'big.zip', {'a.txt': b'a' * 100})
     with pytest.raises(ValueError, match='storage budget'):
-        retain.restore_archive(tmp_path / 'big.zip', tmp_path / 'out', digest, max_bytes=50)
+        retain.restore_archive(
+            tmp_path / 'big.zip', tmp_path / 'out', digest, max_bytes=50
+        )
 
 
 def test_restore_never_overwrites(run: Path, tmp_path: Path) -> None:

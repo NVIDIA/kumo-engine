@@ -44,7 +44,7 @@ from opentelemetry.util._once import Once
 
 logger = logging.getLogger(__name__)
 
-TRACING_DIR = os.path.expanduser("~/.monitoring/tracing")
+TRACING_DIR = os.path.expanduser('~/.monitoring/tracing')
 TRACING_INITIALIZED = False
 TRACING_ENABLED = False
 
@@ -98,7 +98,8 @@ def _get_span_processor_from_type(
 
     if type == SpanExporterType.CONSOLE:
         return SimpleSpanProcessor(
-            ConsoleSpanExporter(out=out if out is not None else sys.stdout))
+            ConsoleSpanExporter(out=out if out is not None else sys.stdout)
+        )
 
     if type == SpanExporterType.FILE:
         TRACING_DIR = output_dir
@@ -109,15 +110,17 @@ def _get_span_processor_from_type(
                 # TODO(manan): does this leak memory?
                 out=open(
                     TRACING_DIR + f'/tracing-{name}.txt',
-                    "w",
-                    encoding="utf-8",
+                    'w',
+                    encoding='utf-8',
                 ),
                 formatter=_format_span,
-            ))
+            )
+        )
 
     if type == SpanExporterType.JAEGER:
         oltp_exporter = OTLPSpanExporter(
-            endpoint=f'http://{jaeger_agent_host_name}:{jaeger_port}')
+            endpoint=f'http://{jaeger_agent_host_name}:{jaeger_port}'
+        )
 
         return BatchSpanProcessor(oltp_exporter)
 
@@ -167,7 +170,7 @@ def initialize_tracing(
     """
     global TRACING_INITIALIZED
     if TRACING_INITIALIZED:
-        logger.warning("Tracing has already been initialized.")
+        logger.warning('Tracing has already been initialized.')
         return
     TRACING_INITIALIZED = True
 
@@ -178,15 +181,16 @@ def initialize_tracing(
         if SpanExporterType.JAEGER not in span_exporters:
             provider = TracerProvider()
         else:
-            provider = TracerProvider(
-                resource=Resource.create({SERVICE_NAME: name}))
+            provider = TracerProvider(resource=Resource.create({SERVICE_NAME: name}))
         opentelemetry.trace.set_tracer_provider(provider)
 
         # Add span processors based on the provided span exporters.
         for span_exporter_type in span_exporters:
             provider.add_span_processor(
-                _get_span_processor_from_type(name, span_exporter_type,
-                                              **span_exporter_kwargs))
+                _get_span_processor_from_type(
+                    name, span_exporter_type, **span_exporter_kwargs
+                )
+            )
 
 
 def shutdown_tracing() -> None:
@@ -236,8 +240,8 @@ def get_output_dir() -> str:
 
 @dataclass
 class TraceOptions:
-    span_name: str = ""
-    span_name_suffix: str = ""
+    span_name: str = ''
+    span_name_suffix: str = ''
 
     # Whether/which parameter values to track in the trace span:
     # if true/false, all or none parameter values will be included in span's
@@ -262,8 +266,9 @@ class TraceOptions:
 
 
 @contextmanager
-def _trace(function: Callable, options: TraceOptions, *args: Any,
-           kwargs: Dict[str, Any]):
+def _trace(
+    function: Callable, options: TraceOptions, *args: Any, kwargs: Dict[str, Any]
+):
     # no-op if tracing is disabled or not initialized
     if not is_tracing_enabled() or not is_tracing_initialized():
         logger.debug('Tracing is not enabled or initialized')
@@ -277,10 +282,10 @@ def _trace(function: Callable, options: TraceOptions, *args: Any,
 
         # check if the function accepts kwargs if any of these options are
         # enabled
-        if (options.propagate_span or options.use_propagated_span):
+        if options.propagate_span or options.use_propagated_span:
             arg_spec = inspect.getfullargspec(function)
             if not arg_spec.varkw:
-                raise Exception("Keyword arguments expected but not provided.")
+                raise Exception('Keyword arguments expected but not provided.')
 
         # span name defaults to function name if not provided
         _span_name = options.get_span_name(function)
@@ -291,7 +296,7 @@ def _trace(function: Callable, options: TraceOptions, *args: Any,
         if options.use_propagated_span:
             carrier = options.use_propagated_span[1]
             if options.use_propagated_span[1] is None:
-                carrier = kwargs["carrier"]
+                carrier = kwargs['carrier']
             ctx = parse_propagated_span(
                 options.use_propagated_span[0],
                 carrier,
@@ -307,7 +312,7 @@ def _trace(function: Callable, options: TraceOptions, *args: Any,
             set_status_on_exception=options.record_exceptions,
         )
     except Exception as e:
-        logger.warning(f"Capturing span failed with exception {e}")
+        logger.warning(f'Capturing span failed with exception {e}')
         yield None
         return
 
@@ -320,11 +325,10 @@ def _trace(function: Callable, options: TraceOptions, *args: Any,
                 *args,
                 **kwargs,
             )
-            _store_dict_in_span(parameter_values, span,
-                                options.flatten_attributes)
+            _store_dict_in_span(parameter_values, span, options.flatten_attributes)
 
         if options.propagate_span is not None:
-            kwargs["span_carrier"] = do_propagate_span(options.propagate_span)
+            kwargs['span_carrier'] = do_propagate_span(options.propagate_span)
 
         yield span
 
@@ -385,14 +389,16 @@ def trace(options: TraceOptions = TraceOptions()) -> Callable:
     Examples:
         TODO(manan): Some basic examples here.
     """
+
     def _inner_trace(function: Callable) -> Callable:
         @wraps(function)
         def _trace_sync_wrapper(*args: Any, **kwargs: Any) -> Any:
             with _trace(function, options, *args, kwargs=kwargs) as span:
                 ret = function(*args, **kwargs)
                 if options.trace_return_value and span:
-                    _store_dict_in_span({"return": ret}, span,
-                                        options.flatten_attributes)
+                    _store_dict_in_span(
+                        {'return': ret}, span, options.flatten_attributes
+                    )
                 return ret
 
         @wraps(function)
@@ -400,12 +406,12 @@ def trace(options: TraceOptions = TraceOptions()) -> Callable:
             with _trace(function, options, *args, kwargs=kwargs) as span:
                 ret = await function(*args, **kwargs)
                 if options.trace_return_value and span:
-                    _store_dict_in_span({"return": ret}, span,
-                                        options.flatten_attributes)
+                    _store_dict_in_span(
+                        {'return': ret}, span, options.flatten_attributes
+                    )
                 return ret
 
-        if inspect.iscoroutinefunction(function) or isinstance(
-                function, SyncToAsync):
+        if inspect.iscoroutinefunction(function) or isinstance(function, SyncToAsync):
             return _trace_async_wrapper
         else:
             return _trace_sync_wrapper
@@ -435,16 +441,16 @@ def do_propagate_span(span_propagator_type: SpanPropagatorType) -> Any:
     """
     propagator = _get_span_propagator_from_type(span_propagator_type)
     if propagator is None:
-        raise Exception(
-            f"Propagator type {span_propagator_type} is not supported")
+        raise Exception(f'Propagator type {span_propagator_type} is not supported')
 
     carrier = {}
     propagator.inject(carrier=carrier)
     return carrier
 
 
-def parse_propagated_span(span_propagator_type: SpanPropagatorType,
-                          carrier: Any) -> Any:
+def parse_propagated_span(
+    span_propagator_type: SpanPropagatorType, carrier: Any
+) -> Any:
     """
     Returns the context of a propagated span (extracted from carrier) for
     continued tracing across process boundaries.
@@ -459,8 +465,7 @@ def parse_propagated_span(span_propagator_type: SpanPropagatorType,
     """
     propagator = _get_span_propagator_from_type(span_propagator_type)
     if propagator is None:
-        raise Exception(
-            f"Propagator type {span_propagator_type} is not supported")
+        raise Exception(f'Propagator type {span_propagator_type} is not supported')
 
     return propagator.extract(carrier=carrier)
 
@@ -473,9 +478,9 @@ def _serialize_dict(d: Dict[Any, Any]) -> Dict[Any, Any]:
     return json.loads(json.dumps(d, default=str))
 
 
-def _flatten_dict(d: Dict[Any, Any], sep="_"):
+def _flatten_dict(d: Dict[Any, Any], sep='_'):
     """Flattens a dictionary, joining parent/child keys with `sep`."""
-    flattened = pd.json_normalize(d, sep=sep).to_dict(orient="records")
+    flattened = pd.json_normalize(d, sep=sep).to_dict(orient='records')
     return flattened[0] if len(flattened) > 0 else {}
 
 
@@ -503,7 +508,8 @@ def _params_to_dict(
 
     return {
         f'params.{key}': value
-        for key, value in bound_arguments.arguments.items() if _track_key(key)
+        for key, value in bound_arguments.arguments.items()
+        if _track_key(key)
     }
 
 

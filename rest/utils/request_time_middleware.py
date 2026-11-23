@@ -24,18 +24,18 @@ from rest.utils.tracing import get_span_context
 log = logging.getLogger(__name__)
 
 _SENSITIVE_QUERY_KEY_PARTS = (
-    "api_key",
-    "authorization",
-    "client_secret",
-    "code",
-    "cookie",
-    "password",
-    "refresh_token",
-    "reset",
-    "secret",
-    "session",
-    "state",
-    "token",
+    'api_key',
+    'authorization',
+    'client_secret',
+    'code',
+    'cookie',
+    'password',
+    'refresh_token',
+    'reset',
+    'secret',
+    'session',
+    'state',
+    'token',
 )
 
 
@@ -52,17 +52,19 @@ def _redact_query_string(query: str) -> str:
     redacted_params = []
     for key, value in parse_qsl(query, keep_blank_values=True):
         redacted_params.append(
-            ("redacted_query", "<redacted>")
-            if _is_sensitive_query_key(key) else (key, value))
+            ('redacted_query', '<redacted>')
+            if _is_sensitive_query_key(key)
+            else (key, value)
+        )
     return urlencode(redacted_params)
 
 
 class SensitiveQueryLogFilter(std_logging.Filter):
     """Redact credential-like query values from Uvicorn access records."""
+
     def filter(self, record: std_logging.LogRecord) -> bool:
         args = record.args
-        if isinstance(args, tuple) and len(args) >= 3 and isinstance(
-                args[2], str):
+        if isinstance(args, tuple) and len(args) >= 3 and isinstance(args[2], str):
             path, separator, query = args[2].partition('?')
             if separator:
                 redacted_args = list(args)
@@ -82,6 +84,7 @@ class RequestTimeMiddleware(BaseHTTPMiddleware):
         threshold: Number of seconds for a request to be considered "slow"
         exclude_prefixes: HTTP routes to exclude from slow-request logging
     """
+
     def __init__(
         self,
         app,
@@ -92,15 +95,19 @@ class RequestTimeMiddleware(BaseHTTPMiddleware):
         self._exclude_prefixes = exclude_prefixes
         self._threshold = timedelta(seconds=threshold_sec)
 
-    async def dispatch(self, request: Request,
-                       call_next: RequestResponseEndpoint) -> Response:
+    async def dispatch(
+        self, request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
         if any(request.url.path.startswith(p) for p in self._exclude_prefixes):
             return await call_next(request)
 
-        host = getattr(getattr(request, "client", None), "host", None)
-        port = getattr(getattr(request, "client", None), "port", None)
-        url = (f"{request.url.path}?{_redacted_query_string(request)}"
-               if request.query_params else request.url.path)
+        host = getattr(getattr(request, 'client', None), 'host', None)
+        port = getattr(getattr(request, 'client', None), 'port', None)
+        url = (
+            f'{request.url.path}?{_redacted_query_string(request)}'
+            if request.query_params
+            else request.url.path
+        )
         status_phrase = http.HTTPStatus.INTERNAL_SERVER_ERROR.phrase
         status_code = 500
 
@@ -113,20 +120,25 @@ class RequestTimeMiddleware(BaseHTTPMiddleware):
         finally:
             full_path = (
                 f'{host}:{port} - "{request.method} {url}" {status_code} '
-                f'{status_phrase}')
+                f'{status_phrase}'
+            )
             self._print_request_time_log(full_path, start, status_code)
 
-    def _print_request_time_log(self, full_path: str, start: float,
-                                status_code: int) -> None:
+    def _print_request_time_log(
+        self, full_path: str, start: float, status_code: int
+    ) -> None:
         # Calculate duration and compare to threshold
         end = time.perf_counter()
         duration = end - start
-        formatted_duration = "{0:.2f}".format(duration)
+        formatted_duration = '{0:.2f}'.format(duration)
         if duration < self._threshold.total_seconds():
-            log.log(INFO if status_code < 400 else ERROR,
-                    f"{full_path}: {formatted_duration}s")
+            log.log(
+                INFO if status_code < 400 else ERROR,
+                f'{full_path}: {formatted_duration}s',
+            )
             return
 
         trace_id = format_trace_id(get_span_context().trace_id)
-        log.error(f"Slow Request! {full_path}: {formatted_duration}s, "
-                  f"Trace ID {trace_id}")
+        log.error(
+            f'Slow Request! {full_path}: {formatted_duration}s, Trace ID {trace_id}'
+        )

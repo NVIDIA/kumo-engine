@@ -31,12 +31,12 @@ def staged_seed_dir(tmp_path):
     schema = pa.schema([('ENTITY', pa.int64()), ('TARGET', pa.float64())])
     pq.write_table(schema.empty_table(), staging_dir / seed_part)
     (staging_dir / INGEST_SPEC).write_text(
-        json.dumps({
-            'split_stages': [{
-                'key': 'train',
-                'parts': [seed_part]
-            }],
-        }))
+        json.dumps(
+            {
+                'split_stages': [{'key': 'train', 'parts': [seed_part]}],
+            }
+        )
+    )
     return staging_dir
 
 
@@ -65,55 +65,43 @@ def graph(tmp_path):
     data = tmp_path / 'data'
     data.mkdir()
     pd.DataFrame({'ID': np.arange(50)}).to_parquet(data / 'users.parquet')
-    pd.DataFrame({
-        'EID':
-        np.arange(500),
-        'USER_ID':
-        rng.integers(0, 50, 500),
-        'TS':
-        pd.Timestamp('2024-01-01') +
-        pd.to_timedelta(rng.integers(0, 120, 500), unit='D'),
-    }).to_parquet(data / 'events.parquet')
+    pd.DataFrame(
+        {
+            'EID': np.arange(500),
+            'USER_ID': rng.integers(0, 50, 500),
+            'TS': pd.Timestamp('2024-01-01')
+            + pd.to_timedelta(rng.integers(0, 120, 500), unit='D'),
+        }
+    ).to_parquet(data / 'events.parquet')
     connector = kumo.FileConnector(root_dir=str(data))
     return kumo.Graph(
         tables={
-            'users':
-            kumo.Table.from_source_table(connector['users.parquet'],
-                                         primary_key='ID'),
-            'events':
-            kumo.Table.from_source_table(
-                connector['events.parquet'], primary_key='EID',
-                time_column='TS').with_column('USER_ID', stype=Stype.ID),
-        }, edges=[Edge(src_table='events', fkey='USER_ID', dst_table='users')])
+            'users': kumo.Table.from_source_table(
+                connector['users.parquet'], primary_key='ID'
+            ),
+            'events': kumo.Table.from_source_table(
+                connector['events.parquet'], primary_key='EID', time_column='TS'
+            ).with_column('USER_ID', stype=Stype.ID),
+        },
+        edges=[Edge(src_table='events', fkey='USER_ID', dst_table='users')],
+    )
 
 
 @pytest.fixture
 def snapshot(tmp_path):
     config = {
-        'tables': [{
-            'table_name':
-            'users',
-            'source_table_name':
-            'db.schema.users',
-            'pkey': {
-                'name': 'id',
-                'dtype': 'int64',
-                'stype': 'ID'
-            },
-            'cols': [
-                {
-                    'name': 'label',
-                    'dtype': 'bool',
-                    'stype': 'categorical'
-                },
-                {
-                    'name': 'age',
-                    'dtype': 'int64',
-                    'stype': 'numerical'
-                },
-            ],
-            'fkeys': [],
-        }]
+        'tables': [
+            {
+                'table_name': 'users',
+                'source_table_name': 'db.schema.users',
+                'pkey': {'name': 'id', 'dtype': 'int64', 'stype': 'ID'},
+                'cols': [
+                    {'name': 'label', 'dtype': 'bool', 'stype': 'categorical'},
+                    {'name': 'age', 'dtype': 'int64', 'stype': 'numerical'},
+                ],
+                'fkeys': [],
+            }
+        ]
     }
     return GraphSnapshot('snapshot', tmp_path / 'index', config)
 
@@ -128,33 +116,36 @@ def fitted(tmp_path_factory):
         data = root / 'data'
         data.mkdir()
         pd.DataFrame({'ID': np.arange(50)}).to_parquet(data / 'ents.parquet')
-        pd.DataFrame({
-            'EID':
-            np.arange(3000),
-            'ENT_ID':
-            rng.integers(0, 50, 3000),
-            'TS':
-            pd.Timestamp('2024-01-01') +
-            pd.to_timedelta(rng.integers(0, 120, 3000), unit='D'),
-        }).to_parquet(data / 'events.parquet')
+        pd.DataFrame(
+            {
+                'EID': np.arange(3000),
+                'ENT_ID': rng.integers(0, 50, 3000),
+                'TS': pd.Timestamp('2024-01-01')
+                + pd.to_timedelta(rng.integers(0, 120, 3000), unit='D'),
+            }
+        ).to_parquet(data / 'events.parquet')
         connector = kumo.FileConnector(root_dir=str(data))
-        events = kumo.Table.from_source_table(
-            connector['events.parquet'], primary_key='EID',
-            time_column='TS').infer_metadata().with_column(
-                'ENT_ID', stype=Stype.ID)
+        events = (
+            kumo.Table.from_source_table(
+                connector['events.parquet'], primary_key='EID', time_column='TS'
+            )
+            .infer_metadata()
+            .with_column('ENT_ID', stype=Stype.ID)
+        )
         graph = kumo.Graph(
             tables={
-                'ents':
-                kumo.Table.from_source_table(connector['ents.parquet'],
-                                             primary_key='ID').infer_metadata(),
-                'events':
-                events,
+                'ents': kumo.Table.from_source_table(
+                    connector['ents.parquet'], primary_key='ID'
+                ).infer_metadata(),
+                'events': events,
             },
-            edges=[Edge(src_table='events', fkey='ENT_ID', dst_table='ents')])
+            edges=[Edge(src_table='events', fkey='ENT_ID', dst_table='ents')],
+        )
         snapshot = graph.snapshot()
         pquery = kumo.PredictiveQuery(
-            graph=graph, query='PREDICT COUNT(events.*, 0, 7, days) > 0 '
-            'FOR EACH ents.ID')
+            graph=graph,
+            query='PREDICT COUNT(events.*, 0, 7, days) > 0 FOR EACH ents.ID',
+        )
         plan = ModelPlan()
         plan.training_job.disable_explain = True
         plan.optimization.max_epochs = 1
@@ -188,19 +179,23 @@ def table_and_snapshot(tmp_path):
     try:
         rng = np.random.default_rng(0)
         (tmp_path / 'data').mkdir()
-        pd.DataFrame({
-            'ID': np.arange(400),
-            'Y': rng.random(400),
-            'F1': rng.normal(size=400),
-            'amount ($)': rng.normal(size=400),
-        }).to_parquet(tmp_path / 'data' / 'ents.parquet')
+        pd.DataFrame(
+            {
+                'ID': np.arange(400),
+                'Y': rng.random(400),
+                'F1': rng.normal(size=400),
+                'amount ($)': rng.normal(size=400),
+            }
+        ).to_parquet(tmp_path / 'data' / 'ents.parquet')
         connector = kumo.FileConnector(root_dir=str(tmp_path / 'data'))
-        ents = kumo.Table.from_source_table(connector['ents.parquet'],
-                                            primary_key='ID').infer_metadata()
+        ents = kumo.Table.from_source_table(
+            connector['ents.parquet'], primary_key='ID'
+        ).infer_metadata()
         graph = kumo.Graph(tables={'ents': ents}, edges=[])
         snapshot = graph.snapshot()
-        query = kumo.PredictiveQuery(graph=graph,
-                                     query='PREDICT ents.Y FOR EACH ents.ID')
+        query = kumo.PredictiveQuery(
+            graph=graph, query='PREDICT ents.Y FOR EACH ents.ID'
+        )
         yield query.generate_training_table(snapshot), snapshot
     finally:
         kumo.configure(scratch_dir=previous_scratch)

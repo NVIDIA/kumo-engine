@@ -7,6 +7,7 @@
 This standalone audit uses stdlib filesystem operations so it can reject
 checkout imports before loading Kumo's own filesystem abstraction.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -51,8 +52,12 @@ def check_install(source: str | None, wheel: Path) -> None:
     if source is None:
         raise ValueError('Installed distribution lacks direct-wheel provenance')
     recorded = urlsplit(json.loads(source)['url'])
-    if (recorded.scheme != 'file' or recorded.netloc
-            or recorded.query or recorded.fragment):
+    if (
+        recorded.scheme != 'file'
+        or recorded.netloc
+        or recorded.query
+        or recorded.fragment
+    ):
         raise ValueError('Installed distribution is not from a local wheel')
     installed_path = Path(url2pathname(recorded.path)).resolve()
     if os.path.normcase(str(installed_path)) != os.path.normcase(str(wheel.resolve())):
@@ -62,8 +67,11 @@ def check_install(source: str | None, wheel: Path) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--wheel', required=True, type=Path)
-    parser.add_argument('--platform', required=True,
-                        choices=('windows-native', 'windows-wsl', 'linux-arm64'))
+    parser.add_argument(
+        '--platform',
+        required=True,
+        choices=('windows-native', 'windows-wsl', 'linux-arm64'),
+    )
     parser.add_argument('--python-version', required=True)
     parser.add_argument('--commit', required=True)
     parser.add_argument('--output', required=True, type=Path)
@@ -75,10 +83,13 @@ def main() -> None:
     actual_python = f'{sys.version_info.major}.{sys.version_info.minor}'
     if actual_python != args.python_version:
         raise ValueError('Python version differs from the qualification matrix')
-    check_platform(args.platform, platform.system(), platform.machine(),
-                   platform.release())
-    origins = {name: check_origin(importlib.import_module(name).__file__,
-                                  Path(sys.prefix)) for name in MODULES}
+    check_platform(
+        args.platform, platform.system(), platform.machine(), platform.release()
+    )
+    origins = {
+        name: check_origin(importlib.import_module(name).__file__, Path(sys.prefix))
+        for name in MODULES
+    }
     diskgraph = importlib.import_module('diskgraph')
     package = Path(check_origin(diskgraph.__file__, Path(sys.prefix))).parent
     ingest = package / 'bin' / ('ingest.exe' if sys.platform == 'win32' else 'ingest')
@@ -88,17 +99,26 @@ def main() -> None:
     if args.platform != 'windows-wsl' and faiss_present:
         raise ValueError('Bare Windows/ARM wheel qualification must omit Faiss')
     import torch
+
     with args.wheel.open('rb') as wheel_file:
         wheel_sha256 = hashlib.file_digest(wheel_file, 'sha256').hexdigest()
-    check_install(importlib.metadata.distribution('kumo-engine').read_text(
-        'direct_url.json'), args.wheel)
+    check_install(
+        importlib.metadata.distribution('kumo-engine').read_text('direct_url.json'),
+        args.wheel,
+    )
     report = {
-        'commit': args.commit, 'wheel': args.wheel.name,
+        'commit': args.commit,
+        'wheel': args.wheel.name,
         'wheel_sha256': wheel_sha256,
-        'platform': args.platform, 'system': platform.platform(),
-        'python': sys.version, 'executable': sys.executable,
-        'origins': origins, 'ingest': str(ingest), 'faiss_present': faiss_present,
-        'torch': torch.__version__, 'torch_cuda_build': torch.version.cuda,
+        'platform': args.platform,
+        'system': platform.platform(),
+        'python': sys.version,
+        'executable': sys.executable,
+        'origins': origins,
+        'ingest': str(ingest),
+        'faiss_present': faiss_present,
+        'torch': torch.__version__,
+        'torch_cuda_build': torch.version.cuda,
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')

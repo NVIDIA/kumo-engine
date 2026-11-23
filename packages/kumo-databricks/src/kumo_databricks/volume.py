@@ -18,8 +18,9 @@ from databricks.sdk import WorkspaceClient
 from databricks.sdk.errors import DatabricksError, NotFound, PermissionDenied
 from kumo_core.chunked_fs import ChunkedFileHandler
 from kumo_core.sources.diagnostics import safe_summary
-from kumo_databricks.staging import clear_volume
 from pyarrow.fs import FileSystem, PyFileSystem
+
+from kumo_databricks.staging import clear_volume
 
 _FILES = '/api/2.0/fs/files'
 _BUFFER = 8 << 20
@@ -28,14 +29,19 @@ _UPLOAD_BOUNDS = {'part_size': 16 << 20, 'parallelism': 4}
 
 def is_volume_path(path: str) -> bool:
     parts = path.rstrip('/').split('/')
-    return (path.startswith('/Volumes/') and len(parts) >= 5
-            and all(parts[1:]) and posixpath.normpath(path) == path.rstrip('/'))
+    return (
+        path.startswith('/Volumes/')
+        and len(parts) >= 5
+        and all(parts[1:])
+        and posixpath.normpath(path) == path.rstrip('/')
+    )
 
 
 def _upload(client: WorkspaceClient, path: str, source: BinaryIO) -> None:
     upload = client.files.upload
-    bounds = (_UPLOAD_BOUNDS if 'parallelism' in inspect.signature(
-        upload).parameters else {})
+    bounds = (
+        _UPLOAD_BOUNDS if 'parallelism' in inspect.signature(upload).parameters else {}
+    )
     upload(path, source, overwrite=True, **bounds)
 
 
@@ -79,8 +85,7 @@ class VolumeHandler(ChunkedFileHandler):
     def _list(self, directory: str) -> Dict[str, int]:
         with _translated(directory):
             try:
-                entries = list(
-                    self._client.files.list_directory_contents(directory))
+                entries = list(self._client.files.list_directory_contents(directory))
             except NotFound:
                 return {}
         found: Dict[str, int] = {}
@@ -143,17 +148,23 @@ class _Part:
         self.close()
         with _translated(self._path):
             response = self._client.api_client.do(
-                'GET', f'{_FILES}{quote(self._path)}', raw=True,
-                response_headers=['content-range'], headers={
+                'GET',
+                f'{_FILES}{quote(self._path)}',
+                raw=True,
+                response_headers=['content-range'],
+                headers={
                     'Accept': 'application/octet-stream',
-                    'Range': f'bytes={offset}-'
-                })
+                    'Range': f'bytes={offset}-',
+                },
+            )
         self._stream = response['contents']
         served = response.get('content-range') or ''
         if not served.startswith(f'bytes {offset}-'):
             self.close()
-            raise OSError(f'{self._path}: asked for bytes from {offset}, '
-                          f'got {served or "the whole file"}')
+            raise OSError(
+                f'{self._path}: asked for bytes from {offset}, '
+                f'got {served or "the whole file"}'
+            )
         self._stream.set_chunk_size(_BUFFER)
         self._at = offset
 

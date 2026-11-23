@@ -88,84 +88,85 @@ from kumo.engine.trainer import (
 )
 
 __all__ = [
-    "ADLSConnector",
-    "ADLSIdentity",
-    "__version__",
-    "configure",
-    "install_skills",
-    "EvaluationResult",
-    "DriftReport",
-    "EmbeddingModelStore",
-    "GloVeVectors",
-    "TextEmbedding",
-    "WriteMode",
-    "TokenEmbeddingModel",
-    "ModelRegistryLocation",
-    "Connector",
-    "FileConnector",
-    "SnowflakeConnector",
-    "S3Connector",
-    "GCSConnector",
-    "BigQueryConnector",
-    "DatabricksConnector",
-    "SourceTable",
-    "SQLSourceTable",
-    "Identity",
-    "SnowflakeIdentity",
-    "S3Identity",
-    "GCSIdentity",
-    "BigQueryIdentity",
-    "DatabricksIdentity",
-    "Column",
-    "Table",
-    "Edge",
-    "Graph",
-    "GraphSnapshot",
-    "MLOps",
-    "mlops",
-    "SnapshotManifest",
-    "TrainingTableManifest",
-    "ModelManifest",
-    "PredictionManifest",
-    "PredictiveQuery",
-    "TrainingTable",
-    "TrainingTableGenerationPlan",
-    "PredictionTable",
-    "Trainer",
-    "TrainingResult",
-    "TrainingExplanations",
-    "PredictionExplanations",
-    "PredictionExplanationOptions",
-    "PredictionExplanationCoverage",
-    "ExplanationUnavailableError",
-    "InvalidExplanationError",
-    "InvalidRunError",
-    "PredictionResult",
-    "ScoringDefaults",
-    "ModelOutputConfig",
-    "PredictionOutputConfig",
-    "TrainingTableOutputConfig",
-    "SnapshotOutputConfig",
+    'ADLSConnector',
+    'ADLSIdentity',
+    '__version__',
+    'configure',
+    'install_skills',
+    'EvaluationResult',
+    'DriftReport',
+    'EmbeddingModelStore',
+    'GloVeVectors',
+    'TextEmbedding',
+    'WriteMode',
+    'TokenEmbeddingModel',
+    'ModelRegistryLocation',
+    'Connector',
+    'FileConnector',
+    'SnowflakeConnector',
+    'S3Connector',
+    'GCSConnector',
+    'BigQueryConnector',
+    'DatabricksConnector',
+    'SourceTable',
+    'SQLSourceTable',
+    'Identity',
+    'SnowflakeIdentity',
+    'S3Identity',
+    'GCSIdentity',
+    'BigQueryIdentity',
+    'DatabricksIdentity',
+    'Column',
+    'Table',
+    'Edge',
+    'Graph',
+    'GraphSnapshot',
+    'MLOps',
+    'mlops',
+    'SnapshotManifest',
+    'TrainingTableManifest',
+    'ModelManifest',
+    'PredictionManifest',
+    'PredictiveQuery',
+    'TrainingTable',
+    'TrainingTableGenerationPlan',
+    'PredictionTable',
+    'Trainer',
+    'TrainingResult',
+    'TrainingExplanations',
+    'PredictionExplanations',
+    'PredictionExplanationOptions',
+    'PredictionExplanationCoverage',
+    'ExplanationUnavailableError',
+    'InvalidExplanationError',
+    'InvalidRunError',
+    'PredictionResult',
+    'ScoringDefaults',
+    'ModelOutputConfig',
+    'PredictionOutputConfig',
+    'TrainingTableOutputConfig',
+    'SnapshotOutputConfig',
 ]
 
 
 def __getattr__(name: str):
     # Imported on first use, so `python -m kumo.engine.skills` does not find
     # the module already imported by this package.
-    if name == "install_skills":
+    if name == 'install_skills':
         from kumo.engine.skills import install_skills
+
         return install_skills
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
 
 
 def _warn_if_skill_stale() -> None:
     # `python -m kumo.engine.skills` runs that module as `__main__` and
     # checks with --check; importing it here as well would load it twice.
     argv = sys.orig_argv
-    if any(a == "-m" and b == "kumo.engine.skills"
-           for a, b in zip(argv, argv[1:])):
+    if any(a == '-m' and b == 'kumo.engine.skills' for a, b in zip(argv, argv[1:])):
         return
     from kumo.engine.skills import warn_if_stale
+
     warn_if_stale()
 
 

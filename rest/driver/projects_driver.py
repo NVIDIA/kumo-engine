@@ -23,7 +23,7 @@ class ProjectsDriver:
     @property
     def _project_service(self) -> ProjectService:
         if self._state_services is None:
-            raise RuntimeError("ProjectsDriver StateServices is not configured")
+            raise RuntimeError('ProjectsDriver StateServices is not configured')
         return self._state_services.projects
 
     # ========================= Project CRUD =========================
@@ -33,14 +33,13 @@ class ProjectsDriver:
         name: str,
         group_id: str,
         slug: Optional[str] = None,
-        description: str = "",
+        description: str = '',
         is_private: bool = False,
     ) -> ProjectDBEntry:
         user_auth = _current_user_ctx.get()
         if user_auth is None:
             # raising runtime error because this should never really happen in prod
-            raise RuntimeError(
-                "create_project requires an authenticated user context")
+            raise RuntimeError('create_project requires an authenticated user context')
         return await self._project_service.create_project(
             name=name,
             group_id=group_id,
@@ -52,10 +51,10 @@ class ProjectsDriver:
 
     async def _list_visible_projects(self) -> List[ProjectDBEntry]:
         return await self._project_service.list_visible_projects(
-            _current_user_ctx.get())
+            _current_user_ctx.get()
+        )
 
-    async def list_projects_in_group(self,
-                                     group_id: str) -> List[ProjectDBEntry]:
+    async def list_projects_in_group(self, group_id: str) -> List[ProjectDBEntry]:
         return await self._project_service.list_projects_in_group(
             group_id,
             _current_user_ctx.get(),

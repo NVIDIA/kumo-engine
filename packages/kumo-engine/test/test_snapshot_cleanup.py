@@ -14,18 +14,25 @@ def test_snapshot_warns_once_per_table_with_duplicate_primary_keys(tmp_path):
     stats = tmp_path / 'ingest_stats.json'
     stats.write_text(
         '{"stats":{"pk_duplicate_counts":'
-        '{"accounts:shard-00000":1,"accounts:shard-00001":2}}}')
+        '{"accounts:shard-00000":1,"accounts:shard-00001":2}}}'
+    )
     result = SimpleNamespace(ingest_stats_path=str(stats))
     graph_config = {
-        'tables': [{
-            'table_name': 'accounts',
-            'pkey': {'name': 'account_id'},
-        }]
+        'tables': [
+            {
+                'table_name': 'accounts',
+                'pkey': {'name': 'account_id'},
+            }
+        ]
     }
 
-    with pytest.warns(UserWarning, match=(
-            r"3 duplicate primary-key row\(s\) for "
-            r"accounts\.account_id; canonical-first")) as caught:
+    with pytest.warns(
+        UserWarning,
+        match=(
+            r'3 duplicate primary-key row\(s\) for '
+            r'accounts\.account_id; canonical-first'
+        ),
+    ) as caught:
         _warn_ingest_data_loss(result, graph_config)
 
     assert len(caught) == 1
@@ -36,18 +43,25 @@ def test_snapshot_warns_when_invalid_primary_keys_drop_rows(tmp_path):
     stats.write_text(
         '{"stats":{"key_failures_by_context":'
         '{"pkey:accounts.account_id":{"parse_failures":1}},'
-        '"source_rows_by_table":{"accounts":4}}}')
+        '"source_rows_by_table":{"accounts":4}}}'
+    )
     result = SimpleNamespace(ingest_stats_path=str(stats))
     graph_config = {
-        'tables': [{
-            'table_name': 'accounts',
-            'pkey': {'name': 'account_id'},
-        }]
+        'tables': [
+            {
+                'table_name': 'accounts',
+                'pkey': {'name': 'account_id'},
+            }
+        ]
     }
 
-    with pytest.warns(UserWarning, match=(
-            r"dropped 1 row\(s\).*null or invalid primary key in "
-            r"accounts\.account_id \(25\.0% of source rows\)")):
+    with pytest.warns(
+        UserWarning,
+        match=(
+            r'dropped 1 row\(s\).*null or invalid primary key in '
+            r'accounts\.account_id \(25\.0% of source rows\)'
+        ),
+    ):
         _warn_ingest_data_loss(result, graph_config)
 
 
@@ -86,34 +100,46 @@ def test_snapshot_discards_only_owned_staging(tmp_path, monkeypatch, failure):
             calls.append(table_name)
             if failure == 'stage' and table_name == 'second':
                 raise ValueError('source failure')
-            return SimpleNamespace(credentials=None, version='v1',
-                                   source={'path': str(dest)})
+            return SimpleNamespace(
+                credentials=None, version='v1', source={'path': str(dest)}
+            )
 
     source = Source()
     tables = [
-        SimpleNamespace(table_name=name,
-                        definition=SimpleNamespace(cols=[], source_table=None),
-                        connector=SimpleNamespace(
-                            source_backend=source,
-                            validate_scratch_dir=lambda path: None,
-                        ))
+        SimpleNamespace(
+            table_name=name,
+            definition=SimpleNamespace(cols=[], source_table=None),
+            connector=SimpleNamespace(
+                source_backend=source,
+                validate_scratch_dir=lambda path: None,
+            ),
+        )
         for name in ('first', 'second')
     ]
     graph = Graph(tables=tables)
     graph.__dict__['id'] = 'graph-key'
     graph.__dict__['_graph_config'] = {
-        'tables': [{
-            'table_name': table.table_name,
-            'source_table_name': f'fixture.public.{table.table_name}',
-            'pkey': {'name': 'id', 'dtype': 'int64', 'stype': 'ID'},
-            'cols': [],
-            'fkeys': [],
-        } for table in tables]
+        'tables': [
+            {
+                'table_name': table.table_name,
+                'source_table_name': f'fixture.public.{table.table_name}',
+                'pkey': {'name': 'id', 'dtype': 'int64', 'stype': 'ID'},
+                'cols': [],
+                'fkeys': [],
+            }
+            for table in tables
+        ]
     }
-    monkeypatch.setattr(snapshots, 'check_diskgraph_output', lambda path: result
-                        if failure == 'cached' else None)
-    monkeypatch.setattr(snapshots.DiskgraphIngestResult, 'for_index',
-                        lambda path: SimpleNamespace(to_json=lambda: '{}'))
+    monkeypatch.setattr(
+        snapshots,
+        'check_diskgraph_output',
+        lambda path: result if failure == 'cached' else None,
+    )
+    monkeypatch.setattr(
+        snapshots.DiskgraphIngestResult,
+        'for_index',
+        lambda path: SimpleNamespace(to_json=lambda: '{}'),
+    )
 
     def execute(graph_config, spec):
         assert all(Path(path).is_dir() for path in spec.source_paths.values())
@@ -149,11 +175,13 @@ def test_snapshot_warns_on_foreign_keys_that_mostly_miss(tmp_path, recwarn):
     frames = {
         'users': pa.table({'id': range(10)}),
         'items': pa.table({'id': range(5)}),
-        'orders': pa.table({
-            'id': range(10),
-            'user_id': [0, 1, 2] + list(range(100, 107)),
-            'item_id': [0, 1, 2, 3, 4] * 2,
-        }),
+        'orders': pa.table(
+            {
+                'id': range(10),
+                'user_id': [0, 1, 2] + list(range(100, 107)),
+                'item_id': [0, 1, 2, 3, 4] * 2,
+            }
+        ),
     }
     source = tmp_path / 'inputs'
     source.mkdir()
@@ -163,23 +191,29 @@ def test_snapshot_warns_on_foreign_keys_that_mostly_miss(tmp_path, recwarn):
         pq.write_table(frame, source / f'{name}.parquet')
         tables.append(
             Table(
-                connector, name,
+                connector,
+                name,
                 TableDefinition(
-                    source_table=connector.source_table_for(name), pkey='id',
+                    source_table=connector.source_table_for(name),
+                    pkey='id',
                     cols=[
                         Column(name=col, dtype=Dtype.int64, stype=Stype.ID)
                         for col in frame.column_names
-                    ])))
-    graph = Graph(tables, [
-        Edge('orders', 'user_id', 'users'),
-        Edge('orders', 'item_id', 'items'),
-    ])
+                    ],
+                ),
+            )
+        )
+    graph = Graph(
+        tables,
+        [
+            Edge('orders', 'user_id', 'users'),
+            Edge('orders', 'item_id', 'items'),
+        ],
+    )
 
     graph.snapshot()
 
-    messages = [
-        str(w.message) for w in recwarn.list if 'matched' in str(w.message)
-    ]
+    messages = [str(w.message) for w in recwarn.list if 'matched' in str(w.message)]
     assert messages == [
         'Foreign key orders.user_id matched 3 of 10 non-null rows (30.00%) '
         'to users.id; unmatched rows get no edge. Check that both columns '

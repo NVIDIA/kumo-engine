@@ -5,8 +5,6 @@
 import os
 import os.path as osp
 import tempfile
-from test.io_utils.fsutil.common import random_name
-from test.io_utils.fsutil.contract import FilesystemContract
 from typing import Generator
 
 import pytest
@@ -14,6 +12,8 @@ import pytest
 from io_utils import fsutil
 from kumo.testing.adls import adls_test_base_uri, withADLSCredentials
 from kumo.testing.s3 import withS3Credentials
+from test.io_utils.fsutil.common import random_name
+from test.io_utils.fsutil.contract import FilesystemContract
 
 
 @pytest.fixture
@@ -25,20 +25,21 @@ def temp_dir() -> Generator[str, None, None]:
 @pytest.fixture
 @withS3Credentials
 def root_s3() -> Generator[str, None, None]:
-    yield "s3://kumo-test-dataplane-bucket/fsutil-test/"
+    yield 's3://kumo-test-dataplane-bucket/fsutil-test/'
 
 
 @pytest.fixture
 def root_gcs(gcs_credentials) -> Generator[str, None, None]:
     from kumo.testing.gcs import ENV_GCS_TEST_BUCKET
+
     bucket = os.getenv(ENV_GCS_TEST_BUCKET, 'kumo-test-bucket')
-    yield f"gs://{bucket}/fsutil-test/"
+    yield f'gs://{bucket}/fsutil-test/'
 
 
 @pytest.fixture
 @withADLSCredentials
 def root_adls() -> Generator[str, None, None]:
-    yield f"{adls_test_base_uri()}/fsutil-test/"
+    yield f'{adls_test_base_uri()}/fsutil-test/'
 
 
 @pytest.fixture
@@ -48,12 +49,12 @@ def root_ucv(temp_ucv) -> Generator[str, None, None]:
 
 @pytest.fixture(
     params=[
-        "root_s3",
-        pytest.param("root_gcs", marks=pytest.mark.gcs_credentials),
-        "root_ucv",
-        "root_adls",
+        'root_s3',
+        pytest.param('root_gcs', marks=pytest.mark.gcs_credentials),
+        'root_ucv',
+        'root_adls',
     ],
-    ids=["s3", "gcs", "ucv", "adls"],
+    ids=['s3', 'gcs', 'ucv', 'adls'],
 )
 def root(request) -> Generator[str, None, None]:
     base: str = request.getfixturevalue(request.param)

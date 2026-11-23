@@ -9,6 +9,7 @@ manages diskgraph snapshot placement, leases, per-node PVC lifecycle,
 and node inventory. Callers reach it via
 ``pool.client.get_controller_client()``.
 """
+
 import asyncio
 import json
 import os
@@ -148,6 +149,7 @@ class WorkflowLeaseState(str, Enum):
     whether to force-release a lease the caller can no longer release
     itself (e.g. workflow hit ``run_timeout`` and ``finally`` never ran).
     """
+
     RUNNING = 'RUNNING'
     TERMINAL = 'TERMINAL'
     NOT_FOUND = 'NOT_FOUND'
@@ -190,8 +192,7 @@ def build_temporal_activity_poller_waiter(
     temporal = temporal_client or TemporalClient(config)
 
     async def wait(task_queue: str, pod_name: str, timeout: float) -> None:
-        expected_identity = activity_worker_identity(pod_name,
-                                                     config.instance_id)
+        expected_identity = activity_worker_identity(pod_name, config.instance_id)
         fully_qualified_queue = config.task_queue(task_queue)
         deadline = monotonic_fn() + timeout
         last_rpc_error: Optional[str] = None
@@ -202,28 +203,30 @@ def build_temporal_activity_poller_waiter(
                     DescribeTaskQueueRequest(
                         namespace=config.temporal_namespace,
                         task_queue=TaskQueue(name=fully_qualified_queue),
-                        task_queue_type=(
-                            TaskQueueType.TASK_QUEUE_TYPE_ACTIVITY),
+                        task_queue_type=(TaskQueueType.TASK_QUEUE_TYPE_ACTIVITY),
                         report_pollers=True,
-                    ))
-                if any(poller.identity == expected_identity
-                       for poller in response.pollers):
+                    )
+                )
+                if any(
+                    poller.identity == expected_identity for poller in response.pollers
+                ):
                     return
                 last_rpc_error = None
             except RPCError as error:
                 if not is_retryable(error):
                     raise
-                last_rpc_error = getattr(error.status, 'name',
-                                         str(error.status))
+                last_rpc_error = getattr(error.status, 'name', str(error.status))
             remaining = deadline - monotonic_fn()
             if remaining > 0:
                 await asyncio.sleep(min(poll_interval_secs, remaining))
-        suffix = (f'; last Temporal RPC status={last_rpc_error}'
-                  if last_rpc_error else '')
+        suffix = (
+            f'; last Temporal RPC status={last_rpc_error}' if last_rpc_error else ''
+        )
         raise ProvisionTimeoutError(
             f'activity pod {pod_name!r} reached Running but did not register '
             f'its Temporal ACTIVITY poller on {fully_qualified_queue!r} '
-            f'within {timeout:.0f}s{suffix}')
+            f'within {timeout:.0f}s{suffix}'
+        )
 
     return wait
 
@@ -232,12 +235,14 @@ async def _default_dataplane_deleter(backup: DataplaneBackup) -> None:
     await asyncio.to_thread(fsutil.rm, backup.dataplane_path)
 
 
-async def _missing_local_snapshot_deleter(snapshot_id: str,
-                                          pool_worker_uid: str) -> bool:
+async def _missing_local_snapshot_deleter(
+    snapshot_id: str, pool_worker_uid: str
+) -> bool:
     del snapshot_id, pool_worker_uid
     raise NotImplementedError(
         'Local snapshot eviction requested, but no daemon local-delete '
-        'dispatcher is configured.')
+        'dispatcher is configured.'
+    )
 
 
 def _canonicalize_snapshot_id(snapshot_id: SnapshotID) -> SnapshotID:
@@ -278,6 +283,7 @@ class PoolController:
     The :meth:`_mutate_and_persist` helper encapsulates the common simple
     mutation path.
     """
+
     def __init__(
         self,
         state: PoolState,
@@ -302,14 +308,21 @@ class PoolController:
         self._state = state
         self._persistence = persistence
         self._strategy = strategy
-        self._workflow_status_checker = (workflow_status_checker
-                                         if workflow_status_checker is not None
-                                         else _noop_workflow_status_checker)
-        self._dataplane_deleter = (dataplane_deleter if dataplane_deleter
-                                   is not None else _default_dataplane_deleter)
-        self._local_snapshot_deleter = (local_snapshot_deleter
-                                        if local_snapshot_deleter is not None
-                                        else _missing_local_snapshot_deleter)
+        self._workflow_status_checker = (
+            workflow_status_checker
+            if workflow_status_checker is not None
+            else _noop_workflow_status_checker
+        )
+        self._dataplane_deleter = (
+            dataplane_deleter
+            if dataplane_deleter is not None
+            else _default_dataplane_deleter
+        )
+        self._local_snapshot_deleter = (
+            local_snapshot_deleter
+            if local_snapshot_deleter is not None
+            else _missing_local_snapshot_deleter
+        )
         self._data_plane_storage_root = data_plane_storage_root
         self._lifecycle_policy = lifecycle_policy or SnapshotLifecyclePolicy()
         if self._lifecycle_policy.min_ssd_idle_secs < 0:
@@ -317,19 +330,23 @@ class PoolController:
         if self._lifecycle_policy.max_ssd_idle_secs < 0:
             raise ValueError('max_ssd_idle_secs must be non-negative')
         if self._lifecycle_policy.max_dataplane_retention_secs < 0:
-            raise ValueError(
-                'max_dataplane_retention_secs must be non-negative')
-        if (self._lifecycle_policy.min_ssd_idle_secs
-                > self._lifecycle_policy.max_ssd_idle_secs):
+            raise ValueError('max_dataplane_retention_secs must be non-negative')
+        if (
+            self._lifecycle_policy.min_ssd_idle_secs
+            > self._lifecycle_policy.max_ssd_idle_secs
+        ):
             raise ValueError('min_ssd_idle_secs must be <= max_ssd_idle_secs')
-        if (self._lifecycle_policy.max_ssd_idle_secs
-                > self._lifecycle_policy.max_dataplane_retention_secs):
+        if (
+            self._lifecycle_policy.max_ssd_idle_secs
+            > self._lifecycle_policy.max_dataplane_retention_secs
+        ):
             raise ValueError(
                 'max_ssd_idle_secs must be <= '
                 'max_dataplane_retention_secs (L2 compliance sweep waits '
                 'for L1 to drain; violating this ordering causes L2 deletion '
                 'to block indefinitely and silently violate the dataplane '
-                'retention SLA)')
+                'retention SLA)'
+            )
         # ssd_max_utilization range (0, 1] is enforced by the dataclass field.
         self._now_utc = now_utc_fn if now_utc_fn is not None else now_utc
         self._time = time_fn if time_fn is not None else time.time
@@ -422,8 +439,7 @@ class PoolController:
         backup = self._state.dataplane_backups.get(snapshot_id)
         if backup is None:
             return
-        size_bytes = await asyncio.to_thread(fsutil.dirsize,
-                                             backup.dataplane_path)
+        size_bytes = await asyncio.to_thread(fsutil.dirsize, backup.dataplane_path)
         if size_bytes <= 0:
             return
 
@@ -443,38 +459,42 @@ class PoolController:
         if placement is None or placement.state != SnapshotState.READY:
             return None
         local = self._state.local_copies.get(
-            _local_copy_key(snapshot_id, placement.worker))
-        if (local is not None and local.local_state not in {
-                SnapshotLocalCopyState.WARM,
-                SnapshotLocalCopyState.EVICTION_CANDIDATE,
-        }):
+            _local_copy_key(snapshot_id, placement.worker)
+        )
+        if local is not None and local.local_state not in {
+            SnapshotLocalCopyState.WARM,
+            SnapshotLocalCopyState.EVICTION_CANDIDATE,
+        }:
             return None
         return placement.worker
 
     def _raise_if_current_copy_evicting(
-            self, snapshot_id: str,
-            placement: Optional[SnapshotPlacement]) -> None:
+        self, snapshot_id: str, placement: Optional[SnapshotPlacement]
+    ) -> None:
         """Block placement while its current local copy is being deleted."""
         if placement is None:
             return
         local = self._state.local_copies.get(
-            _local_copy_key(snapshot_id, placement.worker))
-        if (local is not None
-                and local.local_state == SnapshotLocalCopyState.EVICTING):
+            _local_copy_key(snapshot_id, placement.worker)
+        )
+        if local is not None and local.local_state == SnapshotLocalCopyState.EVICTING:
             raise SnapshotEvictionInProgressError(
                 f'Snapshot {snapshot_id} is being evicted from worker '
                 f'{placement.worker}; retry placement after deletion '
-                'finishes.')
+                'finishes.'
+            )
 
     def _validate_l2_backup(self, snapshot_id: str) -> None:
         backup = self._state.dataplane_backups.get(snapshot_id)
         if backup is None:
             raise AssertionError(
                 f'L2 backup check requested for {snapshot_id}, but no '
-                'dataplane backup is recorded.')
+                'dataplane backup is recorded.'
+            )
 
-    def _lookup_lease_handle(self, placement: Optional[SnapshotPlacement],
-                             job_id: JobID) -> Optional[ProvisionedHandle]:
+    def _lookup_lease_handle(
+        self, placement: Optional[SnapshotPlacement], job_id: JobID
+    ) -> Optional[ProvisionedHandle]:
         # Handle for an existing lease, looked up by recorded path.
         # No cross-map fallback (avoids cross-shard contamination).
         if placement is None or job_id not in placement.leases:
@@ -516,23 +536,39 @@ class PoolController:
         if inventory is not None and not inventory.status.is_routable():
             return False
         placement_state = self._state.placement_state
-        pvc_state = (placement_state.pvcs.get(handle.pool_worker_uid) if
-                     isinstance(placement_state, K8sPlacementState) else None)
-        total_ssd_gib = (pvc_state.tier_ssd_gib if pvc_state is not None else
-                         inventory.state.pvc_total_bytes >> 30
-                         if inventory is not None else 0)
-        gpu_count = (pvc_state.tier_gpu_count if pvc_state is not None else
-                     inventory.gpu_slots_total if inventory is not None else 1)
-        if (request.resource_hint.min_ssd_gib > 0
-                and total_ssd_gib < request.resource_hint.min_ssd_gib):
+        pvc_state = (
+            placement_state.pvcs.get(handle.pool_worker_uid)
+            if isinstance(placement_state, K8sPlacementState)
+            else None
+        )
+        total_ssd_gib = (
+            pvc_state.tier_ssd_gib
+            if pvc_state is not None
+            else inventory.state.pvc_total_bytes >> 30
+            if inventory is not None
+            else 0
+        )
+        gpu_count = (
+            pvc_state.tier_gpu_count
+            if pvc_state is not None
+            else inventory.gpu_slots_total
+            if inventory is not None
+            else 1
+        )
+        if (
+            request.resource_hint.min_ssd_gib > 0
+            and total_ssd_gib < request.resource_hint.min_ssd_gib
+        ):
             return False
         if gpu_count < request.resource_hint.min_gpu_slots:
             return False
         return True
 
     def _pinned_decision_for_retry(
-        self, placement: Optional[SnapshotPlacement], job_id: JobID,
-        resource_hint: Optional[ResourceHint] = None
+        self,
+        placement: Optional[SnapshotPlacement],
+        job_id: JobID,
+        resource_hint: Optional[ResourceHint] = None,
     ) -> Optional[RouteDecision]:
         # Reconstruct prior route decision so retry doesn't re-route
         # (gpu_slots_in_use shifts across attempts → could flip path).
@@ -552,8 +588,11 @@ class PoolController:
             # yet (just minted / mid daemon cold-start, not unhealthy) — keeps
             # the pin so the retry re-attaches to the half-provisioned PVC/pod
             # rather than minting a fresh one.
-            inventory = (self._worker_inventory.get(placement.worker)
-                         if placement.worker else None)
+            inventory = (
+                self._worker_inventory.get(placement.worker)
+                if placement.worker
+                else None
+            )
             if inventory is not None and not inventory.status.is_routable():
                 return None
             placement_state = self._state.placement_state
@@ -562,11 +601,17 @@ class PoolController:
                 if pvc_state is not None:
                     tier_ssd_gib = pvc_state.tier_ssd_gib
                     tier_gpu_count = pvc_state.tier_gpu_count
-            if (resource_hint is not None and tier_ssd_gib > 0
-                    and tier_ssd_gib < resource_hint.min_ssd_gib):
+            if (
+                resource_hint is not None
+                and tier_ssd_gib > 0
+                and tier_ssd_gib < resource_hint.min_ssd_gib
+            ):
                 return None
-            if (resource_hint is not None and tier_gpu_count > 0
-                    and tier_gpu_count < resource_hint.min_gpu_slots):
+            if (
+                resource_hint is not None
+                and tier_gpu_count > 0
+                and tier_gpu_count < resource_hint.min_gpu_slots
+            ):
                 return None
         return RouteDecision(
             path=path,
@@ -608,8 +653,9 @@ class PoolController:
                     count += 1
         return count
 
-    def _persisted_gpu_slots_total_for_worker(self, pool_worker_uid: str,
-                                              fallback: int = 1) -> int:
+    def _persisted_gpu_slots_total_for_worker(
+        self, pool_worker_uid: str, fallback: int = 1
+    ) -> int:
         """GPU capacity from persisted PVC state.
 
         Fresh workers commit ``PvcState`` under the placement state lock before
@@ -624,8 +670,7 @@ class PoolController:
                 return max(pvc_state.tier_gpu_count, 1)
         return max(fallback, 1)
 
-    def _persisted_worker_state(self,
-                                pool_worker_uid: str) -> WorkerStateSnapshot:
+    def _persisted_worker_state(self, pool_worker_uid: str) -> WorkerStateSnapshot:
         """Conservative capacity view before a worker's first heartbeat.
 
         Persisted PVC tier metadata proves total capacity, but used bytes are
@@ -652,28 +697,33 @@ class PoolController:
             return placement_state.silent_worker_suspect_since
         return {}
 
-    def _silent_worker_status(self, suspect_since: float,
-                              now: float) -> WorkerStatus:
+    def _silent_worker_status(self, suspect_since: float, now: float) -> WorkerStatus:
         """Compute synthetic STALE/DEAD status from one shared policy."""
         # ``None`` means RPC-serving grace has not started. Fail closed as
         # STALE; startup-only reconcile must never retire a worker before it has
         # had an opportunity to heartbeat into this process.
-        dead_grace_elapsed = (self._silent_worker_dead_not_before is not None
-                              and now >= self._silent_worker_dead_not_before)
-        if (dead_grace_elapsed
-                and now - suspect_since >= self._worker_dead_threshold_secs):
+        dead_grace_elapsed = (
+            self._silent_worker_dead_not_before is not None
+            and now >= self._silent_worker_dead_not_before
+        )
+        if (
+            dead_grace_elapsed
+            and now - suspect_since >= self._worker_dead_threshold_secs
+        ):
             return WorkerStatus.DEAD
         return WorkerStatus.STALE
 
     def _worker_uids_with_persisted_refs(self) -> set[str]:
         worker_uids = {
             placement.worker
-            for placement in self._state.snapshots.values() if placement.worker
+            for placement in self._state.snapshots.values()
+            if placement.worker
         }
         worker_uids.update(
             local.pool_worker_uid
             for local in self._state.local_copies.values()
-            if local.local_state != SnapshotLocalCopyState.EVICTED)
+            if local.local_state != SnapshotLocalCopyState.EVICTED
+        )
         return worker_uids
 
     def _worker_inventory_for_stats(self) -> Dict[str, WorkerInventory]:
@@ -697,14 +747,13 @@ class PoolController:
                 state=self._persisted_worker_state(pool_worker_uid),
                 status=WorkerStatus.STALE,
                 gpu_slots_total=max(pvc_state.tier_gpu_count, 1),
-                gpu_slots_in_use=self._gpu_slots_in_use_for_worker(
-                    pool_worker_uid),
+                gpu_slots_in_use=self._gpu_slots_in_use_for_worker(pool_worker_uid),
             )
         return inventory
 
     def _placement_status(
-            self, snapshot_id: str,
-            placement: Optional[SnapshotPlacement]) -> PlacementStatus:
+        self, snapshot_id: str, placement: Optional[SnapshotPlacement]
+    ) -> PlacementStatus:
         # WARM = on PVC, COLD = in L2 backup, MISSING = neither.
         if placement is not None and placement.state == SnapshotState.READY:
             return PlacementStatus.WARM
@@ -741,21 +790,23 @@ class PoolController:
             task_queue=task_queue,
             pool_worker_uid=pool_worker_uid,
             status=status,
-            dataplane_path=(backup.dataplane_path
-                            if status == PlacementStatus.COLD
-                            and backup is not None else None),
+            dataplane_path=(
+                backup.dataplane_path
+                if status == PlacementStatus.COLD and backup is not None
+                else None
+            ),
             tier_ssd_gib=tier_ssd_gib,
             debug_info=debug_info or {},
         )
 
-    def _ensure_compliance_record(self,
-                                  snapshot_id: str) -> SnapshotComplianceRecord:
+    def _ensure_compliance_record(self, snapshot_id: str) -> SnapshotComplianceRecord:
         record = self._state.snapshot_compliance.get(snapshot_id)
         if record is None:
             record = SnapshotComplianceRecord(
                 snapshot_id=snapshot_id,
                 max_dataplane_retention_secs=(
-                    self._lifecycle_policy.max_dataplane_retention_secs),
+                    self._lifecycle_policy.max_dataplane_retention_secs
+                ),
             )
             self._state.snapshot_compliance[snapshot_id] = record
         return record
@@ -775,8 +826,10 @@ class PoolController:
             record.expired_at = None
             record.deleted_at = None
             for local in self._state.local_copies.values():
-                if (local.snapshot_id == snapshot_id and local.local_state
-                        != SnapshotLocalCopyState.EVICTED):
+                if (
+                    local.snapshot_id == snapshot_id
+                    and local.local_state != SnapshotLocalCopyState.EVICTED
+                ):
                     local.evictable_under_pressure_at = None
                     local.force_evict_at = None
             return
@@ -785,21 +838,24 @@ class PoolController:
             return
 
         record.last_released_at = final_release_at
-        record.compliance_delete_at = (final_release_at + timedelta(
-            seconds=self._lifecycle_policy.max_dataplane_retention_secs))
+        record.compliance_delete_at = final_release_at + timedelta(
+            seconds=self._lifecycle_policy.max_dataplane_retention_secs
+        )
         record.expired_at = None
         record.deleted_at = None
         for local in self._state.local_copies.values():
-            if (local.snapshot_id != snapshot_id
-                    or local.local_state == SnapshotLocalCopyState.EVICTED):
+            if (
+                local.snapshot_id != snapshot_id
+                or local.local_state == SnapshotLocalCopyState.EVICTED
+            ):
                 continue
             local.last_released_at = final_release_at
-            local.evictable_under_pressure_at = (
-                final_release_at +
-                timedelta(seconds=self._lifecycle_policy.min_ssd_idle_secs))
-            local.force_evict_at = (
-                final_release_at +
-                timedelta(seconds=self._lifecycle_policy.max_ssd_idle_secs))
+            local.evictable_under_pressure_at = final_release_at + timedelta(
+                seconds=self._lifecycle_policy.min_ssd_idle_secs
+            )
+            local.force_evict_at = final_release_at + timedelta(
+                seconds=self._lifecycle_policy.max_ssd_idle_secs
+            )
 
     def _record_local_copy_ready(
         self,
@@ -812,8 +868,7 @@ class PoolController:
         observed_at = observed_at or self._now_utc()
         key = _local_copy_key(snapshot_id, pool_worker_uid)
         local = self._state.local_copies.get(key)
-        if (local is not None
-                and local.local_state == SnapshotLocalCopyState.EVICTING):
+        if local is not None and local.local_state == SnapshotLocalCopyState.EVICTING:
             # EVICTING is a committed delete. It is entered only with no open
             # leases, and place_snapshot blocks new authorized work until the
             # delete completes. A positive report in this window therefore
@@ -821,7 +876,10 @@ class PoolController:
             # warm placement while the external delete is in flight.
             log.debug(
                 'Ignoring READY report during committed snapshot eviction: '
-                'snapshot=%s worker=%s', snapshot_id, pool_worker_uid)
+                'snapshot=%s worker=%s',
+                snapshot_id,
+                pool_worker_uid,
+            )
             return
         if local is None:
             local = SnapshotLocalCopyRecord(
@@ -842,25 +900,29 @@ class PoolController:
             local.force_evict_at = None
         else:
             local.last_released_at = record.last_released_at or observed_at
-            local.evictable_under_pressure_at = (
-                local.last_released_at +
-                timedelta(seconds=self._lifecycle_policy.min_ssd_idle_secs))
-            local.force_evict_at = (
-                local.last_released_at +
-                timedelta(seconds=self._lifecycle_policy.max_ssd_idle_secs))
+            local.evictable_under_pressure_at = local.last_released_at + timedelta(
+                seconds=self._lifecycle_policy.min_ssd_idle_secs
+            )
+            local.force_evict_at = local.last_released_at + timedelta(
+                seconds=self._lifecycle_policy.max_ssd_idle_secs
+            )
             if record.last_released_at is None:
                 record.last_released_at = observed_at
-                record.compliance_delete_at = (observed_at + timedelta(
-                    seconds=self._lifecycle_policy.max_dataplane_retention_secs)
-                                               )
+                record.compliance_delete_at = observed_at + timedelta(
+                    seconds=self._lifecycle_policy.max_dataplane_retention_secs
+                )
 
     def _has_live_local_copy(self, snapshot_id: str) -> bool:
         return any(
-            local.snapshot_id == snapshot_id and local.local_state in {
+            local.snapshot_id == snapshot_id
+            and local.local_state
+            in {
                 SnapshotLocalCopyState.WARM,
                 SnapshotLocalCopyState.EVICTION_CANDIDATE,
                 SnapshotLocalCopyState.EVICTING,
-            } for local in self._state.local_copies.values())
+            }
+            for local in self._state.local_copies.values()
+        )
 
     def _worker_under_ssd_pressure(self, pool_worker_uid: str) -> bool:
         inventory = self._worker_inventory.get(pool_worker_uid)
@@ -869,15 +931,15 @@ class PoolController:
         # Bond pressure to the configured logical cap (fraction of physical),
         # not the raw physical disk: a worker is "full" once used exceeds
         # total * ssd_max_utilization, leaving the complement as headroom.
-        free_floor = (inventory.state.pvc_total_bytes *
-                      (1.0 - self._lifecycle_policy.ssd_max_utilization))
+        free_floor = inventory.state.pvc_total_bytes * (
+            1.0 - self._lifecycle_policy.ssd_max_utilization
+        )
         return inventory.state.pvc_free_bytes < free_floor
 
     def _total_pool_disk_bytes(self) -> int:
         """Total physical PVC capacity across known workers (0 if none has
         reported yet)."""
-        return sum(inv.state.pvc_total_bytes
-                   for inv in self._worker_inventory.values())
+        return sum(inv.state.pvc_total_bytes for inv in self._worker_inventory.values())
 
     def _reject_if_exceeds_disk_capacity(self, source_size_bytes: int) -> None:
         """Require the fixed host to have at least 1.5x the source estimate.
@@ -901,24 +963,28 @@ class PoolController:
                 f'Estimated source size {_gib(source_size_bytes)} requires at '
                 f'least {_gib(minimum_bytes)} of local SSD for streaming '
                 f'DiskGraph ingest, but this fixed host has {_gib(total)}. '
-                f'Use a host with more disk or a smaller dataset.')
+                f'Use a host with more disk or a smaller dataset.'
+            )
 
-    def _active_dataplane_demand_bytes(self, snapshot_id: str,
-                                       pool_worker_uid: str) -> int:
+    def _active_dataplane_demand_bytes(
+        self, snapshot_id: str, pool_worker_uid: str
+    ) -> int:
         return sum(
             max(placement.size_bytes, 0)
             for candidate_id, placement in self._state.snapshots.items()
-            if candidate_id != snapshot_id and placement.leases and
-            placement.state != SnapshotState.READY and candidate_id not in self.
-            _state.dataplane_backups and placement.worker == pool_worker_uid)
+            if candidate_id != snapshot_id
+            and placement.leases
+            and placement.state != SnapshotState.READY
+            and candidate_id not in self._state.dataplane_backups
+            and placement.worker == pool_worker_uid
+        )
 
     def _reject_if_insufficient_local_dataplane_capacity(
-            self, snapshot_id: str, pool_worker_uid: str,
-            estimate_bytes: int) -> None:
+        self, snapshot_id: str, pool_worker_uid: str, estimate_bytes: int
+    ) -> None:
         root = self._data_plane_storage_root
         try:
-            if (root is None or not fsutil.is_local(root)
-                    or estimate_bytes <= 0):
+            if root is None or not fsutil.is_local(root) or estimate_bytes <= 0:
                 return
         except ValueError:
             return
@@ -934,14 +1000,12 @@ class PoolController:
         # Capacity and filesystem identity come from the selected writer's
         # mount namespace; an equal path on another K8s node is not evidence
         # of a shared capacity domain.
-        active_bytes = self._active_dataplane_demand_bytes(
-            snapshot_id, pool_worker_uid)
+        active_bytes = self._active_dataplane_demand_bytes(snapshot_id, pool_worker_uid)
         copies_per_snapshot = 2 if same_filesystem else 1
         reported_free = state.dataplane_free_bytes
         if same_filesystem:
             reported_free = min(reported_free, state.pvc_free_bytes)
-        effective_free = max(reported_free - active_bytes * copies_per_snapshot,
-                             0)
+        effective_free = max(reported_free - active_bytes * copies_per_snapshot, 0)
         required_bytes = estimate_bytes * copies_per_snapshot
         if required_bytes <= effective_free:
             return
@@ -951,7 +1015,8 @@ class PoolController:
             f'{required_bytes} bytes on local data_plane_storage_root '
             f'{root!r}, but only {effective_free} bytes are available after '
             f'active ingests. Free or expand that volume, configure object '
-            f'storage for the dataplane root, or reduce the dataset size.')
+            f'storage for the dataplane root, or reduce the dataset size.'
+        )
 
     def _request_reactive_eviction(self) -> None:
         """Signal an immediate local-retention sweep after ENOSPC."""
@@ -960,38 +1025,51 @@ class PoolController:
     def _reactive_eviction_requested(self) -> bool:
         if self._reactive_eviction_requested_at is None:
             return False
-        return (self._time() - self._reactive_eviction_requested_at
-                <= REACTIVE_EVICTION_WINDOW_SECS)
+        return (
+            self._time() - self._reactive_eviction_requested_at
+            <= REACTIVE_EVICTION_WINDOW_SECS
+        )
 
-    def _should_dispatch_local_eviction(self, local: SnapshotLocalCopyRecord,
-                                        sweep_now) -> bool:
-        force_elapsed = (local.force_evict_at is not None
-                         and sweep_now >= local.force_evict_at)
-        return (force_elapsed or self._reactive_eviction_requested()
-                or self._worker_under_ssd_pressure(local.pool_worker_uid))
+    def _should_dispatch_local_eviction(
+        self, local: SnapshotLocalCopyRecord, sweep_now
+    ) -> bool:
+        force_elapsed = (
+            local.force_evict_at is not None and sweep_now >= local.force_evict_at
+        )
+        return (
+            force_elapsed
+            or self._reactive_eviction_requested()
+            or self._worker_under_ssd_pressure(local.pool_worker_uid)
+        )
 
-    def _mark_local_copy_evicted(self, local: SnapshotLocalCopyRecord,
-                                 sweep_now) -> None:
+    def _mark_local_copy_evicted(
+        self, local: SnapshotLocalCopyRecord, sweep_now
+    ) -> None:
         local.local_state = SnapshotLocalCopyState.EVICTED
         local.evicted_at = sweep_now
         placement = self._state.snapshots.get(local.snapshot_id)
-        if (placement is not None and placement.worker == local.pool_worker_uid
-                and not placement.leases):
+        if (
+            placement is not None
+            and placement.worker == local.pool_worker_uid
+            and not placement.leases
+        ):
             del self._state.snapshots[local.snapshot_id]
 
-    async def _cleanup_orphan_snapshot(self, snapshot_id: str,
-                                       pool_worker_uid: str) -> bool:
+    async def _cleanup_orphan_snapshot(
+        self, snapshot_id: str, pool_worker_uid: str
+    ) -> bool:
         async with self._state_lock:
             async with self._snapshot_locks.acquire(snapshot_id):
                 if self._open_lease_count(snapshot_id) > 0:
                     log.info(
                         'Skipping orphan snapshot cleanup for snapshot=%s '
-                        'worker=%s; active lease exists.', snapshot_id,
-                        pool_worker_uid)
+                        'worker=%s; active lease exists.',
+                        snapshot_id,
+                        pool_worker_uid,
+                    )
                     return False
 
-        deleted = await self._local_snapshot_deleter(snapshot_id,
-                                                     pool_worker_uid)
+        deleted = await self._local_snapshot_deleter(snapshot_id, pool_worker_uid)
         sweep_now = self._now_utc()
         async with self._state_lock:
             async with self._snapshot_locks.acquire(snapshot_id):
@@ -999,7 +1077,9 @@ class PoolController:
                     log.info(
                         'Skipping orphan snapshot cleanup state update for '
                         'snapshot=%s worker=%s; active lease exists.',
-                        snapshot_id, pool_worker_uid)
+                        snapshot_id,
+                        pool_worker_uid,
+                    )
                     return False
                 local_key = _local_copy_key(snapshot_id, pool_worker_uid)
                 local = self._state.local_copies.get(local_key)
@@ -1015,8 +1095,10 @@ class PoolController:
         if not deleted:
             log.info(
                 'Orphan snapshot cleanup found no local directory for '
-                'snapshot=%s worker=%s; marked evicted.', snapshot_id,
-                pool_worker_uid)
+                'snapshot=%s worker=%s; marked evicted.',
+                snapshot_id,
+                pool_worker_uid,
+            )
         return True
 
     def _expected_worker_uids(self) -> set[str]:
@@ -1044,8 +1126,7 @@ class PoolController:
 
         now = self._time()
         async with self._state_lock:
-            expected = (self._expected_worker_uids()
-                        & self._startup_expected_worker_uids)
+            expected = self._expected_worker_uids() & self._startup_expected_worker_uids
             suspects = placement_state.silent_worker_suspect_since
             suspects_changed = False
             for pool_worker_uid in list(suspects):
@@ -1069,16 +1150,19 @@ class PoolController:
                     suspects_changed = True
 
                 status = self._silent_worker_status(suspect_since, now)
-                state = (inventory.state if inventory is not None else
-                         self._persisted_worker_state(pool_worker_uid))
+                state = (
+                    inventory.state
+                    if inventory is not None
+                    else self._persisted_worker_state(pool_worker_uid)
+                )
                 self._worker_inventory[pool_worker_uid] = WorkerInventory(
                     pool_worker_uid=pool_worker_uid,
                     state=state,
                     status=status,
-                    gpu_slots_total=(self._persisted_gpu_slots_total_for_worker(
-                        pool_worker_uid)),
-                    gpu_slots_in_use=self._gpu_slots_in_use_for_worker(
-                        pool_worker_uid),
+                    gpu_slots_total=(
+                        self._persisted_gpu_slots_total_for_worker(pool_worker_uid)
+                    ),
+                    gpu_slots_in_use=self._gpu_slots_in_use_for_worker(pool_worker_uid),
                     last_heartbeat=suspect_since,
                 )
 
@@ -1097,8 +1181,7 @@ class PoolController:
         mutated = False
         retired_at = self._now_utc()
 
-        for pool_worker_uid in (delta.retired_uids |
-                                delta.incompatible_uids):
+        for pool_worker_uid in delta.retired_uids | delta.incompatible_uids:
             self._mark_worker_draining(pool_worker_uid)
             if self._scrub_deleted_worker_state(pool_worker_uid, retired_at):
                 mutated = True
@@ -1121,24 +1204,25 @@ class PoolController:
                 state=self._persisted_worker_state(pool_worker_uid),
                 status=WorkerStatus.DRAINING,
                 gpu_slots_total=self._persisted_gpu_slots_total_for_worker(
-                    pool_worker_uid),
-                gpu_slots_in_use=self._gpu_slots_in_use_for_worker(
-                    pool_worker_uid),
+                    pool_worker_uid
+                ),
+                gpu_slots_in_use=self._gpu_slots_in_use_for_worker(pool_worker_uid),
                 last_heartbeat=self._time(),
             )
             self._worker_inventory[pool_worker_uid] = inventory
         else:
             inventory.status = WorkerStatus.DRAINING
 
-    def _event_matches_current_worker(self, state: PoolState, snapshot_id: str,
-                                      pool_worker_uid: str) -> bool:
+    def _event_matches_current_worker(
+        self, state: PoolState, snapshot_id: str, pool_worker_uid: str
+    ) -> bool:
         """Whether a local/PVC event may mutate this snapshot placement."""
         placement = state.snapshots.get(snapshot_id)
         return placement is None or placement.worker == pool_worker_uid
 
     def _local_snapshot_report_is_current_locked(
-            self, pool_worker_uid: str,
-            worker_storage_mode: PoolStorageMode) -> bool:
+        self, pool_worker_uid: str, worker_storage_mode: PoolStorageMode
+    ) -> bool:
         """Whether a local-state report still has valid worker ownership.
 
         Caller holds ``state_lock``. Re-checking here, immediately before the
@@ -1154,19 +1238,18 @@ class PoolController:
         existing behavior.
         """
         inventory = self._worker_inventory.get(pool_worker_uid)
-        if (inventory is not None
-                and inventory.status == WorkerStatus.DRAINING):
+        if inventory is not None and inventory.status == WorkerStatus.DRAINING:
             return False
-        if (worker_storage_mode == PoolStorageMode.ACTIVITY_ON_PVC
-                and inventory is None):
+        if worker_storage_mode == PoolStorageMode.ACTIVITY_ON_PVC and inventory is None:
             placement_state = self._state.placement_state
-            if (isinstance(placement_state, K8sPlacementState)
-                    and pool_worker_uid not in placement_state.pvcs):
+            if (
+                isinstance(placement_state, K8sPlacementState)
+                and pool_worker_uid not in placement_state.pvcs
+            ):
                 return False
         return True
 
-    def _scrub_deleted_worker_state(self, pool_worker_uid: str,
-                                    retired_at) -> bool:
+    def _scrub_deleted_worker_state(self, pool_worker_uid: str, retired_at) -> bool:
         """Clear controller state pointing at a worker committed for deletion:
         its tracked PVC, any ``SnapshotPlacement`` homed on it, and any
         non-evicted local copy.
@@ -1187,8 +1270,10 @@ class PoolController:
         if isinstance(placement_state, K8sPlacementState):
             if placement_state.pvcs.pop(pool_worker_uid, None) is not None:
                 mutated = True
-            if (placement_state.silent_worker_suspect_since.pop(
-                    pool_worker_uid, None) is not None):
+            if (
+                placement_state.silent_worker_suspect_since.pop(pool_worker_uid, None)
+                is not None
+            ):
                 mutated = True
             self._startup_expected_worker_uids.discard(pool_worker_uid)
 
@@ -1203,15 +1288,16 @@ class PoolController:
                 mutated = True
 
         for local in self._state.local_copies.values():
-            if (local.pool_worker_uid == pool_worker_uid
-                    and local.local_state != SnapshotLocalCopyState.EVICTED):
+            if (
+                local.pool_worker_uid == pool_worker_uid
+                and local.local_state != SnapshotLocalCopyState.EVICTED
+            ):
                 affected_snapshot_ids.add(local.snapshot_id)
                 self._mark_local_copy_evicted(local, retired_at)
                 mutated = True
 
         for snapshot_id in affected_snapshot_ids:
-            self._sync_lifecycle_from_leases(snapshot_id,
-                                             final_release_at=retired_at)
+            self._sync_lifecycle_from_leases(snapshot_id, final_release_at=retired_at)
         return mutated
 
     async def _replan_unavailable_worker(
@@ -1228,20 +1314,23 @@ class PoolController:
         """
         assert self._strategy is not None
         safe_to_retire = await self._strategy.revalidate_retired_workers(
-            {pool_worker_uid})
+            {pool_worker_uid}
+        )
         if pool_worker_uid not in safe_to_retire:
             return False
 
         async with self._state_lock:
             placement = self._state.snapshots.get(request.snapshot_id)
-            if (placement is None or placement.worker != pool_worker_uid
-                    or request.job_id not in placement.leases):
+            if (
+                placement is None
+                or placement.worker != pool_worker_uid
+                or request.job_id not in placement.leases
+            ):
                 return True
             # A heartbeat after the failed provision proves the worker is
             # still participating. Let the prompt failure surface rather than
             # racing that fresh evidence with destructive cleanup.
-            if (self._worker_inventory.get(pool_worker_uid)
-                    is not inventory_token):
+            if self._worker_inventory.get(pool_worker_uid) is not inventory_token:
                 return False
             self._mark_worker_draining(pool_worker_uid)
             self._scrub_deleted_worker_state(pool_worker_uid, self._now_utc())
@@ -1253,14 +1342,13 @@ class PoolController:
                 self._delete_succeeded_pending_absence.add(pool_worker_uid)
         return True
 
-    def _record_heartbeat_ready_snapshot(self, snapshot_id: str,
-                                         pool_worker_uid: str,
-                                         observed_at) -> bool:
+    def _record_heartbeat_ready_snapshot(
+        self, snapshot_id: str, pool_worker_uid: str, observed_at
+    ) -> bool:
         placement_before = deepcopy(self._state.snapshots.get(snapshot_id))
         local_key = _local_copy_key(snapshot_id, pool_worker_uid)
         local_before = deepcopy(self._state.local_copies.get(local_key))
-        compliance_before = deepcopy(
-            self._state.snapshot_compliance.get(snapshot_id))
+        compliance_before = deepcopy(self._state.snapshot_compliance.get(snapshot_id))
 
         placement = self._state.snapshots.get(snapshot_id)
         if placement is None:
@@ -1273,8 +1361,11 @@ class PoolController:
             log.warning(
                 'Preserving current snapshot home while recording a physical '
                 'copy reported by a non-current worker: '
-                'snapshot=%s current_worker=%s event_worker=%s', snapshot_id,
-                placement.worker, pool_worker_uid)
+                'snapshot=%s current_worker=%s event_worker=%s',
+                snapshot_id,
+                placement.worker,
+                pool_worker_uid,
+            )
         else:
             placement.state = SnapshotState.READY
 
@@ -1284,37 +1375,46 @@ class PoolController:
             observed_at=observed_at,
         )
 
-        return (placement_before != self._state.snapshots.get(snapshot_id)
-                or local_before != self._state.local_copies.get(local_key)
-                or compliance_before
-                != self._state.snapshot_compliance.get(snapshot_id))
+        return (
+            placement_before != self._state.snapshots.get(snapshot_id)
+            or local_before != self._state.local_copies.get(local_key)
+            or compliance_before != self._state.snapshot_compliance.get(snapshot_id)
+        )
 
     async def _reconcile_missing_local_copies_from_first_heartbeat(
-            self, pool_worker_uid: str, present_snapshots: set[str]) -> None:
+        self, pool_worker_uid: str, present_snapshots: set[str]
+    ) -> None:
         """Apply negative startup-scan evidence from a worker's first report."""
         sweep_now = self._now_utc()
         local_keys = [
-            key for key, local in self._state.local_copies.items()
-            if (local.pool_worker_uid == pool_worker_uid
+            key
+            for key, local in self._state.local_copies.items()
+            if (
+                local.pool_worker_uid == pool_worker_uid
                 and local.local_state != SnapshotLocalCopyState.EVICTED
-                and local.snapshot_id not in present_snapshots)
+                and local.snapshot_id not in present_snapshots
+            )
         ]
         for key in local_keys:
             local = self._state.local_copies[key]
             async with self._state_lock:
                 async with self._snapshot_locks.acquire(local.snapshot_id):
                     current = self._state.local_copies.get(key)
-                    if (current is None or current.local_state
-                            == SnapshotLocalCopyState.EVICTED
-                            or current.snapshot_id in present_snapshots):
+                    if (
+                        current is None
+                        or current.local_state == SnapshotLocalCopyState.EVICTED
+                        or current.snapshot_id in present_snapshots
+                    ):
                         continue
                     self._mark_local_copy_evicted(current, sweep_now)
                     self._log_open_placements_for_missing_local_copy(
-                        current.snapshot_id, pool_worker_uid)
+                        current.snapshot_id, pool_worker_uid
+                    )
                     await self._persistence.save(self._state)
 
     def _log_open_placements_for_missing_local_copy(
-            self, snapshot_id: str, pool_worker_uid: str) -> None:
+        self, snapshot_id: str, pool_worker_uid: str
+    ) -> None:
         placement = self._state.snapshots.get(snapshot_id)
         if placement is None or placement.worker != pool_worker_uid:
             return
@@ -1323,10 +1423,14 @@ class PoolController:
                 'Active placement points at a local copy missing from daemon '
                 'startup scan: snapshot=%s job=%s worker=%s. The workflow is '
                 'responsible for retrying place_snapshot/ensure_snapshot.',
-                snapshot_id, job_id, pool_worker_uid)
+                snapshot_id,
+                job_id,
+                pool_worker_uid,
+            )
 
     async def _reconcile_ready_snapshots_from_heartbeat(
-            self, pool_worker_uid: str, ready_snapshots: list[str]) -> None:
+        self, pool_worker_uid: str, ready_snapshots: list[str]
+    ) -> None:
         """Apply positive READY evidence from daemon heartbeat inventory.
 
         Heartbeats are authoritative for complete local snapshots discovered
@@ -1339,14 +1443,18 @@ class PoolController:
             async with self._state_lock:
                 async with self._snapshot_locks.acquire(snapshot_id):
                     if not self._local_snapshot_report_is_current_locked(
-                            pool_worker_uid, PoolStorageMode.DAEMON_ON_PVC):
+                        pool_worker_uid, PoolStorageMode.DAEMON_ON_PVC
+                    ):
                         log.warning(
                             'Dropping heartbeat READY mutation after worker '
                             'teardown committed: snapshot=%s worker=%s',
-                            snapshot_id, pool_worker_uid)
+                            snapshot_id,
+                            pool_worker_uid,
+                        )
                         continue
                     if self._record_heartbeat_ready_snapshot(
-                            snapshot_id, pool_worker_uid, observed_at):
+                        snapshot_id, pool_worker_uid, observed_at
+                    ):
                         await self._persistence.save(self._state)
 
     def _sweep_worker_health(self, now: Optional[float] = None) -> None:
@@ -1360,8 +1468,7 @@ class PoolController:
         for inventory in self._worker_inventory.values():
             suspect_since = suspects.get(inventory.pool_worker_uid)
             if suspect_since is not None:
-                inventory.status = self._silent_worker_status(
-                    suspect_since, now)
+                inventory.status = self._silent_worker_status(suspect_since, now)
                 continue
             # Never age a controller-owned status back to READY: DRAINING
             # (scale-down committed) is set deliberately by reconcile, and
@@ -1378,7 +1485,8 @@ class PoolController:
                 inventory.status = WorkerStatus.READY
 
     async def _reconcile_once(
-            self, *, refresh_silent_workers: bool = True) -> ReconcileDelta:
+        self, *, refresh_silent_workers: bool = True
+    ) -> ReconcileDelta:
         """Ask the active placement strategy to reconcile external reality.
 
         P0 applies orphan snapshot cleanup because that is a controller-owned
@@ -1400,9 +1508,9 @@ class PoolController:
             len(delta.orphan_snapshots),
         )
         # A pod appearing after the first observation vetoes state/PVC cleanup.
-        revalidated_retired_uids = (await
-                                    self._strategy.revalidate_retired_workers(
-                                        delta.retired_uids))
+        revalidated_retired_uids = await self._strategy.revalidate_retired_workers(
+            delta.retired_uids
+        )
         # Phase 1 (under state_lock): reflect the reconcile result in
         # controller bookkeeping AND flip every uid we're about to delete to a
         # non-routable status BEFORE any K8s delete happens.
@@ -1430,12 +1538,12 @@ class PoolController:
         # via an existing placement while ``delete_workers`` runs unlocked
         # below (teardown route-race fix).
         async with self._state_lock:
-            confirmed_absent = (self._delete_succeeded_pending_absence -
-                                delta.observed_pool_worker_uids)
+            confirmed_absent = (
+                self._delete_succeeded_pending_absence - delta.observed_pool_worker_uids
+            )
             for pool_worker_uid in confirmed_absent:
                 inventory = self._worker_inventory.get(pool_worker_uid)
-                if (inventory is not None
-                        and inventory.status == WorkerStatus.DRAINING):
+                if inventory is not None and inventory.status == WorkerStatus.DRAINING:
                     self._worker_inventory.pop(pool_worker_uid, None)
                 self._delete_succeeded_pending_absence.discard(pool_worker_uid)
 
@@ -1450,23 +1558,29 @@ class PoolController:
             incompatible_to_delete = {
                 uid
                 for uid in delta.incompatible_uids
-                if (isinstance(placement_state, K8sPlacementState)
+                if (
+                    isinstance(placement_state, K8sPlacementState)
                     and uid in placement_state.pvcs
                     and uid not in confirmed_absent
-                    and uid not in self._delete_succeeded_pending_absence)
+                    and uid not in self._delete_succeeded_pending_absence
+                )
             }
             unexpected_to_delete = {
                 uid
                 for uid in delta.unexpected_uids
-                if (uid not in expected_now and uid not in confirmed_absent
-                    and uid not in self._delete_succeeded_pending_absence)
+                if (
+                    uid not in expected_now
+                    and uid not in confirmed_absent
+                    and uid not in self._delete_succeeded_pending_absence
+                )
             }
             orphan_snapshots_to_delete = {
                 snapshot_id: pool_worker_uid
-                for snapshot_id, pool_worker_uid in
-                delta.orphan_snapshots.items()
-                if (pool_worker_uid not in delta.retired_uids
-                    or pool_worker_uid in retired_to_delete)
+                for snapshot_id, pool_worker_uid in delta.orphan_snapshots.items()
+                if (
+                    pool_worker_uid not in delta.retired_uids
+                    or pool_worker_uid in retired_to_delete
+                )
             }
             effective_delta = replace(
                 delta,
@@ -1475,8 +1589,9 @@ class PoolController:
                 unexpected_uids=unexpected_to_delete,
                 orphan_snapshots=orphan_snapshots_to_delete,
             )
-            uids_to_delete = (retired_to_delete | incompatible_to_delete |
-                              unexpected_to_delete)
+            uids_to_delete = (
+                retired_to_delete | incompatible_to_delete | unexpected_to_delete
+            )
             mutated = self._apply_reconcile_worker_delta(effective_delta)
             # Retired/incompatible uids were flipped to DRAINING + scrubbed by
             # the delta application above; do the same for unexpected uids:
@@ -1502,23 +1617,23 @@ class PoolController:
             if deleted:
                 async with self._state_lock:
                     for pool_worker_uid in deleted:
-                        if (pool_worker_uid
-                                in effective_delta.observed_pool_worker_uids):
-                            self._delete_succeeded_pending_absence.add(
-                                pool_worker_uid)
+                        if pool_worker_uid in effective_delta.observed_pool_worker_uids:
+                            self._delete_succeeded_pending_absence.add(pool_worker_uid)
                         else:
                             self._worker_inventory.pop(pool_worker_uid, None)
 
         for snapshot_id, pool_worker_uid in sorted(
-                effective_delta.orphan_snapshots.items()):
+            effective_delta.orphan_snapshots.items()
+        ):
             try:
-                await self._cleanup_orphan_snapshot(snapshot_id,
-                                                    pool_worker_uid)
+                await self._cleanup_orphan_snapshot(snapshot_id, pool_worker_uid)
             except Exception:
                 log.exception(
                     'Orphan snapshot cleanup failed for snapshot=%s worker=%s; '
-                    'will retry on next reconcile.', snapshot_id,
-                    pool_worker_uid)
+                    'will retry on next reconcile.',
+                    snapshot_id,
+                    pool_worker_uid,
+                )
         return effective_delta
 
     async def _maintenance_once(self) -> ReconcileDelta:
@@ -1535,15 +1650,17 @@ class PoolController:
             self._last_dangling_lease_sweep_at = maintenance_now
         await self._lifecycle_sweeps_once()
         delta = await self._reconcile_once()
-        metrics.update_state_gauges(self._state,
-                                    self._worker_inventory_for_stats(),
-                                    self._lease_activity)
+        metrics.update_state_gauges(
+            self._state, self._worker_inventory_for_stats(), self._lease_activity
+        )
         return delta
 
     def _dangling_lease_sweep_due(self, maintenance_now: float) -> bool:
-        return (self._last_dangling_lease_sweep_at is None
-                or maintenance_now - self._last_dangling_lease_sweep_at
-                >= self._lease_sweep_interval_secs)
+        return (
+            self._last_dangling_lease_sweep_at is None
+            or maintenance_now - self._last_dangling_lease_sweep_at
+            >= self._lease_sweep_interval_secs
+        )
 
     async def _dangling_lease_sweep_once(self) -> int:
         """Release open leases whose owning workflow is terminal or gone.
@@ -1574,19 +1691,20 @@ class PoolController:
                 # persisted before ``lease_workflow_ids`` existed; new
                 # leases always populate the map at commit.
                 workflow_id = placement.lease_workflow_ids.get(job_id, job_id)
-                leases_by_wf.setdefault(workflow_id, []).append(
-                    (snapshot_id, job_id))
+                leases_by_wf.setdefault(workflow_id, []).append((snapshot_id, job_id))
 
         released = 0
         for workflow_id, leases in leases_by_wf.items():
             try:
-                workflow_state = await self._workflow_status_checker(workflow_id
-                                                                     )
+                workflow_state = await self._workflow_status_checker(workflow_id)
             except Exception:
                 log.exception(
                     'Dangling lease sweep: workflow status check failed '
                     'for workflow_id=%s (covers %d lease(s)); leaving '
-                    'leases open until next sweep.', workflow_id, len(leases))
+                    'leases open until next sweep.',
+                    workflow_id,
+                    len(leases),
+                )
                 continue
 
             if workflow_state == WorkflowLeaseState.RUNNING:
@@ -1596,14 +1714,20 @@ class PoolController:
                 log.info(
                     'Dangling lease sweep: force-releasing lease for '
                     'snapshot=%s job=%s workflow_id=%s workflow_state=%s.',
-                    snapshot_id, job_id, workflow_id, workflow_state.value)
+                    snapshot_id,
+                    job_id,
+                    workflow_id,
+                    workflow_state.value,
+                )
                 try:
                     await self._release_lease(snapshot_id, job_id)
                 except Exception:
                     log.exception(
                         'Dangling lease sweep: release failed for snapshot=%s '
                         'job=%s; leaving the lease open until the next sweep.',
-                        snapshot_id, job_id)
+                        snapshot_id,
+                        job_id,
+                    )
                 else:
                     released += 1
         return released
@@ -1617,13 +1741,13 @@ class PoolController:
 
         async with self._state_lock:
             for record in list(self._state.snapshot_compliance.values()):
-                if self._prepare_compliance_sweep(record, sweep_now,
-                                                  compliance_deletes):
+                if self._prepare_compliance_sweep(
+                    record, sweep_now, compliance_deletes
+                ):
                     mutated = True
 
             for local in list(self._state.local_copies.values()):
-                if self._prepare_local_copy_sweep(local, sweep_now,
-                                                  local_deletes):
+                if self._prepare_local_copy_sweep(local, sweep_now, local_deletes):
                     mutated = True
 
             if self._gc_tombstone_records(sweep_now):
@@ -1637,8 +1761,7 @@ class PoolController:
             await self._run_compliance_delete(snapshot_id, backup, sweep_now)
 
         for snapshot_id, pool_worker_uid in local_deletes:
-            await self._run_local_copy_delete(snapshot_id, pool_worker_uid,
-                                              sweep_now)
+            await self._run_local_copy_delete(snapshot_id, pool_worker_uid, sweep_now)
 
     def _gc_tombstone_records(self, sweep_now: datetime) -> bool:
         """Drop terminal tombstone records past the GC grace horizon so
@@ -1675,12 +1798,13 @@ class PoolController:
         # A deleted compliance record means the L2 backup is gone. Re-check
         # there's no live lease or local copy (a snapshot re-requested after
         # deletion would have recreated them) before dropping the tombstone.
-        for snapshot_id, record in list(
-                self._state.snapshot_compliance.items()):
-            if (record.deleted_at is not None
-                    and sweep_now - record.deleted_at >= horizon
-                    and self._open_lease_count(snapshot_id) == 0
-                    and not self._has_live_local_copy(snapshot_id)):
+        for snapshot_id, record in list(self._state.snapshot_compliance.items()):
+            if (
+                record.deleted_at is not None
+                and sweep_now - record.deleted_at >= horizon
+                and self._open_lease_count(snapshot_id) == 0
+                and not self._has_live_local_copy(snapshot_id)
+            ):
                 del self._state.snapshot_compliance[snapshot_id]
                 gc_compliance += 1
                 mutated = True
@@ -1698,10 +1822,15 @@ class PoolController:
         compliance_deletes: list[tuple[str, DataplaneBackup]],
     ) -> bool:
         mutated = False
-        clock_elapsed = (record.compliance_delete_at is not None
-                         and sweep_now >= record.compliance_delete_at)
-        if (not clock_elapsed or self._open_lease_count(record.snapshot_id) > 0
-                or self._has_live_local_copy(record.snapshot_id)):
+        clock_elapsed = (
+            record.compliance_delete_at is not None
+            and sweep_now >= record.compliance_delete_at
+        )
+        if (
+            not clock_elapsed
+            or self._open_lease_count(record.snapshot_id) > 0
+            or self._has_live_local_copy(record.snapshot_id)
+        ):
             return mutated
 
         if record.deleted_at is not None:
@@ -1730,16 +1859,23 @@ class PoolController:
         except Exception:
             log.exception(
                 'Dataplane delete failed for snapshot=%s path=%s; '
-                'will retry on next sweep.', snapshot_id, backup.dataplane_path)
+                'will retry on next sweep.',
+                snapshot_id,
+                backup.dataplane_path,
+            )
             return
 
         async with self._state_lock:
             record = self._state.snapshot_compliance.get(snapshot_id)
             current_backup = self._state.dataplane_backups.get(snapshot_id)
-            if (record is None or record.expired_at is None
-                    or record.deleted_at is not None or current_backup != backup
-                    or self._open_lease_count(snapshot_id) > 0
-                    or self._has_live_local_copy(snapshot_id)):
+            if (
+                record is None
+                or record.expired_at is None
+                or record.deleted_at is not None
+                or current_backup != backup
+                or self._open_lease_count(snapshot_id) > 0
+                or self._has_live_local_copy(snapshot_id)
+            ):
                 return
 
             del self._state.dataplane_backups[snapshot_id]
@@ -1764,8 +1900,10 @@ class PoolController:
         if local.local_state == SnapshotLocalCopyState.WARM:
             if self._open_lease_count(local.snapshot_id) > 0:
                 return mutated
-            if (local.evictable_under_pressure_at is not None
-                    and sweep_now >= local.evictable_under_pressure_at):
+            if (
+                local.evictable_under_pressure_at is not None
+                and sweep_now >= local.evictable_under_pressure_at
+            ):
                 local.local_state = SnapshotLocalCopyState.EVICTION_CANDIDATE
                 mutated = True
 
@@ -1791,27 +1929,31 @@ class PoolController:
         async with self._state_lock:
             async with self._snapshot_locks.acquire(snapshot_id):
                 local = self._state.local_copies.get(
-                    _local_copy_key(snapshot_id, pool_worker_uid))
-                if (local is None or local.local_state
-                        != SnapshotLocalCopyState.EVICTING):
+                    _local_copy_key(snapshot_id, pool_worker_uid)
+                )
+                if (
+                    local is None
+                    or local.local_state != SnapshotLocalCopyState.EVICTING
+                ):
                     return
 
         try:
-            deleted = await self._local_snapshot_deleter(
-                snapshot_id, pool_worker_uid)
+            deleted = await self._local_snapshot_deleter(snapshot_id, pool_worker_uid)
         except Exception:
             log.exception(
                 'Daemon local snapshot delete failed for snapshot=%s '
-                'worker=%s; will retry on next sweep.', snapshot_id,
-                pool_worker_uid)
-            await self._finish_local_copy_delete(snapshot_id, pool_worker_uid,
-                                                 sweep_now, deleted=False,
-                                                 failed=True)
+                'worker=%s; will retry on next sweep.',
+                snapshot_id,
+                pool_worker_uid,
+            )
+            await self._finish_local_copy_delete(
+                snapshot_id, pool_worker_uid, sweep_now, deleted=False, failed=True
+            )
             return
 
-        await self._finish_local_copy_delete(snapshot_id, pool_worker_uid,
-                                             sweep_now, deleted=deleted,
-                                             failed=False)
+        await self._finish_local_copy_delete(
+            snapshot_id, pool_worker_uid, sweep_now, deleted=deleted, failed=False
+        )
 
     async def _finish_local_copy_delete(
         self,
@@ -1825,9 +1967,12 @@ class PoolController:
         async with self._state_lock:
             async with self._snapshot_locks.acquire(snapshot_id):
                 local = self._state.local_copies.get(
-                    _local_copy_key(snapshot_id, pool_worker_uid))
-                if (local is None or local.local_state
-                        != SnapshotLocalCopyState.EVICTING):
+                    _local_copy_key(snapshot_id, pool_worker_uid)
+                )
+                if (
+                    local is None
+                    or local.local_state != SnapshotLocalCopyState.EVICTING
+                ):
                     return
 
                 if failed:
@@ -1840,8 +1985,10 @@ class PoolController:
                 if not deleted:
                     log.info(
                         'Daemon local snapshot delete found no directory for '
-                        'snapshot=%s worker=%s; marking evicted.', snapshot_id,
-                        pool_worker_uid)
+                        'snapshot=%s worker=%s; marking evicted.',
+                        snapshot_id,
+                        pool_worker_uid,
+                    )
                 self._mark_local_copy_evicted(local, sweep_now)
                 await self._persistence.save(self._state)
                 # Count only physical deletions; deleted=False is an
@@ -1858,22 +2005,22 @@ class PoolController:
                 log.exception('Pool controller maintenance tick failed.')
             await asyncio.sleep(interval_secs)
 
-    def _start_maintenance_loop(self,
-                                interval_secs: Optional[float] = None) -> None:
-        if (self._maintenance_task is not None
-                and not self._maintenance_task.done()):
+    def _start_maintenance_loop(self, interval_secs: Optional[float] = None) -> None:
+        if self._maintenance_task is not None and not self._maintenance_task.done():
             return
         if interval_secs is None:
             interval_secs = self._maintenance_interval_secs
         if self._silent_worker_dead_not_before is None:
             self._silent_worker_dead_not_before = (
-                self._time() + self._worker_stale_threshold_secs)
+                self._time() + self._worker_stale_threshold_secs
+            )
         self._maintenance_task = asyncio.create_task(
-            self._maintenance_loop(interval_secs))
+            self._maintenance_loop(interval_secs)
+        )
 
     async def _mutate_and_persist(
-            self, snapshot_id: str, mutate_fn: Callable[[PoolState],
-                                                        None]) -> None:
+        self, snapshot_id: str, mutate_fn: Callable[[PoolState], None]
+    ) -> None:
         """Apply ``mutate_fn`` to ``self._state`` and persist under the
         controller state lock. See class docstring's §Atomicity contract.
         Block B may add variants (e.g., multi-snapshot mutations) but must
@@ -1884,9 +2031,13 @@ class PoolController:
                 mutate_fn(self._state)
                 await self._persistence.save(self._state)
 
-    async def _apply_worker_event(self, pool_worker_uid: str,
-                                  event: WorkerEvent, *,
-                                  worker_storage_mode: PoolStorageMode) -> None:
+    async def _apply_worker_event(
+        self,
+        pool_worker_uid: str,
+        event: WorkerEvent,
+        *,
+        worker_storage_mode: PoolStorageMode,
+    ) -> None:
         """Apply daemon lifecycle events that affect persisted pool state.
 
         ``worker_storage_mode`` is the reporter's own storage contract.
@@ -1898,7 +2049,8 @@ class PoolController:
         """
         if event.type == WorkerEventType.SNAPSHOT_ENSURE_NO_SPACE:
             await self._handle_ensure_snapshot_no_space(
-                pool_worker_uid, event, worker_storage_mode=worker_storage_mode)
+                pool_worker_uid, event, worker_storage_mode=worker_storage_mode
+            )
             return
 
         if event.type == WorkerEventType.SNAPSHOT_ENSURE_FAILED:
@@ -1907,8 +2059,10 @@ class PoolController:
 
         if event.snapshot_id is None:
             log.warning(
-                'Ignoring worker event without snapshot_id: type=%s '
-                'worker=%s', event.type.value, pool_worker_uid)
+                'Ignoring worker event without snapshot_id: type=%s worker=%s',
+                event.type.value,
+                pool_worker_uid,
+            )
             return
 
         snapshot_id = event.snapshot_id
@@ -1917,8 +2071,11 @@ class PoolController:
             if worker_storage_mode != PoolStorageMode.DAEMON_ON_PVC:
                 log.debug(
                     'Dropping SSD corruption from non-daemon worker: '
-                    'snapshot=%s worker=%s storage_mode=%s', snapshot_id,
-                    pool_worker_uid, worker_storage_mode.value)
+                    'snapshot=%s worker=%s storage_mode=%s',
+                    snapshot_id,
+                    pool_worker_uid,
+                    worker_storage_mode.value,
+                )
                 return
 
             def invalidate_local_copy(state: PoolState) -> None:
@@ -1929,8 +2086,7 @@ class PoolController:
                     # Preserve an exact tombstone for legacy current-home
                     # state that predates local-copy records. Do not invent
                     # state for an unrelated reporter.
-                    if (placement is None
-                            or placement.worker != pool_worker_uid):
+                    if placement is None or placement.worker != pool_worker_uid:
                         return
                     local = SnapshotLocalCopyRecord(
                         snapshot_id=snapshot_id,
@@ -1939,9 +2095,11 @@ class PoolController:
                     )
                     state.local_copies[local_key] = local
                 self._mark_local_copy_evicted(local, event.timestamp)
-                if (placement is not None
-                        and placement.worker == pool_worker_uid
-                        and placement.leases):
+                if (
+                    placement is not None
+                    and placement.worker == pool_worker_uid
+                    and placement.leases
+                ):
                     placement.state = SnapshotState.RESERVED
 
             await self._mutate_and_persist(snapshot_id, invalidate_local_copy)
@@ -1952,16 +2110,21 @@ class PoolController:
             if dataplane_path is None:
                 log.warning(
                     'Ignoring dataplane-ready event without dataplane_path: '
-                    'snapshot=%s worker=%s', snapshot_id, pool_worker_uid)
+                    'snapshot=%s worker=%s',
+                    snapshot_id,
+                    pool_worker_uid,
+                )
                 return
 
             def record_backup(state: PoolState) -> None:
                 # Record the size so it survives eviction: the placement's
                 # (set by SNAPSHOT_READY), else the event's.
                 placement = state.snapshots.get(snapshot_id)
-                size_bytes = (placement.size_bytes if placement is not None
-                              and placement.size_bytes > 0 else
-                              (event.size_bytes or 0))
+                size_bytes = (
+                    placement.size_bytes
+                    if placement is not None and placement.size_bytes > 0
+                    else (event.size_bytes or 0)
+                )
                 state.dataplane_backups[snapshot_id] = DataplaneBackup(
                     snapshot_id=snapshot_id,
                     dataplane_path=dataplane_path,
@@ -1985,24 +2148,34 @@ class PoolController:
                 # corrupted antest-349a2f pool_state.json.
                 log.debug(
                     'Dropping SNAPSHOT_READY from non-PVC-backed worker: '
-                    'snapshot=%s worker=%s storage_mode=%s', snapshot_id,
-                    pool_worker_uid, worker_storage_mode.value)
+                    'snapshot=%s worker=%s storage_mode=%s',
+                    snapshot_id,
+                    pool_worker_uid,
+                    worker_storage_mode.value,
+                )
                 return
 
             def record_local_ready(state: PoolState) -> None:
                 if not self._local_snapshot_report_is_current_locked(
-                        pool_worker_uid, worker_storage_mode):
+                    pool_worker_uid, worker_storage_mode
+                ):
                     log.warning(
                         'Dropping SNAPSHOT_READY after worker ownership was '
                         'removed: snapshot=%s worker=%s storage_mode=%s',
-                        snapshot_id, pool_worker_uid, worker_storage_mode.value)
+                        snapshot_id,
+                        pool_worker_uid,
+                        worker_storage_mode.value,
+                    )
                     return
                 placement = state.snapshots.get(snapshot_id)
                 if placement is None:
                     if worker_storage_mode.is_activity_scoped:
                         backup = state.dataplane_backups.get(snapshot_id)
-                        if (backup is not None and backup.size_bytes <= 0
-                                and event.size_bytes is not None):
+                        if (
+                            backup is not None
+                            and backup.size_bytes <= 0
+                            and event.size_bytes is not None
+                        ):
                             backup.size_bytes = event.size_bytes
                         self._record_local_copy_ready(
                             snapshot_id,
@@ -2013,18 +2186,24 @@ class PoolController:
                         log.warning(
                             'Recorded physical SNAPSHOT_READY copy from PVC '
                             'activity worker without recreating a placement: '
-                            'snapshot=%s worker=%s', snapshot_id,
-                            pool_worker_uid)
+                            'snapshot=%s worker=%s',
+                            snapshot_id,
+                            pool_worker_uid,
+                        )
                         return
                     placement = SnapshotPlacement(worker=pool_worker_uid)
                     state.snapshots[snapshot_id] = placement
-                elif self._event_matches_current_worker(state, snapshot_id,
-                                                        pool_worker_uid):
+                elif self._event_matches_current_worker(
+                    state, snapshot_id, pool_worker_uid
+                ):
                     placement.worker = pool_worker_uid
                 else:
                     backup = state.dataplane_backups.get(snapshot_id)
-                    if (backup is not None and backup.size_bytes <= 0
-                            and event.size_bytes is not None):
+                    if (
+                        backup is not None
+                        and backup.size_bytes <= 0
+                        and event.size_bytes is not None
+                    ):
                         backup.size_bytes = event.size_bytes
                     self._record_local_copy_ready(
                         snapshot_id,
@@ -2037,7 +2216,10 @@ class PoolController:
                         'physical SNAPSHOT_READY copy from a non-current '
                         'worker: '
                         'snapshot=%s current_worker=%s event_worker=%s',
-                        snapshot_id, placement.worker, pool_worker_uid)
+                        snapshot_id,
+                        placement.worker,
+                        pool_worker_uid,
+                    )
                     return
 
                 if event.size_bytes is not None:
@@ -2058,23 +2240,31 @@ class PoolController:
             await self._mutate_and_persist(snapshot_id, record_local_ready)
             return
 
-        if (event.type in {
+        if (
+            event.type
+            in {
                 WorkerEventType.SNAPSHOT_INGEST_STARTED,
                 WorkerEventType.SNAPSHOT_RESTORE_STARTED,
-        } and not worker_storage_mode.is_pvc_backed):
+            }
+            and not worker_storage_mode.is_pvc_backed
+        ):
             log.debug(
                 'Dropping %s from non-PVC-backed worker: '
-                'snapshot=%s worker=%s storage_mode=%s', event.type.value,
-                snapshot_id, pool_worker_uid, worker_storage_mode.value)
+                'snapshot=%s worker=%s storage_mode=%s',
+                event.type.value,
+                snapshot_id,
+                pool_worker_uid,
+                worker_storage_mode.value,
+            )
             return
 
         if event.type == WorkerEventType.SNAPSHOT_INGEST_STARTED:
 
             def record_ingesting(state: PoolState) -> None:
                 placement = state.snapshots.get(snapshot_id)
-                if (placement is not None
-                        and self._event_matches_current_worker(
-                            state, snapshot_id, pool_worker_uid)):
+                if placement is not None and self._event_matches_current_worker(
+                    state, snapshot_id, pool_worker_uid
+                ):
                     placement.state = SnapshotState.INGESTING
 
             await self._mutate_and_persist(snapshot_id, record_ingesting)
@@ -2084,20 +2274,27 @@ class PoolController:
 
             def record_restoring(state: PoolState) -> None:
                 placement = state.snapshots.get(snapshot_id)
-                if (placement is not None
-                        and self._event_matches_current_worker(
-                            state, snapshot_id, pool_worker_uid)):
+                if placement is not None and self._event_matches_current_worker(
+                    state, snapshot_id, pool_worker_uid
+                ):
                     placement.state = SnapshotState.RESTORING
 
             await self._mutate_and_persist(snapshot_id, record_restoring)
             return
 
-        log.warning('Ignoring unsupported worker event: type=%s worker=%s',
-                    event.type.value, pool_worker_uid)
+        log.warning(
+            'Ignoring unsupported worker event: type=%s worker=%s',
+            event.type.value,
+            pool_worker_uid,
+        )
 
     async def _handle_ensure_snapshot_no_space(
-            self, pool_worker_uid: str, event: WorkerEvent, *,
-            worker_storage_mode: PoolStorageMode) -> None:
+        self,
+        pool_worker_uid: str,
+        event: WorkerEvent,
+        *,
+        worker_storage_mode: PoolStorageMode,
+    ) -> None:
         if event.snapshot_id is None or event.job is None:
             log.warning(
                 'Ignoring no-space ensure_snapshot event without snapshot/job: '
@@ -2111,9 +2308,9 @@ class PoolController:
         if worker_storage_mode.is_pvc_backed:
             placement = self._state.snapshots.get(event.snapshot_id)
             if not self._event_matches_current_worker(
-                    self._state, event.snapshot_id, pool_worker_uid):
-                current_worker = (placement.worker
-                                  if placement is not None else None)
+                self._state, event.snapshot_id, pool_worker_uid
+            ):
+                current_worker = placement.worker if placement is not None else None
                 log.warning(
                     'Ignoring no-space ensure_snapshot event from '
                     'non-current worker: snapshot=%s job=%s '
@@ -2137,8 +2334,9 @@ class PoolController:
         if worker_storage_mode.is_pvc_backed:
             self._request_reactive_eviction()
 
-    async def _handle_ensure_snapshot_failed(self, pool_worker_uid: str,
-                                             event: WorkerEvent) -> None:
+    async def _handle_ensure_snapshot_failed(
+        self, pool_worker_uid: str, event: WorkerEvent
+    ) -> None:
         if event.snapshot_id is None or event.job is None:
             log.warning(
                 'Ignoring failed ensure_snapshot event without snapshot/job: '
@@ -2161,8 +2359,11 @@ class PoolController:
 
         def clear_failed_progress(state: PoolState) -> None:
             placement = state.snapshots.get(snapshot_id)
-            if (placement is not None and placement.worker == pool_worker_uid
-                    and placement.state != SnapshotState.READY):
+            if (
+                placement is not None
+                and placement.worker == pool_worker_uid
+                and placement.state != SnapshotState.READY
+            ):
                 del state.snapshots[snapshot_id]
 
         await self._mutate_and_persist(snapshot_id, clear_failed_progress)
@@ -2174,10 +2375,12 @@ class PoolController:
     ) -> float:
         """Called under state lock, immediately before committing a route."""
         state = self._state.placement_state
-        if (not isinstance(self._strategy, K8sPlacementStrategy)
-                or not isinstance(state, K8sPlacementState)
-                or decision.path != 'durable'
-                or not decision.provisioned_new_worker):
+        if (
+            not isinstance(self._strategy, K8sPlacementStrategy)
+            or not isinstance(state, K8sPlacementState)
+            or decision.path != 'durable'
+            or not decision.provisioned_new_worker
+        ):
             return 0
         remaining = 0.0
         for uid, pvc in state.pvcs.items():
@@ -2190,9 +2393,11 @@ class PoolController:
             if grace <= 0:
                 continue
             if self._strategy.starting_worker_can_fit(
-                    request, pvc,
-                    size_bytes=decision.snapshot_size_estimate_bytes,
-                    gpu_slots_in_use=self._gpu_slots_in_use_for_worker(uid)):
+                request,
+                pvc,
+                size_bytes=decision.snapshot_size_estimate_bytes,
+                gpu_slots_in_use=self._gpu_slots_in_use_for_worker(uid),
+            ):
                 remaining = max(remaining, grace)
         return remaining
 
@@ -2219,53 +2424,65 @@ class PoolController:
                     # during an await in route cannot cause a missed wakeup.
                     changed = self._worker_capacity_changed
                     placement = self._state.snapshots.get(request.snapshot_id)
-                    self._raise_if_current_copy_evicting(
-                        request.snapshot_id, placement)
+                    self._raise_if_current_copy_evicting(request.snapshot_id, placement)
                     snapshot_size_estimate = (
-                        request.source_size_bytes *
-                        self._ingest_space_multiplier +
-                        self._snapshot_estimate_buffer_bytes
-                        if request.source_size_bytes > 0 else 0)
+                        request.source_size_bytes * self._ingest_space_multiplier
+                        + self._snapshot_estimate_buffer_bytes
+                        if request.source_size_bytes > 0
+                        else 0
+                    )
                     decision = self._pinned_decision_for_retry(
-                        placement, request.job_id, request.resource_hint)
+                        placement, request.job_id, request.resource_hint
+                    )
                     if decision is None:
-                        home_worker_uid = (placement.worker
-                                           if placement is not None
-                                           and placement.worker else None)
+                        home_worker_uid = (
+                            placement.worker
+                            if placement is not None and placement.worker
+                            else None
+                        )
                         # Preserve same-snapshot coalescing/GPU overflow. The
                         # grace only applies when routing needs a NEW daemon.
                         home_gpu_in_use = (
                             self._gpu_slots_in_use_for_worker(home_worker_uid)
-                            if home_worker_uid is not None else 0)
+                            if home_worker_uid is not None
+                            else 0
+                        )
                         # Singlehost MISSING ingestion has a fixed-host 1.5x
                         # guard. WARM reuse/COLD restore already fit the disk;
                         # k8s admission is per tier, never summed across nodes.
-                        if (isinstance(self._strategy,
-                                       SinglehostPlacementStrategy)
-                                and self._placement_status(
-                                    request.snapshot_id,
-                                    placement) == PlacementStatus.MISSING):
+                        if (
+                            isinstance(self._strategy, SinglehostPlacementStrategy)
+                            and self._placement_status(request.snapshot_id, placement)
+                            == PlacementStatus.MISSING
+                        ):
                             self._reject_if_exceeds_disk_capacity(
-                                request.source_size_bytes)
+                                request.source_size_bytes
+                            )
                         decision = await self._strategy.route(
-                            request, warm_location_uid=self._warm_location_uid(
-                                request.snapshot_id),
+                            request,
+                            warm_location_uid=self._warm_location_uid(
+                                request.snapshot_id
+                            ),
                             snapshot_size_estimate_bytes=snapshot_size_estimate,
                             home_worker_uid=home_worker_uid,
                             home_gpu_in_use=home_gpu_in_use,
-                            overflow_viable=(request.snapshot_id
-                                             in self._state.dataplane_backups))
+                            overflow_viable=(
+                                request.snapshot_id in self._state.dataplane_backups
+                            ),
+                        )
                     wait_secs = min(
                         deadline - loop.time(),
-                        self._starting_worker_grace_remaining(
-                            request, decision))
+                        self._starting_worker_grace_remaining(request, decision),
+                    )
                     if wait_secs <= 0:
                         yield placement, decision, snapshot_size_estimate
                         return
             log.info(
-                'Waiting up to %.1fs for starting pool capacity: '
-                'snapshot=%s job=%s', wait_secs, request.snapshot_id,
-                request.job_id)
+                'Waiting up to %.1fs for starting pool capacity: snapshot=%s job=%s',
+                wait_secs,
+                request.snapshot_id,
+                request.job_id,
+            )
             try:
                 await asyncio.wait_for(changed.wait(), timeout=wait_secs)
             except TimeoutError:
@@ -2277,8 +2494,7 @@ class PoolController:
 
     @rpc_handler
     @metrics.observe_place_snapshot
-    async def place_snapshot(self,
-                             request: PlacementRequest) -> PlacementResult:
+    async def place_snapshot(self, request: PlacementRequest) -> PlacementResult:
         """Place ``request.snapshot_id`` for ``request.job_id`` and return
         the task queue that should serve this activity execution.
 
@@ -2313,7 +2529,8 @@ class PoolController:
             raise NotImplementedError(
                 'place_snapshot requires a PlacementStrategy. Real K8s and '
                 'singlehost strategies land in follow-up PRs; tests inject a '
-                'mock strategy for Block B controller-core behavior.')
+                'mock strategy for Block B controller-core behavior.'
+            )
 
         # Backfill a legacy COLD backup's size before the locks (it may scan
         # the dataplane), so routing/overflow read a known size.
@@ -2333,11 +2550,11 @@ class PoolController:
                     placement = self._state.snapshots.get(request.snapshot_id)
 
                     # Fast path: handle already provisioned and ready.
-                    handle = self._lookup_lease_handle(placement,
-                                                       request.job_id)
+                    handle = self._lookup_lease_handle(placement, request.job_id)
                     if handle is not None:
                         self._raise_if_current_copy_evicting(
-                            request.snapshot_id, placement)
+                            request.snapshot_id, placement
+                        )
                         if handle.provision_state == 'ready':
                             if self._handle_worker_routable(handle, request):
                                 # A persisted ready handle still needs its
@@ -2359,20 +2576,26 @@ class PoolController:
 
             if handle_to_validate is not None:
                 handle_to_validate = await self._wait_provision_ready(
-                    request, handle_to_validate)
-                status = await self._persist_ready_handle(
-                    request, handle_to_validate)
+                    request, handle_to_validate
+                )
+                status = await self._persist_ready_handle(request, handle_to_validate)
                 return self._placement_result(
-                    request.snapshot_id, handle_to_validate.task_queue, status,
+                    request.snapshot_id,
+                    handle_to_validate.task_queue,
+                    status,
                     debug_info=handle_to_validate.debug_info,
-                    pool_worker_uid=handle_to_validate.pool_worker_uid)
+                    pool_worker_uid=handle_to_validate.pool_worker_uid,
+                )
 
             async with self._reserve_placement_route(request) as (
-                    placement, decision, snapshot_size_estimate):
-                if (decision.path == 'durable'
-                        and decision.pool_worker_uid is None):
-                    raise RuntimeError('Durable placement requires planned '
-                                       'pool_worker_uid.')
+                placement,
+                decision,
+                snapshot_size_estimate,
+            ):
+                if decision.path == 'durable' and decision.pool_worker_uid is None:
+                    raise RuntimeError(
+                        'Durable placement requires planned pool_worker_uid.'
+                    )
                 if decision.path == 'overflow':
                     # Overflow needs L2 backup to bootstrap from.
                     self._validate_l2_backup(request.snapshot_id)
@@ -2383,8 +2606,10 @@ class PoolController:
                 )
                 if decision.tier_ssd_gib > 0:
                     tier_usable_bytes = int(
-                        decision.tier_ssd_gib * (1 << 30) *
-                        self._lifecycle_policy.ssd_max_utilization)
+                        decision.tier_ssd_gib
+                        * (1 << 30)
+                        * self._lifecycle_policy.ssd_max_utilization
+                    )
                     decision_reservation_bytes = min(
                         decision_reservation_bytes,
                         tier_usable_bytes,
@@ -2393,14 +2618,20 @@ class PoolController:
                     placement.size_bytes if placement is not None else 0,
                     decision_reservation_bytes,
                 )
-                reservation_worker_uid = (decision.pool_worker_uid if (
-                    decision.path == 'durable'
-                    and self._placement_status(request.snapshot_id, placement)
-                    == PlacementStatus.MISSING) else None)
-                if (reservation_worker_uid is not None and
-                    (placement is None
-                     or placement.worker != reservation_worker_uid
-                     or candidate_reservation_bytes > placement.size_bytes)):
+                reservation_worker_uid = (
+                    decision.pool_worker_uid
+                    if (
+                        decision.path == 'durable'
+                        and self._placement_status(request.snapshot_id, placement)
+                        == PlacementStatus.MISSING
+                    )
+                    else None
+                )
+                if reservation_worker_uid is not None and (
+                    placement is None
+                    or placement.worker != reservation_worker_uid
+                    or candidate_reservation_bytes > placement.size_bytes
+                ):
                     self._reject_if_insufficient_local_dataplane_capacity(
                         request.snapshot_id,
                         reservation_worker_uid,
@@ -2420,19 +2651,20 @@ class PoolController:
                         raise AssertionError(
                             'First-placement RouteDecision is missing '
                             'pool_worker_uid; overflow on first '
-                            'placement is impossible.')
+                            'placement is impossible.'
+                        )
                     placement = SnapshotPlacement(
                         worker=decision.pool_worker_uid,
-                        size_bytes=(decision.snapshot_size_estimate_bytes
-                                    or snapshot_size_estimate),
+                        size_bytes=(
+                            decision.snapshot_size_estimate_bytes
+                            or snapshot_size_estimate
+                        ),
                     )
                     self._state.snapshots[request.snapshot_id] = placement
-                elif (not placement.leases
-                      and placement.state != SnapshotState.READY):
+                elif not placement.leases and placement.state != SnapshotState.READY:
                     placement.size_bytes = max(
                         placement.size_bytes,
-                        decision.snapshot_size_estimate_bytes
-                        or snapshot_size_estimate,
+                        decision.snapshot_size_estimate_bytes or snapshot_size_estimate,
                     )
 
                 if reservation_worker_uid is not None:
@@ -2441,9 +2673,11 @@ class PoolController:
                     placement.size_bytes = candidate_reservation_bytes
                     placement.worker = reservation_worker_uid
 
-                if (decision.path == 'durable'
-                        and decision.pool_worker_uid is not None
-                        and decision.tier_ssd_gib > 0):
+                if (
+                    decision.path == 'durable'
+                    and decision.pool_worker_uid is not None
+                    and decision.tier_ssd_gib > 0
+                ):
                     placement_state = self._state.placement_state
                     if isinstance(placement_state, K8sPlacementState):
                         pvc_state = placement_state.pvcs.setdefault(
@@ -2457,7 +2691,7 @@ class PoolController:
                         )
                         if pvc_state.tier_ssd_gib <= 0:
                             pvc_state.tier_ssd_gib = decision.tier_ssd_gib
-                        if (pvc_state.tier_ssd_gib == decision.tier_ssd_gib):
+                        if pvc_state.tier_ssd_gib == decision.tier_ssd_gib:
                             pvc_state.tier_gpu_count = max(
                                 pvc_state.tier_gpu_count,
                                 decision.tier_gpu_count,
@@ -2486,12 +2720,12 @@ class PoolController:
                 # parsing ``job_id``. Required even when
                 # ``job_id == workflow_id`` (single-shot path) so the
                 # sweep doesn't have to special-case missing entries.
-                placement.lease_workflow_ids[
-                    request.job_id] = request.workflow_id
+                placement.lease_workflow_ids[request.job_id] = request.workflow_id
                 placement.lease_activities[request.job_id] = request.activity
 
-                self._lease_activity[(request.snapshot_id,
-                                      request.job_id)] = request.activity
+                self._lease_activity[(request.snapshot_id, request.job_id)] = (
+                    request.activity
+                )
                 self._sync_lifecycle_from_leases(request.snapshot_id)
                 await self._persistence.save(self._state)
 
@@ -2512,19 +2746,23 @@ class PoolController:
             if ready_handle_to_replace is not None:
                 # Clean up the stale placement before reprovisioning its
                 # deterministic resources.
-                await self._release_strategy_handle(ready_handle_to_replace,
-                                                    request.snapshot_id,
-                                                    request.job_id)
-            inventory_token = (self._worker_inventory.get(
-                decision.pool_worker_uid) if decision.pool_worker_uid else None)
+                await self._release_strategy_handle(
+                    ready_handle_to_replace, request.snapshot_id, request.job_id
+                )
+            inventory_token = (
+                self._worker_inventory.get(decision.pool_worker_uid)
+                if decision.pool_worker_uid
+                else None
+            )
             try:
-                provisioned_handle = await self._strategy.provision(
-                    request, decision)
+                provisioned_handle = await self._strategy.provision(request, decision)
             except ExistingWorkerUnavailableError as exc:
-                if (decision.pool_worker_uid is not None
-                        and await self._replan_unavailable_worker(
-                            request, decision.pool_worker_uid,
-                            inventory_token)):
+                if (
+                    decision.pool_worker_uid is not None
+                    and await self._replan_unavailable_worker(
+                        request, decision.pool_worker_uid, inventory_token
+                    )
+                ):
                     raise RuntimeError(
                         f'Unavailable worker {decision.pool_worker_uid} was '
                         'retired; retrying placement on a fresh worker.'
@@ -2535,8 +2773,7 @@ class PoolController:
             async with self._state_lock:
                 async with self._snapshot_locks.acquire(request.snapshot_id):
                     placement = self._state.snapshots.get(request.snapshot_id)
-                    if (placement is None
-                            or request.job_id not in placement.leases):
+                    if placement is None or request.job_id not in placement.leases:
                         # Lease released concurrently; orphan the handle.
                         handle_to_release = provisioned_handle
                         status = PlacementStatus.MISSING
@@ -2547,28 +2784,29 @@ class PoolController:
                             placement.worker = provisioned_handle.pool_worker_uid
                         if provisioned_handle.kind == 'durable':
                             # Per-job: task_queue keyed by job_id.
-                            placement.durable_handles[
-                                request.job_id] = provisioned_handle
+                            placement.durable_handles[request.job_id] = (
+                                provisioned_handle
+                            )
                         else:
                             # Per-job: distinct eph Job per call.
-                            placement.overflow_handles[
-                                request.job_id] = provisioned_handle
-                        status = self._placement_status(request.snapshot_id,
-                                                        placement)
+                            placement.overflow_handles[request.job_id] = (
+                                provisioned_handle
+                            )
+                        status = self._placement_status(request.snapshot_id, placement)
                         await self._persistence.save(self._state)
 
             # Tear down orphaned handle outside the lock (K8s calls).
             if handle_to_release is not None:
-                await self._release_strategy_handle(handle_to_release,
-                                                    request.snapshot_id,
-                                                    request.job_id)
+                await self._release_strategy_handle(
+                    handle_to_release, request.snapshot_id, request.job_id
+                )
             else:
                 # Wait for the pod and its Temporal poller. The persisted
                 # handle lets release_lease clean up if readiness fails.
                 provisioned_handle = await self._wait_provision_ready(
-                    request, provisioned_handle)
-                status = await self._persist_ready_handle(
-                    request, provisioned_handle)
+                    request, provisioned_handle
+                )
+                status = await self._persist_ready_handle(request, provisioned_handle)
 
             return self._placement_result(
                 request.snapshot_id,
@@ -2588,8 +2826,11 @@ class PoolController:
             async with self._snapshot_locks.acquire(request.snapshot_id):
                 placement = self._state.snapshots.get(request.snapshot_id)
                 if placement is not None:
-                    handles = (placement.durable_handles if handle.kind
-                               == 'durable' else placement.overflow_handles)
+                    handles = (
+                        placement.durable_handles
+                        if handle.kind == 'durable'
+                        else placement.overflow_handles
+                    )
                     if request.job_id in handles:
                         handles[request.job_id] = handle
                         await self._persistence.save(self._state)
@@ -2603,16 +2844,18 @@ class PoolController:
         """Wait for readiness; release the placement if the wait fails."""
         assert self._strategy is not None
         try:
-            return await self._strategy.wait_provision_ready(
-                handle, request.job_id)
+            return await self._strategy.wait_provision_ready(handle, request.job_id)
         except (Exception, asyncio.CancelledError):
             try:
                 await self._release_lease_while_placement_locked(
-                    request.snapshot_id, request.job_id)
+                    request.snapshot_id, request.job_id
+                )
             except Exception:
                 log.exception(
-                    'Failed to clean up unready placement: snapshot=%s '
-                    'job=%s', request.snapshot_id, request.job_id)
+                    'Failed to clean up unready placement: snapshot=%s job=%s',
+                    request.snapshot_id,
+                    request.job_id,
+                )
             raise
 
     @rpc_handler
@@ -2631,11 +2874,11 @@ class PoolController:
     async def _release_lease(self, snapshot_id: str, job_id: str) -> None:
         placement_key = _placement_key(snapshot_id, job_id)
         async with self._placement_provision_locks.acquire(placement_key):
-            await self._release_lease_while_placement_locked(
-                snapshot_id, job_id)
+            await self._release_lease_while_placement_locked(snapshot_id, job_id)
 
-    async def _release_lease_while_placement_locked(self, snapshot_id: str,
-                                                    job_id: str) -> None:
+    async def _release_lease_while_placement_locked(
+        self, snapshot_id: str, job_id: str
+    ) -> None:
         async with self._state_lock:
             async with self._snapshot_locks.acquire(snapshot_id):
                 placement = self._state.snapshots.get(snapshot_id)
@@ -2644,15 +2887,13 @@ class PoolController:
                 handle_to_release = self._lookup_lease_handle(placement, job_id)
 
         if self._strategy is not None:
-            await self._release_strategy_handle(handle_to_release, snapshot_id,
-                                                job_id)
+            await self._release_strategy_handle(handle_to_release, snapshot_id, job_id)
 
         async with self._state_lock:
             async with self._snapshot_locks.acquire(snapshot_id):
                 await self._release_lease_locked(snapshot_id, job_id)
 
-    async def _release_lease_locked(self, snapshot_id: str,
-                                    job_id: str) -> None:
+    async def _release_lease_locked(self, snapshot_id: str, job_id: str) -> None:
         placement = self._state.snapshots.get(snapshot_id)
         if placement is None or job_id not in placement.leases:
             return
@@ -2675,13 +2916,12 @@ class PoolController:
         self._lease_activity.pop((snapshot_id, job_id), None)
         if not placement.leases:
             placement.last_lease_released = released_at
-        self._sync_lifecycle_from_leases(snapshot_id,
-                                         final_release_at=released_at)
+        self._sync_lifecycle_from_leases(snapshot_id, final_release_at=released_at)
         await self._persistence.save(self._state)
 
-    async def _release_strategy_handle(self,
-                                       handle: Optional[ProvisionedHandle],
-                                       snapshot_id: str, job_id: str) -> None:
+    async def _release_strategy_handle(
+        self, handle: Optional[ProvisionedHandle], snapshot_id: str, job_id: str
+    ) -> None:
         assert self._strategy is not None
         request = PlacementRequest(
             snapshot_id=snapshot_id,
@@ -2719,14 +2959,15 @@ class PoolController:
         state = report.state
         is_activity_scoped = report.worker_storage_mode.is_activity_scoped
         existing = self._worker_inventory.get(pool_worker_uid)
-        is_draining_report = (existing is not None
-                              and existing.status == WorkerStatus.DRAINING)
+        is_draining_report = (
+            existing is not None and existing.status == WorkerStatus.DRAINING
+        )
         silent_suspects = self._silent_worker_suspects()
         was_silent_suspect = pool_worker_uid in silent_suspects
         silent_suspect_cleared = False
-        is_first_worker_report = (not is_activity_scoped and
-                                  (pool_worker_uid not in self._worker_inventory
-                                   or was_silent_suspect))
+        is_first_worker_report = not is_activity_scoped and (
+            pool_worker_uid not in self._worker_inventory or was_silent_suspect
+        )
         gpu_slots_total = 0
         gpu_slots_in_use = 0
         if not is_activity_scoped:
@@ -2738,14 +2979,16 @@ class PoolController:
             # (READY/STALE/DEAD) is heartbeat-derived, so a fresh heartbeat is
             # allowed to bring a worker back to READY (a self-healed daemon
             # re-registering within the DEAD window clears its own staleness).
-            preserved_status = (WorkerStatus.DRAINING if existing is not None
-                                and existing.status == WorkerStatus.DRAINING
-                                else WorkerStatus.READY)
+            preserved_status = (
+                WorkerStatus.DRAINING
+                if existing is not None and existing.status == WorkerStatus.DRAINING
+                else WorkerStatus.READY
+            )
             is_draining_report = preserved_status == WorkerStatus.DRAINING
             gpu_slots_total = self._persisted_gpu_slots_total_for_worker(
-                pool_worker_uid)
-            gpu_slots_in_use = self._gpu_slots_in_use_for_worker(
-                pool_worker_uid)
+                pool_worker_uid
+            )
+            gpu_slots_in_use = self._gpu_slots_in_use_for_worker(pool_worker_uid)
             self._worker_inventory[pool_worker_uid] = WorkerInventory(
                 pool_worker_uid=pool_worker_uid,
                 state=state,
@@ -2754,15 +2997,22 @@ class PoolController:
                 gpu_slots_in_use=gpu_slots_in_use,
                 last_heartbeat=now,
             )
-            silent_suspect_cleared = (silent_suspects.pop(
-                pool_worker_uid, None) is not None)
+            silent_suspect_cleared = (
+                silent_suspects.pop(pool_worker_uid, None) is not None
+            )
         log.debug(
             'report_status from %s: %d ready, %d in-progress, '
             'pvc_free=%d/%d, '
-            'gpu=%d/%d, event=%s', pool_worker_uid, len(state.ready_snapshots),
-            len(state.in_progress_snapshots), state.pvc_free_bytes,
-            state.pvc_total_bytes, gpu_slots_in_use, gpu_slots_total,
-            report.event.type.value if report.event else 'none')
+            'gpu=%d/%d, event=%s',
+            pool_worker_uid,
+            len(state.ready_snapshots),
+            len(state.in_progress_snapshots),
+            state.pvc_free_bytes,
+            state.pvc_total_bytes,
+            gpu_slots_in_use,
+            gpu_slots_total,
+            report.event.type.value if report.event else 'none',
+        )
 
         if silent_suspect_cleared:
             async with self._state_lock:
@@ -2775,8 +3025,10 @@ class PoolController:
             # placement/PVC state. This is intentionally fail-closed: once
             # teardown commits, even a still-alive worker cannot rejoin with
             # warm L1 data; any reusable snapshot is restored from L2 instead.
-            if (report.event is not None and report.event.type
-                    == WorkerEventType.SNAPSHOT_PERSIST_UPLOADED):
+            if (
+                report.event is not None
+                and report.event.type == WorkerEventType.SNAPSHOT_PERSIST_UPLOADED
+            ):
                 await self._apply_worker_event(
                     pool_worker_uid,
                     report.event,
@@ -2787,8 +3039,7 @@ class PoolController:
         if is_first_worker_report:
             await self._reconcile_missing_local_copies_from_first_heartbeat(
                 pool_worker_uid,
-                set(state.ready_snapshots)
-                | set(state.in_progress_snapshots),
+                set(state.ready_snapshots) | set(state.in_progress_snapshots),
             )
 
         if not is_activity_scoped:
@@ -2797,12 +3048,15 @@ class PoolController:
             # snapshots reported as READY here; treating missing entries as evicted
             # needs additional worker-failure/rebind policy.
             await self._reconcile_ready_snapshots_from_heartbeat(
-                pool_worker_uid, state.ready_snapshots)
+                pool_worker_uid, state.ready_snapshots
+            )
 
         if report.event is not None:
             await self._apply_worker_event(
-                pool_worker_uid, report.event,
-                worker_storage_mode=report.worker_storage_mode)
+                pool_worker_uid,
+                report.event,
+                worker_storage_mode=report.worker_storage_mode,
+            )
 
         if not is_activity_scoped:
             self._worker_capacity_changed.set()
@@ -2811,32 +3065,33 @@ class PoolController:
     @rpc_handler
     @metrics.count_rpc_errors('get_pool_stats')
     async def get_pool_stats(
-            self, filter: Optional[PoolStatsFilter] = None) -> PoolStats:
+        self, filter: Optional[PoolStatsFilter] = None
+    ) -> PoolStats:
         """Return a point-in-time snapshot of pool-wide aggregate stats.
 
         Read-only; safe to poll at high frequency. Intended for monitoring
         dashboards and Prometheus exporters.
         """
         stats_filter = filter or PoolStatsFilter()
-        allowed_workers = (set(stats_filter.pool_worker_uids) if
-                           stats_filter.pool_worker_uids is not None else None)
+        allowed_workers = (
+            set(stats_filter.pool_worker_uids)
+            if stats_filter.pool_worker_uids is not None
+            else None
+        )
         inventory = list(self._worker_inventory_for_stats().values())
         if allowed_workers is not None:
             inventory = [
-                inv for inv in inventory
-                if inv.pool_worker_uid in allowed_workers
+                inv for inv in inventory if inv.pool_worker_uid in allowed_workers
             ]
         snapshot_items = list(self._state.snapshots.items())
         if allowed_workers is not None:
             snapshot_items = [
-                item for item in snapshot_items
-                if item[1].worker in allowed_workers
+                item for item in snapshot_items if item[1].worker in allowed_workers
             ]
         snapshots = [snapshot for _, snapshot in snapshot_items]
         snapshot_ids = {snapshot_id for snapshot_id, _ in snapshot_items}
         local_copies = [
-            deepcopy(local)
-            for _key, local in sorted(self._state.local_copies.items())
+            deepcopy(local) for _key, local in sorted(self._state.local_copies.items())
         ]
         snapshot_compliance = [
             deepcopy(record)
@@ -2844,51 +3099,57 @@ class PoolController:
         ]
         if allowed_workers is not None:
             local_copies = [
-                local for local in local_copies
+                local
+                for local in local_copies
                 if local.pool_worker_uid in allowed_workers
             ]
-            local_copy_snapshot_ids = {
-                local.snapshot_id
-                for local in local_copies
-            }
+            local_copy_snapshot_ids = {local.snapshot_id for local in local_copies}
             snapshot_compliance = [
-                record for record in snapshot_compliance
+                record
+                for record in snapshot_compliance
                 if record.snapshot_id in snapshot_ids
                 or record.snapshot_id in local_copy_snapshot_ids
             ]
         dataplane_backups = len(self._state.dataplane_backups)
         if allowed_workers is not None:
             dataplane_backups = sum(
-                1 for snapshot_id in self._state.dataplane_backups
-                if snapshot_id in snapshot_ids)
+                1
+                for snapshot_id in self._state.dataplane_backups
+                if snapshot_id in snapshot_ids
+            )
         active_lease_counts_by_worker: Dict[str, int] = {}
         for placement in snapshots:
             if not placement.worker:
                 continue
             active_lease_counts_by_worker[placement.worker] = (
-                active_lease_counts_by_worker.get(placement.worker, 0) +
-                len(placement.leases))
+                active_lease_counts_by_worker.get(placement.worker, 0)
+                + len(placement.leases)
+            )
 
         live_local_snapshot_ids_by_worker: Dict[str, set[str]] = {}
         for local in self._state.local_copies.values():
             if local.local_state == SnapshotLocalCopyState.EVICTED:
                 continue
-            if allowed_workers is not None and (local.pool_worker_uid
-                                                not in allowed_workers):
+            if allowed_workers is not None and (
+                local.pool_worker_uid not in allowed_workers
+            ):
                 continue
             live_local_snapshot_ids_by_worker.setdefault(
-                local.pool_worker_uid, set()).add(local.snapshot_id)
+                local.pool_worker_uid, set()
+            ).add(local.snapshot_id)
 
         snapshot_ids_by_worker: Dict[str, set[str]] = {}
         for snapshot_id, snapshot in snapshot_items:
             if not snapshot.worker:
                 continue
-            snapshot_ids_by_worker.setdefault(snapshot.worker,
-                                              set()).add(snapshot_id)
-        for pool_worker_uid, local_snapshot_ids in (
-                live_local_snapshot_ids_by_worker.items()):
-            snapshot_ids_by_worker.setdefault(pool_worker_uid,
-                                              set()).update(local_snapshot_ids)
+            snapshot_ids_by_worker.setdefault(snapshot.worker, set()).add(snapshot_id)
+        for (
+            pool_worker_uid,
+            local_snapshot_ids,
+        ) in live_local_snapshot_ids_by_worker.items():
+            snapshot_ids_by_worker.setdefault(pool_worker_uid, set()).update(
+                local_snapshot_ids
+            )
 
         durable_workers = [
             PoolWorkerStats(
@@ -2897,33 +3158,38 @@ class PoolController:
                 pvc_free_bytes=inv.state.pvc_free_bytes,
                 pvc_total_bytes=inv.state.pvc_total_bytes,
                 gpu_slots_total=self._persisted_gpu_slots_total_for_worker(
-                    inv.pool_worker_uid, inv.gpu_slots_total),
-                gpu_slots_in_use=self._gpu_slots_in_use_for_worker(
-                    inv.pool_worker_uid),
-                active_leases=active_lease_counts_by_worker.get(
-                    inv.pool_worker_uid, 0),
-                snapshot_ids=(sorted(
-                    snapshot_ids_by_worker.get(inv.pool_worker_uid, set()))
-                              if stats_filter.include_snapshots else []),
+                    inv.pool_worker_uid, inv.gpu_slots_total
+                ),
+                gpu_slots_in_use=self._gpu_slots_in_use_for_worker(inv.pool_worker_uid),
+                active_leases=active_lease_counts_by_worker.get(inv.pool_worker_uid, 0),
+                snapshot_ids=(
+                    sorted(snapshot_ids_by_worker.get(inv.pool_worker_uid, set()))
+                    if stats_filter.include_snapshots
+                    else []
+                ),
             )
             for inv in sorted(inventory, key=lambda item: item.pool_worker_uid)
         ]
         return PoolStats(
             num_nodes=len(inventory),
-            num_healthy_nodes=sum(1 for inv in inventory
-                                  if inv.status == WorkerStatus.READY),
+            num_healthy_nodes=sum(
+                1 for inv in inventory if inv.status == WorkerStatus.READY
+            ),
             num_snapshots=len(snapshots),
             total_pvc_bytes=sum(inv.state.pvc_total_bytes for inv in inventory),
             free_pvc_bytes=sum(inv.state.pvc_free_bytes for inv in inventory),
             active_leases=sum(len(snapshot.leases) for snapshot in snapshots),
             dataplane_backups=dataplane_backups,
             durable_workers=durable_workers,
-            snapshots=([deepcopy(snapshot) for snapshot in snapshots]
-                       if stats_filter.include_snapshots else []),
-            local_copies=(local_copies
-                          if stats_filter.include_snapshots else []),
-            snapshot_compliance=(snapshot_compliance
-                                 if stats_filter.include_snapshots else []),
+            snapshots=(
+                [deepcopy(snapshot) for snapshot in snapshots]
+                if stats_filter.include_snapshots
+                else []
+            ),
+            local_copies=(local_copies if stats_filter.include_snapshots else []),
+            snapshot_compliance=(
+                snapshot_compliance if stats_filter.include_snapshots else []
+            ),
         )
 
 
@@ -2933,6 +3199,7 @@ class PoolControllerPlacementContext:
     This lives outside the AutoRPC service class so these provider methods do
     not become part of the RPC surface.
     """
+
     def __init__(self, controller: PoolController) -> None:
         self._controller = controller
 
@@ -2950,10 +3217,10 @@ class PoolControllerPlacementContext:
         base = self._controller.worker_inventory
         synthesized: Dict[str, WorkerInventory] = {}
         for pool_worker_uid, inventory in base.items():
-            in_use = self._controller._gpu_slots_in_use_for_worker(
-                pool_worker_uid)
+            in_use = self._controller._gpu_slots_in_use_for_worker(pool_worker_uid)
             total = self._controller._persisted_gpu_slots_total_for_worker(
-                pool_worker_uid, inventory.gpu_slots_total)
+                pool_worker_uid, inventory.gpu_slots_total
+            )
             synthesized[pool_worker_uid] = replace(
                 inventory,
                 gpu_slots_total=total,
@@ -2993,9 +3260,11 @@ class PoolControllerPlacementContext:
             SnapshotState.INGESTING,
             SnapshotState.RESTORING,
         }
-        return sum(p.size_bytes
-                   for p in self._controller._state.snapshots.values()
-                   if p.worker == pool_worker_uid and p.state in _IN_FLIGHT)
+        return sum(
+            p.size_bytes
+            for p in self._controller._state.snapshots.values()
+            if p.worker == pool_worker_uid and p.state in _IN_FLIGHT
+        )
 
 
 PlacementStrategyFactory = Callable[[PoolController], PlacementStrategy]
@@ -3012,9 +3281,11 @@ _POOL_WORKER_STATEDB_SECRET_ENV = 'POOL_WORKER_STATEDB_SECRET'
 _POOL_WORKER_STATEDB_CA_SECRET_ENV = 'POOL_WORKER_STATEDB_CA_SECRET'
 _POOL_WORKER_STATEDB_CA_SECRET_KEY_ENV = 'POOL_WORKER_STATEDB_CA_SECRET_KEY'
 _POOL_WORKER_GCP_APPLICATION_CREDENTIALS_SECRET_ENV = (
-    'POOL_WORKER_GCP_APPLICATION_CREDENTIALS_SECRET')
+    'POOL_WORKER_GCP_APPLICATION_CREDENTIALS_SECRET'
+)
 _POOL_WORKER_GCP_APPLICATION_CREDENTIALS_KEY_ENV = (
-    'POOL_WORKER_GCP_APPLICATION_CREDENTIALS_KEY')
+    'POOL_WORKER_GCP_APPLICATION_CREDENTIALS_KEY'
+)
 _POOL_WORKER_POD_LABELS_ENV = 'POOL_WORKER_POD_LABELS_JSON'
 _POOL_WORKER_SERVICE_ACCOUNT_ENV = 'POOL_WORKER_SERVICE_ACCOUNT'
 _POOL_WORKER_FS_GROUP_ENV = 'POOL_WORKER_FS_GROUP'
@@ -3028,8 +3299,8 @@ def _configured_tenant_secret_key_ref() -> Optional[SecretKeyRef]:
     rather than rendering a broken secretKeyRef into every pool pod.
     """
     from pool.worker_manager import SecretKeyRef
-    secret_name = os.environ.get(_POOL_WORKER_TENANT_SECRET_SECRET_ENV,
-                                 '').strip()
+
+    secret_name = os.environ.get(_POOL_WORKER_TENANT_SECRET_SECRET_ENV, '').strip()
     key = os.environ.get(_POOL_WORKER_TENANT_SECRET_KEY_ENV, '').strip()
     if not (secret_name or key):
         return None
@@ -3040,20 +3311,22 @@ def _configured_tenant_secret_key_ref() -> Optional[SecretKeyRef]:
             'Ignoring half-configured tenant secret ref: set BOTH '
             'POOL_WORKER_TENANT_SECRET_SECRET and '
             'POOL_WORKER_TENANT_SECRET_KEY (exactly one is currently set); '
-            'pool pods will not receive the tenant secret key.')
+            'pool pods will not receive the tenant secret key.'
+        )
         return None
     return SecretKeyRef(secret_name=secret_name, key=key)
 
 
 def _k8s_pool_storage_class() -> str:
-    return (os.environ.get(_POOL_STORAGE_CLASS_NAME_ENV, '').strip()
-            or DEFAULT_K8S_POOL_STORAGE_CLASS)
+    return (
+        os.environ.get(_POOL_STORAGE_CLASS_NAME_ENV, '').strip()
+        or DEFAULT_K8S_POOL_STORAGE_CLASS
+    )
 
 
 def _configured_pool_worker_service_account() -> Optional[str]:
     """ServiceAccount for runtime-created workers, or non-chart inheritance."""
-    return (os.environ.get(_POOL_WORKER_SERVICE_ACCOUNT_ENV, '').strip()
-            or None)
+    return os.environ.get(_POOL_WORKER_SERVICE_ACCOUNT_ENV, '').strip() or None
 
 
 def _configured_pool_worker_fs_group() -> Optional[int]:
@@ -3067,13 +3340,14 @@ def _configured_pool_worker_fs_group() -> Optional[int]:
 def _diskgraph_config(config: DeployEnvConfig) -> DiskgraphConfig:
     data_compute = config.data_compute
     if not isinstance(data_compute, DiskgraphConfig):
-        raise ValueError('Pool controller requires diskgraph data_compute; got '
-                         f'{type(data_compute).__name__}.')
+        raise ValueError(
+            'Pool controller requires diskgraph data_compute; got '
+            f'{type(data_compute).__name__}.'
+        )
     return data_compute
 
 
-def _k8s_pool_config(
-        config: DeployEnvConfig) -> Optional[K8sPoolStrategyConfig]:
+def _k8s_pool_config(config: DeployEnvConfig) -> Optional[K8sPoolStrategyConfig]:
     """Return the k8s-specific pool sub-config, or None if unset.
 
     Returns None (rather than fabricating an empty default) because
@@ -3084,29 +3358,36 @@ def _k8s_pool_config(
     return _diskgraph_config(config).k8s_pool
 
 
-def _configured_lifecycle_policy(
-        config: DeployEnvConfig) -> SnapshotLifecyclePolicy:
+def _configured_lifecycle_policy(config: DeployEnvConfig) -> SnapshotLifecyclePolicy:
     defaults = SnapshotLifecyclePolicy()
     dg = _diskgraph_config(config)
     k8s = _k8s_pool_config(config)
     # Preserve explicit ordering validation, but keep an omitted pressure
     # window within a shorter configured hard-expiry TTL.
     # This makes max-only configuration safe without changing the 24h default.
-    max_ssd_idle_secs = (defaults.max_ssd_idle_secs if dg.pool_max_ssd_idle_secs
-                         is None else dg.pool_max_ssd_idle_secs)
-    min_ssd_idle_secs = (min(defaults.min_ssd_idle_secs, max_ssd_idle_secs)
-                         if dg.pool_min_ssd_idle_secs is None else
-                         dg.pool_min_ssd_idle_secs)
+    max_ssd_idle_secs = (
+        defaults.max_ssd_idle_secs
+        if dg.pool_max_ssd_idle_secs is None
+        else dg.pool_max_ssd_idle_secs
+    )
+    min_ssd_idle_secs = (
+        min(defaults.min_ssd_idle_secs, max_ssd_idle_secs)
+        if dg.pool_min_ssd_idle_secs is None
+        else dg.pool_min_ssd_idle_secs
+    )
     return SnapshotLifecyclePolicy(
         min_ssd_idle_secs=min_ssd_idle_secs,
         max_ssd_idle_secs=max_ssd_idle_secs,
-        max_dataplane_retention_secs=(defaults.max_dataplane_retention_secs
-                                      if dg.pool_max_dataplane_retention_secs
-                                      is None else
-                                      dg.pool_max_dataplane_retention_secs),
-        ssd_max_utilization=(defaults.ssd_max_utilization if k8s is None
-                             or k8s.pool_ssd_max_utilization is None else
-                             k8s.pool_ssd_max_utilization),
+        max_dataplane_retention_secs=(
+            defaults.max_dataplane_retention_secs
+            if dg.pool_max_dataplane_retention_secs is None
+            else dg.pool_max_dataplane_retention_secs
+        ),
+        ssd_max_utilization=(
+            defaults.ssd_max_utilization
+            if k8s is None or k8s.pool_ssd_max_utilization is None
+            else k8s.pool_ssd_max_utilization
+        ),
     )
 
 
@@ -3144,18 +3425,22 @@ def _configured_tombstone_gc_grace_secs(config: DeployEnvConfig) -> float:
 _K8S_TENANT_RE = re.compile(r'^[a-z0-9][a-z0-9-]{0,47}$')
 
 
-def _configured_k8s_pool_names(config: DeployEnvConfig, ) -> tuple[str, str]:
+def _configured_k8s_pool_names(
+    config: DeployEnvConfig,
+) -> tuple[str, str]:
     configured_tenant = os.environ.get('POOL_WORKER_TENANT', '').strip()
     tenant = configured_tenant or re.sub(
-        r'[^a-z0-9-]', '-', config.id_suffix.lower()).lstrip('-')
+        r'[^a-z0-9-]', '-', config.id_suffix.lower()
+    ).lstrip('-')
     if not _K8S_TENANT_RE.match(tenant):
         raise ValueError(
             f'Diskgraph k8s pool tenant must match {_K8S_TENANT_RE.pattern} '
             f'— RFC 1123 lowercase alphanumeric + "-", starting with '
             f'alphanumeric, ≤48 chars (so the derived "kumo-dataplane-<id>" '
-            f'namespace stays under k8s\'s 63-char cap). Derived tenant '
+            f"namespace stays under k8s's 63-char cap). Derived tenant "
             f'{tenant!r} from {config.deploy_mode.value} '
-            f'id_suffix={config.id_suffix!r}.')
+            f'id_suffix={config.id_suffix!r}.'
+        )
     namespace = os.environ.get('POD_NAMESPACE') or f'kumo-dataplane-{tenant}'
     return tenant, namespace
 
@@ -3166,15 +3451,17 @@ def _empty_state_for_strategy(config: DeployEnvConfig) -> PoolState:
         return PoolState(placement_state=SinglehostPlacementState())
     if diskgraph.pool_strategy == 'k8s':
         return PoolState(placement_state=K8sPlacementState())
-    raise ValueError(f'Unknown diskgraph pool strategy: '
-                     f'{diskgraph.pool_strategy}')
+    raise ValueError(f'Unknown diskgraph pool strategy: {diskgraph.pool_strategy}')
 
 
-def _normalize_state_for_strategy(config: DeployEnvConfig,
-                                  state: PoolState) -> Optional[PoolState]:
+def _normalize_state_for_strategy(
+    config: DeployEnvConfig, state: PoolState
+) -> Optional[PoolState]:
     diskgraph = _diskgraph_config(config)
-    if (diskgraph.pool_strategy != 'singlehost'
-            or state.placement_state.type == 'singlehost'):
+    if (
+        diskgraph.pool_strategy != 'singlehost'
+        or state.placement_state.type == 'singlehost'
+    ):
         return None
     if not (config.deploy_mode.is_dev or config.deploy_mode.is_test):
         log.warning(
@@ -3222,21 +3509,21 @@ def _scrub_unbacked_k8s_placement_ghosts(state: PoolState) -> bool:
             continue
         if pool_worker_uid in placement_state.pvcs:
             continue
-        local = state.local_copies.get(
-            _local_copy_key(snapshot_id, pool_worker_uid))
-        if (local is not None
-                and local.local_state != SnapshotLocalCopyState.EVICTED):
+        local = state.local_copies.get(_local_copy_key(snapshot_id, pool_worker_uid))
+        if local is not None and local.local_state != SnapshotLocalCopyState.EVICTED:
             continue
         log.warning(
             'Removing unbacked legacy snapshot placement during startup: '
-            'snapshot=%s worker=%s', snapshot_id, pool_worker_uid)
+            'snapshot=%s worker=%s',
+            snapshot_id,
+            pool_worker_uid,
+        )
         del state.snapshots[snapshot_id]
         removed = True
     return removed
 
 
-def _configured_strategy_factory(
-        config: DeployEnvConfig) -> PlacementStrategyFactory:
+def _configured_strategy_factory(config: DeployEnvConfig) -> PlacementStrategyFactory:
     diskgraph = _diskgraph_config(config)
     if diskgraph.pool_strategy == 'singlehost':
         from pool.strategy_singlehost import SinglehostPlacementStrategy
@@ -3249,8 +3536,7 @@ def _configured_strategy_factory(
         return lambda _: SinglehostPlacementStrategy(task_queue=task_queue)
     if diskgraph.pool_strategy == 'k8s':
         return _configured_k8s_strategy_factory(config, diskgraph)
-    raise ValueError(f'Unknown diskgraph pool strategy: '
-                     f'{diskgraph.pool_strategy}')
+    raise ValueError(f'Unknown diskgraph pool strategy: {diskgraph.pool_strategy}')
 
 
 def _pool_resource_spec(
@@ -3305,16 +3591,18 @@ def _build_configured_k8s_manager(
     if diskgraph.k8s_pool is None:
         raise ValueError(
             "pool_strategy='k8s' requires data_compute.k8s_pool with "
-            'pool_diskgraph_node_types.')
+            'pool_diskgraph_node_types.'
+        )
     k8s_pool = diskgraph.k8s_pool
-    node_types: dict[str, DiskgraphNodeType] = dict(
-        k8s_pool.pool_diskgraph_node_types)
+    node_types: dict[str, DiskgraphNodeType] = dict(k8s_pool.pool_diskgraph_node_types)
     # Capacity tier is (ssd_gib, gpu_count). Config keys remain opaque platform
     # names; duplicate capacity tuples are intentionally interchangeable.
-    capacity_tiers = sorted({
-        CapacityTier(tier_ssd_gib=nt.ssd_gib, tier_gpu_count=nt.gpu_count)
-        for nt in node_types.values()
-    })
+    capacity_tiers = sorted(
+        {
+            CapacityTier(tier_ssd_gib=nt.ssd_gib, tier_gpu_count=nt.gpu_count)
+            for nt in node_types.values()
+        }
+    )
     sizes_gib: list[int] = sorted({nt.ssd_gib for nt in node_types.values()})
     largest_ssd_gib = max(sizes_gib)
     manager = K8sPoolWorkerManager(
@@ -3325,11 +3613,16 @@ def _build_configured_k8s_manager(
         daemon_command=POOL_DAEMON_COMMAND,
         daemon_args=POOL_DAEMON_ARGS,
         daemon_resources=_pool_resource_spec(
-            k8s_pool.pool_resources.effective_daemon()),
+            k8s_pool.pool_resources.effective_daemon()
+        ),
         pool_extra_tolerations=[
-            V1Toleration(key=t.key, operator=t.operator or 'Equal',
-                         value=t.value, effect=t.effect,
-                         toleration_seconds=t.toleration_seconds)
+            V1Toleration(
+                key=t.key,
+                operator=t.operator or 'Equal',
+                value=t.value,
+                effect=t.effect,
+                toleration_seconds=t.toleration_seconds,
+            )
             for t in k8s_pool.pool_extra_tolerations
         ],
         kube_context=kube_context,
@@ -3343,32 +3636,43 @@ def _build_configured_k8s_manager(
         # Substrate wiring for the runtime-created pool pods. Secret/ConfigMap
         # names come from the chart (env); the Temporal cert dir comes from the
         # deploy config (empty for Temporal Cloud => no cert mount, correct).
-        pod_env_configmap=(os.environ.get(_POOL_WORKER_ENV_CONFIGMAP_ENV,
-                                          '').strip() or None),
-        temporal_cert_secret=(os.environ.get(
-            _POOL_WORKER_TEMPORAL_CERT_SECRET_ENV, '').strip() or None),
+        pod_env_configmap=(
+            os.environ.get(_POOL_WORKER_ENV_CONFIGMAP_ENV, '').strip() or None
+        ),
+        temporal_cert_secret=(
+            os.environ.get(_POOL_WORKER_TEMPORAL_CERT_SECRET_ENV, '').strip() or None
+        ),
         temporal_cert_dir=(config.tls_cert_dir or None),
         tenant_secret_key_ref=_configured_tenant_secret_key_ref(),
         # Password auth only: the Secret name comes from the chart, the mount
         # path from the deploy config, so both halves agree with what the app
         # resolves dsn_secret_name against.
-        statedb_secret=(os.environ.get(_POOL_WORKER_STATEDB_SECRET_ENV,
-                                       '').strip() or None),
-        statedb_ca_secret=(os.environ.get(_POOL_WORKER_STATEDB_CA_SECRET_ENV,
-                                          '').strip() or None),
-        statedb_ca_secret_key=(os.environ.get(
-            _POOL_WORKER_STATEDB_CA_SECRET_KEY_ENV, '').strip() or None),
+        statedb_secret=(
+            os.environ.get(_POOL_WORKER_STATEDB_SECRET_ENV, '').strip() or None
+        ),
+        statedb_ca_secret=(
+            os.environ.get(_POOL_WORKER_STATEDB_CA_SECRET_ENV, '').strip() or None
+        ),
+        statedb_ca_secret_key=(
+            os.environ.get(_POOL_WORKER_STATEDB_CA_SECRET_KEY_ENV, '').strip() or None
+        ),
         secrets_mount_path=(deploy_env().secrets.mount_path or None),
-        gcp_application_credentials_secret=(os.environ.get(
-            _POOL_WORKER_GCP_APPLICATION_CREDENTIALS_SECRET_ENV,
-            '').strip() or None),
-        gcp_application_credentials_secret_key=(os.environ.get(
-            _POOL_WORKER_GCP_APPLICATION_CREDENTIALS_KEY_ENV,
-            '').strip() or None),
-        gcp_application_credentials_path=(os.environ.get(
-            'GOOGLE_APPLICATION_CREDENTIALS', '').strip() or None),
+        gcp_application_credentials_secret=(
+            os.environ.get(
+                _POOL_WORKER_GCP_APPLICATION_CREDENTIALS_SECRET_ENV, ''
+            ).strip()
+            or None
+        ),
+        gcp_application_credentials_secret_key=(
+            os.environ.get(_POOL_WORKER_GCP_APPLICATION_CREDENTIALS_KEY_ENV, '').strip()
+            or None
+        ),
+        gcp_application_credentials_path=(
+            os.environ.get('GOOGLE_APPLICATION_CREDENTIALS', '').strip() or None
+        ),
         pod_template_labels=json.loads(
-            os.environ.get(_POOL_WORKER_POD_LABELS_ENV, '{}')),
+            os.environ.get(_POOL_WORKER_POD_LABELS_ENV, '{}')
+        ),
     )
 
     def manager_pvc_spec(chosen_ssd_gib: int) -> WorkerManagerPvcSpec:
@@ -3386,8 +3690,7 @@ async def _registered_cache_tier_keys(
     pvc_spec_factory: Callable[[int], PvcSpec],
 ) -> set[tuple[int, int]]:
     """Configured tiers proven by current Registered pod/PVC envelopes."""
-    configured = {(tier.tier_ssd_gib, tier.tier_gpu_count)
-                  for tier in configured_tiers}
+    configured = {(tier.tier_ssd_gib, tier.tier_gpu_count) for tier in configured_tiers}
     placement_state = controller._state.placement_state
     if not isinstance(placement_state, K8sPlacementState):
         return set()
@@ -3396,16 +3699,18 @@ async def _registered_cache_tier_keys(
         if worker.status != 'Registered':
             continue
         pvc_state = placement_state.pvcs.get(worker.pool_worker_uid)
-        if (pvc_state is None or pvc_state.tier_ssd_gib <= 0
-                or pvc_state.tier_gpu_count <= 0):
+        if (
+            pvc_state is None
+            or pvc_state.tier_ssd_gib <= 0
+            or pvc_state.tier_gpu_count <= 0
+        ):
             continue
         key = (pvc_state.tier_ssd_gib, pvc_state.tier_gpu_count)
         if key not in configured or key in result:
             continue
         spec = pvc_spec_factory(pvc_state.tier_ssd_gib)
         spec.gpu_count = pvc_state.tier_gpu_count
-        if await manager.registered_worker_matches_current_cache_tier(
-                worker, spec):
+        if await manager.registered_worker_matches_current_cache_tier(worker, spec):
             result.add(key)
     return result
 
@@ -3426,12 +3731,16 @@ async def run_configured_init_canary(
     if diskgraph.pool_strategy != 'k8s':
         log.info(
             'Init canary: pool_strategy=%s has no external node pools '
-            'to validate; skipping.', diskgraph.pool_strategy)
+            'to validate; skipping.',
+            diskgraph.pool_strategy,
+        )
         return
     from pool.k8s_strategy import K8sPlacementStrategy
     from pool.worker_manager.init_canary import run_init_canary
+
     manager, _sizes_gib, capacity_tiers, manager_pvc_spec = (
-        _build_configured_k8s_manager(config, diskgraph))
+        _build_configured_k8s_manager(config, diskgraph)
+    )
     canary_pvc_specs = []
     for tier in capacity_tiers:
         spec = manager_pvc_spec(tier.tier_ssd_gib)
@@ -3457,7 +3766,8 @@ async def run_configured_init_canary(
     strategy = controller._strategy
     if not isinstance(strategy, K8sPlacementStrategy):
         raise RuntimeError(
-            "pool_strategy='k8s' constructed a non-K8s placement strategy")
+            "pool_strategy='k8s' constructed a non-K8s placement strategy"
+        )
     strategy.restrict_to_available_capacity(
         result.available_cache_tiers,
         ephemeral_available=result.ephemeral_available,
@@ -3477,24 +3787,31 @@ def _configured_k8s_strategy_factory(
     if diskgraph.k8s_pool is None:
         raise ValueError(
             "pool_strategy='k8s' requires data_compute.k8s_pool with "
-            'pool_diskgraph_node_types.')
+            'pool_diskgraph_node_types.'
+        )
     k8s_pool = diskgraph.k8s_pool
     manager, _sizes_gib, capacity_tiers, manager_pvc_spec = (
-        _build_configured_k8s_manager(config, diskgraph))
+        _build_configured_k8s_manager(config, diskgraph)
+    )
 
     def activity_resources(request: PlacementRequest) -> Optional[ResourceSpec]:
         """Shared by cache and ephemeral pods; TRAIN/PREDICT still get 1 GPU."""
         resources = k8s_pool.pool_resources
         if request.activity == SnapshotActivity.TRAIN:
-            return _pool_resource_spec(resources.effective_activity('training'),
-                                       gpu_count=1)
+            return _pool_resource_spec(
+                resources.effective_activity('training'), gpu_count=1
+            )
         if request.activity == SnapshotActivity.PREDICT:
             return _pool_resource_spec(
-                resources.effective_activity('prediction'), gpu_count=1)
+                resources.effective_activity('prediction'), gpu_count=1
+            )
         return _pool_resource_spec(resources.effective_activity(None))
 
     from pool.k8s_strategy import DEFAULT_SSD_MAX_UTILIZATION
-    ssd_max_utilization = k8s_pool.pool_ssd_max_utilization or DEFAULT_SSD_MAX_UTILIZATION
+
+    ssd_max_utilization = (
+        k8s_pool.pool_ssd_max_utilization or DEFAULT_SSD_MAX_UTILIZATION
+    )
     activity_poller_waiter = build_temporal_activity_poller_waiter(config)
     return lambda controller: build_k8s_placement_strategy(
         manager,
@@ -3532,15 +3849,20 @@ async def create_pool_controller(
     persistence = PoolStatePersistence(
         config.pool_state_path,
         empty_state_factory=(
-            lambda: PoolState(placement_state=K8sPlacementState())
-            if strategy_factory is not None else _empty_state_for_strategy(
-                config)),
+            lambda: (
+                PoolState(placement_state=K8sPlacementState())
+                if strategy_factory is not None
+                else _empty_state_for_strategy(config)
+            )
+        ),
     )
     state = await persistence.load()
-    should_scrub_k8s_ghosts = (strategy_factory is not None or
-                               _diskgraph_config(config).pool_strategy == 'k8s')
-    state_changed = (should_scrub_k8s_ghosts
-                     and _scrub_unbacked_k8s_placement_ghosts(state))
+    should_scrub_k8s_ghosts = (
+        strategy_factory is not None or _diskgraph_config(config).pool_strategy == 'k8s'
+    )
+    state_changed = should_scrub_k8s_ghosts and _scrub_unbacked_k8s_placement_ghosts(
+        state
+    )
     if strategy_factory is None:
         normalized_state = _normalize_state_for_strategy(config, state)
         if normalized_state is not None:
@@ -3549,31 +3871,34 @@ async def create_pool_controller(
     if state_changed:
         await persistence.save(state)
     effective_strategy_factory: PlacementStrategyFactory = (
-        strategy_factory if strategy_factory is not None else
-        _configured_strategy_factory(config))
+        strategy_factory
+        if strategy_factory is not None
+        else _configured_strategy_factory(config)
+    )
     controller = PoolController(
         state=state,
         persistence=persistence,
         workflow_status_checker=(
-            workflow_status_checker if workflow_status_checker is not None else
-            build_temporal_workflow_status_checker(config)),
-        local_snapshot_deleter=(local_snapshot_deleter
-                                if local_snapshot_deleter is not None else
-                                build_temporal_snapshot_deleter(config)),
+            workflow_status_checker
+            if workflow_status_checker is not None
+            else build_temporal_workflow_status_checker(config)
+        ),
+        local_snapshot_deleter=(
+            local_snapshot_deleter
+            if local_snapshot_deleter is not None
+            else build_temporal_snapshot_deleter(config)
+        ),
         data_plane_storage_root=config.data_plane_storage_root,
         lifecycle_policy=_configured_lifecycle_policy(config),
         lease_sweep_interval_secs=_configured_lease_sweep_interval_secs(config),
-        worker_stale_threshold_secs=(
-            _configured_worker_stale_threshold_secs(config)),
-        worker_dead_threshold_secs=(
-            _configured_worker_dead_threshold_secs(config)),
+        worker_stale_threshold_secs=(_configured_worker_stale_threshold_secs(config)),
+        worker_dead_threshold_secs=(_configured_worker_dead_threshold_secs(config)),
         maintenance_interval_secs=_configured_maintenance_interval_secs(config),
         tombstone_gc_grace_secs=_configured_tombstone_gc_grace_secs(config),
-        ingest_space_multiplier=_diskgraph_config(
-            config).ingest_space_multiplier,
+        ingest_space_multiplier=_diskgraph_config(config).ingest_space_multiplier,
         snapshot_estimate_buffer_bytes=(
-            (_diskgraph_config(config).snapshot_estimate_buffer_gib or 0) *
-            (1 << 30)),
+            (_diskgraph_config(config).snapshot_estimate_buffer_gib or 0) * (1 << 30)
+        ),
     )
     controller._set_placement_strategy(effective_strategy_factory(controller))
     # Strategy-owned background tasks (e.g. K8sPoolWorkerManager's
@@ -3588,14 +3913,17 @@ async def create_pool_controller(
         except Exception:
             log.exception(
                 'Strategy startup hook failed; controller will boot '
-                'anyway and the periodic maintenance loop is the backstop.')
+                'anyway and the periodic maintenance loop is the backstop.'
+            )
     try:
         # Startup reconciliation may clean already-orphaned external objects,
         # but persisted workers must not age before RPC serving starts.
         await controller._reconcile_once(refresh_silent_workers=False)
     except Exception:
-        log.exception('Placement strategy startup reconcile failed; serving on '
-                      'loaded pool state. Periodic maintenance will retry.')
+        log.exception(
+            'Placement strategy startup reconcile failed; serving on '
+            'loaded pool state. Periodic maintenance will retry.'
+        )
     if start_maintenance_loop:
         controller._start_maintenance_loop()
     return controller

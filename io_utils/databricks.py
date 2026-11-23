@@ -88,39 +88,47 @@ class DatabricksConnectionInfo:
         self.host = validate_host(self.host)
 
     def __repr__(self) -> str:
-        return (f"Databricks connector: "
-                f"(host={self.host}, cluster={self.cluster_id}, "
-                f"warehouse={self.warehouse_id}, catalog={self.catalog})")
+        return (
+            f'Databricks connector: '
+            f'(host={self.host}, cluster={self.cluster_id}, '
+            f'warehouse={self.warehouse_id}, catalog={self.catalog})'
+        )
 
     @staticmethod
-    def _make_credentials(token: Optional[str], client_id: Optional[str],
-                          client_secret: Optional[str]) -> dict[str, SecretStr]:
+    def _make_credentials(
+        token: Optional[str], client_id: Optional[str], client_secret: Optional[str]
+    ) -> dict[str, SecretStr]:
         if token:
-            return {"pat": SecretStr(token)}
+            return {'pat': SecretStr(token)}
         else:
             if client_id is None or client_secret is None:
                 raise RuntimeError(
-                    "either (token) or (client_id and client_secret) "
-                    "must be provided")
+                    'either (token) or (client_id and client_secret) must be provided'
+                )
             return {
-                "client_id": SecretStr(client_id),
-                "client_secret": SecretStr(client_secret),
+                'client_id': SecretStr(client_id),
+                'client_secret': SecretStr(client_secret),
             }
 
     @staticmethod
     def from_remote_secrets() -> 'DatabricksConnectionInfo':
         credentials = get_secrets('kumo-databricks-credentials')
-        host = validate_host(credentials["host"])
-        cluster_id = credentials["cluster_id"]
-        token = credentials.get("pat", None)
+        host = validate_host(credentials['host'])
+        cluster_id = credentials['cluster_id']
+        token = credentials.get('pat', None)
         client_id = credentials.get('client_id', None)
         client_secret = credentials.get('client_secret', None)
         warehouse_id = credentials.get('warehouse_id', '')
         cred = DatabricksConnectionInfo._make_credentials(
-            token=token, client_id=client_id, client_secret=client_secret)
-        return DatabricksConnectionInfo(host=host, cluster_id=cluster_id,
-                                        warehouse_id=warehouse_id, catalog='',
-                                        credentials=cred)
+            token=token, client_id=client_id, client_secret=client_secret
+        )
+        return DatabricksConnectionInfo(
+            host=host,
+            cluster_id=cluster_id,
+            warehouse_id=warehouse_id,
+            catalog='',
+            credentials=cred,
+        )
 
     @staticmethod
     def from_environment() -> 'DatabricksConnectionInfo':
@@ -131,36 +139,45 @@ class DatabricksConnectionInfo:
         client_id = DATABRICKS_CLIENT_ID.parse_value()
         client_secret = DATABRICKS_CLIENT_SECRET.parse_value()
         cred = DatabricksConnectionInfo._make_credentials(
-            token=token, client_id=client_id, client_secret=client_secret)
-        return DatabricksConnectionInfo(host=host, cluster_id=cluster_id,
-                                        warehouse_id=warehouse_id, catalog='',
-                                        credentials=cred)
+            token=token, client_id=client_id, client_secret=client_secret
+        )
+        return DatabricksConnectionInfo(
+            host=host,
+            cluster_id=cluster_id,
+            warehouse_id=warehouse_id,
+            catalog='',
+            credentials=cred,
+        )
 
     @staticmethod
     def get() -> 'DatabricksConnectionInfo':
         if KUMO_TESTING.parse_value():
-            logger.info("Running in test mode; using environment variables "
-                        "for Databricks connection info")
+            logger.info(
+                'Running in test mode; using environment variables '
+                'for Databricks connection info'
+            )
             return DatabricksConnectionInfo.from_environment()
         try:
-            logger.info(
-                "Getting Databricks connection info from secret manager")
+            logger.info('Getting Databricks connection info from secret manager')
             return DatabricksConnectionInfo.from_remote_secrets()
         except SecretAccessException as e:
             logger.error(
-                "Failed to get Databricks connection info from secret manager "
-                "(error_type=%s); using environment variables",
-                type(e).__name__)
+                'Failed to get Databricks connection info from secret manager '
+                '(error_type=%s); using environment variables',
+                type(e).__name__,
+            )
             return DatabricksConnectionInfo.from_environment()
 
 
 class DatabricksClient:
     """A client class for common Databricks operations."""
+
     def __init__(self, connection_info: DatabricksConnectionInfo):
         self.connection_info = connection_info
 
     def _get_databricks_token(
-            self, credentials: Optional[Dict] = None) -> Optional[str]:
+        self, credentials: Optional[Dict] = None
+    ) -> Optional[str]:
         """Get Databricks PAT token from credentials or environment."""
         credentials = credentials or {}
 
@@ -169,30 +186,31 @@ class DatabricksClient:
         if token is not None and isinstance(token, SecretStr):
             token: str = token.get_secret_value()
 
-        client_id = credentials.get('client_id',
-                                    DATABRICKS_CLIENT_ID.parse_value())
+        client_id = credentials.get('client_id', DATABRICKS_CLIENT_ID.parse_value())
         # Extract the secret values
         if client_id is not None and isinstance(client_id, SecretStr):
             client_id: str = client_id.get_secret_value()
 
         if not token and not client_id:  # pragma: no cover
             raise WarehouseMisconfigurationError(
-                "No credentials were provided. Please provide either "
-                f"Databricks PAT with env var `{DATABRICKS_TOKEN.name}` "
-                "or OAuth client ID and secret with "
-                f"env var `{DATABRICKS_CLIENT_ID.name}` and "
-                f"`{DATABRICKS_CLIENT_SECRET.name}`.")
+                'No credentials were provided. Please provide either '
+                f'Databricks PAT with env var `{DATABRICKS_TOKEN.name}` '
+                'or OAuth client ID and secret with '
+                f'env var `{DATABRICKS_CLIENT_ID.name}` and '
+                f'`{DATABRICKS_CLIENT_SECRET.name}`.'
+            )
         return token
 
     def _get_databricks_oauth_secret(
-            self, credentials: Optional[Dict] = None) -> Tuple[str, str]:
+        self, credentials: Optional[Dict] = None
+    ) -> Tuple[str, str]:
         """Get Databricks OAuth credentials from credentials or environment."""
         credentials = credentials or {}
 
-        client_id = credentials.get('client_id',
-                                    DATABRICKS_CLIENT_ID.parse_value())
-        client_secret = credentials.get('client_secret',
-                                        DATABRICKS_CLIENT_SECRET.parse_value())
+        client_id = credentials.get('client_id', DATABRICKS_CLIENT_ID.parse_value())
+        client_secret = credentials.get(
+            'client_secret', DATABRICKS_CLIENT_SECRET.parse_value()
+        )
 
         # Extract the secret values
         if client_id is not None and isinstance(client_id, SecretStr):
@@ -202,18 +220,21 @@ class DatabricksClient:
 
         if not client_id or not client_secret:
             raise WarehouseMisconfigurationError(
-                "Please provide both the service principal client ID "
-                "and the OAuth secret when using OAuth for authentication.")
+                'Please provide both the service principal client ID '
+                'and the OAuth secret when using OAuth for authentication.'
+            )
         return client_id, client_secret
 
     def _process_exception_for_oauth_retry(self, err: Exception):
         """Check if exception is oauth request related."""
         if 'Max retries exceeded with url: /oidc' in str(err):
             raise WarehouseExtendedRetriableError(
-                'Databricks OAuth request failed') from None
+                'Databricks OAuth request failed'
+            ) from None
         else:
             raise WarehouseRetriableError(
-                'Databricks connection request failed') from None
+                'Databricks connection request failed'
+            ) from None
 
     def resolved_auth(self) -> Dict[str, str]:
         """Resolve the single auth method used by SQL and Cloud Fetch."""
@@ -226,8 +247,7 @@ class DatabricksClient:
         else:
             has_oauth = bool(DATABRICKS_CLIENT_ID.parse_value())
         if has_oauth:
-            client_id, client_secret = self._get_databricks_oauth_secret(
-                credentials)
+            client_id, client_secret = self._get_databricks_oauth_secret(credentials)
             return {
                 'auth_type': 'oauth-m2m',
                 'client_id': client_id,
@@ -236,8 +256,9 @@ class DatabricksClient:
         if token:
             return {'auth_type': 'pat', 'token': token}
         raise WarehouseMisconfigurationError(
-            "No credentials were provided. Please provide either "
-            "OAuth client ID and secret or a Databricks PAT.")
+            'No credentials were provided. Please provide either '
+            'OAuth client ID and secret or a Databricks PAT.'
+        )
 
     def workspace_client_kwargs(self) -> Dict[str, str]:
         """Build SDK arguments from the identity used by SQL and Cloud Fetch."""
@@ -246,10 +267,16 @@ class DatabricksClient:
             **self.resolved_auth(),
         }
 
-    @retry(exceptions=WarehouseRetriableError, tries=3, delay=2, backoff=2,
-           logger=logger)
-    @retry(exceptions=WarehouseExtendedRetriableError, tries=7, delay=5,
-           backoff=2, logger=logger)
+    @retry(
+        exceptions=WarehouseRetriableError, tries=3, delay=2, backoff=2, logger=logger
+    )
+    @retry(
+        exceptions=WarehouseExtendedRetriableError,
+        tries=7,
+        delay=5,
+        backoff=2,
+        logger=logger,
+    )
     def create_sql_connection(
         self,
         schema: Optional[str] = None,
@@ -270,23 +297,28 @@ class DatabricksClient:
         from databricks.sql.exc import RequestError
 
         try:
-            staging_kwargs = ({
-                'staging_allowed_local_path':
-                staging_allowed_local_path
-            } if staging_allowed_local_path is not None else {})
+            staging_kwargs = (
+                {'staging_allowed_local_path': staging_allowed_local_path}
+                if staging_allowed_local_path is not None
+                else {}
+            )
             auth = self.resolved_auth()
             if auth['auth_type'] == 'oauth-m2m':
                 # Perform 2-legged OAuth token authentication
-                config = Config(host=self.connection_info.host,
-                                auth_type="oauth-m2m",
-                                client_id=auth['client_id'],
-                                client_secret=auth['client_secret'])
+                config = Config(
+                    host=self.connection_info.host,
+                    auth_type='oauth-m2m',
+                    client_id=auth['client_id'],
+                    client_secret=auth['client_secret'],
+                )
                 creds = oauth_service_principal(config)
                 connection = sql.connect(
                     server_hostname=self.connection_info.host.replace(
-                        'https://', '', 1),
+                        'https://', '', 1
+                    ),
                     http_path=_DATABRICKS_HTTP_PATH_TEMPLATE.format(
-                        warehouse_id=self.connection_info.warehouse_id),
+                        warehouse_id=self.connection_info.warehouse_id
+                    ),
                     credentials_provider=lambda: creds,
                     catalog=self.connection_info.catalog,
                     schema=schema,
@@ -297,9 +329,11 @@ class DatabricksClient:
                 # Perform PAT-based authentication
                 connection = sql.connect(
                     server_hostname=self.connection_info.host.replace(
-                        'https://', '', 1),
+                        'https://', '', 1
+                    ),
                     http_path=_DATABRICKS_HTTP_PATH_TEMPLATE.format(
-                        warehouse_id=self.connection_info.warehouse_id),
+                        warehouse_id=self.connection_info.warehouse_id
+                    ),
                     access_token=auth['token'],
                     catalog=self.connection_info.catalog,
                     schema=schema,
@@ -307,13 +341,11 @@ class DatabricksClient:
                     **_DATABRICKS_CONNECT_RETRY_KWARGS,
                 )
             return connection
-        except (ValueError, MaxRetryError, ConnectionError,
-                RequestError) as err:
+        except (ValueError, MaxRetryError, ConnectionError, RequestError) as err:
             self._process_exception_for_oauth_retry(err)
 
 
-def _execute_query(query: str,
-                   fetch_one: bool = False) -> Union[tuple, pyarrow.Table]:
+def _execute_query(query: str, fetch_one: bool = False) -> Union[tuple, pyarrow.Table]:
     """Execute a SQL query using Databricks warehouse compute.
 
     Args:
@@ -355,27 +387,26 @@ def get_num_rows_databricks(table_path: str) -> int:
         int: The number of rows in the parquet table.
     """
     from io_utils.fsutil import isdir
+
     try:
         if isdir(table_path):
-            query = f"SELECT COUNT(*) FROM parquet.`{table_path}/*.parquet`"
+            query = f'SELECT COUNT(*) FROM parquet.`{table_path}/*.parquet`'
         else:
             # Already checked before that it is a parquet file
-            query = f"SELECT COUNT(*) FROM parquet.`{table_path}`"
+            query = f'SELECT COUNT(*) FROM parquet.`{table_path}`'
 
         result = _execute_query(query, fetch_one=True)
         return result[0] if result else 0
     except Exception as e:
         logger.error(
-            "Failed to get Databricks parquet row count for %s "
-            "(error_type=%s)",
+            'Failed to get Databricks parquet row count for %s (error_type=%s)',
             table_path,
             type(e).__name__,
         )
         return 0
 
 
-def get_parquet_head_databricks(table_path: str,
-                                max_rows: int = 1000) -> pyarrow.Table:
+def get_parquet_head_databricks(table_path: str, max_rows: int = 1000) -> pyarrow.Table:
     """Get the first N rows of a parquet table using Databricks compute.
 
     Args:
@@ -390,9 +421,9 @@ def get_parquet_head_databricks(table_path: str,
         Exception: Any exception that occurs during query execution.
     """
     from io_utils.fsutil import isdir, listdir
+
     if isdir(table_path):
-        query = (f"SELECT * FROM parquet.`{table_path}/*.parquet` "
-                 f"LIMIT {max_rows}")
+        query = f'SELECT * FROM parquet.`{table_path}/*.parquet` LIMIT {max_rows}'
     # file or file prefix with wildcard
     else:
         # databricks sql doesn't expand globs - for now check that wildcard
@@ -402,20 +433,20 @@ def get_parquet_head_databricks(table_path: str,
             dir_list = listdir(osp.dirname(table_path))
             table_path_match = table_path.replace('*', '')
             for file in dir_list:
-                if file.startswith(
-                        table_path_match) and not file.endswith('.parquet'):
-                    raise ValueError(f"Found non-parquet file {file} matching"
-                                     f" {table_path}; unable to load table via "
-                                     f"Databricks SQL.")
+                if file.startswith(table_path_match) and not file.endswith('.parquet'):
+                    raise ValueError(
+                        f'Found non-parquet file {file} matching'
+                        f' {table_path}; unable to load table via '
+                        f'Databricks SQL.'
+                    )
 
-        query = f"SELECT * FROM parquet.`{table_path}` LIMIT {max_rows}"
+        query = f'SELECT * FROM parquet.`{table_path}` LIMIT {max_rows}'
 
     try:
         return _execute_query(query)
     except Exception as e:
         logger.error(
-            "Failed to get Databricks parquet head rows for %s "
-            "(error_type=%s)",
+            'Failed to get Databricks parquet head rows for %s (error_type=%s)',
             table_path,
             type(e).__name__,
         )
@@ -424,4 +455,5 @@ def get_parquet_head_databricks(table_path: str,
                 'Databricks could not read the requested parquet data.'
             ) from None
         raise RuntimeError(
-            'Databricks could not read the requested parquet data.') from None
+            'Databricks could not read the requested parquet data.'
+        ) from None

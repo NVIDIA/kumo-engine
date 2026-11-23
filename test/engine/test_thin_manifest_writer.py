@@ -10,6 +10,7 @@ Validates that the manifest writer produces output the wheel's
 ``open_task_dataset`` can consume (round-trip test), and that the
 written JSON structure matches the design-doc contract.
 """
+
 from __future__ import annotations
 
 import json
@@ -48,26 +49,22 @@ def _make_spec(workdir: str, **overrides) -> TaskDatasetMaterializeSpec:
             'node_types': {
                 'USERS': {
                     'feature_columns': ['AGE'],
-                    'mapper_key':
-                    'USERS',
-                    'time_column':
-                    None,
-                    'column_specs': [{
-                        'column_name': 'AGE',
-                        'dtype': 'float',
-                        'stype': 'numerical',
-                        'encoder': {
-                            'name': 'Numerical'
-                        },
-                        'stats': {
-                            'MEAN': 0.0
-                        },
-                    }],
+                    'mapper_key': 'USERS',
+                    'time_column': None,
+                    'column_specs': [
+                        {
+                            'column_name': 'AGE',
+                            'dtype': 'float',
+                            'stype': 'numerical',
+                            'encoder': {'name': 'Numerical'},
+                            'stats': {'MEAN': 0.0},
+                        }
+                    ],
                 },
             },
             'target_encoder_input': None,
         },
-        graph_node_types=('USERS', ),
+        graph_node_types=('USERS',),
         graph_edge_types=(),
     )
     defaults.update(overrides)
@@ -75,28 +72,16 @@ def _make_spec(workdir: str, **overrides) -> TaskDatasetMaterializeSpec:
 
 
 _MOCK_STATS = {
-    'target_distribution': {
-        '0': 0.5,
-        '1': 0.5
-    },
+    'target_distribution': {'0': 0.5, '1': 0.5},
     'row_count': 12,
 }
 
 _MOCK_STAGE_COUNTS = {'train': 6, 'val': 3, 'test': 3}
 
 _MOCK_STAGE_TABLE_REFS = {
-    'train': {
-        'table_name': 'TT_USERS__train',
-        'storage_kind': 'mock_parquet'
-    },
-    'val': {
-        'table_name': 'TT_USERS__val',
-        'storage_kind': 'mock_parquet'
-    },
-    'test': {
-        'table_name': 'TT_USERS__test',
-        'storage_kind': 'mock_parquet'
-    },
+    'train': {'table_name': 'TT_USERS__train', 'storage_kind': 'mock_parquet'},
+    'val': {'table_name': 'TT_USERS__val', 'storage_kind': 'mock_parquet'},
+    'test': {'table_name': 'TT_USERS__test', 'storage_kind': 'mock_parquet'},
 }
 
 
@@ -136,7 +121,9 @@ def test_manifest_creates_expected_files(workdir: str) -> None:
         'checksums.json',
     }
     actual = set(os.listdir(bundle_dir))
-    assert expected == actual, f'Missing: {expected - actual}, Extra: {actual - expected}'
+    assert expected == actual, (
+        f'Missing: {expected - actual}, Extra: {actual - expected}'
+    )
 
 
 def test_manifest_json_has_required_top_level_fields(workdir: str) -> None:
@@ -189,17 +176,16 @@ def test_metadata_json_content(workdir: str) -> None:
 
 def test_recorded_target_to_entity_paths_round_trip(workdir: str) -> None:
     manifest_path = _write_manifest(
-        workdir, target_to_entity_paths=((('ORDERS', 'USER_ID', 'USERS'), ), ))
+        workdir, target_to_entity_paths=((('ORDERS', 'USER_ID', 'USERS'),),)
+    )
     bundle_dir = os.path.dirname(manifest_path)
     with open(os.path.join(bundle_dir, 'metadata.json')) as f:
         meta = json.load(f)
 
-    assert meta['target_to_entity_paths'] == [[['ORDERS', 'USER_ID',
-                                                'USERS']]]
+    assert meta['target_to_entity_paths'] == [[['ORDERS', 'USER_ID', 'USERS']]]
 
 
-def test_unrecorded_target_to_entity_paths_leave_the_key_absent(
-        workdir: str) -> None:
+def test_unrecorded_target_to_entity_paths_leave_the_key_absent(workdir: str) -> None:
     # A producer that does not record paths must stay distinguishable from
     # one that records that there are none: the reader falls back to the
     # graph edge list on the first and trusts the empty list on the second.
@@ -235,7 +221,7 @@ def test_graph_runtime_metadata_json_content(workdir: str) -> None:
     manifest_path = _write_manifest(
         workdir,
         graph_node_types=('USERS', 'PRODUCTS'),
-        graph_edge_types=(('USERS', 'BOUGHT', 'PRODUCTS'), ),
+        graph_edge_types=(('USERS', 'BOUGHT', 'PRODUCTS'),),
         feature_schema=schema,
     )
     bundle_dir = os.path.dirname(manifest_path)
@@ -249,11 +235,7 @@ def test_graph_runtime_metadata_json_content(workdir: str) -> None:
     assert grm['graph_index_path'] == '/data/test_graph/v1'
     assert grm['node_types'] == ['USERS', 'PRODUCTS']
     assert len(grm['edge_types']) == 1
-    assert grm['edge_types'][0] == {
-        'src': 'USERS',
-        'rel': 'BOUGHT',
-        'dst': 'PRODUCTS'
-    }
+    assert grm['edge_types'][0] == {'src': 'USERS', 'rel': 'BOUGHT', 'dst': 'PRODUCTS'}
 
 
 def test_split_info_json_content(workdir: str) -> None:
@@ -364,9 +346,7 @@ def test_no_partial_state_on_failure(workdir: str) -> None:
         graph_index_path='/data/g/v1',
         stats={'ok': True},
         stage_counts={'train': 1},
-        stage_table_refs={'train': {
-            'table_name': 't'
-        }},
+        stage_table_refs={'train': {'table_name': 't'}},
         has_time=False,
         has_weight=False,
     )
@@ -385,8 +365,9 @@ def _bundle(workdir: str, **kwargs) -> str:
         has_weight=False,
         **kwargs,
     )
-    with open(os.path.join(os.path.dirname(manifest_path),
-                           'runtime_manifest.json'), 'w') as f:
+    with open(
+        os.path.join(os.path.dirname(manifest_path), 'runtime_manifest.json'), 'w'
+    ) as f:
         json.dump({}, f)
     return manifest_path
 
@@ -397,8 +378,11 @@ def test_column_stats_live_in_their_own_sidecar(workdir, monkeypatch):
     manifest_path = _bundle(workdir)
     read = []
     original = task_dataset._load_manifest_json
-    monkeypatch.setattr(task_dataset, '_load_manifest_json',
-                        lambda path: read.append(path) or original(path))
+    monkeypatch.setattr(
+        task_dataset,
+        '_load_manifest_json',
+        lambda path: read.append(path) or original(path),
+    )
 
     manifest = DiskgraphTaskManifest.load(manifest_path)
 
@@ -437,7 +421,8 @@ def test_bundles_with_inline_column_stats_still_fit(workdir):
 
     manifest = DiskgraphTaskManifest.load(manifest_path)
     fitted = ResolvedNumericalTask.from_manifest(
-        manifest, name='job', column_stats=manifest.load_column_stats())
+        manifest, name='job', column_stats=manifest.load_column_stats()
+    )
     layout = ResolvedNumericalTask.from_manifest(manifest, name='job')
 
     encoders = collect_resolved_encoders(fitted)

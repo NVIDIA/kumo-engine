@@ -34,6 +34,7 @@ class PredictiveQueryFieldMetadata(FormatterMetadata):
     require_primary_key (bool = False): Whether to require that the field
         reference a column (allows fields like train_start_offset: <scalar>)
     """
+
     condition: FieldRequirement
     aggregation: FieldRequirement
     require_primary_key: bool = False
@@ -47,6 +48,7 @@ class PredictiveQueryV2Config:
     """Config class for PredictiveQueryV2.
     This class can be used to create a PredictiveQueryV2 object.
     """
+
     name: str
     graph: GraphConfig
     validated_predictive_query: ValidatedPredictiveQuery
@@ -69,16 +71,19 @@ class PredictiveQueryV2Config:
         # functionalities compared to kumo.validation.ValidationResponse
         # So we overwrite the loading here
         if isinstance(self.validated_predictive_query, dict):
-            self.validated_predictive_query[
-                'validation_response'] = from_json_dict(
-                    self.validated_predictive_query['validation_response'],
-                    ValidationResponse)
+            self.validated_predictive_query['validation_response'] = from_json_dict(
+                self.validated_predictive_query['validation_response'],
+                ValidationResponse,
+            )
         else:
             if not isinstance(
-                    self.validated_predictive_query.validation_response,
-                    ValidationResponse):
-                self.validated_predictive_query.validation_response = ValidationResponse(
-                ).merge(self.validated_predictive_query.validation_response)
+                self.validated_predictive_query.validation_response, ValidationResponse
+            ):
+                self.validated_predictive_query.validation_response = (
+                    ValidationResponse().merge(
+                        self.validated_predictive_query.validation_response
+                    )
+                )
 
     def get_bp_entity_col_name(self) -> str:
         """
@@ -86,7 +91,9 @@ class PredictiveQueryV2Config:
         """
         # isort: off
         from kumo.pquery.batch_pred_table_generator import (
-            PredictionTableGeneratorV2, )
+            PredictionTableGeneratorV2,
+        )
+
         # isort: on
         return PredictionTableGeneratorV2.ENTITY
 
@@ -131,12 +138,14 @@ class PredictiveQueryV2Config:
         return dict_to_yaml(arg_dict)
 
     def with_credentials(
-            self, credentials: Dict[str, Dict]) -> 'PredictiveQueryV2Config':
+        self, credentials: Dict[str, Dict]
+    ) -> 'PredictiveQueryV2Config':
         """
         Sets the credentials in the graph and updates the config.
         """
         from kumo.graph import Graph
         from kumo.pquery.predictive_query_validator import _set_pq_credentials
+
         graph = Graph.from_config(self.graph)
         _set_pq_credentials(
             self.validated_predictive_query,
@@ -159,7 +168,9 @@ class PredictiveQueryV2Config:
         (new approach) and num_forecasts (old approach)"""
         return (
             self.validated_predictive_query.problem_type == ProblemType.FORECAST
-            or self.forecast_length is not None and self.forecast_length > 1)
+            or self.forecast_length is not None
+            and self.forecast_length > 1
+        )
 
 
 @kumo_dataclass
@@ -234,13 +245,14 @@ class PredictiveQueryConfigBase:
         """
         from kumo.graph import Graph
         from kumo.pquery.utils import validator_kwargs
+
         assert self.query_string is not None
         parsed_query = PQLParser().to_parsed_predictive_query(self.query_string)
         graph = Graph.from_config(self.graph)
         validator = PredictiveQueryValidator(
-            **validator_kwargs(graph, query_string=self.query_string))
-        predictive_query, response = validator.validate_predictive_query(
-            parsed_query)
+            **validator_kwargs(graph, query_string=self.query_string)
+        )
+        predictive_query, response = validator.validate_predictive_query(parsed_query)
         if not response.ok:
             # Should not happen unless the config is corrupted
             raise ValueError(response.message())

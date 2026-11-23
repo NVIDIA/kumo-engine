@@ -33,6 +33,7 @@ def parse_query_string_v2(
     # TODO(jinu): add a pquery_str parameter to PredictiveQueryV2Config
     # don't split into entity, target and whatif in the config for pqueryv2
     from kumo.pquery.utils import validator_kwargs
+
     try:
         parsed_query = newPQLParser().to_parsed_predictive_query(query_string)
     except ValueError as error:
@@ -43,24 +44,25 @@ def parse_query_string_v2(
         # `from None` keeps the raw query out of the exception chain, matching
         # the parser-input handling at rest/driver/pquery_logic.py:200-207.
         raise ValidationException(
-            title="Invalid predictive query",
+            title='Invalid predictive query',
             message=str(error),
         ) from None
     validator = PredictiveQueryValidator(
-        **validator_kwargs(graph, query_string=query_string))
-    validated_query, response = validator.validate_predictive_query(
-        parsed_query)
+        **validator_kwargs(graph, query_string=query_string)
+    )
+    validated_query, response = validator.validate_predictive_query(parsed_query)
     if not response.ok:
         # Should not happen unless the config is corrupted
         raise ValidationException(
-            title="Invalid predictive query",
+            title='Invalid predictive query',
             message=response.message(),
         )
 
     assert validated_query is not None
     num_forecasts = validated_query.num_forecasts
-    forecast_length = (num_forecasts if validated_query.problem_type
-                       == ProblemType.FORECAST else None)
+    forecast_length = (
+        num_forecasts if validated_query.problem_type == ProblemType.FORECAST else None
+    )
     return PredictiveQueryV2Config(
         name=name,
         graph=graph_config or graph.config(),

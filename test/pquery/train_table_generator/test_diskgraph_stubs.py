@@ -7,6 +7,7 @@ Each stub corresponds to a capability the Spark path handles but DG Rust
 does not. The guards fire only on the specific trigger so unrelated DG
 jobs (e.g., node-pred regression in test_diskgraph_e2e.py) keep passing.
 """
+
 from unittest.mock import MagicMock
 
 import pytest
@@ -67,8 +68,7 @@ def test_train_table_parity_raises_on_static_node_pred_with_time_split():
     combo['task_type'] = TaskType.REGRESSION
     combo['query_type'] = QueryType.STATIC
     combo['split'] = MagicMock(spec=TimeSplit)
-    with pytest.raises(UnsupportedInDiskgraphError,
-                       match='static split filtering'):
+    with pytest.raises(UnsupportedInDiskgraphError, match='static split filtering'):
         _check_diskgraph_train_table_parity(**combo)
 
 
@@ -93,8 +93,9 @@ def test_downsampling_parity_no_raise_when_disabled():
 
 
 def test_downsampling_parity_raises_when_enabled():
-    with pytest.raises(UnsupportedInDiskgraphError,
-                       match='DISKGRAPH_PRODUCER_DOWNSAMPLING_ENABLED'):
+    with pytest.raises(
+        UnsupportedInDiskgraphError, match='DISKGRAPH_PRODUCER_DOWNSAMPLING_ENABLED'
+    ):
         _check_diskgraph_downsampling_parity(True)
 
 
@@ -112,24 +113,26 @@ class _FakeDiskgraphTargetCategoryLimitError(_FakeDiskgraphDataError):
 
 def _patch_diskgraph_errors(monkeypatch):
     monkeypatch.setattr(
-        "kumo.pquery.train_table_generator.DiskgraphDataError",
+        'kumo.pquery.train_table_generator.DiskgraphDataError',
         _FakeDiskgraphDataError,
     )
     monkeypatch.setattr(
-        "kumo.pquery.train_table_generator.DiskgraphSystemError",
+        'kumo.pquery.train_table_generator.DiskgraphSystemError',
         _FakeDiskgraphSystemError,
     )
     monkeypatch.setattr(
-        "kumo.pquery.train_table_generator.DiskgraphTargetCategoryLimitError",
+        'kumo.pquery.train_table_generator.DiskgraphTargetCategoryLimitError',
         _FakeDiskgraphTargetCategoryLimitError,
     )
 
 
-@pytest.mark.parametrize("error_cls",
-                         [_FakeDiskgraphDataError, _FakeDiskgraphSystemError])
-@pytest.mark.parametrize("marker", _DISKGRAPH_ZERO_ROWS_MARKERS)
+@pytest.mark.parametrize(
+    'error_cls', [_FakeDiskgraphDataError, _FakeDiskgraphSystemError]
+)
+@pytest.mark.parametrize('marker', _DISKGRAPH_ZERO_ROWS_MARKERS)
 def test_diskgraph_zero_row_error_raises_training_table_generation_error(
-        monkeypatch, error_cls, marker):
+    monkeypatch, error_cls, marker
+):
     # Both the legacy ``execute_tt_plan returned zero rows`` signal and the
     # TT-NG streaming ``execute_tt_gen`` 0-byte-parquet EOF signal must
     # reclassify to the graceful "Empty training table" validation error.
@@ -138,16 +141,16 @@ def test_diskgraph_zero_row_error_raises_training_table_generation_error(
     with pytest.raises(TrainingTableGenerationError) as exc_info:
         _raise_training_table_generation_error_for_diskgraph_empty_result(
             error_cls(marker),
-            entity_table="patients",
+            entity_table='patients',
             timestamp_count=1296,
         )
 
     error = exc_info.value.as_error()
-    assert error.title == "Empty training table"
-    assert "zero training rows" in error.message
+    assert error.title == 'Empty training table'
+    assert 'zero training rows' in error.message
     assert "entity table 'patients'" in error.message
-    assert "1296 anchor timestamps" in error.message
-    assert "ingested graph edges" in error.message
+    assert '1296 anchor timestamps' in error.message
+    assert 'ingested graph edges' in error.message
 
 
 def test_diskgraph_zero_row_message_handles_static_query_context(monkeypatch):
@@ -155,21 +158,21 @@ def test_diskgraph_zero_row_message_handles_static_query_context(monkeypatch):
 
     message = _diskgraph_empty_train_table_error_message(
         _FakeDiskgraphDataError(_DISKGRAPH_ZERO_ROWS_MARKERS[0]),
-        entity_table="users",
+        entity_table='users',
         timestamp_count=0,
     )
 
     assert message is not None
-    assert "without temporal anchor timestamps" in message
-    assert "across 0 anchor timestamps" not in message
+    assert 'without temporal anchor timestamps' in message
+    assert 'across 0 anchor timestamps' not in message
 
 
 def test_diskgraph_non_zero_row_error_is_not_reclassified(monkeypatch):
     _patch_diskgraph_errors(monkeypatch)
 
     result = _raise_training_table_generation_error_for_diskgraph_empty_result(
-        _FakeDiskgraphDataError("column missing"),
-        entity_table="patients",
+        _FakeDiskgraphDataError('column missing'),
+        entity_table='patients',
         timestamp_count=1296,
     )
 
@@ -186,37 +189,37 @@ def test_diskgraph_non_zero_row_error_is_not_reclassified(monkeypatch):
 # production code calls and assert the wrapping behavior at that seam.
 
 
-def test_seam_wraps_diskgraph_zero_row_error_as_training_table_error(
-        monkeypatch):
+def test_seam_wraps_diskgraph_zero_row_error_as_training_table_error(monkeypatch):
     _patch_diskgraph_errors(monkeypatch)
 
     def fake_generate_train_table():
         raise _FakeDiskgraphDataError(
-            f"{_DISKGRAPH_ZERO_ROWS_MARKERS[0]} for query foo")
+            f'{_DISKGRAPH_ZERO_ROWS_MARKERS[0]} for query foo'
+        )
 
     with pytest.raises(TrainingTableGenerationError) as exc_info:
         _invoke_diskgraph_train_table_seam(
             fake_generate_train_table,
-            entity_table="patients",
+            entity_table='patients',
             timestamp_count=42,
         )
 
     error = exc_info.value.as_error()
-    assert error.title == "Empty training table"
+    assert error.title == 'Empty training table'
     assert "entity table 'patients'" in error.message
-    assert "42 anchor timestamps" in error.message
+    assert '42 anchor timestamps' in error.message
     # The original DiskGraph error must be preserved as the cause so
     # downstream loggers / Sentry see the full traceback.
     assert isinstance(exc_info.value.__cause__, _FakeDiskgraphDataError)
 
 
-def test_seam_classifies_target_category_limit_as_terminal_validation(
-        monkeypatch):
+def test_seam_classifies_target_category_limit_as_terminal_validation(monkeypatch):
     _patch_diskgraph_errors(monkeypatch)
 
     def fake_generate_train_table():
         raise _FakeDiskgraphTargetCategoryLimitError(
-            'TARGET1 exact category limit exceeded')
+            'TARGET1 exact category limit exceeded'
+        )
 
     with pytest.raises(TrainingTableGenerationError) as exc_info:
         _invoke_diskgraph_train_table_seam(
@@ -229,8 +232,7 @@ def test_seam_classifies_target_category_limit_as_terminal_validation(
     assert error.title == 'Train-table target category limit exceeded'
     assert 'no usable train table statistics artifact was published' in error.message
     assert 'Retrying with unchanged data cannot succeed' in error.message
-    assert isinstance(exc_info.value.__cause__,
-                      _FakeDiskgraphTargetCategoryLimitError)
+    assert isinstance(exc_info.value.__cause__, _FakeDiskgraphTargetCategoryLimitError)
 
 
 def test_seam_does_not_classify_system_error_by_message(monkeypatch):
@@ -238,10 +240,10 @@ def test_seam_does_not_classify_system_error_by_message(monkeypatch):
 
     def fake_generate_train_table():
         raise _FakeDiskgraphSystemError(
-            'cannot produce complete train-table column stats')
+            'cannot produce complete train-table column stats'
+        )
 
-    with pytest.raises(_FakeDiskgraphSystemError,
-                       match='cannot produce complete'):
+    with pytest.raises(_FakeDiskgraphSystemError, match='cannot produce complete'):
         _invoke_diskgraph_train_table_seam(
             fake_generate_train_table,
             entity_table='patients',
@@ -253,12 +255,12 @@ def test_seam_passes_through_unrelated_diskgraph_error(monkeypatch):
     _patch_diskgraph_errors(monkeypatch)
 
     def fake_generate_train_table():
-        raise _FakeDiskgraphDataError("schema mismatch on edge table")
+        raise _FakeDiskgraphDataError('schema mismatch on edge table')
 
-    with pytest.raises(_FakeDiskgraphDataError, match="schema mismatch"):
+    with pytest.raises(_FakeDiskgraphDataError, match='schema mismatch'):
         _invoke_diskgraph_train_table_seam(
             fake_generate_train_table,
-            entity_table="patients",
+            entity_table='patients',
             timestamp_count=42,
         )
 
@@ -266,11 +268,11 @@ def test_seam_passes_through_unrelated_diskgraph_error(monkeypatch):
 def test_seam_returns_result_when_call_succeeds(monkeypatch):
     _patch_diskgraph_errors(monkeypatch)
 
-    sentinel = ("output_path", "manifest_path")
+    sentinel = ('output_path', 'manifest_path')
 
     result = _invoke_diskgraph_train_table_seam(
         lambda: sentinel,
-        entity_table="patients",
+        entity_table='patients',
         timestamp_count=42,
     )
 

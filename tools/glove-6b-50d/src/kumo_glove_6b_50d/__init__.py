@@ -3,4 +3,4 @@
 # SPDX-License-Identifier: Apache-2.0
 from pathlib import Path
 
-ROOT = str(Path(__file__).parent / "data")
+ROOT = str(Path(__file__).parent / 'data')

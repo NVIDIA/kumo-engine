@@ -25,30 +25,30 @@ from temporalio_commons.process_pool_utils import HealingProcessPoolExecutor
 
 
 def test_write_artifacts_to_customer_sanitizes_connector_error(
-        caplog: pytest.LogCaptureFixture) -> None:
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     provider_payload = 'provider said password=customer-secret-token'
     resolved_connectors = {PredictionArtifactType.PREDICTIONS: [Mock()]}
 
     with (
-            patch(
-                'rest.backends.ml_backend.activities.parquet_io_activities.'
-                '_write_artifacts_to_customer',
-                side_effect=ConnectorError(message=provider_payload),
+        patch(
+            'rest.backends.ml_backend.activities.parquet_io_activities.'
+            '_write_artifacts_to_customer',
+            side_effect=ConnectorError(message=provider_payload),
+        ),
+        patch(
+            'rest.backends.ml_backend.activities.parquet_io_activities.'
+            '_resolve_output_connectors',
+            return_value=resolved_connectors,
+        ),
+        patch(
+            'rest.backends.ml_backend.activities.parquet_io_activities.activity.info',
+            return_value=SimpleNamespace(
+                attempt=1,
+                activity_type='write-artifacts',
+                activity_id='test-activity',
             ),
-            patch(
-                'rest.backends.ml_backend.activities.parquet_io_activities.'
-                '_resolve_output_connectors',
-                return_value=resolved_connectors,
-            ),
-            patch(
-                'rest.backends.ml_backend.activities.parquet_io_activities.'
-                'activity.info',
-                return_value=SimpleNamespace(
-                    attempt=1,
-                    activity_type='write-artifacts',
-                    activity_id='test-activity',
-                ),
-            ),
+        ),
     ):
         with pytest.raises(ArtifactExportError) as exc_info:
             write_artifacts_to_customer(Mock(), {})
@@ -56,7 +56,8 @@ def test_write_artifacts_to_customer_sanitizes_connector_error(
     error = exc_info.value
     assert error.get_user_message() == (
         'The selected output connector rejected the write. '
-        'Verify its native target permissions.')
+        'Verify its native target permissions.'
+    )
     assert error.__cause__ is None
     assert provider_payload not in str(error)
     assert provider_payload not in caplog.text
@@ -95,27 +96,25 @@ def test_write_artifacts_resolves_connector_inside_activity() -> None:
         return []
 
     with (
-            patch(
-                'rest.backends.data_backend.connector_broker.'
-                'connector_credential_broker.resolve',
-                return_value=resolved,
-            ) as resolve,
-            patch(
-                'rest.backends.ml_backend.activities.parquet_io_activities.'
-                '_write_artifacts_to_customer',
-                side_effect=write,
+        patch(
+            'rest.backends.data_backend.connector_broker.'
+            'connector_credential_broker.resolve',
+            return_value=resolved,
+        ) as resolve,
+        patch(
+            'rest.backends.ml_backend.activities.parquet_io_activities.'
+            '_write_artifacts_to_customer',
+            side_effect=write,
+        ),
+        patch.object(HealingProcessPoolExecutor, 'submit') as process_pool_submit,
+        patch(
+            'rest.backends.ml_backend.activities.parquet_io_activities.activity.info',
+            return_value=SimpleNamespace(
+                attempt=1,
+                activity_type='write-artifacts',
+                activity_id='test-activity',
             ),
-            patch.object(HealingProcessPoolExecutor, 'submit') as
-            process_pool_submit,
-            patch(
-                'rest.backends.ml_backend.activities.parquet_io_activities.'
-                'activity.info',
-                return_value=SimpleNamespace(
-                    attempt=1,
-                    activity_type='write-artifacts',
-                    activity_id='test-activity',
-                ),
-            ),
+        ),
     ):
         assert write_artifacts_to_customer(input, {}) == []
 

@@ -31,7 +31,8 @@ def test_hosted_offsets_use_the_shared_error(start, end):
     end_offset = pd.DateOffset(days=end)
     shared = validate_train_offsets(start_offset, end_offset)
     response = PreTrainTableValidator.validate_train_offsets(
-        None, start_offset, end_offset)
+        None, start_offset, end_offset
+    )
     assert response.errors == ([] if shared is None else [shared])
 
 
@@ -39,22 +40,21 @@ def test_hosted_offsets_use_the_shared_error(start, end):
 def test_hosted_anchors_use_the_shared_error(year):
     anchor, minimum = pd.Timestamp(f'{year}-01-01'), pd.Timestamp('2024-01-01')
     shared = validate_anchor_time(anchor, minimum, 'orders')
-    response = PrePredTableValidator().validate_anchor_time(
-        anchor, minimum, 'orders')
+    response = PrePredTableValidator().validate_anchor_time(anchor, minimum, 'orders')
     assert response.errors == ([] if shared is None else [shared])
 
 
-@pytest.mark.parametrize('classes',
-                         [[], [False], [True], ['only'], [False, True]])
+@pytest.mark.parametrize('classes', [[], [False], [True], ['only'], [False, True]])
 def test_hosted_label_cardinality_uses_the_shared_error(classes):
     validator = object.__new__(TrainTableValidator)
     validator.query = SimpleNamespace(problem_type=ProblemType.CLASSIFY)
     stats = SimpleNamespace(
-        num_targets=max(1, len(classes)), target_distribution={
+        num_targets=max(1, len(classes)),
+        target_distribution={
             'percentage': dict.fromkeys(classes, 1.0),
-        })
-    expected = validate_target_classes(stats.num_targets, classes,
-                                       classify=True)
+        },
+    )
+    expected = validate_target_classes(stats.num_targets, classes, classify=True)
     assert validator.validate_class_number(stats).errors == expected
 
 
@@ -72,6 +72,7 @@ def test_hosted_generation_retains_structured_quality_error():
         raise GenerationValidationError(error)
 
     with pytest.raises(TrainingTableGenerationError) as caught:
-        _invoke_diskgraph_train_table_seam(generate, entity_table='users',
-                                           timestamp_count=1)
+        _invoke_diskgraph_train_table_seam(
+            generate, entity_table='users', timestamp_count=1
+        )
     assert caught.value.as_error() == error

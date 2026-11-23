@@ -52,84 +52,83 @@ def test_csv_connector_config():
     assert connector == Connector.from_config(connector.config())
 
 
-def test_export_table_projects_selected_columns_and_preserves_na_values(
-        tmp_path):
-    source_dir = tmp_path / "source"
+def test_export_table_projects_selected_columns_and_preserves_na_values(tmp_path):
+    source_dir = tmp_path / 'source'
     source_dir.mkdir()
     # The connector writes under the deploy_env-derived data persist dir
     # (kumo.data.get_persist_dir); read exported artifacts back from there.
     persist_dir = Path(get_persist_dir())
 
-    table_name = "providers"
-    csv_path = source_dir / f"{table_name}.csv"
-    with csv_path.open("w") as f:
-        f.write("id,amount,nullable_code,zip\n")
+    table_name = 'providers'
+    csv_path = source_dir / f'{table_name}.csv'
+    with csv_path.open('w') as f:
+        f.write('id,amount,nullable_code,zip\n')
         for i in range(60_000):
-            nullable_code = "?" if i == 7 else f"code_{i}"
-            f.write(f"{i},{i * 10},{nullable_code},{100_000_000 + i}\n")
-        f.write("60000,600000,code_60000,3062223ND\n")
+            nullable_code = '?' if i == 7 else f'code_{i}'
+            f.write(f'{i},{i * 10},{nullable_code},{100_000_000 + i}\n')
+        f.write('60000,600000,code_60000,3062223ND\n')
 
-    connector = CSVConnector("csv", root_dir=str(source_dir), na_values="?")
+    connector = CSVConnector('csv', root_dir=str(source_dir), na_values='?')
     table_fp = IngestedTableFingerprint(
         connector_name=connector.name,
         source_name=table_name,
         cols={
-            "id": Dtype.int64,
-            "amount": Dtype.int64,
-            "nullable_code": Dtype.string,
+            'id': Dtype.int64,
+            'amount': Dtype.int64,
+            'nullable_code': Dtype.string,
         },
-        pkey="id",
+        pkey='id',
         time_col=None,
         end_time_col=None,
     )
 
-    metrics = connector.export_table(table_name, table_fp, "v1")
+    metrics = connector.export_table(table_name, table_fp, 'v1')
 
-    export_path = persist_dir / "ingest" / table_fp.ingest_path_fpid / "v1"
+    export_path = persist_dir / 'ingest' / table_fp.ingest_path_fpid / 'v1'
     table = pq.read_table(export_path)
     assert metrics.num_rows == 60_001
-    assert table.column_names == ["id", "amount", "nullable_code"]
-    assert table.schema.field("id").type == pa.int64()
-    assert table.schema.field("amount").type == pa.int64()
-    assert table.schema.field("nullable_code").type == pa.string()
-    assert table.column("nullable_code").null_count == 1
+    assert table.column_names == ['id', 'amount', 'nullable_code']
+    assert table.schema.field('id').type == pa.int64()
+    assert table.schema.field('amount').type == pa.int64()
+    assert table.schema.field('nullable_code').type == pa.string()
+    assert table.column('nullable_code').null_count == 1
 
 
 def test_export_table_allows_decimal_formatted_int_values(tmp_path):
-    source_dir = tmp_path / "source"
+    source_dir = tmp_path / 'source'
     source_dir.mkdir()
     # The connector writes under the deploy_env-derived data persist dir
     # (kumo.data.get_persist_dir); read exported artifacts back from there.
     persist_dir = Path(get_persist_dir())
 
-    table_name = "transactions"
-    csv_path = source_dir / f"{table_name}.csv"
-    with csv_path.open("w") as f:
-        f.write("id,amount,zip\n")
-        f.write("1,10.0,100000000\n")
-        f.write("2,11.0,3062223ND\n")
+    table_name = 'transactions'
+    csv_path = source_dir / f'{table_name}.csv'
+    with csv_path.open('w') as f:
+        f.write('id,amount,zip\n')
+        f.write('1,10.0,100000000\n')
+        f.write('2,11.0,3062223ND\n')
 
-    connector = CSVConnector("csv", root_dir=str(source_dir))
+    connector = CSVConnector('csv', root_dir=str(source_dir))
     table_fp = IngestedTableFingerprint(
         connector_name=connector.name,
         source_name=table_name,
         cols={
-            "id": Dtype.int64,
-            "amount": Dtype.int64,
+            'id': Dtype.int64,
+            'amount': Dtype.int64,
         },
-        pkey="id",
+        pkey='id',
         time_col=None,
         end_time_col=None,
     )
 
-    metrics = connector.export_table(table_name, table_fp, "v1")
+    metrics = connector.export_table(table_name, table_fp, 'v1')
 
-    export_path = persist_dir / "ingest" / table_fp.ingest_path_fpid / "v1"
+    export_path = persist_dir / 'ingest' / table_fp.ingest_path_fpid / 'v1'
     table = pq.read_table(export_path)
     assert metrics.num_rows == 2
-    assert table.column_names == ["id", "amount"]
-    assert table.schema.field("id").type == pa.int64()
-    assert table.schema.field("amount").type == pa.int64()
+    assert table.column_names == ['id', 'amount']
+    assert table.schema.field('id').type == pa.int64()
+    assert table.schema.field('amount').type == pa.int64()
 
 
 def test_export_table_handles_multi_block_and_multi_file_inputs(tmp_path):
@@ -137,13 +136,13 @@ def test_export_table_handles_multi_block_and_multi_file_inputs(tmp_path):
     integer columns with decimal-formatted values in later blocks must not
     crash schema inference, alphanumeric values in unselected columns must
     not affect the output, and a projected string column must round-trip."""
-    source_dir = tmp_path / "source"
+    source_dir = tmp_path / 'source'
     source_dir.mkdir()
     # The connector writes under the deploy_env-derived data persist dir
     # (kumo.data.get_persist_dir); read exported artifacts back from there.
     persist_dir = Path(get_persist_dir())
 
-    table_name = "events"
+    table_name = 'events'
     # Sharded CSVs live in a directory matching ``table_name``. The first
     # shard's "amount" column looks like int64; the second shard contains
     # decimal-formatted ints, which would force a schema mismatch at the
@@ -152,39 +151,39 @@ def test_export_table_handles_multi_block_and_multi_file_inputs(tmp_path):
     table_dir = source_dir / table_name
     table_dir.mkdir()
     shards = [
-        [f"{i},10,9876ABC{i},code_{i}\n" for i in range(2000)],
-        [f"{2000 + i},10.5,9876ABC{i},code_{i}\n" for i in range(2000)],
+        [f'{i},10,9876ABC{i},code_{i}\n' for i in range(2000)],
+        [f'{2000 + i},10.5,9876ABC{i},code_{i}\n' for i in range(2000)],
     ]
     for shard_idx, rows in enumerate(shards):
-        csv_path = table_dir / f"shard_{shard_idx}.csv"
-        with csv_path.open("w") as f:
-            f.write("id,amount,extra,label\n")
+        csv_path = table_dir / f'shard_{shard_idx}.csv'
+        with csv_path.open('w') as f:
+            f.write('id,amount,extra,label\n')
             f.writelines(rows)
 
-    connector = CSVConnector("csv", root_dir=str(source_dir))
+    connector = CSVConnector('csv', root_dir=str(source_dir))
     table_fp = IngestedTableFingerprint(
         connector_name=connector.name,
         source_name=table_name,
         cols={
-            "id": Dtype.int64,
-            "amount": Dtype.int64,
-            "label": Dtype.string,
+            'id': Dtype.int64,
+            'amount': Dtype.int64,
+            'label': Dtype.string,
         },
-        pkey="id",
+        pkey='id',
         time_col=None,
         end_time_col=None,
     )
 
-    metrics = connector.export_table(table_name, table_fp, "v1")
+    metrics = connector.export_table(table_name, table_fp, 'v1')
 
-    export_path = persist_dir / "ingest" / table_fp.ingest_path_fpid / "v1"
+    export_path = persist_dir / 'ingest' / table_fp.ingest_path_fpid / 'v1'
     table = pq.read_table(export_path)
     assert metrics.num_rows == 4000
     # Unselected "extra" column must not appear in the output.
-    assert table.column_names == ["id", "amount", "label"]
-    assert table.schema.field("id").type == pa.int64()
-    assert table.schema.field("amount").type == pa.int64()
-    assert table.schema.field("label").type == pa.string()
+    assert table.column_names == ['id', 'amount', 'label']
+    assert table.schema.field('id').type == pa.int64()
+    assert table.schema.field('amount').type == pa.int64()
+    assert table.schema.field('label').type == pa.string()
 
 
 def test_load_csv():
@@ -203,9 +202,7 @@ def test_load_csv():
 
     assert len(df.columns) == len(cols)
     assert df.columns.values.tolist() == [col[0] for col in cols]
-    assert df.dtypes.values.tolist() == [
-        dtype_to_pandas(col[2]) for col in cols
-    ]
+    assert df.dtypes.values.tolist() == [dtype_to_pandas(col[2]) for col in cols]
 
     chunk = connector.read_table('TRANS', pkey, cols, num_rows=5)
     assert df[:5].equals(chunk)
@@ -242,9 +239,7 @@ def test_load_csv_sample():
     assert df.shape[0] == 12
     assert len(df.columns) == len(cols)
     assert df.columns.values.tolist() == [col[0] for col in cols]
-    assert df.dtypes.values.tolist() == [
-        dtype_to_pandas(col[2]) for col in cols
-    ]
+    assert df.dtypes.values.tolist() == [dtype_to_pandas(col[2]) for col in cols]
 
     df = connector.read_table('TRANS', pkey, cols, num_rows=1234)
     assert df.shape[0] == 1234
@@ -260,8 +255,8 @@ def test_detect_csv_sep(tmp_path: Path):
     path = osp.join(path, '..', 'csv_data', 'FINANCIAL', 'TRANS.csv')
     assert detect_csv_sep(path) == ';'
 
-    path = (tmp_path / "text.csv").as_posix()
-    with open(path, "w") as f:
+    path = (tmp_path / 'text.csv').as_posix()
+    with open(path, 'w') as f:
         f.write('Adventure|Animation|Children|Comedy|Fantasy')
     assert detect_csv_sep(path) == '|'
 
@@ -269,10 +264,11 @@ def test_detect_csv_sep(tmp_path: Path):
 def test_detect_csv_sep_for_empty_file(tempdir):
     fsutil.makedirs(tempdir.name)
     file_path = os.path.join(tempdir.name, 'no_data.csv')
-    with open(file_path, "w") as f:
+    with open(file_path, 'w') as f:
         f.write('\n')
-    with pytest.raises(NoValidSeparatorFoundError,
-                       match="Could not auto-detect a delimiter"):
+    with pytest.raises(
+        NoValidSeparatorFoundError, match='Could not auto-detect a delimiter'
+    ):
         assert detect_csv_sep(file_path)
     fsutil.rm(tempdir.name)
 
@@ -280,20 +276,24 @@ def test_detect_csv_sep_for_empty_file(tempdir):
 def test_detect_csv_sep_for_windows(tempdir):
     fsutil.makedirs(tempdir.name)
     file_path = os.path.join(tempdir.name, 'windows.csv')
-    with open(file_path, "w") as f:
+    with open(file_path, 'w') as f:
         f.write('1,2,3\r\n4,5,6\r\n7,8,9\r\n')
     assert detect_csv_sep(file_path) == ','
 
 
 def test_get_sep(tempdir):
-    df1 = pd.DataFrame(data={
-        'col1': [1, 2, 3, 4],
-        'col2': [1, 2, 3, 4],
-    })
-    df2 = pd.DataFrame(data={
-        'col1': [1, 2, 3, 4],
-        'col2': [1, 2, 3, 4],
-    })
+    df1 = pd.DataFrame(
+        data={
+            'col1': [1, 2, 3, 4],
+            'col2': [1, 2, 3, 4],
+        }
+    )
+    df2 = pd.DataFrame(
+        data={
+            'col1': [1, 2, 3, 4],
+            'col2': [1, 2, 3, 4],
+        }
+    )
     table_path = os.path.join(tempdir.name, 'data')
     fsutil.makedirs(table_path, exist_ok=True)
     df1.to_csv(os.path.join(table_path, 'file1.csv'), index=False, sep='|')
@@ -304,9 +304,11 @@ def test_get_sep(tempdir):
 
 
 def test_get_sep_single_col(tempdir):
-    df = pd.DataFrame(data={
-        'col1': [1, 2, 3, 4],
-    })
+    df = pd.DataFrame(
+        data={
+            'col1': [1, 2, 3, 4],
+        }
+    )
     table_path = os.path.join(tempdir.name, 'data')
     fsutil.makedirs(table_path)
     df.to_csv(os.path.join(table_path, 'file1.csv'), index=False, sep='|')
@@ -315,20 +317,26 @@ def test_get_sep_single_col(tempdir):
     assert connector._get_sep(table_path) == ','
 
 
-@pytest.mark.parametrize("data,dtype,expect_result", [
-    ('1\n2', Dtype.int, [1, 2]),
-    ('1\n2', Dtype.date, [
-        pd.Timestamp('1970-01-01 00:00:01'),
-        pd.Timestamp('1970-01-01 00:00:02'),
-    ]),
-    ('1\n2', Dtype.string, ["1", "2"]),
-    ('1.0\n2.1', Dtype.int, None),
-    ('a\n2.1', Dtype.int, None),
-    ('a\n2.1', Dtype.date, [pd.NaT, pd.NaT]),
-    ('true\nFalse\n0\n1', Dtype.bool, [True, False, False, True]),
-])
-def test_read_csv_safe(data: str, dtype: Dtype,
-                       expect_result: Optional[List[Any]]):
+@pytest.mark.parametrize(
+    'data,dtype,expect_result',
+    [
+        ('1\n2', Dtype.int, [1, 2]),
+        (
+            '1\n2',
+            Dtype.date,
+            [
+                pd.Timestamp('1970-01-01 00:00:01'),
+                pd.Timestamp('1970-01-01 00:00:02'),
+            ],
+        ),
+        ('1\n2', Dtype.string, ['1', '2']),
+        ('1.0\n2.1', Dtype.int, None),
+        ('a\n2.1', Dtype.int, None),
+        ('a\n2.1', Dtype.date, [pd.NaT, pd.NaT]),
+        ('true\nFalse\n0\n1', Dtype.bool, [True, False, False, True]),
+    ],
+)
+def test_read_csv_safe(data: str, dtype: Dtype, expect_result: Optional[List[Any]]):
     io = StringIO(f'A\n{data}')
     dtypes = {'A': dtype}
     if expect_result is None:
@@ -346,8 +354,7 @@ def test_read_csv_safe_infers_int_from_float_like():
     assert list(df['A']) == [1, 2, 3]
 
 
-def test_read_csv_safe_parsing_types(csv_edge_case_data,
-                                     write_csv_edge_case_files):
+def test_read_csv_safe_parsing_types(csv_edge_case_data, write_csv_edge_case_files):
     """Test read_csv_safe on combinations of test data and separators (checks
     that the read operation does not fail and that columns are separated
     correctly when expected to be)
@@ -361,8 +368,8 @@ def test_read_csv_safe_parsing_types(csv_edge_case_data,
     data = csv_edge_case_data()  # non-timestamp data
     # two of the four tests have structural issues preventing sep inference
     structure_issues = [
-        "missing_and_empty_fields",
-        "delimiter_mixes",
+        'missing_and_empty_fields',
+        'delimiter_mixes',
     ]
     for separator in [';', ',', '\t', '|', ':']:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -376,7 +383,7 @@ def test_read_csv_safe_parsing_types(csv_edge_case_data,
                 'compression': 'infer',
                 'on_bad_lines': 'skip',
                 'escapechar': None,
-                'nrows': 10
+                'nrows': 10,
             }
 
             # some test data written out with some delimeters won't parse
@@ -414,7 +421,7 @@ def test_read_csv_safe_parsing_types(csv_edge_case_data,
                     try:
                         read_csv_safe(file_path, {}, **default_kwargs)
                     except DuplicateColumnsError:
-                        assert "04_column_duplication.csv" in file_path
+                        assert '04_column_duplication.csv' in file_path
                         continue
 
                     # infer separator correctly and read with that
@@ -425,7 +432,7 @@ def test_read_csv_safe_parsing_types(csv_edge_case_data,
 
                     # in case where tests writes with semicolon, table with
                     # some rows forced to be ; becomes normal
-                    elif separator == ';' and "delimiter_mixes" in file_path:
+                    elif separator == ';' and 'delimiter_mixes' in file_path:
                         assert inferred_sep == ';'
                     else:
                         # remaining cases default to "," inference
@@ -438,20 +445,21 @@ def test_read_csv_safe_parsing_types(csv_edge_case_data,
                         inferred_kwargs.update({'sep': inferred_sep})
 
                         try:
-                            result_df = read_csv_safe(file_path, {},
-                                                      **inferred_kwargs)
+                            result_df = read_csv_safe(file_path, {}, **inferred_kwargs)
                         except DuplicateColumnsError:
-                            assert "04_column_duplication.csv" in file_path
+                            assert '04_column_duplication.csv' in file_path
                             continue
 
                         # basic check that columns were separated correctly
                         # and rows read
 
-                        assert result_df.shape[0] == expected_shapes[(
-                            file_path.split('/')[-1], separator)][0]
+                        assert (
+                            result_df.shape[0]
+                            == expected_shapes[(file_path.split('/')[-1], separator)][0]
+                        )
 
                 except Exception as e:
-                    pytest.fail(f"Failed to read {file_path}: {str(e)}")
+                    pytest.fail(f'Failed to read {file_path}: {str(e)}')
 
 
 def test_read_csv_safe_index():
@@ -488,12 +496,13 @@ def test_csv_col_dtypes_infer_temporal():
     with tempfile.TemporaryDirectory() as tmp_dir:
         data = {
             'DATE_1': [
-                '2024-01-01 00:00:00', '2024-02-15 00:00:00',
-                '2024-03-30 00:00:00', '2024-04-12 00:00:00',
-                '2024-05-25 00:00:00'
+                '2024-01-01 00:00:00',
+                '2024-02-15 00:00:00',
+                '2024-03-30 00:00:00',
+                '2024-04-12 00:00:00',
+                '2024-05-25 00:00:00',
             ],
-            'TIME_1':
-            [1704060000, 1707984000, 1711800000, 1712908800, 1716609600]
+            'TIME_1': [1704060000, 1707984000, 1711800000, 1712908800, 1716609600],
         }
         df = pd.DataFrame(data)
 
@@ -531,13 +540,13 @@ def test_csv_col_types_infer_and_cast():
             'userId': Dtype.int64,
             'movieId': Dtype.int64,
             'tag': Dtype.string,
-            'timestamp': Dtype.time
+            'timestamp': Dtype.time,
         },
         'tags_epoch_small': {
             'userId': Dtype.int64,
             'movieId': Dtype.int64,
             'tag': Dtype.string,
-            'timestamp': Dtype.time
+            'timestamp': Dtype.time,
         },
         'synthetic_table': {
             'index': Dtype.int64,
@@ -546,7 +555,7 @@ def test_csv_col_types_infer_and_cast():
             'multicat1': Dtype.string,
             'lists': Dtype.string,
             'date': Dtype.date,
-        }
+        },
     }
     for table in table_metadata_configs:
         # test the two versions of the tag table
@@ -595,13 +604,16 @@ def test_csv_connector_all_types(write_stype_dtype_test_csv):
         connector = CSVConnector('csv', root_dir=tmp_dir)
         table_metadata_configs = connector.get_table_metadata()
         types_table = [
-            table for table in table_metadata_configs
+            table
+            for table in table_metadata_configs
             if table.source_name == 'stype_dtype_combinations'
         ][0]
-        table = Table.from_source_config(types_table,
-                                         name='stype_dtype_combinations',
-                                         data_source=types_table.data_source,
-                                         connector=connector)
+        table = Table.from_source_config(
+            types_table,
+            name='stype_dtype_combinations',
+            data_source=types_table.data_source,
+            connector=connector,
+        )
 
         table.infer_stypes()
         table.infer_dtypes_from_stypes()
@@ -609,7 +621,9 @@ def test_csv_connector_all_types(write_stype_dtype_test_csv):
         for col in table.cols:
             # Implementation of lists via csv strings is a todo
             if expected_dtypes[col.name] in [
-                    Dtype.floatlist, Dtype.intlist, Dtype.stringlist
+                Dtype.floatlist,
+                Dtype.intlist,
+                Dtype.stringlist,
             ]:
                 continue
 
@@ -648,9 +662,12 @@ def test_csv_connector_all_types(write_stype_dtype_test_csv):
 
         # force a new read + cast
 
-        recast = connector.read_table_sample('stype_dtype_combinations',
-                                             cols=table.cols, skip_cache=True,
-                                             cast_results=True)
+        recast = connector.read_table_sample(
+            'stype_dtype_combinations',
+            cols=table.cols,
+            skip_cache=True,
+            cast_results=True,
+        )
         # 31 valid (stype, dtype) pairs plus the fixture's two custom columns.
         # Was 35: `text__binary` and `sequence__binary` are no longer valid
         # pairs now that `Stype` is kumoapi's, which accepts `binary` only for
@@ -680,9 +697,12 @@ def test_csv_connector_all_types(write_stype_dtype_test_csv):
             table[col].dtype = dtype
             table[col].stype = stype
 
-        recast = connector.read_table_sample('stype_dtype_combinations',
-                                             cols=table.cols, skip_cache=True,
-                                             cast_results=True)
+        recast = connector.read_table_sample(
+            'stype_dtype_combinations',
+            cols=table.cols,
+            skip_cache=True,
+            cast_results=True,
+        )
         # 31 valid (stype, dtype) pairs plus the fixture's two custom columns.
         # Was 35: `text__binary` and `sequence__binary` are no longer valid
         # pairs now that `Stype` is kumoapi's, which accepts `binary` only for
@@ -690,8 +710,9 @@ def test_csv_connector_all_types(write_stype_dtype_test_csv):
         assert recast.shape == (1000, 33)
 
 
-def test_csv_connector_timestamp_handling(csv_edge_case_data,
-                                          write_csv_edge_case_files):
+def test_csv_connector_timestamp_handling(
+    csv_edge_case_data, write_csv_edge_case_files
+):
     # Covers only the DG-native read path: timestamp stype/dtype inference +
     # pandas `read_table_sample` casting over the edge-case timestamp CSVs. The
     # Spark-cast row-nullification assertions have no DG-native equivalent on
@@ -741,19 +762,23 @@ def test_csv_connector_timestamp_handling(csv_edge_case_data,
 
         connector = CSVConnector('csv', root_dir=tmp_dir)
         table_metadata_configs = connector.get_table_metadata()
-        assert {table.source_name
-                for table in table_metadata_configs
-                } == set(expected_dtype_by_table)
+        assert {table.source_name for table in table_metadata_configs} == set(
+            expected_dtype_by_table
+        )
         for table_config in table_metadata_configs:
             expected_dtype = expected_dtype_by_table[table_config.source_name]
-            timestamp_config = next(col for col in table_config.cols
-                                    if col.name == 'timestamp')
+            timestamp_config = next(
+                col for col in table_config.cols if col.name == 'timestamp'
+            )
             assert timestamp_config.dtype == expected_dtype
 
             # 1. create table and infer types
             table = Table.from_source_config(
-                table_config, name=table_config.source_name[3:],
-                data_source=table_config.data_source, connector=connector)
+                table_config,
+                name=table_config.source_name[3:],
+                data_source=table_config.data_source,
+                connector=connector,
+            )
             table.infer_stypes()
             table.infer_dtypes_from_stypes()
             assert table['timestamp'].dtype == expected_dtype
@@ -765,10 +790,12 @@ def test_csv_connector_timestamp_handling(csv_edge_case_data,
                 assert table['timestamp'].stype != Stype.timestamp
 
             # 2. read table sample with pandas (including casting)
-            table_sample = connector.read_table_sample(table_config.source_name,
-                                                       cols=table.cols,
-                                                       skip_cache=True,
-                                                       cast_results=True)
+            table_sample = connector.read_table_sample(
+                table_config.source_name,
+                cols=table.cols,
+                skip_cache=True,
+                cast_results=True,
+            )
 
             assert table_sample.shape[0] > 0
             assert table_sample.shape[1] == 4
@@ -787,15 +814,22 @@ def test_csv_connector_type_inference(tempdir):
             'float': ['1.1', '2.2', '3.3'],
             'int_leading_zero': ['01', '02', '03'],
             'float_leading_zero': ['01.0', '02.0', '03.0'],
-            'int_missing': ['1', '2', pd.NA]
-        }, dtype='string').to_csv(dummy_table_path, index=False)
+            'int_missing': ['1', '2', pd.NA],
+        },
+        dtype='string',
+    ).to_csv(dummy_table_path, index=False)
 
     connector = CSVConnector('csv', root_dir=tables_path)
 
     actual = [col.dtype for col in connector.get_table_metadata()[0].cols]
     expected = [
-        Dtype.int64, Dtype.int64, Dtype.int64, Dtype.float64, Dtype.string,
-        Dtype.string, Dtype.int64
+        Dtype.int64,
+        Dtype.int64,
+        Dtype.int64,
+        Dtype.float64,
+        Dtype.string,
+        Dtype.string,
+        Dtype.int64,
     ]
 
     assert actual == expected
@@ -822,16 +856,13 @@ def test_csv_num_rows():
 
 
 def test_write_csv_table(tempdir):
-    data = [{
-        "name": "ted",
-        "age": 34,
-        "value": 0.10
-    }, {
-        "name": "barney",
-        "age": 35,
-        "value": 1.2
-    }]
-    df = pd.DataFrame.from_dict(data, )
+    data = [
+        {'name': 'ted', 'age': 34, 'value': 0.10},
+        {'name': 'barney', 'age': 35, 'value': 1.2},
+    ]
+    df = pd.DataFrame.from_dict(
+        data,
+    )
 
     fsutil.makedirs(tempdir.name, exist_ok=True)
     connector = CSVConnector('csv', root_dir=tempdir.name)
@@ -850,11 +881,14 @@ def test_csv_connector_check_encoding():
     assert metadata[0].table_name == 'inutf8'
 
 
-@pytest.mark.parametrize('contents', [
-    'id,empty,code\n9007199254740993,,001\n9007199254740994,,002\n',
-    'id,value\n1,10.0\n2,20\n',
-    'id,value\n1,true\n2,false\n',
-])
+@pytest.mark.parametrize(
+    'contents',
+    [
+        'id,empty,code\n9007199254740993,,001\n9007199254740994,,002\n',
+        'id,value\n1,10.0\n2,20\n',
+        'id,value\n1,true\n2,false\n',
+    ],
+)
 def test_shared_csv_metadata_and_preview(tmp_path, contents):
     from kumo_core.sources.object_store import ObjectStoreSourceReader
     from pyarrow.fs import LocalFileSystem
@@ -863,10 +897,9 @@ def test_shared_csv_metadata_and_preview(tmp_path, contents):
     hosted = CSVConnector('csv', root_dir=str(tmp_path))
     local = ObjectStoreSourceReader(LocalFileSystem(), root=str(tmp_path))
     metadata = hosted._get_table_cols_metadata('events')
-    assert {
-        column.name: column.dtype
-        for column in metadata.cols
-    } == local.dtypes('events')
+    assert {column.name: column.dtype for column in metadata.cols} == local.dtypes(
+        'events'
+    )
     expected = hosted._load(str(tmp_path / 'events.csv'), num_rows=2)
     empty = local.head('events', 0)
     assert empty.num_rows == 0
@@ -878,9 +911,8 @@ def test_shared_csv_metadata_and_preview(tmp_path, contents):
 @pytest.mark.parametrize('compression', [None, 'gzip', 'zip'])
 def test_shared_csv_preview_preserves_pandas_dialects(tmp_path, compression):
     path = tmp_path / 'events.csv'
-    pd.DataFrame({
-        'id': [1, 2],
-        'value': [10, 20]
-    }).to_csv(path, index=False, sep=' ', compression=compression)
+    pd.DataFrame({'id': [1, 2], 'value': [10, 20]}).to_csv(
+        path, index=False, sep=' ', compression=compression
+    )
     result = read_csv_safe(str(path), {}, sep=r'\s+', compression=compression)
     assert result.to_dict('list') == {'id': [1, 2], 'value': [10, 20]}

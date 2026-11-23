@@ -12,6 +12,7 @@ Example usage:
         --dataplane s3://example-bucket \
         --job trainingjob-example
 """
+
 import argparse
 import asyncio
 import os.path as osp
@@ -40,22 +41,36 @@ init(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument('--customer', type=str, default="demo",
-                        help="The customer name, default to demo")
-    parser.add_argument('--job', type=str,
-                        default="trainingjob-d1576fa360df47b7be873b6033b14575",
-                        help="The job id, default to an old job on demo")
     parser.add_argument(
-        '--pquery', type=str, default='',
-        help=('The pquery name to list ingested data (from most recent'
-              ' training)'))
-    parser.add_argument('--json_file', type=str, default='',
-                        help='The file to output in json format')
-    parser.add_argument('--dataplane', type=str,
-                        default='s3://kumo-prod-dataplane-bucket',
-                        help='The dataplane to use, default to prod')
-    parser.add_argument('--version', type=str, default='',
-                        help='The version used by the job')
+        '--customer',
+        type=str,
+        default='demo',
+        help='The customer name, default to demo',
+    )
+    parser.add_argument(
+        '--job',
+        type=str,
+        default='trainingjob-d1576fa360df47b7be873b6033b14575',
+        help='The job id, default to an old job on demo',
+    )
+    parser.add_argument(
+        '--pquery',
+        type=str,
+        default='',
+        help=('The pquery name to list ingested data (from most recent training)'),
+    )
+    parser.add_argument(
+        '--json_file', type=str, default='', help='The file to output in json format'
+    )
+    parser.add_argument(
+        '--dataplane',
+        type=str,
+        default='s3://kumo-prod-dataplane-bucket',
+        help='The dataplane to use, default to prod',
+    )
+    parser.add_argument(
+        '--version', type=str, default='', help='The version used by the job'
+    )
     return parser.parse_args()
 
 
@@ -66,14 +81,16 @@ def load_graph_config(customer: str, job: str, dataplane: str) -> GraphConfig:
         graph_dir = fsutil.listdir(graph_dir)[0]
         graph_config_path = osp.join(graph_dir, 'config.json')
     except Exception as e:
-        raise ValueError('Unable to locate the graph config for: '
-                         f'{customer}/{job} under {job_path}') from e
+        raise ValueError(
+            f'Unable to locate the graph config for: {customer}/{job} under {job_path}'
+        ) from e
 
     return json.load_json(graph_config_path, GraphConfig)
 
 
-def ingested_table_path(customer: str, table: TableConfig, dataplane: str,
-                        version: str) -> str:
+def ingested_table_path(
+    customer: str, table: TableConfig, dataplane: str, version: str
+) -> str:
     # NOTE: this should be kept in sync with any changes in
     # kumo.data.utils.get_materialize_path but cannot use that util directly
     # due to its inference of the root dir and stage
@@ -93,34 +110,37 @@ def ingested_table_path(customer: str, table: TableConfig, dataplane: str,
         ingest_fpid_location = table_fpid.fpid()
     table_path = (
         f'{dataplane}/{customer}/prod/'
-        f'data-persist-dir/ingest/{ingest_fpid_location}/{table.data_version}/')
+        f'data-persist-dir/ingest/{ingest_fpid_location}/{table.data_version}/'
+    )
 
     if not fsutil.exists(osp.join(table_path, '_SUCCESS')):
-        fingerprint_path = (f'{dataplane}/{customer}/prod/'
-                            f'data-persist-dir/ingest/{ingest_fpid_location}')
-        print(f"fingerprint_path: {fingerprint_path}")
+        fingerprint_path = (
+            f'{dataplane}/{customer}/prod/'
+            f'data-persist-dir/ingest/{ingest_fpid_location}'
+        )
+        print(f'fingerprint_path: {fingerprint_path}')
         versions = []
         if fsutil.exists(fingerprint_path):
             versions = fsutil.listdir(osp.join(fingerprint_path))
             if versions:
                 print(
-                    f"Fingerprint {table_fpid} is valid for {table.table_name}"
-                    f" and no ingested data found at version {table.data_version}"
-                    " but some ingested data does exist.")
+                    f'Fingerprint {table_fpid} is valid for {table.table_name}'
+                    f' and no ingested data found at version {table.data_version}'
+                    ' but some ingested data does exist.'
+                )
                 latest_version = sorted(versions)[-1].split('/')[-1]
-                table_path_with_latest = osp.join(fingerprint_path,
-                                                  latest_version)
+                table_path_with_latest = osp.join(fingerprint_path, latest_version)
                 return table_path_with_latest
 
         raise ValueError(
-            f"Unable to find ingested table {table} from {table_path}; "
-            "invalid fingerprint path or no ingested data available: "
-            f"{fingerprint_path}")
+            f'Unable to find ingested table {table} from {table_path}; '
+            'invalid fingerprint path or no ingested data available: '
+            f'{fingerprint_path}'
+        )
     return table_path
 
 
-async def get_job_from_pquery(customer: str, pquery_name: str,
-                              dataplane: str) -> str:
+async def get_job_from_pquery(customer: str, pquery_name: str, dataplane: str) -> str:
     state_root = f'{dataplane}/{customer}/prod/db'
     try:
         state_db = await open_state_db_from_deploy_config(
@@ -140,44 +160,44 @@ async def get_job_from_pquery(customer: str, pquery_name: str,
                 pquery_def = await services.pqueries.get_definition(pquery_fpid)
         if pquery_def is not None:
             filters = {
-                str(TAG_KEY_PQUERY_ID):
-                str(JobTagValue.of_pquery_id(pquery_def.fpid))
+                str(TAG_KEY_PQUERY_ID): str(JobTagValue.of_pquery_id(pquery_def.fpid))
             }
         else:
             filters = {
-                str(TAG_KEY_PQUERY_NAME):
-                str(JobTagValue.of_pquery_name(pquery_name))
+                str(TAG_KEY_PQUERY_NAME): str(JobTagValue.of_pquery_name(pquery_name))
             }
         tagged_jobs = await services.ml_jobs.list_job_tags(
             JobType.TRAINING_JOB,
             filters,
         )
         if not tagged_jobs:
-            raise ValueError(f"No training job found for {pquery_name}.")
+            raise ValueError(f'No training job found for {pquery_name}.')
         training_jobs = await services.ml_jobs.get_training_jobs(
-            [TrainingJobID(str(job_id)) for job_id in tagged_jobs])
+            [TrainingJobID(str(job_id)) for job_id in tagged_jobs]
+        )
     except Exception as exc:
         raise ValueError(
-            "Unable to load StateDB metadata to get training job id "
-            f"from pquery {pquery_name}") from exc
+            'Unable to load StateDB metadata to get training job id '
+            f'from pquery {pquery_name}'
+        ) from exc
 
     if not training_jobs:
-        raise ValueError(f"No training job found for {pquery_name}.")
+        raise ValueError(f'No training job found for {pquery_name}.')
     return str(max(training_jobs, key=job_sort_value).id)
 
 
 def job_sort_value(job) -> str:
-    execution = getattr(job, "execution", None)
+    execution = getattr(job, 'execution', None)
     for value in (
-            getattr(execution, "last_updated_at", None),
-            getattr(execution, "start_time", None),
-            getattr(getattr(job, "timestamps", None), "updated_at", None),
-            getattr(getattr(job, "timestamps", None), "created_at", None),
-            getattr(job, "id", ""),
+        getattr(execution, 'last_updated_at', None),
+        getattr(execution, 'start_time', None),
+        getattr(getattr(job, 'timestamps', None), 'updated_at', None),
+        getattr(getattr(job, 'timestamps', None), 'created_at', None),
+        getattr(job, 'id', ''),
     ):
         if value is not None:
             return str(value)
-    return ""
+    return ''
 
 
 def main(args: argparse.Namespace):
@@ -187,9 +207,8 @@ def main(args: argparse.Namespace):
     if 'kumo-doordash-cache' in args.dataplane == 's3://kumo-doordash-cache':
         customer = 'kumo'
     if args.pquery:
-        job = asyncio.run(
-            get_job_from_pquery(customer, args.pquery, args.dataplane))
-        log.info(f"Using job {job} from pquery {args.pquery}")
+        job = asyncio.run(get_job_from_pquery(customer, args.pquery, args.dataplane))
+        log.info(f'Using job {job} from pquery {args.pquery}')
     else:
         job = args.job
 
@@ -203,16 +222,16 @@ def main(args: argparse.Namespace):
         if table.end_time_col:
             table.cols = table.cols + [table.end_time_col]  # type: ignore
         ingested_data_source[table.name] = ingested_table_path(
-            customer, table, args.dataplane, args.version)
+            customer, table, args.dataplane, args.version
+        )
         table_metadata[table.name] = table
         assert isinstance(table, TableConfig)
 
         json_output[table.name] = {
             'path': ingested_data_source[table.name],
-            'fingerprint': table.fingerprint().fpid()
+            'fingerprint': table.fingerprint().fpid(),
         }
-        print(f'Table name: {table.name}, '
-              f'path: {ingested_data_source[table.name]}')
+        print(f'Table name: {table.name}, path: {ingested_data_source[table.name]}')
 
     if args.json_file:
         json.save_json(json_output, args.json_file)

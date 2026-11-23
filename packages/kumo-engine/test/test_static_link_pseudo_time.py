@@ -16,8 +16,7 @@ import kumo.engine as kumo
 from kumo.engine import FileConnector, Graph, PredictiveQuery, Table, Trainer
 from kumo.engine.table import TableDefinition
 
-QUERY = ('PREDICT LIST_DISTINCT(orders.item_id) RANK TOP 10 '
-         'FOR EACH users.id')
+QUERY = 'PREDICT LIST_DISTINCT(orders.item_id) RANK TOP 10 FOR EACH users.id'
 LAYER = {
     'fanouts': {},
     'default_fanout': {
@@ -31,16 +30,21 @@ LAYER = {
 def _snapshot(tmp_path, num_users=60, num_items=40, per_user=8):
     """Users order random items: no signal beyond the labels themselves."""
     rng = random.Random(0)
-    orders = [(user, item) for user in range(num_users)
-              for item in rng.sample(range(num_items), per_user)]
+    orders = [
+        (user, item)
+        for user in range(num_users)
+        for item in rng.sample(range(num_items), per_user)
+    ]
     frames = {
         'users': pa.table({'id': list(range(num_users))}),
         'items': pa.table({'id': list(range(num_items))}),
-        'orders': pa.table({
-            'id': list(range(len(orders))),
-            'user_id': [user for user, _ in orders],
-            'item_id': [item for _, item in orders],
-        }),
+        'orders': pa.table(
+            {
+                'id': list(range(len(orders))),
+                'user_id': [user for user, _ in orders],
+                'item_id': [item for _, item in orders],
+            }
+        ),
     }
     source = tmp_path / 'inputs'
     source.mkdir()
@@ -50,17 +54,25 @@ def _snapshot(tmp_path, num_users=60, num_items=40, per_user=8):
         pq.write_table(frame, source / f'{name}.parquet')
         tables.append(
             Table(
-                connector, name,
+                connector,
+                name,
                 TableDefinition(
-                    source_table=connector.source_table_for(name), pkey='id',
+                    source_table=connector.source_table_for(name),
+                    pkey='id',
                     cols=[
                         Column(name=col, dtype=Dtype.int64, stype=Stype.ID)
                         for col in frame.column_names
-                    ])))
-    graph = Graph(tables, [
-        Edge('orders', 'user_id', 'users'),
-        Edge('orders', 'item_id', 'items'),
-    ])
+                    ],
+                ),
+            )
+        )
+    graph = Graph(
+        tables,
+        [
+            Edge('orders', 'user_id', 'users'),
+            Edge('orders', 'item_id', 'items'),
+        ],
+    )
     return graph, graph.snapshot(), orders
 
 
@@ -82,23 +94,28 @@ def datamodule(request, tmp_path):
         rows.mkdir()
         users = sorted({user for user, _ in orders})
         pq.write_table(
-            pa.table({
-                'ENTITY1': users,
-                'TARGET1': [[i for u, i in orders if u == user]
-                            for user in users],
-            }), rows / 'part-00000.parquet')
+            pa.table(
+                {
+                    'ENTITY1': users,
+                    'TARGET1': [[i for u, i in orders if u == user] for user in users],
+                }
+            ),
+            rows / 'part-00000.parquet',
+        )
         custom = PreparedCustomTrainingTable(str(rows))
     task = materialize_training_task(
         TrainingWorkflowRequest.from_spec(
             graph=snapshot.graph_config,
             predictive_query=QUERY,
-            prepared_graph=PreparedGraph(index_id=snapshot.id,
-                                         index_path=str(snapshot.index_path)),
+            prepared_graph=PreparedGraph(
+                index_id=snapshot.id, index_path=str(snapshot.index_path)
+            ),
             run_id='leak',
             scratch_dir=str(tmp_path / 'scratch'),
             artifact_dir=str(tmp_path / 'run'),
             custom_training_table=custom,
-        ))
+        )
+    )
     return DiskgraphLightningDataModule(
         task.manifest_path,
         {},
@@ -131,8 +148,9 @@ def _labels(batches):
     links = set()
     for batch in batches:
         task = batch['task']
-        users = np.repeat(np.asarray(task['seed_node_ids']),
-                          np.asarray(task['lp_pos_counts']))
+        users = np.repeat(
+            np.asarray(task['seed_node_ids']), np.asarray(task['lp_pos_counts'])
+        )
         items = np.asarray(task['lp_pos_rhs_global'])
         keep = ~np.asarray(task['lp_pos_mask'])
         links |= set(zip(users[keep].tolist(), items[keep].tolist()))
@@ -185,16 +203,16 @@ def test_static_link_subgraphs_hide_later_split_labels(datamodule):
 
 def test_static_link_fit_on_random_links_scores_like_random(tmp_path):
     kumo.configure(scratch_dir=tmp_path / 'scratch')
-    graph, snapshot, _ = _snapshot(tmp_path, num_users=300, num_items=200,
-                                   per_user=10)
+    graph, snapshot, _ = _snapshot(tmp_path, num_users=300, num_items=200, per_user=10)
     query = PredictiveQuery(graph, QUERY)
     plan = query.suggest_model_plan(snapshot)
     plan.training_job.num_experiments = 1
     plan.training_job.disable_explain = True
     plan.optimization.max_epochs = 10
     plan.model_architecture.module = 'shallow_rhs'
-    result = Trainer(plan).fit(query.generate_training_table(snapshot),
-                               snapshot=snapshot)
+    result = Trainer(plan).fit(
+        query.generate_training_table(snapshot), snapshot=snapshot
+    )
     # Random ranking recalls ~10/190; reading labels off subgraphs gives ~0.3.
     assert result.metrics['test_recall@10'] < 0.15
 
@@ -241,9 +259,11 @@ def test_stage_visibility_overrides_generic_runtime_options(datamodule):
         (datamodule.rhs_predict_dataloader, _item_side),
     ]
     expected = [read(_batches(loader())) for loader, read in loaders]
-    datamodule.runtime_options.update({
-        "pseudo_seed_time": 3,
-        "disable_pseudo_time": True,
-    })
+    datamodule.runtime_options.update(
+        {
+            'pseudo_seed_time': 3,
+            'disable_pseudo_time': True,
+        }
+    )
     for (loader, read), visible in zip(loaders, expected):
         assert read(_batches(loader())) == visible

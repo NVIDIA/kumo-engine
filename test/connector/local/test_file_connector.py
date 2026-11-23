@@ -33,8 +33,7 @@ def get_default_df() -> pd.DataFrame:
 
 
 def test_get_data_version_local():
-    file_connector = ParquetConnector('parquet_connector', LOCAL_PATH,
-                                      'parquet')
+    file_connector = ParquetConnector('parquet_connector', LOCAL_PATH, 'parquet')
     current_time = time.time()
     create_file(LOCAL_PATH, 'table.parquet', get_default_df())
 
@@ -48,18 +47,26 @@ def test_get_data_version_local():
 
     # Create a table object with pre-assigned data version. Verify that the
     # connector retrieves the pre-assigned data version for this table.
-    table = Table(table_name='table', data_source='parquet',
-                  source_name='table', data_version='test_version')
+    table = Table(
+        table_name='table',
+        data_source='parquet',
+        source_name='table',
+        data_version='test_version',
+    )
     table.connector = file_connector
     assert file_connector.get_data_version('table') == 'test_version'
 
 
-@pytest.mark.parametrize(('connector_type', 'suffix'), [
-    (CSVConnector, 'csv'),
-    (ParquetConnector, 'parquet'),
-])
+@pytest.mark.parametrize(
+    ('connector_type', 'suffix'),
+    [
+        (CSVConnector, 'csv'),
+        (ParquetConnector, 'parquet'),
+    ],
+)
 def test_missing_direct_file_has_typed_error_and_can_be_ignored(
-        tmp_path, connector_type, suffix):
+    tmp_path, connector_type, suffix
+):
     connector = connector_type('file_connector', str(tmp_path), suffix)
     table_name = f'missing.{suffix}'
 
@@ -80,8 +87,7 @@ def test_nested_dataset_can_use_default_data_version(tmp_path, monkeypatch):
 
 
 def test_get_data_version_local_multiple_files():
-    file_connector = ParquetConnector('parquet_connector', LOCAL_PATH,
-                                      'parquet')
+    file_connector = ParquetConnector('parquet_connector', LOCAL_PATH, 'parquet')
 
     table_path = osp.join(LOCAL_PATH, 'table')
     fsutil.makedirs(table_path)
@@ -98,19 +104,15 @@ def test_hosted_export_rejects_declared_column_missing_in_later_shard(tmp_path):
     from kumo_core.sources.errors import PermanentSourceError
     from kumoapi.typing import Dtype
 
-    create_file(str(tmp_path / "events"), "part-0.parquet",
-                pd.DataFrame({
-                    "id": [1],
-                    "value": [2.0]
-                }))
-    create_file(str(tmp_path / "events"), "part-1.parquet",
-                pd.DataFrame({"id": [2]}))
-    connector = ParquetConnector("files", str(tmp_path), "parquet")
-    with pytest.raises(PermanentSourceError,
-                       match="missing declared columns: value"):
+    create_file(
+        str(tmp_path / 'events'),
+        'part-0.parquet',
+        pd.DataFrame({'id': [1], 'value': [2.0]}),
+    )
+    create_file(str(tmp_path / 'events'), 'part-1.parquet', pd.DataFrame({'id': [2]}))
+    connector = ParquetConnector('files', str(tmp_path), 'parquet')
+    with pytest.raises(PermanentSourceError, match='missing declared columns: value'):
         with connector._local_source(
-                "events", columns={
-                    "id": Dtype.int64,
-                    "value": Dtype.float64
-                }):
-            pytest.fail("invalid source must fail before export")
+            'events', columns={'id': Dtype.int64, 'value': Dtype.float64}
+        ):
+            pytest.fail('invalid source must fail before export')

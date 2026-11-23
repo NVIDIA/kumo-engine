@@ -37,10 +37,11 @@ from kumo.validation import (
 logger = logging.getLogger(__name__)
 
 
-class UniqueIdGenerator():
+class UniqueIdGenerator:
     """
     This class is used to generate unique id for tracing purpose.
     """
+
     def __init__(self):
         self.node_cnt: int = 0
 
@@ -53,7 +54,7 @@ class UniqueIdGenerator():
 
 
 def col_name(full_name: str) -> str:
-    r""""Given a fully qualified column name in the format of
+    r""" "Given a fully qualified column name in the format of
     `<table_name>`.`<col_name>`, returns the column name.
 
     Args:
@@ -67,7 +68,7 @@ def col_name(full_name: str) -> str:
 
 
 def table_name(full_name: str) -> str:
-    r""""Given a fully qualified column name in the format of
+    r""" "Given a fully qualified column name in the format of
     `<table_name>`.`<col_name>`, returns the table name.
 
     Args:
@@ -79,15 +80,17 @@ def table_name(full_name: str) -> str:
     """
     if len(full_name.split('.')) < 2:
         raise ValidationException(
-            title="Invalid column reference",
-            message=(f'"{full_name}" object has no table name. '
-                     "Use the format `<table>.<column>`."),
+            title='Invalid column reference',
+            message=(
+                f'"{full_name}" object has no table name. '
+                'Use the format `<table>.<column>`.'
+            ),
         )
     return '.'.join(full_name.split('.')[:-1])
 
 
 def table_name_with_connector(connector_and_table_name: str) -> str:
-    r""""Given a fully qualified table name in the format of
+    r""" "Given a fully qualified table name in the format of
     `<connector_id>`.`<table_name>`, returns the table name.
 
     Args:
@@ -114,8 +117,9 @@ def fqn(table_name: str, col_name: str) -> str:
     return f'{table_name}.{col_name}'
 
 
-def get_rhs_lp_table(query: ValidatedPredictiveQuery, graph: Graph,
-                     no_connector: bool = False) -> str:
+def get_rhs_lp_table(
+    query: ValidatedPredictiveQuery, graph: Graph, no_connector: bool = False
+) -> str:
     r"""Given a link prediction query, returns a fully qualified
     name `connector.table` for the RHS table."""
     aggr = query.get_final_target_aggregation()
@@ -131,8 +135,9 @@ def get_rhs_lp_table(query: ValidatedPredictiveQuery, graph: Graph,
         return dst_table
 
 
-def get_rhs_lp_table_pkey(query: ValidatedPredictiveQuery, graph: Graph,
-                          no_connector: bool = False) -> str:
+def get_rhs_lp_table_pkey(
+    query: ValidatedPredictiveQuery, graph: Graph, no_connector: bool = False
+) -> str:
     r"""Given a link prediction query, returns a fully qualified
     name `connector.table.pkey` or `table.pkey` for the RHS table.
     """
@@ -166,13 +171,11 @@ def get_max_train_rows() -> int:
     return MAX_TRAIN_ROWS
 
 
-def _add_node_config_to_output(node: ASTNode, level: int,
-                               output: List[str]) -> None:
-    indent = "___" * level
+def _add_node_config_to_output(node: ASTNode, level: int, output: List[str]) -> None:
+    indent = '___' * level
     output.append(indent + repr(node))
-    _node_config = \
-        construct_object_string_from_config(node)
-    output.append(indent + "__+" + _node_config)
+    _node_config = construct_object_string_from_config(node)
+    output.append(indent + '__+' + _node_config)
 
 
 def trace_ast_output(node: Optional[ASTNode], level: int = 1) -> List[str]:
@@ -199,8 +202,9 @@ def trace_ast_output(node: Optional[ASTNode], level: int = 1) -> List[str]:
     return output
 
 
-def get_lag_timestamps(start_time: pd.Timestamp, num_lags: int,
-                       step: pd.Timedelta) -> List[pd.Timestamp]:
+def get_lag_timestamps(
+    start_time: pd.Timestamp, num_lags: int, step: pd.Timedelta
+) -> List[pd.Timestamp]:
     """starting from start_time, generate a list of num_lags timestamps
     with step size between each timestamp. The list goes from the most old
     to the most recent timestamp."""
@@ -220,10 +224,13 @@ def get_yoy_timestamps(
     yoy_length = forecast_length + 2 * PADDING_SIZE
     yoy_offset = pd.Timedelta(days=ONE_YEAR_AGO_OFFSET_DAYS)
     assert isinstance(yoy_offset, pd.Timedelta)
-    yoy_timeframes = [(pred_time - yoy_offset) + (window * i) for i in range(
-        -PADDING_SIZE,
-        forecast_length + PADDING_SIZE,
-    )]
+    yoy_timeframes = [
+        (pred_time - yoy_offset) + (window * i)
+        for i in range(
+            -PADDING_SIZE,
+            forecast_length + PADDING_SIZE,
+        )
+    ]
     return yoy_timeframes, yoy_length
 
 
@@ -249,40 +256,57 @@ def validate_forecasting_parameters_consistency(
     prediction_foreacast_length = none_or_default(prediction_forecast_length, 1)
     if not (training_foreacast_length == prediction_foreacast_length):
         response.merge(
-            ValidationResponse(errors=[
-                ValidationError(
-                    title='Forecast length mismatch', message=(
-                        f"The forecast length in the training job "
-                        f"({training_foreacast_length}) "
-                        f"does not match the forecast length in the "
-                        f"prediction job ({prediction_foreacast_length})"))
-            ]))
+            ValidationResponse(
+                errors=[
+                    ValidationError(
+                        title='Forecast length mismatch',
+                        message=(
+                            f'The forecast length in the training job '
+                            f'({training_foreacast_length}) '
+                            f'does not match the forecast length in the '
+                            f'prediction job ({prediction_foreacast_length})'
+                        ),
+                    )
+                ]
+            )
+        )
     training_lag_timesteps = none_or_default(training_lag_timesteps, 0)
     prediction_lag_timesteps = none_or_default(prediction_lag_timesteps, 0)
     if not (training_lag_timesteps == prediction_lag_timesteps):
         response.merge(
-            ValidationResponse(errors=[
-                ValidationError(
-                    title='Lag timesteps mismatch', message=(
-                        f"The lag timesteps in the training job "
-                        f"({training_lag_timesteps}) "
-                        f"does not match the lag timesteps in the "
-                        f"prediction job ({prediction_lag_timesteps})"))
-            ]))
+            ValidationResponse(
+                errors=[
+                    ValidationError(
+                        title='Lag timesteps mismatch',
+                        message=(
+                            f'The lag timesteps in the training job '
+                            f'({training_lag_timesteps}) '
+                            f'does not match the lag timesteps in the '
+                            f'prediction job ({prediction_lag_timesteps})'
+                        ),
+                    )
+                ]
+            )
+        )
 
     training_year_over_year = none_or_default(training_year_over_year, False)
-    prediction_year_over_year = none_or_default(prediction_year_over_year,
-                                                False)
+    prediction_year_over_year = none_or_default(prediction_year_over_year, False)
     if not (training_year_over_year == prediction_year_over_year):
         response.merge(
-            ValidationResponse(errors=[
-                ValidationError(
-                    title='Year over year mismatch', message=(
-                        f"The year over year parameter in the training job "
-                        f"({training_year_over_year}) "
-                        f"does not match the year over year parameter in the "
-                        f"prediction job ({prediction_year_over_year})"))
-            ]))
+            ValidationResponse(
+                errors=[
+                    ValidationError(
+                        title='Year over year mismatch',
+                        message=(
+                            f'The year over year parameter in the training job '
+                            f'({training_year_over_year}) '
+                            f'does not match the year over year parameter in the '
+                            f'prediction job ({prediction_year_over_year})'
+                        ),
+                    )
+                ]
+            )
+        )
     return response
 
 
@@ -303,21 +327,22 @@ def get_train_table_schema(train_table_path: str) -> pa.Schema:
     """
     # Native TT-NG publications select one parquet file. Custom inputs may be
     # directories containing parquet parts.
-    if train_table_path.endswith('parquet') and not fsutil.isdir(
-            train_table_path):
+    if train_table_path.endswith('parquet') and not fsutil.isdir(train_table_path):
         single_file = train_table_path
     else:
         entries = fsutil.listdir(train_table_path, suffix='parquet')
         single_file = next(
-            (path for path in entries
-             if path.endswith('parquet') and not fsutil.isdir(path)),
+            (
+                path
+                for path in entries
+                if path.endswith('parquet') and not fsutil.isdir(path)
+            ),
             None,
         )
     if single_file is None:
         raise ValidationException(
-            title="Missing training table data",
-            message=(f"No parquet files were found directly under "
-                     f"{train_table_path}."),
+            title='Missing training table data',
+            message=(f'No parquet files were found directly under {train_table_path}.'),
         )
     if fsutil.is_ucv(single_file) or fsutil.is_adls(single_file):
         with fsutil.TemporaryDirectory() as temp_dir:
@@ -326,7 +351,7 @@ def get_train_table_schema(train_table_path: str) -> pa.Schema:
     elif fsutil.is_s3(single_file) or fsutil.is_gcs(single_file):
         # Normalize s3a first so the strip and filesystem both see s3://.
         single_file = fsutil.s3a_as_s3(single_file)
-        no_prefix = single_file.removeprefix("s3://").removeprefix("gs://")
+        no_prefix = single_file.removeprefix('s3://').removeprefix('gs://')
         dataset = pq.ParquetDataset(
             no_prefix,
             filesystem=arrow_cloud_filesystem(single_file),
@@ -335,18 +360,22 @@ def get_train_table_schema(train_table_path: str) -> pa.Schema:
         dataset = pq.ParquetDataset(single_file)
     else:
         raise ValidationException(
-            title="Unsupported train table path",
+            title='Unsupported train table path',
             message=(
-                "Operation only supports local, S3, and GCS paths. "
-                "Use a local path, `s3://...`, or `gs://...` parquet dataset."),
+                'Operation only supports local, S3, and GCS paths. '
+                'Use a local path, `s3://...`, or `gs://...` parquet dataset.'
+            ),
         )
 
     return dataset.schema
 
 
-def validate_weight_column(weight_col_name: str, train_table_path: str,
-                           task_type,
-                           list_distinct_target_is_array: bool) -> BaseColumn:
+def validate_weight_column(
+    weight_col_name: str,
+    train_table_path: str,
+    task_type,
+    list_distinct_target_is_array: bool,
+) -> BaseColumn:
     """
     Validates a weight column exists and has the appropriate data type.
 
@@ -367,10 +396,11 @@ def validate_weight_column(weight_col_name: str, train_table_path: str,
             type
     """
     from kumo_core.training.options import allow_array_targets
+
     logger.debug(
-        "validate_weight_column: task_type=%s has_array_target=%s "
-        "list_distinct_target_is_array=%s allow_array_targets=%s "
-        "weight_col_name=%s train_table_path=%s",
+        'validate_weight_column: task_type=%s has_array_target=%s '
+        'list_distinct_target_is_array=%s allow_array_targets=%s '
+        'weight_col_name=%s train_table_path=%s',
         task_type,
         getattr(task_type, 'has_array_target', None),
         list_distinct_target_is_array,
@@ -381,17 +411,13 @@ def validate_weight_column(weight_col_name: str, train_table_path: str,
     schema = get_train_table_schema(train_table_path)
     schema_dict = {field.name: field.type for field in schema}
     logger.debug(
-        "validate_weight_column: schema columns=%s",
-        {
-            name: str(dtype)
-            for name, dtype in schema_dict.items()
-        },
+        'validate_weight_column: schema columns=%s',
+        {name: str(dtype) for name, dtype in schema_dict.items()},
     )
     if weight_col_name not in schema_dict:
         raise ValidationException(
-            title="Invalid Weight Column",
-            message=(f"Weight column '{weight_col_name}' not found in "
-                     "training table."),
+            title='Invalid Weight Column',
+            message=(f"Weight column '{weight_col_name}' not found in training table."),
         )
 
     weight_dtype = None
@@ -399,20 +425,26 @@ def validate_weight_column(weight_col_name: str, train_table_path: str,
     if task_type.has_array_target and list_distinct_target_is_array:
         if not is_list(weight_col_type):
             raise ValidationException(
-                title="Invalid Weight Column",
-                message=(f"Weight column '{weight_col_name}' must be an "
-                         "array type since target is array type "
-                         f"(got {weight_col_type})."),
+                title='Invalid Weight Column',
+                message=(
+                    f"Weight column '{weight_col_name}' must be an "
+                    'array type since target is array type '
+                    f'(got {weight_col_type}).'
+                ),
             )
         weight_dtype = Dtype.floatlist
     else:
-        if not (is_integer(weight_col_type) or is_floating(weight_col_type)
-                or is_decimal(weight_col_type)):
+        if not (
+            is_integer(weight_col_type)
+            or is_floating(weight_col_type)
+            or is_decimal(weight_col_type)
+        ):
             raise ValidationException(
-                title="Invalid Weight Column",
+                title='Invalid Weight Column',
                 message=(
                     f"Weight column '{weight_col_name}' must be a "
-                    f"numerical type (float or int) (got {weight_col_type})."),
+                    f'numerical type (float or int) (got {weight_col_type}).'
+                ),
             )
         weight_dtype = Dtype.float
     return BaseColumn(name=weight_col_name, dtype=weight_dtype)
@@ -426,9 +458,10 @@ async def validate_weight_table_num_rows(
 ) -> ValidationResponse:
     from rest.config.table_v2 import BigQuerySourceTable, S3SourceTable
 
-    logger.info("Executing validate_weight_table_num_rows.")
-    get_parquet_metadata = sync_to_async(parquet_util.get_parquet_metadata,
-                                         executor=None)
+    logger.info('Executing validate_weight_table_num_rows.')
+    get_parquet_metadata = sync_to_async(
+        parquet_util.get_parquet_metadata, executor=None
+    )
     get_table_stats = sync_to_async(connector.get_table_stats, executor=None)
 
     validation = ValidationResponse()
@@ -436,77 +469,90 @@ async def validate_weight_table_num_rows(
     wtt_num_rows = None
     try:
         if tt_num_rows is None:
-            tt_num_rows = (
-                await get_parquet_metadata(train_table_path)).num_rows
-        logger.info("Successfully fetched training table metadata.")
+            tt_num_rows = (await get_parquet_metadata(train_table_path)).num_rows
+        logger.info('Successfully fetched training table metadata.')
     except Exception as e:
         error = PublicException(
-            message=("Kumo failed to fetch metadata for train table with "
-                     f"path {train_table_path}. Check that the path exists and "
-                     "the connector has read permissions."),
+            message=(
+                'Kumo failed to fetch metadata for train table with '
+                f'path {train_table_path}. Check that the path exists and '
+                'the connector has read permissions.'
+            ),
             error=e,
         ).message
         validation.errors.append(
             ValidationError(
-                title="Failed to fetch original training table.",
+                title='Failed to fetch original training table.',
                 message=error,
-            ))
+            )
+        )
         return validation
 
     if isinstance(source_table, BigQuerySourceTable) or isinstance(
-            source_table, S3SourceTable):
+        source_table, S3SourceTable
+    ):
         table_name = source_table.table_name
     else:
         table_name = source_table.table
 
     try:
         if isinstance(source_table, CustomSQLSourceTable):
-            get_query_num_rows = sync_to_async(connector.get_query_num_rows,
-                                               executor=None)
+            get_query_num_rows = sync_to_async(
+                connector.get_query_num_rows, executor=None
+            )
             wtt_num_rows = await get_query_num_rows(source_table.sql)
         else:
-            wtt_stats = await get_table_stats(table_name,
-                                              [TableStatType.NUM_ROWS])
+            wtt_stats = await get_table_stats(table_name, [TableStatType.NUM_ROWS])
             wtt_num_rows = wtt_stats[TableStatType.NUM_ROWS].value
-        logger.info(f"Successfully fetched weighted training table stats. "
-                    f"Number of rows: {wtt_num_rows}")
+        logger.info(
+            f'Successfully fetched weighted training table stats. '
+            f'Number of rows: {wtt_num_rows}'
+        )
     except Exception as e:
         error = PublicException(
-            message="Kumo failed to fetch num rows for weighted "
+            message='Kumo failed to fetch num rows for weighted '
             f"train table with '{table_name}'. Check that the table exists "
-            "and the connector has read permissions.",
+            'and the connector has read permissions.',
             error=e,
         ).message
         validation.errors.append(
             ValidationError(
-                title="Failed to get number of rows.",
+                title='Failed to get number of rows.',
                 message=error,
-            ))
+            )
+        )
         return validation
 
     assert tt_num_rows is not None and wtt_num_rows is not None
     if tt_num_rows != wtt_num_rows:
-        error = PublicException(message=(
-            "Your weighted training table and original training table don't "
-            "contain the same number of rows. "
-            f"(Train table number of rows == {tt_num_rows}. "
-            f"Weighted train table number of rows == {wtt_num_rows}.) "
-            "Please double check that the joins performed to add a weight "
-            "column to the train table are one-to-one and not filtering "
-            "rows.")).message
+        error = PublicException(
+            message=(
+                "Your weighted training table and original training table don't "
+                'contain the same number of rows. '
+                f'(Train table number of rows == {tt_num_rows}. '
+                f'Weighted train table number of rows == {wtt_num_rows}.) '
+                'Please double check that the joins performed to add a weight '
+                'column to the train table are one-to-one and not filtering '
+                'rows.'
+            )
+        ).message
         validation.errors.append(
             ValidationError(
                 title="Number of rows doesn't match",
                 message=error,
-            ))
+            )
+        )
     else:
-        logger.info("Row count validation passed: both tables have the same "
-                    f"number of rows ({tt_num_rows})")
+        logger.info(
+            'Row count validation passed: both tables have the same '
+            f'number of rows ({tt_num_rows})'
+        )
     return validation
 
 
-def validate_int(const: int, min_int: int | None = None,
-                 max_int: int | None = None) -> ValidationResponse:
+def validate_int(
+    const: int, min_int: int | None = None, max_int: int | None = None
+) -> ValidationResponse:
     r"""Validate that size of :obj:`const` is within the supported
     limits.
 
@@ -530,7 +576,9 @@ def validate_int(const: int, min_int: int | None = None,
             ValidationError(
                 title='Unsupported constant',
                 message=f'Constant {const} is outside of the range of '
-                f'supported integers ({min_int}, {max_int}).'))
+                f'supported integers ({min_int}, {max_int}).',
+            )
+        )
     return response
 
 
@@ -548,10 +596,12 @@ def _allow_array_targets_for_query(query_string: Optional[str]) -> bool:
     formatting); there we fall back to the module capability flag.
     """
     from kumo_core.training.options import allow_array_targets
+
     if query_string is None:
         return allow_array_targets()
     from kumoapi.typing import ProblemType
     from kumopql.parser import PQLParser
+
     try:
         parsed = PQLParser().to_parsed_predictive_query(query_string)
     except Exception:
@@ -570,6 +620,7 @@ def validator_kwargs(
     passed as arguments. Pass ``query_string`` so array-target mode is decided
     per query (link-prediction only); omit it in graph-only contexts."""
     from kumo.graph.utils import map_to_api_graph_definition
+
     graph_def = map_to_api_graph_definition(graph)
     return {
         'graph': graph_def,

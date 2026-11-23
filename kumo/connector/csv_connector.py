@@ -52,6 +52,7 @@ class CSVConnector(FileConnector):
         escapechar (str, optional): One-character string used to escape other
             characters. (default: :obj:`None`)
     """
+
     def __init__(
         self,
         name: str,
@@ -73,7 +74,7 @@ class CSVConnector(FileConnector):
         self.escapechar = escapechar
 
     def _get_connector_type(self) -> str:
-        return "csv"
+        return 'csv'
 
     def _get_sep(self, path: str) -> str:
         """
@@ -85,8 +86,7 @@ class CSVConnector(FileConnector):
             if fsutil.isdir(path):
                 files = fsutil.listdir(path=path, suffix=self.suffix)
                 for file_path in files:
-                    if (fsutil.isdir(file_path)
-                            or fsutil.filesize(file_path) == 0):
+                    if fsutil.isdir(file_path) or fsutil.filesize(file_path) == 0:
                         continue
                     return self._infer_separator(file_path)
             else:
@@ -104,9 +104,9 @@ class CSVConnector(FileConnector):
         skip_cache: bool = False,
         skip_inferral: bool = False,
     ) -> Optional[TableMetadataConfig]:
-        metadata = TableMetadataConfig(table_name=table_name,
-                                       source_name=table_name,
-                                       data_source=self._name)
+        metadata = TableMetadataConfig(
+            table_name=table_name, source_name=table_name, data_source=self._name
+        )
 
         try:
             df = self.read_table_sample(table_name, skip_cache=skip_cache)
@@ -116,8 +116,9 @@ class CSVConnector(FileConnector):
             logger.warning(f'Duplicate columns found in Table {table_name}')
             raise (e)
         except Exception as e:
-            logger.warning('Table metadata read failed (error_type=%s)',
-                           type(e).__name__)
+            logger.warning(
+                'Table metadata read failed (error_type=%s)', type(e).__name__
+            )
             return None
 
         from kumo_core.sources.csv_preview import column_dtypes
@@ -182,11 +183,18 @@ class CSVConnector(FileConnector):
             else:
                 # nrows is not supported by pyarrow engine
                 kwargs['engine'] = 'pyarrow'
-            df = read_csv_safe(path, dtypes=dtypes, suffix=self.suffix,
-                               index_col=index_col, sample=sample, **kwargs)
+            df = read_csv_safe(
+                path,
+                dtypes=dtypes,
+                suffix=self.suffix,
+                index_col=index_col,
+                sample=sample,
+                **kwargs,
+            )
             if num_rows is not None:
-                return df.sample(n=min(num_rows, df.shape[0]),
-                                 random_state=SAMPLING_SEED)
+                return df.sample(
+                    n=min(num_rows, df.shape[0]), random_state=SAMPLING_SEED
+                )
             else:
                 return df.sample(frac=frac, random_state=SAMPLING_SEED)
         else:
@@ -194,12 +202,19 @@ class CSVConnector(FileConnector):
                 kwargs['nrows'] = num_rows
             if offset > 0:
                 kwargs['skiprows'] = range(1, offset + 1)
-            return read_csv_safe(path, dtypes=dtypes, suffix=self.suffix,
-                                 index_col=index_col, sample=sample, **kwargs)
+            return read_csv_safe(
+                path,
+                dtypes=dtypes,
+                suffix=self.suffix,
+                index_col=index_col,
+                sample=sample,
+                **kwargs,
+            )
 
     @blocking_method(DATA_BACKEND_THREAD_POOL)
-    def _get_table_num_rows(self, table_name: str,
-                            data_version: str | None = None) -> int:
+    def _get_table_num_rows(
+        self, table_name: str, data_version: str | None = None
+    ) -> int:
         table_path = self._get_path(table_name)
         if fsutil.exists(table_path):
             file_paths = self.table_path_to_files(path=table_path)
@@ -214,12 +229,14 @@ class CSVConnector(FileConnector):
 
         raise FileNotFoundError(
             f"Obtaining the number of rows for table '{table_name}' "
-            f"is not implemented for the remote directory "
-            f"{osp.join(self.root_dir, table_name)} or file does not exist")
+            f'is not implemented for the remote directory '
+            f'{osp.join(self.root_dir, table_name)} or file does not exist'
+        )
 
     @blocking_method(DATA_BACKEND_THREAD_POOL)
-    def _get_table_source_size(self, table_name: str,
-                               data_version: str | None = None) -> int:
+    def _get_table_source_size(
+        self, table_name: str, data_version: str | None = None
+    ) -> int:
         path = self._get_path(table_name)
         file_paths = self.table_path_to_files(path=path)
         total_size = 0
@@ -238,11 +255,16 @@ class CSVConnector(FileConnector):
         return layout.CSV
 
     def _csv_read_options(self, path: str) -> csv_format.CsvOptions:
-        nulls = (tuple(self.na_values) if isinstance(self.na_values, list) else
-                 (self.na_values, ) if self.na_values is not None else None)
-        return csv_format.CsvOptions(delimiter=self.sep,
-                                     escape_char=self.escapechar or False,
-                                     null_values=nulls)
+        nulls = (
+            tuple(self.na_values)
+            if isinstance(self.na_values, list)
+            else (self.na_values,)
+            if self.na_values is not None
+            else None
+        )
+        return csv_format.CsvOptions(
+            delimiter=self.sep, escape_char=self.escapechar or False, null_values=nulls
+        )
 
 
 @blocking_func()
@@ -270,15 +292,20 @@ def read_csv_safe(
     if isinstance(path, str):
         reader = source_reader(path)
         files = [
-            entry.path for entry in layout.objects(reader.filesystem,
-                                                   reader.root, suffix=suffix)
+            entry.path
+            for entry in layout.objects(reader.filesystem, reader.root, suffix=suffix)
             if entry.size != 0
         ]
 
         def read(options):
             return csv_preview.read_frames(
-                reader.filesystem, files, max_files=MAX_NUM_FILES_TO_SAMPLE
-                if sample and 'nrows' in options else None, **options)
+                reader.filesystem,
+                files,
+                max_files=MAX_NUM_FILES_TO_SAMPLE
+                if sample and 'nrows' in options
+                else None,
+                **options,
+            )
     else:
 
         def read(options):
@@ -286,8 +313,9 @@ def read_csv_safe(
             return pd.read_csv(path, **options)
 
     try:
-        df = csv_preview.read_pandas(read, dtypes, index_col=index_col,
-                                     dtype=dtype, **kwargs)
+        df = csv_preview.read_pandas(
+            read, dtypes, index_col=index_col, dtype=dtype, **kwargs
+        )
     except csv_preview.DuplicateColumnsError as error:
         raise DuplicateColumnsError(str(error)) from None
 

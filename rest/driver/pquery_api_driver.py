@@ -85,10 +85,12 @@ from rest.backends.data_backend.context import DataBackendContext
 from rest.backends.data_backend.data_backend import DataBackend
 from rest.backends.ml_backend.data_util import get_job_base_dir, get_job_dir
 from rest.backends.ml_backend.ml_job_backend import MLJobBackend
+
 # yapf: disable
 from rest.backends.ml_backend.prediction_artifacts import (
     resolve_prediction_artifact,
 )
+
 # yapf: enable
 from rest.config.connector import object_store_source_for_connector
 from rest.config.data_backend import (
@@ -122,7 +124,9 @@ from statedb.rest.connector_authorization import CONNECTOR_GRAPH_ACTIONS
 
 # isort: off
 from rest.backends.ml_backend.job_queue import (
-    JobConcurrencyLimitError, )
+    JobConcurrencyLimitError,
+)
+
 # isort: on
 from typing import Dict, List, Optional, Tuple
 
@@ -138,8 +142,7 @@ from rest.config.batch_prediction_job import (
 )
 from rest.config.batch_prediction_job_v2 import BatchPredictionFilterOverrides
 from rest.config.graph_v2 import GraphDefinition, build_graph_definition
-from rest.config.jobs import \
-    BatchPredictionRequest as RestBatchPredictionRequest
+from rest.config.jobs import BatchPredictionRequest as RestBatchPredictionRequest
 from rest.config.mlops import MLOpsQueryConfig, MLOpsStats
 from rest.config.predictive_query import (
     DefaultModelPlanInfo,
@@ -254,18 +257,21 @@ log = logging.getLogger(__name__)
 _DATA_DOWNLOAD_LIMIT = 1024 * 1024 * 1024
 
 # Forecasting validation
-_FORECASTING_PARAMS_TITLE = "Invalid Forecasting Configuration"
+_FORECASTING_PARAMS_TITLE = 'Invalid Forecasting Configuration'
 _FORECASTING_PARAMS_NO_TRAINING_JOB_MESSAGE = (
-    "Forecasting parameters must be sourced from the training config. "
-    "Please provide a valid training job ID.")
+    'Forecasting parameters must be sourced from the training config. '
+    'Please provide a valid training job ID.'
+)
 _FORECASTING_PARAMS_NO_GEN_TT_MESSAGE = (
-    "Could not find the training table generation job for training job {}. "
-    "The training job may be corrupted or missing its training table "
-    "configuration.")
+    'Could not find the training table generation job for training job {}. '
+    'The training job may be corrupted or missing its training table '
+    'configuration.'
+)
 
 
 class TrainingJobEncodersNotAvailableError(EntityDoesNotExistError):
     """Raised when a terminal training job has no encoder artifact."""
+
     def __init__(self) -> None:
         Exception.__init__(
             self,
@@ -274,22 +280,25 @@ class TrainingJobEncodersNotAvailableError(EntityDoesNotExistError):
 
 
 def _training_job_not_in_project(
-        id: TrainingJobID,
-        project_id: ProjectID) -> TrainingJobNotInProjectError:
+    id: TrainingJobID, project_id: ProjectID
+) -> TrainingJobNotInProjectError:
     return TrainingJobNotInProjectError(
-        f"Training Job with id='{id}' is not in project '{project_id}'")
+        f"Training Job with id='{id}' is not in project '{project_id}'"
+    )
 
 
 def _batch_prediction_not_in_project(
-        id: BatchPredictionJobID,
-        project_id: ProjectID) -> BatchPredictionNotInProjectError:
+    id: BatchPredictionJobID, project_id: ProjectID
+) -> BatchPredictionNotInProjectError:
     return BatchPredictionNotInProjectError(
-        f"Batch Prediction with id='{id}' is not in project '{project_id}'")
+        f"Batch Prediction with id='{id}' is not in project '{project_id}'"
+    )
 
 
 @dataclasses.dataclass(frozen=True)
 class ForecastingParams:
     """Forecasting parameters sourced from a training config."""
+
     lag_timesteps: Optional[int]
     year_over_year: bool
     forecast_length: Optional[int]
@@ -297,22 +306,20 @@ class ForecastingParams:
     @classmethod
     def from_plan(
         cls,
-        plan: Union[TrainingTableGenerationPlan,
-                    model_plan_api.PredictionTableGenerationPlan],
+        plan: Union[
+            TrainingTableGenerationPlan, model_plan_api.PredictionTableGenerationPlan
+        ],
     ) -> 'ForecastingParams':
         """Extract forecasting params from a plan with forecasting fields."""
         return cls(
             lag_timesteps=inferred_or_missing_type_to_none(plan.lag_timesteps),
-            year_over_year=inferred_or_missing_type_to_false(
-                plan.year_over_year),
-            forecast_length=inferred_or_missing_type_to_none(
-                plan.forecast_length),
+            year_over_year=inferred_or_missing_type_to_false(plan.year_over_year),
+            forecast_length=inferred_or_missing_type_to_none(plan.forecast_length),
         )
 
     @classmethod
     def default(cls) -> 'ForecastingParams':
-        return cls(lag_timesteps=None, year_over_year=False,
-                   forecast_length=None)
+        return cls(lag_timesteps=None, year_over_year=False, forecast_length=None)
 
     @property
     def is_forecasting(self) -> bool:
@@ -320,8 +327,11 @@ class ForecastingParams:
 
     @property
     def has_any(self) -> bool:
-        return (self.forecast_length is not None
-                or self.lag_timesteps is not None or self.year_over_year)
+        return (
+            self.forecast_length is not None
+            or self.lag_timesteps is not None
+            or self.year_over_year
+        )
 
 
 class PQueryApiDriver:
@@ -394,7 +404,7 @@ class PQueryApiDriver:
 
     def _require_state_services(self) -> StateServices:
         if self._state_services is None:
-            raise RuntimeError("StateServices is required")
+            raise RuntimeError('StateServices is required')
         return self._state_services
 
     async def _require_project_access(self, project_id: ProjectID) -> None:
@@ -403,10 +413,12 @@ class PQueryApiDriver:
             _current_user_ctx.get(),
         )
 
-    async def require_project_access(self, ctx: RequestContext,
-                                     project_id: ProjectID) -> None:
+    async def require_project_access(
+        self, ctx: RequestContext, project_id: ProjectID
+    ) -> None:
         await self._require_state_services().projects.get_project(
-            project_id, ctx.user_authorization)
+            project_id, ctx.user_authorization
+        )
 
     @staticmethod
     def _job_pquery_fpid(job: Any) -> Optional[FPID]:
@@ -421,8 +433,9 @@ class PQueryApiDriver:
         direct = getattr(config, 'pquery_def_fpid', None)
         if direct is not None:
             return FPID(direct)
-        pquery_id = (getattr(config, 'pquery_id', None)
-                     or getattr(config, 'predictive_query_id', None))
+        pquery_id = getattr(config, 'pquery_id', None) or getattr(
+            config, 'predictive_query_id', None
+        )
         if pquery_id is None:
             return None
         try:
@@ -441,11 +454,12 @@ class PQueryApiDriver:
         _, claimed_fpid = PredictiveQueryID.parse(pquery_id)
         if claimed_fpid is None:
             raise PredictiveQueryDoesNotExistError(pquery_id)
-        job = await self._require_ml_job_service().get_job_if_exists_generic(
-            job_id)
-        if (job is None
-                or str(getattr(job, 'project_id', '')) != str(project_id)
-                or self._job_pquery_fpid(job) != claimed_fpid):
+        job = await self._require_ml_job_service().get_job_if_exists_generic(job_id)
+        if (
+            job is None
+            or str(getattr(job, 'project_id', '')) != str(project_id)
+            or self._job_pquery_fpid(job) != claimed_fpid
+        ):
             # Use a resource-not-found response for every mismatch so this
             # authorization check cannot be used to enumerate another
             # project's jobs or PQueries.
@@ -486,7 +500,8 @@ class PQueryApiDriver:
     ) -> Optional[GraphDefinition]:
         await self._require_project_access(project_id)
         return await self._require_graph_service().get_graph_definition(
-            project_id, graph_fpid)
+            project_id, graph_fpid
+        )
 
     @staticmethod
     def _pquery_resource_from_definition_and_graph(
@@ -502,8 +517,7 @@ class PQueryApiDriver:
             query_string=pq_def.query_str,
             graph=graph_def,
             runtime_options=pquery_runtime_options_or_none(
-                list_distinct_target_is_array=(
-                    pq_def.list_distinct_target_is_array),
+                list_distinct_target_is_array=(pq_def.list_distinct_target_is_array),
                 lp_bp_layout=pq_def.lp_bp_layout,
             ),
         )
@@ -513,10 +527,8 @@ class PQueryApiDriver:
         pq_def: PQueryDefinition,
         project_id: ProjectID,
     ) -> PQueryResource:
-        graph_def = await self._get_graph_def_for_pquery(
-            pq_def.graph_fpid, project_id)
-        return self._pquery_resource_from_definition_and_graph(
-            pq_def, graph_def)
+        graph_def = await self._get_graph_def_for_pquery(pq_def.graph_fpid, project_id)
+        return self._pquery_resource_from_definition_and_graph(pq_def, graph_def)
 
     async def _pquery_resources_from_definitions(
         self,
@@ -528,15 +540,15 @@ class PQueryApiDriver:
             return {}
 
         graph_defs = await self._require_graph_service().get_graph_definitions(
-            project_id, {pq_def.graph_fpid
-                         for pq_def in pq_defs})
+            project_id, {pq_def.graph_fpid for pq_def in pq_defs}
+        )
         resources: Dict[FPID, PQueryResource] = {}
         for pq_def in pq_defs:
             graph_def = graph_defs.get(pq_def.graph_fpid)
             if graph_def is not None:
                 resources[pq_def.fpid] = (
-                    self._pquery_resource_from_definition_and_graph(
-                        pq_def, graph_def))
+                    self._pquery_resource_from_definition_and_graph(pq_def, graph_def)
+                )
         return resources
 
     async def _pquery_definitions_by_ids(
@@ -547,8 +559,9 @@ class PQueryApiDriver:
         if not unique_pq_ids:
             return {}
 
-        definitions_by_id = (await self._require_pquery_service().
-                             get_definitions_by_ids(unique_pq_ids))
+        definitions_by_id = await self._require_pquery_service().get_definitions_by_ids(
+            unique_pq_ids
+        )
         return {pq_id: definitions_by_id.get(pq_id) for pq_id in unique_pq_ids}
 
     async def _get_graph_data_compute_input(
@@ -569,7 +582,8 @@ class PQueryApiDriver:
         tags: Dict[JobTagKey, JobTagValue],
     ) -> bool:
         return await self._require_ml_job_service().apply_job_tags(
-            job_type, job_id, tags)
+            job_type, job_id, tags
+        )
 
     async def _link_graph_to_project(
         self,
@@ -585,20 +599,26 @@ class PQueryApiDriver:
         project_id: ProjectID,
     ) -> PQueryResource:
         await self._require_project_access(project_id)
-        pq_def = await self._require_pquery_service().get_definition_by_id(pq_id
-                                                                           )
+        pq_def = await self._require_pquery_service().get_definition_by_id(pq_id)
         if pq_def is None:
             raise PredictiveQueryDoesNotExistError(pq_id)
 
         return await self._pquery_resource_from_definition(pq_def, project_id)
 
-    async def get_many_predictive_queries_v2(self, job_to_pq_fpid: Dict[Union[
-        TrainingJobID,
-        BatchPredictionJobID,
-        GeneratePredictionTableJobID,
-        GenerateTrainTableJobID,
-    ], PredictiveQueryID], project_id: ProjectID,
-                                             skip_validation: bool = False):
+    async def get_many_predictive_queries_v2(
+        self,
+        job_to_pq_fpid: Dict[
+            Union[
+                TrainingJobID,
+                BatchPredictionJobID,
+                GeneratePredictionTableJobID,
+                GenerateTrainTableJobID,
+            ],
+            PredictiveQueryID,
+        ],
+        project_id: ProjectID,
+        skip_validation: bool = False,
+    ):
         await self._require_project_access(project_id)
         id_to_fpid: Dict[PredictiveQueryID, FPID] = {}
         for job_id, pq_id in job_to_pq_fpid.items():
@@ -609,8 +629,7 @@ class PQueryApiDriver:
             )
 
         pq_fpids = set(id_to_fpid.values())
-        pqs_dict = await self._require_pquery_service().get_definitions(pq_fpids
-                                                                        )
+        pqs_dict = await self._require_pquery_service().get_definitions(pq_fpids)
 
         # get task type for each predictive query
         fpid_to_task_type = {}
@@ -618,15 +637,19 @@ class PQueryApiDriver:
             fpid_to_task_type[pq_fpid] = pq_def.task_type
             if not pq_def.task_type:
                 parsed_pq = await self.get_parsed_pq_v2_by_fpid(
-                    pq_fpid, project_id, skip_validation)
+                    pq_fpid, project_id, skip_validation
+                )
                 fpid_to_task_type[pq_fpid] = parsed_pq.task_type
 
-        result: Dict[Union[
-            TrainingJobID,
-            BatchPredictionJobID,
-            GeneratePredictionTableJobID,
-            GenerateTrainTableJobID,
-        ], Tuple[str, TaskType]] = {}
+        result: Dict[
+            Union[
+                TrainingJobID,
+                BatchPredictionJobID,
+                GeneratePredictionTableJobID,
+                GenerateTrainTableJobID,
+            ],
+            Tuple[str, TaskType],
+        ] = {}
 
         # make a mapping between the job id and predictive query yaml
         for key, val in job_to_pq_fpid.items():
@@ -668,33 +691,36 @@ class PQueryApiDriver:
                 'Batch prediction filter overrides are not support with '
                 'custom training table.\n2. The training job is associated '
                 'with a legacy job which doesnt contain predictive_query '
-                'definition')
+                'definition'
+            )
 
         parsed_predictive_query = await self.get_parsed_pq_v2_by_fpid(
-            pq_fpid, ProjectID(training_job.project_id))
+            pq_fpid, ProjectID(training_job.project_id)
+        )
 
-        graph = fail_closed_graph_from_config(
-            parsed_predictive_query.config.graph)
+        graph = fail_closed_graph_from_config(parsed_predictive_query.config.graph)
 
         parser = PQLParser()
         query_str = parsed_predictive_query.config.query_string()
         validator = PredictiveQueryValidator(
-            **validator_kwargs(graph, query_string=query_str))
+            **validator_kwargs(graph, query_string=query_str)
+        )
 
         parsed_query = parser.to_parsed_predictive_query(query_str)
-        predictive_query, response = validator.validate_predictive_query(
-            parsed_query)
+        predictive_query, response = validator.validate_predictive_query(parsed_query)
 
         if predictive_query is None:
-            raise ValueError(f'Unable to validate predictive query for {id}: '
-                             f'{response.error_message()}')
+            raise ValueError(
+                f'Unable to validate predictive query for {id}: '
+                f'{response.error_message()}'
+            )
 
         transformer = BPFilterTransformer()
         editable_query = transformer.get_bp_editable_query(
             predictive_query,
             parsed_predictive_query.task_type,
             map_to_api_graph_definition(graph),
-            original_query_text="",
+            original_query_text='',
         )
 
         return editable_query
@@ -744,26 +770,29 @@ class PQueryApiDriver:
                 'Batch prediction filter overrides are not support with '
                 'custom training table.\n2. The training job is associated '
                 'with a legacy job which doesnt contain predictive_query '
-                'definition')
+                'definition'
+            )
 
         parsed_predictive_query = await self.get_parsed_pq_v2_by_fpid(
-            pq_fpid, ProjectID(training_job.project_id))
+            pq_fpid, ProjectID(training_job.project_id)
+        )
 
-        graph = fail_closed_graph_from_config(
-            parsed_predictive_query.config.graph)
+        graph = fail_closed_graph_from_config(parsed_predictive_query.config.graph)
 
         parser = PQLParser()
         query_str = parsed_predictive_query.config.query_string()
         validator = PredictiveQueryValidator(
-            **validator_kwargs(graph, query_string=query_str))
+            **validator_kwargs(graph, query_string=query_str)
+        )
 
         parsed_query = parser.to_parsed_predictive_query(query_str)
-        predictive_query, response = validator.validate_predictive_query(
-            parsed_query)
+        predictive_query, response = validator.validate_predictive_query(parsed_query)
 
         if predictive_query is None:
-            raise ValueError(f'Unable to validate predictive query for {id}: '
-                             f'{response.error_message()}')
+            raise ValueError(
+                f'Unable to validate predictive query for {id}: '
+                f'{response.error_message()}'
+            )
 
         transformer = BPFilterTransformer()
         graph_def = map_to_api_graph_definition(graph)
@@ -772,7 +801,7 @@ class PQueryApiDriver:
             predictive_query,
             task_type,
             graph_def,
-            original_query_text="",
+            original_query_text='',
         )
 
         user_changes = {}
@@ -782,7 +811,8 @@ class PQueryApiDriver:
             if field.field_name == 'Target filter':
                 user_changes[field.field_name] = overrides.target_filter
         editable_query_user_response = EditableQueryResponse(
-            editable_query, user_changes)
+            editable_query, user_changes
+        )
         return transformer.insert_filter_overrides(
             editable_query_user_response,
             graph_def,
@@ -798,9 +828,9 @@ class PQueryApiDriver:
         CustomTrainingTable spec."""
         if custom_train_table is None:
             return None
-        (source_table, source_table_name,
-         connector_id) = extract_source_table_type(
-             custom_train_table.source_table)
+        (source_table, source_table_name, connector_id) = extract_source_table_type(
+            custom_train_table.source_table
+        )
 
         assert source_table_name is not None
         # ``None`` names a table supplied as it stands, with no weight column
@@ -809,14 +839,14 @@ class PQueryApiDriver:
         split_col = custom_train_table.table_mod_spec.split_col
 
         connector_spec = await self._get_custom_table_connector_spec(
-            source_table, connector_id, project_id)
+            source_table, connector_id, project_id
+        )
         if isinstance(source_table, source_table_api.CustomSQLSourceTable):
             from kumo_core.types import ConnectorType
 
             from kumo.data.custom_sql import referenced_tables_or_none
 
-            connector = await self._require_state_services(
-            ).connectors.get_for_project(
+            connector = await self._require_state_services().connectors.get_for_project(
                 project_id,
                 ConnectorID(connector_id),
                 _current_user_ctx.get(),
@@ -825,13 +855,14 @@ class PQueryApiDriver:
             if connector_type != ConnectorType.DATABRICKS:
                 raise ValueError(
                     'Custom SQL training sources are currently supported '
-                    'only for Databricks connectors.')
+                    'only for Databricks connectors.'
+                )
             source_table = dataclasses.replace(
                 source_table,
-                connector_type=source_table_api.ConnectorType(
-                    connector_type.value),
-                referenced_tables=(referenced_tables_or_none(
-                    source_table.sql, connector_type) or []),
+                connector_type=source_table_api.ConnectorType(connector_type.value),
+                referenced_tables=(
+                    referenced_tables_or_none(source_table.sql, connector_type) or []
+                ),
             )
 
         return CustomTrainingTable(
@@ -875,7 +906,8 @@ class PQueryApiDriver:
     ) -> ConnectorExecutionRef:
         if connector_id is None:
             raise ConnectorError(
-                "A project-owned connector_id and project_id are required")
+                'A project-owned connector_id and project_id are required'
+            )
         connectors = self._require_state_services().connectors
         expected_type = None
         if not isinstance(source_table, source_table_api.CustomSQLSourceTable):
@@ -883,7 +915,8 @@ class PQueryApiDriver:
             source_type_name = getattr(source_type, 'name', None)
             if source_type_name is None:
                 raise ValueError(
-                    'Custom training source has no supported connector type')
+                    'Custom training source has no supported connector type'
+                )
             try:
                 expected_type = data_source_api.ConnectorType[source_type_name]
             except KeyError:
@@ -896,12 +929,16 @@ class PQueryApiDriver:
                 _current_user_ctx.get(),
             )
             if connector is None:
-                if not (isinstance(source_table, source_table_api.S3SourceTable)
-                        and isinstance(source_table.source,
-                                       source_table_api.S3RelativeSource)):
+                if not (
+                    isinstance(source_table, source_table_api.S3SourceTable)
+                    and isinstance(
+                        source_table.source, source_table_api.S3RelativeSource
+                    )
+                ):
                     raise ValueError(
                         'Project upload connectors require a '
-                        'connector-relative custom training source')
+                        'connector-relative custom training source'
+                    )
                 expected_type = None
         return await connectors.execution_ref_for_project(
             _current_user_ctx.get(),
@@ -948,12 +985,14 @@ class PQueryApiDriver:
             )
 
         except ValidationException as e:
-            return ValidationResponse(errors=[
-                ValidationError(
-                    title="Connector not found",
-                    message=str(e),
-                )
-            ])
+            return ValidationResponse(
+                errors=[
+                    ValidationError(
+                        title='Connector not found',
+                        message=str(e),
+                    )
+                ]
+            )
 
         return await DataBackend._execute_single_activity(
             self._data_backend_ctx,
@@ -995,7 +1034,8 @@ class PQueryApiDriver:
                 raise ValueError('PQuery name is not valid')
 
         pquery_def = await self._pquery_logic(project_id).build_pquery_def_v2(
-            pquery_resource=args, pquery_settings=self._pquery_settings)
+            pquery_resource=args, pquery_settings=self._pquery_settings
+        )
         fpid = await self._require_pquery_service().add_definition(pquery_def)
         if args.name is not None:
             await self._require_pquery_service().set_alias(args.name, fpid)
@@ -1008,39 +1048,46 @@ class PQueryApiDriver:
         response: jobs_api.ValidationResponse,
     ) -> jobs_api.ErrorDetails:
         """
-                Convert a ValidationResponse object to an ErrorDetails object.
+        Convert a ValidationResponse object to an ErrorDetails object.
 
-                Args:
-                    response (jobs_api.ValidationResponse): The validation
-                    response object.
+        Args:
+            response (jobs_api.ValidationResponse): The validation
+            response object.
 
-                Returns:
-                    jobs_api.ErrorDetails: The error details object.
-                """
+        Returns:
+            jobs_api.ErrorDetails: The error details object.
+        """
         items = [
             jobs_api.ErrorDetail(
                 type=jobs_api.ErrorType.ERROR,
                 title=error.title,
                 description=error.message,
                 cta=None,
-            ) for error in response.errors
+            )
+            for error in response.errors
         ]
-        items.extend([
-            jobs_api.ErrorDetail(
-                type=jobs_api.ErrorType.INFO,
-                title=warn.title,
-                description=warn.message,
-                cta=None,
-            ) for warn in response.warnings
-        ])
-        items.extend([
-            jobs_api.ErrorDetail(
-                type=jobs_api.ErrorType.INFO,
-                title=info.title,
-                description=info.message,
-                cta=None,
-            ) for info in response.info_items
-        ])
+        items.extend(
+            [
+                jobs_api.ErrorDetail(
+                    type=jobs_api.ErrorType.INFO,
+                    title=warn.title,
+                    description=warn.message,
+                    cta=None,
+                )
+                for warn in response.warnings
+            ]
+        )
+        items.extend(
+            [
+                jobs_api.ErrorDetail(
+                    type=jobs_api.ErrorType.INFO,
+                    title=info.title,
+                    description=info.message,
+                    cta=None,
+                )
+                for info in response.info_items
+            ]
+        )
 
         return jobs_api.ErrorDetails(items=items)
 
@@ -1072,17 +1119,19 @@ class PQueryApiDriver:
         await self._require_project_access(project_id)
         try:
             # Convert request to args
-            query_name = ""
+            query_name = ''
             if args.pquery_resource.name:
                 query_name = args.pquery_resource.name
             if check_unique_id and query_name:
-                existing = await self._require_pquery_service(
-                ).get_definition_by_id(PredictiveQueryID(query_name))
+                existing = await self._require_pquery_service().get_definition_by_id(
+                    PredictiveQueryID(query_name)
+                )
                 if existing is not None:
                     raise ValidationException(
-                        title="Predictive query already exists",
-                        message=(f"Predictive query with name={query_name} "
-                                 "already exists"),
+                        title='Predictive query already exists',
+                        message=(
+                            f'Predictive query with name={query_name} already exists'
+                        ),
                     )
             val_args = PQueryValidationArgs(
                 query_string=args.pquery_resource.query_string,
@@ -1092,25 +1141,29 @@ class PQueryApiDriver:
                 model_plan=args.model_plan,
                 runtime_options=pquery_runtime_options_or_none(
                     list_distinct_target_is_array=(
-                        args.pquery_resource.list_distinct_target_is_array),
+                        args.pquery_resource.list_distinct_target_is_array
+                    ),
                     lp_bp_layout=args.pquery_resource.lp_bp_layout,
                 ),
             )
 
             validation_response = await self._pquery_logic(
-                project_id).validate_predictive_query_v2(
-                    val_args,
-                    pquery_settings=self._pquery_settings,
-                    check_unique_id=False,
-                )
+                project_id
+            ).validate_predictive_query_v2(
+                val_args,
+                pquery_settings=self._pquery_settings,
+                check_unique_id=False,
+            )
             return validation_response
         except ValidationException as e:
-            return ValidationResponse(errors=[
-                ValidationError(
-                    title='Invalid Predictive Query',
-                    message=(str(e)),
-                )
-            ])
+            return ValidationResponse(
+                errors=[
+                    ValidationError(
+                        title='Invalid Predictive Query',
+                        message=(str(e)),
+                    )
+                ]
+            )
 
     async def get_pquery_metadata(
         self,
@@ -1121,31 +1174,34 @@ class PQueryApiDriver:
             pq_def = await self._pquery_service.get_definition_by_id(pquery_id)
             if pq_def is not None:
                 graph_def = await self._get_graph_def_for_pquery(
-                    pq_def.graph_fpid, project_id)
+                    pq_def.graph_fpid, project_id
+                )
                 if graph_def is None:
                     raise PredictiveQueryDoesNotExistError(pquery_id)
-                if (pq_def.task_type is not None
-                        and pq_def.query_type is not None):
+                if pq_def.task_type is not None and pq_def.query_type is not None:
                     return pq_def.task_type, pq_def.query_type
 
-        _, pq_resource = await self._resolve_pquery_for_launch(
-            pquery_id, project_id)
+        _, pq_resource = await self._resolve_pquery_for_launch(pquery_id, project_id)
         val_args = PQueryValidationArgs(
             query_string=pq_resource.query_string,
             graph=pq_resource.graph,
-            name=pq_resource.name or "",
-            desc=pq_resource.desc or "",
+            name=pq_resource.name or '',
+            desc=pq_resource.desc or '',
             fpid=pquery_id.fpid,
             runtime_options=pquery_runtime_options_or_none(
                 list_distinct_target_is_array=(
-                    pq_resource.list_distinct_target_is_array),
+                    pq_resource.list_distinct_target_is_array
+                ),
                 lp_bp_layout=pq_resource.lp_bp_layout,
             ),
         )
-        parsed_pq, _ = await self._pquery_logic(
-            project_id).parse_predictive_query_v2(
-                val_args, config=None, auto_trainer_options=None,
-                pquery_settings=self._pquery_settings, skip_validation=True)
+        parsed_pq, _ = await self._pquery_logic(project_id).parse_predictive_query_v2(
+            val_args,
+            config=None,
+            auto_trainer_options=None,
+            pquery_settings=self._pquery_settings,
+            skip_validation=True,
+        )
         return (parsed_pq.task_type, parsed_pq.query_type)
 
     async def start_generate_pred_table(
@@ -1162,18 +1218,18 @@ class PQueryApiDriver:
         # temporary fix until the parent-child relationship is properly
         # restored.
         pq_def_fpid, pq_resource = await self._resolve_pquery_for_launch(
-            request.pquery_id, project_id)
+            request.pquery_id, project_id
+        )
 
-        compute_graph_fpid, graph_ver_info = (await
-                                              self._handle_snapshot_override_v2(
-                                                  pq_resource,
-                                                  request.graph_snapshot_id))
-        graph_data_ver = (graph_ver_info.graph_data_version
-                          if graph_ver_info else None)
+        compute_graph_fpid, graph_ver_info = await self._handle_snapshot_override_v2(
+            pq_resource, request.graph_snapshot_id
+        )
+        graph_data_ver = graph_ver_info.graph_data_version if graph_ver_info else None
 
         if compute_graph_fpid != pq_resource.graph.fpid:
             pq_def_fpid, pq_resource = await self._fork_pquery_def_for_graph(
-                pq_def_fpid, pq_resource, compute_graph_fpid, project_id)
+                pq_def_fpid, pq_resource, compute_graph_fpid, project_id
+            )
 
         pq_id = PredictiveQueryID.compose(fpid=pq_def_fpid)
 
@@ -1185,26 +1241,28 @@ class PQueryApiDriver:
         val_args = PQueryValidationArgs(
             query_string=pq_resource.query_string,
             graph=pq_resource.graph,
-            name=pq_resource.name or "",
-            desc=pq_resource.desc or "",
+            name=pq_resource.name or '',
+            desc=pq_resource.desc or '',
             fpid=pq_def_fpid,
             runtime_options=pquery_runtime_options_or_none(
                 list_distinct_target_is_array=(
-                    pq_resource.list_distinct_target_is_array),
+                    pq_resource.list_distinct_target_is_array
+                ),
                 lp_bp_layout=pq_resource.lp_bp_layout,
             ),
         )
-        parsed_pq, _ = await self._pquery_logic(
-            project_id).parse_predictive_query_v2(
-                val_args, config=None, auto_trainer_options=None,
-                pquery_settings=self._pquery_settings)
+        parsed_pq, _ = await self._pquery_logic(project_id).parse_predictive_query_v2(
+            val_args,
+            config=None,
+            auto_trainer_options=None,
+            pquery_settings=self._pquery_settings,
+        )
         task_type = parsed_pq.task_type
 
         forecasting_params = ForecastingParams.from_plan(request.plan)
         if not forecasting_params.has_any:
             if training_job_id is not None:
-                forecasting_params = await self._get_forecasting_params(
-                    training_job_id)
+                forecasting_params = await self._get_forecasting_params(training_job_id)
             else:
                 forecasting_params = ForecastingParams.default()
 
@@ -1220,8 +1278,9 @@ class PQueryApiDriver:
         )
 
         bp_logic = self._batch_prediction_logic()
-        binary_class_threshold = (0.5 if task_type
-                                  == TaskType.BINARY_CLASSIFICATION else None)
+        binary_class_threshold = (
+            0.5 if task_type == TaskType.BINARY_CLASSIFICATION else None
+        )
         job_id = GeneratePredictionTableJobID.make_random_id()
 
         anchor_time = request.plan.anchor_time
@@ -1256,8 +1315,9 @@ class PQueryApiDriver:
         except Exception as ex:
             if isinstance(ex, ValueError):
                 raise
-            raise ValueError(f'Invalid batch prediction job input due to '
-                             f'{type(ex).__name__}: {ex}') from ex
+            raise ValueError(
+                f'Invalid batch prediction job input due to {type(ex).__name__}: {ex}'
+            ) from ex
 
         job_id = await self._ml_job_backend.start_generate_pred_table(
             job_input,
@@ -1270,11 +1330,10 @@ class PQueryApiDriver:
 
         tags = self.create_ordered_job_tags(
             request.job_tags,
-            pq_resource.name or "NA",
+            pq_resource.name or 'NA',
             job_input.config.pquery_def_fpid,
         )
-        await self._apply_job_tags(JobType.GENERATE_PREDICTION_TABLE_JOB,
-                                   job_id, tags)
+        await self._apply_job_tags(JobType.GENERATE_PREDICTION_TABLE_JOB, job_id, tags)
 
         return job_id
 
@@ -1294,13 +1353,15 @@ class PQueryApiDriver:
             return ForecastingParams.default()
 
         gen_tt_entry = await self._ml_job_backend.get_training_gen_tt_job(
-            training_job_id)
+            training_job_id
+        )
         if gen_tt_entry is not None:
             return ForecastingParams.from_plan(gen_tt_entry.config.plan)
 
         # Fallback: gen-TT job not linked; try training job plan directly.
-        training_plan = (await self._ml_job_backend.
-                         get_training_job_training_table_plan(training_job_id))
+        training_plan = await self._ml_job_backend.get_training_job_training_table_plan(
+            training_job_id
+        )
         if training_plan is not None:
             return ForecastingParams.from_plan(training_plan)
 
@@ -1317,23 +1378,18 @@ class PQueryApiDriver:
         else:
             name, fpid = PredictiveQueryID.parse(pq_id)
         if fpid is not None:
-            filters = {
-                str(TAG_KEY_PQUERY_ID): str(JobTagValue.of_pquery_id(fpid))
-            }
+            filters = {str(TAG_KEY_PQUERY_ID): str(JobTagValue.of_pquery_id(fpid))}
         elif name is not None:
-            filters = {
-                str(TAG_KEY_PQUERY_NAME): str(JobTagValue.of_pquery_name(name))
-            }
+            filters = {str(TAG_KEY_PQUERY_NAME): str(JobTagValue.of_pquery_name(name))}
         else:
             return None
         tagged_jobs = await self._list_job_tags(JobType.TRAINING_JOB, filters)
         if not tagged_jobs:
             return None
         rows = await self._require_ml_job_service().list_training_job_rows(
-            job_ids={TrainingJobID(job_id)
-                     for job_id in tagged_jobs},
+            job_ids={TrainingJobID(job_id) for job_id in tagged_jobs},
             project_ids=project_ids,
-            sort_created_at="desc",
+            sort_created_at='desc',
             limit=1,
         )
         return rows[0].id if rows else None
@@ -1347,10 +1403,9 @@ class PQueryApiDriver:
         filters = {str(TAG_KEY_PQUERY_ID): str(JobTagValue.of_pquery_id(fpid))}
         tagged_jobs = await self._list_job_tags(JobType.TRAINING_JOB, filters)
         rows = await self._require_ml_job_service().list_training_job_rows(
-            job_ids={TrainingJobID(job_id)
-                     for job_id in tagged_jobs},
+            job_ids={TrainingJobID(job_id) for job_id in tagged_jobs},
             project_ids=project_ids,
-            sort_created_at="asc",
+            sort_created_at='asc',
         )
         return [row.id for row in rows]
 
@@ -1363,15 +1418,16 @@ class PQueryApiDriver:
             return True
 
         training_jobs_by_id = await self._ml_job_backend.get_training_jobs(
-            ctx, set(training_job_ids))
+            ctx, set(training_job_ids)
+        )
 
         all_cancelled = True
         for training_job_id in training_job_ids:
             training_job = training_jobs_by_id.get(training_job_id)
-            if (training_job is not None
-                    and training_job.execution.status.is_submitted):
+            if training_job is not None and training_job.execution.status.is_submitted:
                 cancelled = await self._ml_job_backend.cancel_training_job(
-                    training_job_id)
+                    training_job_id
+                )
                 all_cancelled = all_cancelled and cancelled
         return all_cancelled
 
@@ -1393,8 +1449,7 @@ class PQueryApiDriver:
             fpid = None
 
         if fpid is None:
-            fpid = await self._require_pquery_service().get_alias(
-                pquery_name_or_id)
+            fpid = await self._require_pquery_service().get_alias(pquery_name_or_id)
 
         if fpid is None:
             raise PredictiveQueryDoesNotExistError(pquery_name_or_id)
@@ -1403,19 +1458,17 @@ class PQueryApiDriver:
         if pq_def is None:
             raise PredictiveQueryDoesNotExistError(pquery_name_or_id)
 
-        graph_def = await self._get_graph_def_for_pquery(
-            pq_def.graph_fpid, project_id)
+        graph_def = await self._get_graph_def_for_pquery(pq_def.graph_fpid, project_id)
         if graph_def is None:
             raise ValueError(f'Graph not found for pquery {pquery_name_or_id}')
 
         return fpid, PQueryResource(
             name=pq_def.pquery_name,
             query_string=pq_def.query_str,
-            desc="",
+            desc='',
             graph=graph_def,
             runtime_options=pquery_runtime_options_or_none(
-                list_distinct_target_is_array=(
-                    pq_def.list_distinct_target_is_array),
+                list_distinct_target_is_array=(pq_def.list_distinct_target_is_array),
                 lp_bp_layout=pq_def.lp_bp_layout,
             ),
         )
@@ -1441,12 +1494,13 @@ class PQueryApiDriver:
             return BatchPredictionJobID.as_parent_of(id)
 
     async def _get_job_dir(
-        self, id: Union[
+        self,
+        id: Union[
             GenerateTrainTableJobID,
             GeneratePredictionTableJobID,
             TrainingJobID,
             BatchPredictionJobID,
-        ]
+        ],
     ) -> Optional[str]:
         """Get the job directory for a given job ID. Resolve to parent if the
         job directory does not exist.
@@ -1465,9 +1519,10 @@ class PQueryApiDriver:
         job_dir = get_job_dir(get_job_base_dir(), id)
         job_dir_exists = await fsutil.exists_async(job_dir)
         if not job_dir_exists:
-            log.warning(f"Job directory {job_dir} does not exist")
+            log.warning(f'Job directory {job_dir} does not exist')
             if isinstance(id, GenerateTrainTableJobID) or isinstance(
-                    id, GeneratePredictionTableJobID):
+                id, GeneratePredictionTableJobID
+            ):
                 parent_id = self._get_parent_id(id)
                 job_dir = get_job_dir(get_job_base_dir(), parent_id)
                 job_dir_exists = await fsutil.exists_async(job_dir)
@@ -1515,52 +1570,56 @@ class PQueryApiDriver:
         """
         # For GenerateTrainTableJobID and GeneratePredictionTableJobID,
         # try StateDB first as it's the most reliable source of truth.
-        if isinstance(id,
-                      (GenerateTrainTableJobID, GeneratePredictionTableJobID)):
-            execution = await self._ml_job_backend.get_generate_table_job_execution(
-                id)
+        if isinstance(id, (GenerateTrainTableJobID, GeneratePredictionTableJobID)):
+            execution = await self._ml_job_backend.get_generate_table_job_execution(id)
 
             if execution is not None:
                 # 1. Try validation from StateDB
                 if execution.validation is not None:
-                    err_warn_details = _validation_to_warn_details(
-                        execution.validation)
+                    err_warn_details = _validation_to_warn_details(execution.validation)
                     if err_warn_details:
-                        return self._transform_to_error_details(
-                            err_warn_details)
+                        return self._transform_to_error_details(err_warn_details)
 
                 # 2. Try ValidationResponse file
                 job_dir = await self._get_job_dir(id)
                 if job_dir:
                     disk_err_warn_details = await _get_warn_details(
-                        [HomeDirManager(job_dir).validation_path(id)])
+                        [HomeDirManager(job_dir).validation_path(id)]
+                    )
                     if disk_err_warn_details and disk_err_warn_details[0]:
                         return self._transform_to_error_details(
-                            disk_err_warn_details[0])
+                            disk_err_warn_details[0]
+                        )
 
                 # 3. Try failure_info.message from StateDB
-                if execution.failure_info is not None and execution.failure_info.message:
-                    return jobs_api.ErrorDetails(items=[
-                        jobs_api.ErrorDetail(
-                            title=None,
-                            description=execution.failure_info.message,
-                            cta=None,
-                            type=jobs_api.ErrorType.ERROR,
-                        )
-                    ])
+                if (
+                    execution.failure_info is not None
+                    and execution.failure_info.message
+                ):
+                    return jobs_api.ErrorDetails(
+                        items=[
+                            jobs_api.ErrorDetail(
+                                title=None,
+                                description=execution.failure_info.message,
+                                cta=None,
+                                type=jobs_api.ErrorType.ERROR,
+                            )
+                        ]
+                    )
 
                 # 4. Try log.detail from StateDB for failed jobs only. DONE
                 # generated-table jobs store success text in log.detail.
-                if (execution.status == JobStatus.FAILED
-                        and execution.log.detail):
-                    return jobs_api.ErrorDetails(items=[
-                        jobs_api.ErrorDetail(
-                            title=None,
-                            description=execution.log.detail,
-                            cta=None,
-                            type=jobs_api.ErrorType.ERROR,
-                        )
-                    ])
+                if execution.status == JobStatus.FAILED and execution.log.detail:
+                    return jobs_api.ErrorDetails(
+                        items=[
+                            jobs_api.ErrorDetail(
+                                title=None,
+                                description=execution.log.detail,
+                                cta=None,
+                                type=jobs_api.ErrorType.ERROR,
+                            )
+                        ]
+                    )
 
             # Job not found in StateDB, return empty
             return jobs_api.ErrorDetails(items=[])
@@ -1575,7 +1634,8 @@ class PQueryApiDriver:
             return jobs_api.ErrorDetails(items=[])
 
         err_warn_details = await _get_warn_details(
-            [HomeDirManager(job_dir).validation_path(id)])
+            [HomeDirManager(job_dir).validation_path(id)]
+        )
         if len(err_warn_details) == 0:
             return jobs_api.ErrorDetails(items=[])
         # We are querying for 1 job only so at most can get one entry
@@ -1596,11 +1656,14 @@ class PQueryApiDriver:
         """
         items = []
         for err in err_warn_details:
-            type = (jobs_api.ErrorType.ERROR
-                    if err.is_error else jobs_api.ErrorType.INFO)
-            cta = None if err.cta is None else jobs_api.ErrorCTA(
-                name=err.cta.name,
-                url=err.cta.url,
+            type = jobs_api.ErrorType.ERROR if err.is_error else jobs_api.ErrorType.INFO
+            cta = (
+                None
+                if err.cta is None
+                else jobs_api.ErrorCTA(
+                    name=err.cta.name,
+                    url=err.cta.url,
+                )
             )
 
             error_detail = jobs_api.ErrorDetail(
@@ -1621,15 +1684,20 @@ class PQueryApiDriver:
     ) -> GenerateTrainTableJobID:
         """Launch a job to generate training table."""
         pq_def_fpid, pq_resource = await self._resolve_pquery_for_launch(
-            request.pquery_id, project_id)
+            request.pquery_id, project_id
+        )
 
-        compute_graph_fpid, graph_version_info = (
-            await self._handle_snapshot_override_v2(pq_resource,
-                                                    request.graph_snapshot_id))
+        (
+            compute_graph_fpid,
+            graph_version_info,
+        ) = await self._handle_snapshot_override_v2(
+            pq_resource, request.graph_snapshot_id
+        )
 
         if compute_graph_fpid != pq_resource.graph.fpid:
             pq_def_fpid, pq_resource = await self._fork_pquery_def_for_graph(
-                pq_def_fpid, pq_resource, compute_graph_fpid, project_id)
+                pq_def_fpid, pq_resource, compute_graph_fpid, project_id
+            )
 
         await self._link_graph_to_project(
             pq_resource.graph.fpid,
@@ -1637,15 +1705,17 @@ class PQueryApiDriver:
         )
 
         graph_data_compute_input = await self._get_graph_data_compute_input(
-            GraphIDv2.compose(fpid=compute_graph_fpid), project_id)
+            GraphIDv2.compose(fpid=compute_graph_fpid), project_id
+        )
 
         training_spec, parsed_pq = await self._pquery_logic(
-            project_id)._make_training_spec_v2(
-                pq_resource,
-                self._pquery_settings,
-                pq_def_fpid=pq_def_fpid,
-                graph_version_info=graph_version_info,
-            )
+            project_id
+        )._make_training_spec_v2(
+            pq_resource,
+            self._pquery_settings,
+            pq_def_fpid=pq_def_fpid,
+            graph_version_info=graph_version_info,
+        )
 
         # Here model plan is just a container for train-table-generation plan
         training_spec.advanced_options = ModelPlan()
@@ -1676,10 +1746,9 @@ class PQueryApiDriver:
         # snapshot, same plan -- because those are what a training run reads
         # back off it, and a registered table has to name them the same way.
         if request.custom_train_table is not None:
-            training_spec.custom_train_table = (await
-                                                self._registered_custom_tt(
-                                                    project_id,
-                                                    request.custom_train_table))
+            training_spec.custom_train_table = await self._registered_custom_tt(
+                project_id, request.custom_train_table
+            )
 
         job_id = await self._ml_job_backend.start_generate_train_table(
             training_spec,
@@ -1695,12 +1764,8 @@ class PQueryApiDriver:
             registered_custom_table=request.custom_train_table,
         )
 
-        tags = {
-            JobTagKey(k): JobTagValue(v)
-            for k, v in request.job_tags.items()
-        }
-        tags[TAG_KEY_PQUERY_NAME] = JobTagValue.of_pquery_name(pq_resource.name
-                                                               or "NA")
+        tags = {JobTagKey(k): JobTagValue(v) for k, v in request.job_tags.items()}
+        tags[TAG_KEY_PQUERY_NAME] = JobTagValue.of_pquery_name(pq_resource.name or 'NA')
         tags[TAG_KEY_PQUERY_ID] = JobTagValue.of_pquery_id(pq_def_fpid)
         await self._apply_job_tags(
             JobType.GENERATE_TRAIN_TABLE_JOB,
@@ -1719,50 +1784,55 @@ class PQueryApiDriver:
         predictive_query_id: Optional[PredictiveQueryID],
     ) -> ValidationResponse:
         # 1. Ensure that the training job exists, and has been completed:
-        training_job: Optional[TrainingJobResponse] = (
-            await self.get_training_job(
-                ctx,
-                training_job_id,
-                strip_expensive_fields=True,
-            ))
+        training_job: Optional[TrainingJobResponse] = await self.get_training_job(
+            ctx,
+            training_job_id,
+            strip_expensive_fields=True,
+        )
         if not training_job:
             message = TRAINING_JOB_NOT_FOUND_MESSAGE.format(training_job_id)
-            return ValidationResponse(errors=[
-                ValidationError(title=TRAINING_JOB_NOT_FOUND_TITLE,
-                                message=message)
-            ])
+            return ValidationResponse(
+                errors=[
+                    ValidationError(title=TRAINING_JOB_NOT_FOUND_TITLE, message=message)
+                ]
+            )
         else:
             status = training_job.execution.status
             if status != JobStatus.DONE:
                 message = TRAINING_JOB_INCOMPLETE_MESSAGE.format(
-                    training_job_id, status)
-                return ValidationResponse(errors=[
-                    ValidationError(title=TRAINING_JOB_INCOMPLETE_TITLE,
-                                    message=message)
-                ])
+                    training_job_id, status
+                )
+                return ValidationResponse(
+                    errors=[
+                        ValidationError(
+                            title=TRAINING_JOB_INCOMPLETE_TITLE, message=message
+                        )
+                    ]
+                )
 
         assert training_job
         assert training_job.execution.status == JobStatus.DONE
         project_id = ProjectID(training_job.project_id)
 
-        training_job_pq_id: Optional[PredictiveQueryID] = (
-            await self.get_training_job_pquery_id_v2(
-                ctx,
-                training_job_id,
-            ))
+        training_job_pq_id: Optional[
+            PredictiveQueryID
+        ] = await self.get_training_job_pquery_id_v2(
+            ctx,
+            training_job_id,
+        )
 
         if not training_job_pq_id:
             message = TRAINING_JOB_NO_PQUERY_MESSAGE
-            return ValidationResponse(errors=[
-                ValidationError(title=TRAINING_JOB_NO_PQUERY_TITLE,
-                                message=message)
-            ])
+            return ValidationResponse(
+                errors=[
+                    ValidationError(title=TRAINING_JOB_NO_PQUERY_TITLE, message=message)
+                ]
+            )
 
         assert training_job_pq_id
-        training_job_pquery: PQueryResource = (await
-                                               self.get_predictive_query_v2(
-                                                   pq_id=training_job_pq_id,
-                                                   project_id=project_id))
+        training_job_pquery: PQueryResource = await self.get_predictive_query_v2(
+            pq_id=training_job_pq_id, project_id=project_id
+        )
 
         # 2. Ensure that the graph node and edge types are identical between
         # training and prediction. It is likely sufficient to loosen the
@@ -1771,103 +1841,125 @@ class PQueryApiDriver:
         # for now:
         training_job_graph_def = training_job_pquery.graph
         assert graph_id.fpid
-        graph_def, _, _ = (await self._graph_driver.get_graph_v2(
-            graph_id.fpid, project_id))
+        graph_def, _, _ = await self._graph_driver.get_graph_v2(
+            graph_id.fpid, project_id
+        )
         prediction_job_graph_def = graph_def.graph
 
         training_node_types = set(training_job_graph_def.tables.keys())
         prediction_node_types = set(prediction_job_graph_def.tables.keys())
         response = ValidationResponse()
         if training_node_types != prediction_node_types:
-            message = INCOMPATIBLE_GRAPH_MESSAGE.format(training_job_id,
-                                                        training_node_types,
-                                                        prediction_node_types)
+            message = INCOMPATIBLE_GRAPH_MESSAGE.format(
+                training_job_id, training_node_types, prediction_node_types
+            )
             response.errors.append(
-                ValidationError(title=INCOMPATIBLE_GRAPH_TITLE,
-                                message=message))
+                ValidationError(title=INCOMPATIBLE_GRAPH_TITLE, message=message)
+            )
 
         # Ignore column groups that contains less than 2 column keys,
         # due to legacy UI bug that accidentally allowed creating graph with
         # such meaningless column groups.
         # See https://github.com/kumo-ai/kumo/issues/22767
-        training_edge_types = set(cg for cg in training_job_graph_def.col_groups
-                                  if len(cg.columns) >= 2)
+        training_edge_types = set(
+            cg for cg in training_job_graph_def.col_groups if len(cg.columns) >= 2
+        )
         prediction_edge_types = set(
-            cg for cg in prediction_job_graph_def.col_groups
-            if len(cg.columns) >= 2)
+            cg for cg in prediction_job_graph_def.col_groups if len(cg.columns) >= 2
+        )
         if training_edge_types != prediction_edge_types:
-            message = INCOMPATIBLE_EDGES_MESSAGE.format(training_job_id,
-                                                        training_edge_types,
-                                                        prediction_edge_types)
+            message = INCOMPATIBLE_EDGES_MESSAGE.format(
+                training_job_id, training_edge_types, prediction_edge_types
+            )
             response.errors.append(
-                ValidationError(title=INCOMPATIBLE_EDGES_TITLE,
-                                message=message))
+                ValidationError(title=INCOMPATIBLE_EDGES_TITLE, message=message)
+            )
         if not response.ok:
             return response
 
         # Check table columns and encoders for each table:
-        for table_name, train_table_config in (
-                training_job_graph_def.tables.items()):
-            prediction_table_config = prediction_job_graph_def.tables.get(
-                table_name)
+        for table_name, train_table_config in training_job_graph_def.tables.items():
+            prediction_table_config = prediction_job_graph_def.tables.get(table_name)
 
             if train_table_config.pkey != prediction_table_config.pkey:
                 message = INCOMPATIBLE_PRIMARY_KEY_MESSAGE.format(
-                    training_job_id, table_name, train_table_config.pkey,
-                    prediction_table_config.pkey)
+                    training_job_id,
+                    table_name,
+                    train_table_config.pkey,
+                    prediction_table_config.pkey,
+                )
                 response.errors.append(
-                    ValidationError(title=INCOMPATIBLE_PRIMARY_KEY_TITLE,
-                                    message=message))
+                    ValidationError(
+                        title=INCOMPATIBLE_PRIMARY_KEY_TITLE, message=message
+                    )
+                )
 
-            if train_table_config.time_col != (
-                    prediction_table_config.time_col):
+            if train_table_config.time_col != (prediction_table_config.time_col):
                 message = INCOMPATIBLE_TIME_COLUMN_MESSAGE.format(
-                    training_job_id, table_name, train_table_config.time_col,
-                    prediction_table_config.time_col)
+                    training_job_id,
+                    table_name,
+                    train_table_config.time_col,
+                    prediction_table_config.time_col,
+                )
                 response.errors.append(
-                    ValidationError(title=INCOMPATIBLE_TIME_COLUMN_TITLE,
-                                    message=message))
+                    ValidationError(
+                        title=INCOMPATIBLE_TIME_COLUMN_TITLE, message=message
+                    )
+                )
 
             if train_table_config.end_time_col != (
-                    prediction_table_config.end_time_col):
+                prediction_table_config.end_time_col
+            ):
                 message = INCOMPATIBLE_END_TIME_COLUMN_MESSAGE.format(
-                    training_job_id, table_name,
+                    training_job_id,
+                    table_name,
                     train_table_config.end_time_col,
-                    prediction_table_config.end_time_col)
+                    prediction_table_config.end_time_col,
+                )
                 response.errors.append(
-                    ValidationError(title=INCOMPATIBLE_END_TIME_COLUMN_TITLE,
-                                    message=message))
+                    ValidationError(
+                        title=INCOMPATIBLE_END_TIME_COLUMN_TITLE, message=message
+                    )
+                )
 
-            train_table_columns = {
-                col.name: col
-                for col in train_table_config.cols
-            }
+            train_table_columns = {col.name: col for col in train_table_config.cols}
             prediction_table_columns = {
-                col.name: col
-                for col in prediction_table_config.cols
+                col.name: col for col in prediction_table_config.cols
             }
             train_table_column_names = set(train_table_columns.keys())
             prediction_table_column_names = set(prediction_table_columns.keys())
             if train_table_column_names != prediction_table_column_names:
                 message = INCOMPATIBLE_COLUMNS_MESSAGE.format(
-                    training_job_id, table_name, train_table_column_names,
-                    prediction_table_column_names)
+                    training_job_id,
+                    table_name,
+                    train_table_column_names,
+                    prediction_table_column_names,
+                )
                 response.errors.append(
-                    ValidationError(title=INCOMPATIBLE_COLUMNS_TITLE,
-                                    message=message))
-            for col_name in (train_table_column_names
-                             & prediction_table_column_names):
+                    ValidationError(title=INCOMPATIBLE_COLUMNS_TITLE, message=message)
+                )
+            for col_name in train_table_column_names & prediction_table_column_names:
                 train_col = train_table_columns[col_name]
                 prediction_col = prediction_table_columns[col_name]
-                if (train_col.dtype != prediction_col.dtype
-                        or train_col.stype != prediction_col.stype):
+                if (
+                    train_col.dtype != prediction_col.dtype
+                    or train_col.stype != prediction_col.stype
+                ):
                     message = INCOMPATIBLE_COLUMN_TYPES_MESSAGE.format(
-                        training_job_id, table_name, col_name, train_col.dtype,
-                        train_col.stype, col_name, prediction_col.dtype,
-                        prediction_col.stype)
+                        training_job_id,
+                        table_name,
+                        col_name,
+                        train_col.dtype,
+                        train_col.stype,
+                        col_name,
+                        prediction_col.dtype,
+                        prediction_col.stype,
+                    )
                     response.errors.append(
-                        ValidationError(title=INCOMPATIBLE_COLUMN_TYPES_TITLE,
-                                        message=message))
+                        ValidationError(
+                            title=INCOMPATIBLE_COLUMN_TYPES_TITLE, message=message
+                        )
+                    )
         if not response.ok:
             return response
 
@@ -1875,36 +1967,39 @@ class PQueryApiDriver:
         # graphs will always create a PQ FPID diff):
         # TODO(manan): raise error if different task types
         if predictive_query_id:
-            prediction_job_pquery: PQueryResource = (
-                await self.get_predictive_query_v2(
-                    pq_id=predictive_query_id,
-                    project_id=project_id,
-                ))
+            prediction_job_pquery: PQueryResource = await self.get_predictive_query_v2(
+                pq_id=predictive_query_id,
+                project_id=project_id,
+            )
             training_pq_fpid = training_job_pq_id.fpid
             training_pq_str = training_job_pquery.query_string
             prediction_pq_fpid = predictive_query_id.fpid
             prediction_pq_str = prediction_job_pquery.query_string
-            if ((training_pq_fpid != prediction_pq_fpid)
-                    and (training_pq_str != prediction_pq_str)):
+            if (training_pq_fpid != prediction_pq_fpid) and (
+                training_pq_str != prediction_pq_str
+            ):
                 message = (
-                    f"Training job {training_job_id} was trained with "
-                    f"predictive query {training_pq_str}, which differs "
-                    f"from the prediction job predictive query "
-                    f"{prediction_pq_str}. Please ensure this is correct "
-                    f"before proceeding.")
+                    f'Training job {training_job_id} was trained with '
+                    f'predictive query {training_pq_str}, which differs '
+                    f'from the prediction job predictive query '
+                    f'{prediction_pq_str}. Please ensure this is correct '
+                    f'before proceeding.'
+                )
                 response.warnings.append(
-                    ValidationWarning(title="Mismatched Predictive Queries",
-                                      message=message))
+                    ValidationWarning(
+                        title='Mismatched Predictive Queries', message=message
+                    )
+                )
 
         # Get the prediction table job. If this is None, then the user is using
         # a custom prediction table
         pred_table_job = None
         if pred_table_job_id is not None:
             pred_table_job: Optional[
-                jobs_api.GeneratePredictionTableJobResource] = (
-                    await
-                    self.get_generate_pred_table_job(ctx, pred_table_job_id,
-                                                     project_id))
+                jobs_api.GeneratePredictionTableJobResource
+            ] = await self.get_generate_pred_table_job(
+                ctx, pred_table_job_id, project_id
+            )
             # A still-running gen-pred-table job is fine: the BP workflow waits
             # for it to finish before materializing. Only a job that reached a
             # failed terminal state (FAILED/CANCELLED) can never yield a usable
@@ -1913,18 +2008,21 @@ class PQueryApiDriver:
             pred_table_status = pred_table_job.job_status_report.status
             if pred_table_status in (JobStatus.FAILED, JobStatus.CANCELLED):
                 message = PREDICTION_TABLE_JOB_FAILED_MESSAGE.format(
-                    pred_table_job_id, pred_table_status.value)
-                return ValidationResponse(errors=[
-                    ValidationError(title=PREDICTION_TABLE_JOB_FAILED_TITLE,
-                                    message=message)
-                ])
+                    pred_table_job_id, pred_table_status.value
+                )
+                return ValidationResponse(
+                    errors=[
+                        ValidationError(
+                            title=PREDICTION_TABLE_JOB_FAILED_TITLE, message=message
+                        )
+                    ]
+                )
 
         train_table_job = None
         if training_job.generate_train_table_job_id is not None:
             train_table_job = await self.get_training_table_generation_job(
-                ctx,
-                GenerateTrainTableJobID(
-                    training_job.generate_train_table_job_id))
+                ctx, GenerateTrainTableJobID(training_job.generate_train_table_job_id)
+            )
         assert train_table_job is not None
 
         # 4. Forecasting parameter compatibility between the training and
@@ -1935,17 +2033,20 @@ class PQueryApiDriver:
                 iomttn = inferred_or_missing_type_to_none
                 forecasting_param_validation = (
                     validate_forecasting_parameters_consistency(
-                        training_forecast_length=iomttn(
-                            ttg_plan.forecast_length),
+                        training_forecast_length=iomttn(ttg_plan.forecast_length),
                         training_lag_timesteps=iomttn(ttg_plan.lag_timesteps),
                         training_year_over_year=iomttn(ttg_plan.year_over_year),
                         prediction_forecast_length=iomttn(
-                            pred_table_job.config.plan.forecast_length),
+                            pred_table_job.config.plan.forecast_length
+                        ),
                         prediction_lag_timesteps=iomttn(
-                            pred_table_job.config.plan.lag_timesteps),
+                            pred_table_job.config.plan.lag_timesteps
+                        ),
                         prediction_year_over_year=iomttn(
-                            pred_table_job.config.plan.year_over_year),
-                    ))
+                            pred_table_job.config.plan.year_over_year
+                        ),
+                    )
+                )
                 response.merge(forecasting_param_validation)
 
         return response
@@ -1975,36 +2076,44 @@ class PQueryApiDriver:
         """
         # Training Job ID:
         training_job_id = TrainingJobID(request.model_training_job_id)
-        (request.pred_table_source, custom_pred_table_connector) = (
-            await self._authorize_custom_prediction_table_source(
-                request.pred_table_source, project_id))
+        (
+            request.pred_table_source,
+            custom_pred_table_connector,
+        ) = await self._authorize_custom_prediction_table_source(
+            request.pred_table_source, project_id
+        )
 
         # Predictive Query ID (if not passed, will use Training PQID):
         if request.pred_table_job_id:
             pquery_id = PredictiveQueryID.from_public(
-                (await
-                 self.get_generate_pred_table_job(ctx,
-                                                  request.pred_table_job_id,
-                                                  project_id)).config.pquery_id)
+                (
+                    await self.get_generate_pred_table_job(
+                        ctx, request.pred_table_job_id, project_id
+                    )
+                ).config.pquery_id
+            )
         else:
-            pquery_id = await self.get_training_job_pquery_id_v2(
-                ctx, training_job_id)
+            pquery_id = await self.get_training_job_pquery_id_v2(ctx, training_job_id)
         if pquery_id is None:
             raise ValueError(
                 'Unable to find training job associated with the model '
-                f'training ID={training_job_id}')
+                f'training ID={training_job_id}'
+            )
 
         pq_def_fpid, pq_resource = await self._resolve_pquery_for_launch(
-            pquery_id, project_id)
+            pquery_id, project_id
+        )
 
         graph_fpid, _ = await self._handle_snapshot_override_v2(
-            pq_resource, request.graph_snapshot_id)
+            pq_resource, request.graph_snapshot_id
+        )
         graph_id = GraphIDv2.public(graph_fpid)
 
         legacy_filter_overrides = None
         if filter_overrides is not None:
             legacy_filter_overrides = self._convert_to_legacy_filter_overrides(
-                filter_overrides)
+                filter_overrides
+            )
 
         # Parse the external kumoapi request into the internal, enriched
         # request type. Passing outputs/predict_options as dicts lets the
@@ -2015,11 +2124,11 @@ class PQueryApiDriver:
             outputs=[dataclasses.asdict(o) for o in request.outputs],
             predict_options={
                 **dataclasses.asdict(request.predict_options),
-                "prediction_time":
-                request.prediction_time,
+                'prediction_time': request.prediction_time,
             },
             batch_prediction_workflow_id=getattr(
-                request, "batch_prediction_workflow_id", None),
+                request, 'batch_prediction_workflow_id', None
+            ),
             explanations=request.explanations,
         )
 
@@ -2028,13 +2137,13 @@ class PQueryApiDriver:
             training_job_id=training_job_id,
             pred_table_job_id=request.pred_table_job_id,
             graph_id=graph_id,
-            predictive_query_id=(pquery_id
-                                 if request.pred_table_job_id else None),
+            predictive_query_id=(pquery_id if request.pred_table_job_id else None),
         )
 
         if graph_fpid != pq_resource.graph.fpid:
             pq_def_fpid, pq_resource = await self._fork_pquery_def_for_graph(
-                pq_def_fpid, pq_resource, graph_fpid, project_id)
+                pq_def_fpid, pq_resource, graph_fpid, project_id
+            )
 
         await self._link_graph_to_project(
             pq_resource.graph.fpid,
@@ -2044,19 +2153,22 @@ class PQueryApiDriver:
         val_args = PQueryValidationArgs(
             query_string=pq_resource.query_string,
             graph=pq_resource.graph,
-            name=pq_resource.name or "",
-            desc=pq_resource.desc or "",
+            name=pq_resource.name or '',
+            desc=pq_resource.desc or '',
             fpid=pq_def_fpid,
             runtime_options=pquery_runtime_options_or_none(
                 list_distinct_target_is_array=(
-                    pq_resource.list_distinct_target_is_array),
+                    pq_resource.list_distinct_target_is_array
+                ),
                 lp_bp_layout=pq_resource.lp_bp_layout,
             ),
         )
-        parsed_pq, _ = await self._pquery_logic(
-            project_id).parse_predictive_query_v2(
-                val_args, config=None, auto_trainer_options=None,
-                pquery_settings=self._pquery_settings)
+        parsed_pq, _ = await self._pquery_logic(project_id).parse_predictive_query_v2(
+            val_args,
+            config=None,
+            auto_trainer_options=None,
+            pquery_settings=self._pquery_settings,
+        )
 
         task_type = parsed_pq.task_type
         forecasting_params = await self._get_forecasting_params(training_job_id)
@@ -2066,15 +2178,16 @@ class PQueryApiDriver:
 
         logic_ro = self._batch_prediction_logic()
 
-        validation_response.merge(await
-                                  logic_ro.validate_batch_prediction_args_v2(
-                                      ctx,
-                                      rest_request,
-                                      self._allow_local_batch_pred_paths,
-                                      task_type,
-                                      parsed_pq.query_type,
-                                      project_id,
-                                  ))
+        validation_response.merge(
+            await logic_ro.validate_batch_prediction_args_v2(
+                ctx,
+                rest_request,
+                self._allow_local_batch_pred_paths,
+                task_type,
+                parsed_pq.query_type,
+                project_id,
+            )
+        )
 
         if not validation_response.ok:
             return (None, validation_response)
@@ -2101,19 +2214,13 @@ class PQueryApiDriver:
             project_id=project_id,
         )
 
-        tags = {
-            JobTagKey(k): JobTagValue(v)
-            for k, v in request.job_tags.items()
-        }
-        await self._apply_job_tags(JobType.BATCH_PREDICTION_JOB, bp_job_id,
-                                   tags)
-        if (request.pred_table_job_id is None
-                and request.pred_table_source is None):
+        tags = {JobTagKey(k): JobTagValue(v) for k, v in request.job_tags.items()}
+        await self._apply_job_tags(JobType.BATCH_PREDICTION_JOB, bp_job_id, tags)
+        if request.pred_table_job_id is None and request.pred_table_source is None:
             # generate-prediction-table job is implicitly spawned as child
             # job of batch prediction job, so we need to update job_tags
             # (indexing).
-            pred_table_job_id = GeneratePredictionTableJobID.as_child_of(
-                bp_job_id)
+            pred_table_job_id = GeneratePredictionTableJobID.as_child_of(bp_job_id)
             tags[TAG_KEY_PARENT_JOB] = JobTagValue(bp_job_id)
             await self._apply_job_tags(
                 JobType.GENERATE_PREDICTION_TABLE_JOB,
@@ -2127,48 +2234,56 @@ class PQueryApiDriver:
         self,
         source: jobs_api.PredictionTableSource | None,
         project_id: ProjectID,
-    ) -> tuple[jobs_api.PredictionTableSource | None, ConnectorExecutionRef
-               | None]:
+    ) -> tuple[jobs_api.PredictionTableSource | None, ConnectorExecutionRef | None]:
         """Authorize and canonicalize a custom object-store coordinate."""
         if source is None:
             return None, None
         connector_id = ConnectorID(source.connector_id)
         principal = _current_user_ctx.get()
-        connector = await self._require_state_services(
-        ).connectors.get_for_project(project_id, connector_id, principal)
+        connector = await self._require_state_services().connectors.get_for_project(
+            project_id, connector_id, principal
+        )
         config = connector.config
         expected_type = data_source_api.ConnectorType[source.storage_type.name]
         if config.type != expected_type:
             raise ValueError(
-                'Custom prediction source type does not match its connector')
+                'Custom prediction source type does not match its connector'
+            )
         if expected_type == data_source_api.ConnectorType.DATABRICKS:
             if not isinstance(
-                    config, data_source_api.DatabricksConnectorResourceConfig):
+                config, data_source_api.DatabricksConnectorResourceConfig
+            ):
                 raise ValueError(
-                    'Custom prediction source requires a Databricks connector')
+                    'Custom prediction source requires a Databricks connector'
+                )
         else:
-            if not isinstance(config,
-                              (data_source_api.S3ConnectorResourceConfig,
-                               data_source_api.GCSConnectorResourceConfig,
-                               data_source_api.ADLSConnectorResourceConfig)):
+            if not isinstance(
+                config,
+                (
+                    data_source_api.S3ConnectorResourceConfig,
+                    data_source_api.GCSConnectorResourceConfig,
+                    data_source_api.ADLSConnectorResourceConfig,
+                ),
+            ):
                 raise ValueError(
                     'Custom prediction tables require an object-store or '
-                    'Databricks connector')
-            canonical_source = object_store_source_for_connector(
-                config, source.source)
+                    'Databricks connector'
+                )
+            canonical_source = object_store_source_for_connector(config, source.source)
             source = dataclasses.replace(source, source=canonical_source)
-        reference = await self._require_state_services(
-        ).connectors.execution_ref_for_project(
-            principal,
-            project_id,
-            connector_id,
-            CONNECTOR_GRAPH_ACTIONS,
-            expected_type=expected_type,
+        reference = (
+            await self._require_state_services().connectors.execution_ref_for_project(
+                principal,
+                project_id,
+                connector_id,
+                CONNECTOR_GRAPH_ACTIONS,
+                expected_type=expected_type,
+            )
         )
         return source, reference
 
     def _convert_to_legacy_filter_overrides(
-            self, filter_overrides: BatchPredictionFilterOverrides
+        self, filter_overrides: BatchPredictionFilterOverrides
     ) -> FilterOverrideArgs:
         return FilterOverrideArgs(
             entity_filter_override=filter_overrides.entity_filter,
@@ -2176,14 +2291,13 @@ class PQueryApiDriver:
         )
 
     async def get_training_progress(
-            self, ctx: RequestContext, training_job_id: TrainingJobID,
-            project_id: ProjectID) -> jobs_api.AutoTrainerProgress:
-        await self._require_training_job_in_project(ctx, training_job_id,
-                                                    project_id)
-        training_job_path = await self._ml_job_backend.get_job_home_dir(
-            training_job_id)
+        self, ctx: RequestContext, training_job_id: TrainingJobID, project_id: ProjectID
+    ) -> jobs_api.AutoTrainerProgress:
+        await self._require_training_job_in_project(ctx, training_job_id, project_id)
+        training_job_path = await self._ml_job_backend.get_job_home_dir(training_job_id)
         return await self._load_training_progress_from_job_path.coroutine(
-            training_job_path)
+            training_job_path
+        )
 
     async def cancel_training_job(
         self,
@@ -2191,13 +2305,13 @@ class PQueryApiDriver:
         training_job_id: TrainingJobID,
         project_id: ProjectID,
     ) -> bool:
-        await self._require_training_job_in_project(ctx, training_job_id,
-                                                    project_id)
+        await self._require_training_job_in_project(ctx, training_job_id, project_id)
         return await self._ml_job_backend.cancel_training_job(training_job_id)
 
     @blocking_method()
     def _load_training_progress_from_job_path(
-            self, training_job_path: str) -> AutoTrainerProgress:
+        self, training_job_path: str
+    ) -> AutoTrainerProgress:
         home = HomeDirManager(training_job_path)
         task_name = home.first_task_name()
         if task_name is None:
@@ -2218,8 +2332,7 @@ class PQueryApiDriver:
         request: TrainingJobInternalRequest,
         project_id: ProjectID,
         job_source: Optional[JobSource] = None,
-        training_table_generation_plan: Optional[
-            TrainingTableGenerationPlan] = None,
+        training_table_generation_plan: Optional[TrainingTableGenerationPlan] = None,
         user_info: Optional[str] = None,
         reserved_training_job_id: Optional[TrainingJobID] = None,
     ) -> TrainingJobID:
@@ -2257,9 +2370,15 @@ class PQueryApiDriver:
         if reserved_training_job_id is None:
             reserved_training_job_id = TrainingJobID.make_random_id()
 
-        (pq_id, pq_resource, pq_def_fpid, graph_version_info,
-         graph_data_compute_input) = await self._get_pq_and_graph_v2(
-             request.pquery_id, project_id, request.graph_snapshot_id)
+        (
+            pq_id,
+            pq_resource,
+            pq_def_fpid,
+            graph_version_info,
+            graph_data_compute_input,
+        ) = await self._get_pq_and_graph_v2(
+            request.pquery_id, project_id, request.graph_snapshot_id
+        )
 
         await self._link_graph_to_project(
             pq_resource.graph.fpid,
@@ -2267,39 +2386,47 @@ class PQueryApiDriver:
         )
 
         training_spec, parsed_pq = await self._pquery_logic(
-            project_id)._make_training_spec_v2(
-                pq_resource,
-                self._pquery_settings,
-                pq_def_fpid=pq_def_fpid,
-            )
+            project_id
+        )._make_training_spec_v2(
+            pq_resource,
+            self._pquery_settings,
+            pq_def_fpid=pq_def_fpid,
+        )
 
         # Copy so that mutations below (the training-table-generation
         # section, in particular) do not leak back into the caller's plan.
         training_spec.advanced_options = copy.deepcopy(request.model_plan)
 
         training_spec.custom_train_table = await self._from_custom_tt(
-            project_id, request.custom_train_table)
+            project_id, request.custom_train_table
+        )
         has_train_table_weight_col = False
         if training_spec.custom_train_table:
             has_train_table_weight_col = True
         model_plan_weight_col = (
-            training_spec.advanced_options.training_table_generation.weight_col)
+            training_spec.advanced_options.training_table_generation.weight_col
+        )
         if model_plan_weight_col is not None:
             has_train_table_weight_col = True
 
         training_spec.advanced_options.training_table_generation = (
             copy.deepcopy(training_table_generation_plan)
-            or (await self._default_model_plan_with_graph_def(
-                query_string=pq_resource.query_string,
-                graph_def=pq_resource.graph,
-                run_mode=RunMode.NORMAL,
-                project_id=project_id,
-            )).model_plan.training_table_generation)
+            or (
+                await self._default_model_plan_with_graph_def(
+                    query_string=pq_resource.query_string,
+                    graph_def=pq_resource.graph,
+                    run_mode=RunMode.NORMAL,
+                    project_id=project_id,
+                )
+            ).model_plan.training_table_generation
+        )
         train_plan_weight_col = (
-            training_spec.advanced_options.training_table_generation.weight_col)
+            training_spec.advanced_options.training_table_generation.weight_col
+        )
         if train_plan_weight_col is None and model_plan_weight_col is not None:
             training_spec.advanced_options.training_table_generation.weight_col = (
-                model_plan_weight_col)
+                model_plan_weight_col
+            )
             train_plan_weight_col = model_plan_weight_col
         if train_plan_weight_col is not None:
             has_train_table_weight_col = True
@@ -2310,16 +2437,16 @@ class PQueryApiDriver:
             run_mode=RunMode.NORMAL,
             graph=parsed_pq.predictive_query.graph.config(),
             entity_table_names=parsed_pq.predictive_query.entity_table_names,
-            target_to_entity_paths=(
-                parsed_pq.predictive_query.target_to_entity_paths),
+            target_to_entity_paths=(parsed_pq.predictive_query.target_to_entity_paths),
             has_train_table_weight_col=has_train_table_weight_col,
         )
         validate_text_embedding_models(training_spec.advanced_options)
 
         # Validate warm start job if provided
         if request.warm_start_job_id:
-            await self._validate_warm_start_job(ctx, request.warm_start_job_id,
-                                                parsed_pq.task_type)
+            await self._validate_warm_start_job(
+                ctx, request.warm_start_job_id, parsed_pq.task_type
+            )
 
         # Make a RPC call to MLJobBackend to kick off the training job.
         try:
@@ -2342,15 +2469,19 @@ class PQueryApiDriver:
                 raise JobConcurrencyLimitError(rpc_error.message)
             raise
 
-        await self._update_train_job_tags(request, training_job_id,
-                                          pq_resource.name or "NA", pq_id)
+        await self._update_train_job_tags(
+            request, training_job_id, pq_resource.name or 'NA', pq_id
+        )
 
         return training_job_id
 
-    async def _update_train_job_tags(self, request: TrainingJobInternalRequest,
-                                     training_job_id: TrainingJobID,
-                                     pquery_name: str,
-                                     pq_id: PredictiveQueryID) -> None:
+    async def _update_train_job_tags(
+        self,
+        request: TrainingJobInternalRequest,
+        training_job_id: TrainingJobID,
+        pquery_name: str,
+        pq_id: PredictiveQueryID,
+    ) -> None:
         tags = self.create_ordered_job_tags(
             request.job_tags,
             pquery_name,
@@ -2365,8 +2496,7 @@ class PQueryApiDriver:
         if request.train_table_job_id is None:
             # generate-train-table job is implicitly spawned as child job
             # of training job, so we need to update job_tags (indexing).
-            train_table_job_id = GenerateTrainTableJobID.as_child_of(
-                training_job_id)
+            train_table_job_id = GenerateTrainTableJobID.as_child_of(training_job_id)
             tags[TAG_KEY_PARENT_JOB] = JobTagValue(training_job_id)
             await self._apply_job_tags(
                 JobType.GENERATE_TRAIN_TABLE_JOB,
@@ -2379,22 +2509,36 @@ class PQueryApiDriver:
         pquery_id: str,
         project_id: ProjectID,
         graph_snapshot_id: Optional[GraphSnapshotID],
-    ) -> Tuple[PredictiveQueryID, PQueryResource, FPID,
-               Optional[GraphDataVersionInfo], GraphDataComputeInput]:
+    ) -> Tuple[
+        PredictiveQueryID,
+        PQueryResource,
+        FPID,
+        Optional[GraphDataVersionInfo],
+        GraphDataComputeInput,
+    ]:
         """Resolve a wire pquery ID and build shared launch-time inputs."""
         pq_def_fpid, pq_resource = await self._resolve_pquery_for_launch(
-            pquery_id, project_id)
-        compute_graph_fpid, graph_version_info = (
-            await self._handle_snapshot_override_v2(pq_resource,
-                                                    graph_snapshot_id))
+            pquery_id, project_id
+        )
+        (
+            compute_graph_fpid,
+            graph_version_info,
+        ) = await self._handle_snapshot_override_v2(pq_resource, graph_snapshot_id)
         if compute_graph_fpid != pq_resource.graph.fpid:
             pq_def_fpid, pq_resource = await self._fork_pquery_def_for_graph(
-                pq_def_fpid, pq_resource, compute_graph_fpid, project_id)
+                pq_def_fpid, pq_resource, compute_graph_fpid, project_id
+            )
         pq_id = PredictiveQueryID.compose(fpid=pq_def_fpid)
         graph_data_compute_input = await self._get_graph_data_compute_input(
-            GraphIDv2.compose(fpid=compute_graph_fpid), project_id)
-        return (pq_id, pq_resource, pq_def_fpid, graph_version_info,
-                graph_data_compute_input)
+            GraphIDv2.compose(fpid=compute_graph_fpid), project_id
+        )
+        return (
+            pq_id,
+            pq_resource,
+            pq_def_fpid,
+            graph_version_info,
+            graph_data_compute_input,
+        )
 
     async def update_job_tags(
         self,
@@ -2406,7 +2550,8 @@ class PQueryApiDriver:
     ) -> bool:
         """Update tags (add, mutate, or delete) for an existing job."""
         return await self._ml_job_backend.update_job_tags(
-            job_type, job_id, tags, project_id=project_id)
+            job_type, job_id, tags, project_id=project_id
+        )
 
     async def remove_job_tag(
         self,
@@ -2417,7 +2562,8 @@ class PQueryApiDriver:
         project_id: ProjectID,
     ) -> bool:
         return await self._ml_job_backend.delete_job_tag(
-            job_type, job_id, tag, project_id=project_id)
+            job_type, job_id, tag, project_id=project_id
+        )
 
     async def archive_job(
         self,
@@ -2465,7 +2611,8 @@ class PQueryApiDriver:
         if await self.get_pquery_definition_by_id(id) is None:
             raise PredictiveQueryDoesNotExistError(id)
         return await self._batch_prediction_logic().cancel_batch_prediction_job(
-            ctx, id, bp_job_id)
+            ctx, id, bp_job_id
+        )
 
     async def get_current_training_job_id(
         self,
@@ -2482,7 +2629,8 @@ class PQueryApiDriver:
         project_id: ProjectID,
     ):
         await self._require_state_services().projects.get_project(
-            project_id, ctx.user_authorization)
+            project_id, ctx.user_authorization
+        )
         # v2 pqueries don't cache `current_training_job_id`; the pquery ->
         # training job link lives in job tags keyed on the definition fpid.
         pq_def = await self._require_pquery_service().get_definition_by_id(id)
@@ -2504,23 +2652,28 @@ class PQueryApiDriver:
         if job_id is None:
             raise ValidationException(
                 message=(
-                    "This predictive query has needs to be trained, before "
-                    "you can perform this operation."), )
+                    'This predictive query has needs to be trained, before '
+                    'you can perform this operation.'
+                ),
+            )
 
         existing_job = await self._ml_job_backend.get_training_job(ctx, job_id)
         if not existing_job:
             raise RuntimeError(
-                f"Training job {job_id} is missing from the "
-                f"ML backend. Please check for database corruption, or "
-                f"retrain the predictive query.")
+                f'Training job {job_id} is missing from the '
+                f'ML backend. Please check for database corruption, or '
+                f'retrain the predictive query.'
+            )
 
         if existing_job.execution.status != JobStatus.DONE:
             raise ValidationException(
                 message=(
-                    "This predictive query needs to be trained successfully "
-                    "before you can perform this operation. However, the last "
-                    f"training job for this pquery has status = "
-                    f"{existing_job.execution.status}."), )
+                    'This predictive query needs to be trained successfully '
+                    'before you can perform this operation. However, the last '
+                    f'training job for this pquery has status = '
+                    f'{existing_job.execution.status}.'
+                ),
+            )
 
         if ProjectID(existing_job.project_id) != project_id:
             raise TrainingJobDoesNotExistError(job_id)
@@ -2534,16 +2687,19 @@ class PQueryApiDriver:
         """Return the most recently launched batch prediction job id for the
         given predictive query, or None if there is none."""
         return (
-            await
-            self._require_ml_job_service().get_current_batch_prediction_job_ids(
+            await self._require_ml_job_service().get_current_batch_prediction_job_ids(
                 [id],
                 project_ids=visible_project_ids_or_none(ctx.user_authorization),
-            )).get(id)
+            )
+        ).get(id)
 
     async def get_predictive_query_object(
-            self, id: PredictiveQueryID, project_id: ProjectID,
-            pquery_settings: PredictiveQuerySettings,
-            infer_encoders: bool = False) -> Optional[PredictiveQuery]:
+        self,
+        id: PredictiveQueryID,
+        project_id: ProjectID,
+        pquery_settings: PredictiveQuerySettings,
+        infer_encoders: bool = False,
+    ) -> Optional[PredictiveQuery]:
         await self._require_project_access(project_id)
         return await self._pquery_logic(project_id).get_predictive_query_object(
             id,
@@ -2562,7 +2718,8 @@ class PQueryApiDriver:
             await self.require_project_access(ctx, project_id)
         # Get the training job from the ML backend
         training_job = await self._ml_job_backend.get_training_job(
-            ctx, id, strip_expensive_fields=strip_expensive_fields)
+            ctx, id, strip_expensive_fields=strip_expensive_fields
+        )
         if training_job is None:
             return None
 
@@ -2584,7 +2741,7 @@ class PQueryApiDriver:
         return training_job
 
     async def get_training_table_generation_job(
-            self, ctx: RequestContext, id: GenerateTrainTableJobID
+        self, ctx: RequestContext, id: GenerateTrainTableJobID
     ) -> jobs_api.GenerateTrainTableJobResource:
         jobs = await self._ml_job_backend.get_generate_train_table_jobs(
             {id},
@@ -2631,10 +2788,15 @@ class PQueryApiDriver:
         config = row.config
         if config is None:
             return False
-        return ((model_id is None or model_id == config.training_job_id) and
-                (pquery_id is None or config.predictive_query_id == pquery_id
-                 or PredictiveQueryID.compose(fpid=config.pquery_def_fpid)
-                 == pquery_id) and (job_ids is None or row.id in job_ids))
+        return (
+            (model_id is None or model_id == config.training_job_id)
+            and (
+                pquery_id is None
+                or config.predictive_query_id == pquery_id
+                or PredictiveQueryID.compose(fpid=config.pquery_def_fpid) == pquery_id
+            )
+            and (job_ids is None or row.id in job_ids)
+        )
 
     @staticmethod
     def _batch_prediction_links_from_row(
@@ -2644,11 +2806,9 @@ class PQueryApiDriver:
         config = row.config
         assert config is not None
         pq_id = config.predictive_query_id
-        is_from_sdk = pq_id is not None and (pq_id.is_public
-                                             or pq_id.name == "NA")
+        is_from_sdk = pq_id is not None and (pq_id.is_public or pq_id.name == 'NA')
         if is_from_sdk and config.pquery_def_fpid is not None:
-            public_pq_id = PredictiveQueryID.compose(
-                fpid=config.pquery_def_fpid)
+            public_pq_id = PredictiveQueryID.compose(fpid=config.pquery_def_fpid)
             graph_id = config.graph_id
             assert graph_id is not None
             return (
@@ -2676,8 +2836,7 @@ class PQueryApiDriver:
             if config is None:
                 continue
             pq_id = config.predictive_query_id
-            is_from_sdk = pq_id is not None and (pq_id.is_public
-                                                 or pq_id.name == "NA")
+            is_from_sdk = pq_id is not None and (pq_id.is_public or pq_id.name == 'NA')
             if not (is_from_sdk and config.pquery_def_fpid is not None):
                 pq_ids.append(pq_id)
         if not pq_ids:
@@ -2698,9 +2857,11 @@ class PQueryApiDriver:
             return []
         rows_by_id = {row.id: row for row in rows}
         job_outputs = await self._ml_job_backend.get_batch_prediction_jobs(
-            ctx, set(rows_by_id), job_status, limit)
+            ctx, set(rows_by_id), job_status, limit
+        )
         pqs_by_id = await self._pqueries_by_id_for_batch_prediction_rows(
-            rows_by_id[job_id] for job_id in job_outputs)
+            rows_by_id[job_id] for job_id in job_outputs
+        )
 
         result = []
         for job_id, job_output in job_outputs.items():
@@ -2708,14 +2869,16 @@ class PQueryApiDriver:
             config = row.config
             assert config is not None
             pq_link, graph_link = self._batch_prediction_links_from_row(
-                row, pqs_by_id.get(config.predictive_query_id))
+                row, pqs_by_id.get(config.predictive_query_id)
+            )
             response = BatchPredictionJobResponse(
                 id=row.id,
                 config=config,
                 timestamps=ResourceTimestamps(
                     created_at=row.timestamps.created_at,
-                    updated_at=(job_output.last_updated_at
-                                or row.timestamps.created_at),
+                    updated_at=(
+                        job_output.last_updated_at or row.timestamps.created_at
+                    ),
                 ),
                 predictive_query_link=pq_link,
                 execution=job_output,
@@ -2785,11 +2948,13 @@ class PQueryApiDriver:
         project_id: ProjectID,
     ) -> None:
         await self._require_state_services().projects.get_project(
-            project_id, ctx.user_authorization)
+            project_id, ctx.user_authorization
+        )
         job = await self._require_ml_job_service().get_training_job(id)
         visible = visible_project_ids_or_none(ctx.user_authorization)
-        if job is None or (visible is not None
-                           and ProjectID(job.project_id) not in visible):
+        if job is None or (
+            visible is not None and ProjectID(job.project_id) not in visible
+        ):
             raise TrainingJobDoesNotExistError(id)
         if ProjectID(job.project_id) != project_id:
             raise _training_job_not_in_project(id, project_id)
@@ -2801,7 +2966,8 @@ class PQueryApiDriver:
         project_id: ProjectID,
     ) -> None:
         await self._require_state_services().projects.get_project(
-            project_id, ctx.user_authorization)
+            project_id, ctx.user_authorization
+        )
         rows = await self._require_ml_job_service().get_batch_prediction_rows(
             [id],
             project_ids=visible_project_ids_or_none(ctx.user_authorization),
@@ -2812,8 +2978,7 @@ class PQueryApiDriver:
             raise _batch_prediction_not_in_project(id, project_id)
 
     @blocking_method()
-    def _load_prediction_progress(self,
-                                  path: str) -> Optional[PredictionProgress]:
+    def _load_prediction_progress(self, path: str) -> Optional[PredictionProgress]:
         return progress_util.get_prediction_progress(path)
 
     async def delete_predictive_query(
@@ -2828,9 +2993,9 @@ class PQueryApiDriver:
         )
         # Check if there is any batch prediction job associated with this query
         if await self._require_ml_job_service().has_batch_prediction_rows(
-                project_ids={project_id},
-                pquery_id=id,
-                match_pquery_def_fpid=False,
+            project_ids={project_id},
+            pquery_id=id,
+            match_pquery_def_fpid=False,
         ):
             raise ValidationHTTPException(BATCH_PREDICTION_JOBS_DELETE_MESSAGE)
 
@@ -2838,8 +3003,12 @@ class PQueryApiDriver:
         pq_def = await pquery_service.get_definition_by_id(id)
         if pq_def is None:
             raise PredictiveQueryDoesNotExistError(id)
-        if await self._require_graph_service().get_graph_entry(
-                project_id, pq_def.graph_fpid) is None:
+        if (
+            await self._require_graph_service().get_graph_entry(
+                project_id, pq_def.graph_fpid
+            )
+            is None
+        ):
             # Definitions are content-addressed, but their graph ownership is
             # the authorization boundary.  Do not disclose or mutate a query
             # through a project that does not own its graph.
@@ -2847,19 +3016,22 @@ class PQueryApiDriver:
         await self._cancel_inflight_training_jobs(
             ctx,
             await self._training_job_ids_for_pquery_from_services(
-                pq_def.fpid, project_ids={project_id}),
+                pq_def.fpid, project_ids={project_id}
+            ),
         )
-        await self._require_graph_service(
-        ).decrement_or_delete_graph_definition(project_id, pq_def.graph_fpid)
+        await self._require_graph_service().decrement_or_delete_graph_definition(
+            project_id, pq_def.graph_fpid
+        )
         if pq_def.pquery_name is not None:
             await pquery_service.delete_alias(pq_def.pquery_name)
         await pquery_service.delete_definition(pq_def.fpid)
 
-    async def delete_training_job(self, ctx: RequestContext,
-                                  id: PredictiveQueryID,
-                                  job_id: TrainingJobID) -> None:
+    async def delete_training_job(
+        self, ctx: RequestContext, id: PredictiveQueryID, job_id: TrainingJobID
+    ) -> None:
         await self._require_ml_job_service().delete_job_tags(
-            JobType.TRAINING_JOB, job_id)
+            JobType.TRAINING_JOB, job_id
+        )
 
         log.info('Deleting job %s from ML Job Backend.', job_id)
         try:
@@ -2876,12 +3048,11 @@ class PQueryApiDriver:
         ctx: RequestContext,
         id: BatchPredictionJobID,
     ) -> bool:
-        return await self._batch_prediction_logic().delete_batch_prediction(
-            ctx, id)
+        return await self._batch_prediction_logic().delete_batch_prediction(ctx, id)
 
     async def list_predictive_queries_v2(
-            self, project_id: ProjectID,
-            name_pattern: str = '.*') -> List[PQueryResource]:
+        self, project_id: ProjectID, name_pattern: str = '.*'
+    ) -> List[PQueryResource]:
         """
         Returns a list of V2 PQueries (SDK/API resource model) that matches the
         name pattern.
@@ -2890,30 +3061,30 @@ class PQueryApiDriver:
         pquery_service = self._require_pquery_service()
         names = await pquery_service.list_aliases(name_pattern)
         definitions_by_id = await self._pquery_definitions_by_ids(
-            [PredictiveQueryID(name) for name in names])
+            [PredictiveQueryID(name) for name in names]
+        )
         definitions_by_name = {}
         for name in names:
             pq_def = definitions_by_id.get(PredictiveQueryID(name))
             if pq_def is not None:
                 definitions_by_name[name] = pq_def
 
-        missing_names = [
-            name for name in names if name not in definitions_by_name
-        ]
+        missing_names = [name for name in names if name not in definitions_by_name]
         if missing_names:
-            raise PredictiveQueryDoesNotExistError(
-                PredictiveQueryID(missing_names[0]))
+            raise PredictiveQueryDoesNotExistError(PredictiveQueryID(missing_names[0]))
 
         resources_by_fpid = await self._pquery_resources_from_definitions(
-            definitions_by_name.values(), project_id)
+            definitions_by_name.values(), project_id
+        )
         return [
-            resources_by_fpid[definitions_by_name[name].fpid] for name in names
+            resources_by_fpid[definitions_by_name[name].fpid]
+            for name in names
             if definitions_by_name[name].fpid in resources_by_fpid
         ]
 
     async def list_job_tags(
-            self, job_type: JobType,
-            tag_filters: Mapping[str, str]) -> Dict[JobID, JobTags]:
+        self, job_type: JobType, tag_filters: Mapping[str, str]
+    ) -> Dict[JobID, JobTags]:
         return await self._list_job_tags(job_type, tag_filters)
 
     async def _list_job_tags(
@@ -2924,7 +3095,8 @@ class PQueryApiDriver:
         job_ids: Iterable[JobID] | None = None,
     ) -> Dict[JobID, JobTags]:
         return await self._require_ml_job_service().list_job_tags(
-            job_type, tag_filters, job_ids=job_ids)
+            job_type, tag_filters, job_ids=job_ids
+        )
 
     async def list_batch_prediction_jobs(
         self,
@@ -2941,13 +3113,13 @@ class PQueryApiDriver:
         if tag_filters:
             job_tags = {
                 BatchPredictionJobID(id): tags
-                for id, tags in (await self._list_job_tags(
-                    JobType.BATCH_PREDICTION_JOB, tag_filters)).items()
+                for id, tags in (
+                    await self._list_job_tags(JobType.BATCH_PREDICTION_JOB, tag_filters)
+                ).items()
             }
             job_ids = set(job_tags)
 
-        responses = await self._batch_prediction_logic(
-        ).list_batch_prediction_jobs(
+        responses = await self._batch_prediction_logic().list_batch_prediction_jobs(
             ctx,
             model_id=model_id,
             pquery_id=pquery_id,
@@ -2960,32 +3132,39 @@ class PQueryApiDriver:
             response.id for response in responses if response.id not in job_tags
         ]
         if missing_tag_ids:
-            job_tags.update({
-                BatchPredictionJobID(id): tag
-                for id, tag in (await self._list_job_tags(
-                    JobType.BATCH_PREDICTION_JOB,
-                    {},
-                    job_ids=missing_tag_ids,
-                )).items()
-            })
+            job_tags.update(
+                {
+                    BatchPredictionJobID(id): tag
+                    for id, tag in (
+                        await self._list_job_tags(
+                            JobType.BATCH_PREDICTION_JOB,
+                            {},
+                            job_ids=missing_tag_ids,
+                        )
+                    ).items()
+                }
+            )
         for response in responses:
             if response.id in job_tags:
                 response.tags = job_tags[response.id].tags
         return responses
 
     async def list_paginated_batch_prediction_jobs(
-        self, ctx: RequestContext, pagination_args: PaginationArgs,
+        self,
+        ctx: RequestContext,
+        pagination_args: PaginationArgs,
         model_id: Optional[TrainingJobID] = None,
         pquery_id: Optional[PredictiveQueryID] = None,
-        job_status: Optional[JobStatus] = None
+        job_status: Optional[JobStatus] = None,
     ) -> PaginatedBatchPredictionJobResponse:
-        return await self._batch_prediction_logic(
-        ).list_paginated_batch_prediction_jobs(
-            ctx,
-            pagination_args,
-            model_id=model_id,
-            pquery_id=pquery_id,
-            job_status=job_status,
+        return (
+            await self._batch_prediction_logic().list_paginated_batch_prediction_jobs(
+                ctx,
+                pagination_args,
+                model_id=model_id,
+                pquery_id=pquery_id,
+                job_status=job_status,
+            )
         )
 
     async def get_generate_pred_table_job(
@@ -2995,9 +3174,11 @@ class PQueryApiDriver:
         project_id: ProjectID,
     ) -> jobs_api.GeneratePredictionTableJobResource:
         await self._require_state_services().projects.get_project(
-            project_id, ctx.user_authorization)
+            project_id, ctx.user_authorization
+        )
         jobs = await self._ml_job_backend.get_generate_pred_table_jobs(
-            {job_id}, project_ids={project_id})
+            {job_id}, project_ids={project_id}
+        )
         if not jobs:
             raise KeyError(f'Job with id {job_id} not found in database')
         return jobs[0]
@@ -3010,8 +3191,7 @@ class PQueryApiDriver:
         job_type: JobType,
         job_id: JobID,
     ) -> Optional[JobTags]:
-        return await self._require_ml_job_service().get_job_tags(
-            job_type, job_id)
+        return await self._require_ml_job_service().get_job_tags(job_type, job_id)
 
     async def _get_job_tags(
         self,
@@ -3020,11 +3200,12 @@ class PQueryApiDriver:
     ) -> JobTags:
         job_tags = await self._get_job_tags_if_exists(job_type, job_id)
         if job_tags is None:
-            raise KeyError(f"{job_type} id={job_id} is not found in DB")
+            raise KeyError(f'{job_type} id={job_id} is not found in DB')
         return job_tags
 
     async def get_training_job_materialization_info(
-            self, id: TrainingJobID) -> Optional[MaterializationTaskInfo]:
+        self, id: TrainingJobID
+    ) -> Optional[MaterializationTaskInfo]:
         info = await self._ml_job_backend.get_materialization_info(id)
         if info is not None:
             info.clear_private_fields()
@@ -3038,45 +3219,45 @@ class PQueryApiDriver:
     ) -> RESTParsedPredictiveQuery:
         pq_def = await self._require_pquery_service().get_definition(fpid)
         if pq_def is None:
-            raise PredictiveQueryDoesNotExistError(
-                PredictiveQueryID.compose(fpid=fpid))
+            raise PredictiveQueryDoesNotExistError(PredictiveQueryID.compose(fpid=fpid))
 
-        graph_def = await self._get_graph_def_for_pquery(
-            pq_def.graph_fpid, project_id)
+        graph_def = await self._get_graph_def_for_pquery(pq_def.graph_fpid, project_id)
         if graph_def is None:
             raise ValueError(
-                f'Unable to find graph for predictive query definition '
-                f'{pq_def.fpid}')
+                f'Unable to find graph for predictive query definition {pq_def.fpid}'
+            )
 
         val_args = PQueryValidationArgs(
             query_string=pq_def.query_str,
             graph=graph_def,
-            name=pq_def.pquery_name or "NA",
-            desc="",
+            name=pq_def.pquery_name or 'NA',
+            desc='',
             fpid=fpid,
             runtime_options=pquery_runtime_options_or_none(
-                list_distinct_target_is_array=(
-                    pq_def.list_distinct_target_is_array),
+                list_distinct_target_is_array=(pq_def.list_distinct_target_is_array),
                 lp_bp_layout=pq_def.lp_bp_layout,
             ),
         )
-        parsed_pq, _ = await self._pquery_logic(
-            project_id).parse_predictive_query_v2(
-                val_args, config=None, auto_trainer_options=None,
-                pquery_settings=self._pquery_settings,
-                skip_validation=skip_validation)
+        parsed_pq, _ = await self._pquery_logic(project_id).parse_predictive_query_v2(
+            val_args,
+            config=None,
+            auto_trainer_options=None,
+            pquery_settings=self._pquery_settings,
+            skip_validation=skip_validation,
+        )
         return parsed_pq
 
     async def get_pquery_definition(self, fpid: FPID) -> PQueryDefinition:
-        return await self._require_pquery_service().get_definition_required(fpid
-                                                                            )
+        return await self._require_pquery_service().get_definition_required(fpid)
 
     async def get_pquery_definition_if_exists(
-            self, fpid: FPID) -> Optional[PQueryDefinition]:
+        self, fpid: FPID
+    ) -> Optional[PQueryDefinition]:
         return await self._require_pquery_service().get_definition(fpid)
 
     async def get_pquery_definition_by_id(
-            self, id: PredictiveQueryID) -> Optional[PQueryDefinition]:
+        self, id: PredictiveQueryID
+    ) -> Optional[PQueryDefinition]:
         return await self._require_pquery_service().get_definition_by_id(id)
 
     async def get_train_table_stats(
@@ -3108,15 +3289,13 @@ class PQueryApiDriver:
         job_dir = get_job_dir(get_job_base_dir(), JobID(job_id))
 
         # Try loading from job dir first
-        stats = await train_table_generation_stats_from_job_dir.coroutine(
-            job_dir)
+        stats = await train_table_generation_stats_from_job_dir.coroutine(job_dir)
         if stats is not None:
             return stats
 
         # TODO: We currently plan to deprecate this method by 2025/04/01.
         # Fall back to cache
-        return await train_table_generation_stats_from_cache_v2.coroutine(job_id
-                                                                          )
+        return await train_table_generation_stats_from_cache_v2.coroutine(job_id)
 
     async def get_train_table_split_stats(
         self,
@@ -3145,45 +3324,45 @@ class PQueryApiDriver:
                 job_input = load_json(job_input_path, TrainingJobInput)
             except Exception as e:
                 log.info(
-                    f"Failed to load job input as TrainingJobInput directly: "
-                    f"{e}. Trying to load via json components and see "
-                    f"whether the failure is due to predictive query config "
-                    f"is PredictiveQueryConfigBase which is the legacy "
-                    f"format.")
+                    f'Failed to load job input as TrainingJobInput directly: '
+                    f'{e}. Trying to load via json components and see '
+                    f'whether the failure is due to predictive query config '
+                    f'is PredictiveQueryConfigBase which is the legacy '
+                    f'format.'
+                )
                 # Try loading as dictionary and then convert
                 training_input_json = load_json(job_input_path, dict)
-                pquery_config_json = training_input_json['spec'][
-                    'predictive_query']
+                pquery_config_json = training_input_json['spec']['predictive_query']
 
                 # Check if we need to convert from PredictiveQueryConfigBase
                 # to PredictiveQueryV2Config
                 try:
-                    pquery_config = from_json(to_json(pquery_config_json),
-                                              PredictiveQueryConfigBase)
+                    pquery_config = from_json(
+                        to_json(pquery_config_json), PredictiveQueryConfigBase
+                    )
                 except Exception as e:
                     log.error(
-                        f"Failed to convert predictive query config "
-                        f"{pquery_config_json} to PredictiveQueryConfigBase"
-                        f": {e}")
+                        f'Failed to convert predictive query config '
+                        f'{pquery_config_json} to PredictiveQueryConfigBase'
+                        f': {e}'
+                    )
                 finally:
-                    pquery_v2_config = (
-                        pquery_config.to_predictive_query_v2_config())
+                    pquery_v2_config = pquery_config.to_predictive_query_v2_config()
                     # Replace with the V2Config in the original dict
-                    training_input_json['spec'][
-                        'predictive_query'] = dataclasses.asdict(
-                            pquery_v2_config)
+                    training_input_json['spec']['predictive_query'] = (
+                        dataclasses.asdict(pquery_v2_config)
+                    )
 
                     # Convert back to TrainingJobInput
-                    job_input = from_json(to_json(training_input_json),
-                                          TrainingJobInput)
-                    log.info(
-                        "Successfully converted to PredictiveQueryV2Config")
+                    job_input = from_json(
+                        to_json(training_input_json), TrainingJobInput
+                    )
+                    log.info('Successfully converted to PredictiveQueryV2Config')
 
             if job_input.spec.split is not None:
                 split_fpid = Split.get_fpid_from_config(job_input.spec.split)
         elif GenerateTrainTableJobID.is_valid_id(job_id):
-            job_input_path = HomeDirManager(
-                job_dir).generate_train_table_job_input_file
+            job_input_path = HomeDirManager(job_dir).generate_train_table_job_input_file
             job_input = load_json(job_input_path, GenerateTrainTableJobInput)
             if job_input.spec.split is not None:
                 split_fpid = Split.get_fpid_from_config(job_input.spec.split)
@@ -3228,14 +3407,16 @@ class PQueryApiDriver:
         """
         logic = self._pquery_logic(project_id)
         graph = await self._graph_logic(project_id).get_graph_object(
-            to_graph_id(graph_id))
+            to_graph_id(graph_id)
+        )
         if graph is None:
             raise GraphDoesNotExistError(graph_id)
 
         return await logic.infer_task_type_pqlv2(query, graph)
 
     async def generate_holdout_presigned_url(
-            self, training_job_id) -> OutputPresignedUrlResponse:
+        self, training_job_id
+    ) -> OutputPresignedUrlResponse:
         r"""Generate the holdout dataset download url.
 
         Args:
@@ -3260,13 +3441,14 @@ class PQueryApiDriver:
         home = HomeDirManager(training_job_path)
         task_name = home.first_task_name()
         if task_name is None:
-            raise ValueError("Task does not exist")
+            raise ValueError('Task does not exist')
         best_train_dir = home.get_best_trainer_dir(str(task_name))
 
         # Download from refit train val directory if it is enabled.
         # Otherwise download from best train directory.
-        trainer_config = load_json(os.path.join(best_train_dir, 'config.json'),
-                                   TrainerConfig)
+        trainer_config = load_json(
+            os.path.join(best_train_dir, 'config.json'), TrainerConfig
+        )
         if trainer_config.refit_cfg.refitted_trainval:
             best_train_dir = best_train_dir.rstrip('/') + '_refit_trainval'
 
@@ -3274,11 +3456,12 @@ class PQueryApiDriver:
         if fsutil.exists(data_path):
             return data_path
         else:
-            log.error("Holdout data does not exist for %s", training_job_path)
-            raise ValueError("Holdout data does not exist.")
+            log.error('Holdout data does not exist for %s', training_job_path)
+            raise ValueError('Holdout data does not exist.')
 
     async def generate_bp_presigned_url(
-            self, batch_prediction_job_id) -> OutputPresignedUrlResponse:
+        self, batch_prediction_job_id
+    ) -> OutputPresignedUrlResponse:
         r"""Generate the batch prediction output url.
 
         For S3/GCS the output is zipped (if multi-partition) and a
@@ -3293,33 +3476,39 @@ class PQueryApiDriver:
             OutputPresignedUrlResponse class which has the presigned url.
         """
         batch_prediction_job_path = await self._ml_job_backend.get_job_home_dir(
-            batch_prediction_job_id)
+            batch_prediction_job_id
+        )
 
         @blocking_func()
         def _prepare_download_url() -> str:
             job_home = HomeDirManager(batch_prediction_job_path)
             artifact = resolve_prediction_artifact(
-                job_home, PredictionArtifactType.PREDICTIONS)
+                job_home, PredictionArtifactType.PREDICTIONS
+            )
             if artifact is None:
                 raise ValueError('Batch prediction output was not found')
             output_dir = artifact.root
-            files = (list(artifact.files) if artifact.files is not None else
-                     fsutil.listdir(output_dir))
+            files = (
+                list(artifact.files)
+                if artifact.files is not None
+                else fsutil.listdir(output_dir)
+            )
             data_size = sum(fsutil.filesize(path) or 0 for path in files)
             if data_size >= _DATA_DOWNLOAD_LIMIT:
-                raise ValueError(
-                    PREDICTION_OUTPUT_SIZE_MESSAGE.format(data_size))
+                raise ValueError(PREDICTION_OUTPUT_SIZE_MESSAGE.format(data_size))
 
             helper = fsutil.get_presigned_helper(output_dir)
             if helper is None or isinstance(helper, LocalPresignedHelper):
-                raise ValueError(f"Download not supported for: {output_dir}")
+                raise ValueError(f'Download not supported for: {output_dir}')
 
             # Single partition → presign directly; multiple → zip first.
             if len(files) == 1:
                 path = files[0]
             else:
-                archive_name = hashlib.sha256(
-                    str(batch_prediction_job_id).encode()).hexdigest() + '.zip'
+                archive_name = (
+                    hashlib.sha256(str(batch_prediction_job_id).encode()).hexdigest()
+                    + '.zip'
+                )
                 archive_path = os.path.join(
                     deploy_env().data_plane_storage_root,
                     'tmp_archives',
@@ -3328,8 +3517,7 @@ class PQueryApiDriver:
                 if artifact.files is not None:
                     path = fsutil.zip_files(files, output_path=archive_path)
                 else:
-                    path = fsutil.zip_directory(output_dir,
-                                                output_path=archive_path)
+                    path = fsutil.zip_directory(output_dir, output_path=archive_path)
 
             return helper.generate_download_url(path)
 
@@ -3337,10 +3525,12 @@ class PQueryApiDriver:
         return OutputPresignedUrlResponse(presigned_url)
 
     async def supports_batch_prediction_download(
-            self, batch_prediction_job_id: BatchPredictionJobID) -> bool:
+        self, batch_prediction_job_id: BatchPredictionJobID
+    ) -> bool:
         """Whether this deployment can expose a browser-safe prediction URL."""
         batch_prediction_job_path = await self._ml_job_backend.get_job_home_dir(
-            batch_prediction_job_id)
+            batch_prediction_job_id
+        )
         job_home = HomeDirManager(batch_prediction_job_path)
 
         @blocking_func()
@@ -3357,8 +3547,7 @@ class PQueryApiDriver:
                 return False
             artifact_root = artifact.root
             helper = fsutil.get_presigned_helper(artifact_root)
-            return helper is not None and not isinstance(
-                helper, LocalPresignedHelper)
+            return helper is not None and not isinstance(helper, LocalPresignedHelper)
 
         return await _supports_download.coroutine()
 
@@ -3375,7 +3564,8 @@ class PQueryApiDriver:
                 partitions are requested.
         """
         res = await self._get_presigned_artifact_urls(
-            ctx, job_id, PredictionArtifactType.PREDICTIONS)
+            ctx, job_id, PredictionArtifactType.PREDICTIONS
+        )
 
         return None if res is None else GetPredictionsDfUrlResponse(res)
 
@@ -3392,13 +3582,14 @@ class PQueryApiDriver:
                 partitions are requested.
         """
         res = await self._get_presigned_artifact_urls(
-            ctx, job_id, PredictionArtifactType.EMBEDDINGS)
+            ctx, job_id, PredictionArtifactType.EMBEDDINGS
+        )
 
         return None if res is None else GetEmbeddingsDfUrlResponse(res)
 
     async def _get_presigned_artifact_urls(
-            self, ctx: RequestContext, job_id: str,
-            artifact_type: PredictionArtifactType) -> list[str] | None:
+        self, ctx: RequestContext, job_id: str, artifact_type: PredictionArtifactType
+    ) -> list[str] | None:
 
         bp_job_id = BatchPredictionJobID(job_id)
         bp_job_response = await self.get_batch_prediction_job(ctx, bp_job_id)
@@ -3411,15 +3602,15 @@ class PQueryApiDriver:
         # What's needed is finer-grained job status codes which can accurately
         # indicate whether the internal files are available.
         if bp_job_response is None:
-            raise ValueError(
-                BATCH_PREDICTION_JOB_NOT_FOUND_MESSAGE.format(job_id))
+            raise ValueError(BATCH_PREDICTION_JOB_NOT_FOUND_MESSAGE.format(job_id))
 
         # TODO(eric): investigate whether identity comparison will be correct
         # despite there being two enums named PredictionArtifactType used
         # seemingly interchangeably
         configured_outputs = bp_job_response.config.outputs
-        artifact_type_valid = any(o.artifact_type == artifact_type
-                                  for o in configured_outputs)
+        artifact_type_valid = any(
+            o.artifact_type == artifact_type for o in configured_outputs
+        )
 
         # An empty output list is the SDK's local-download contract: the
         # prediction artifacts remain in Kumo's data plane instead of being
@@ -3428,8 +3619,8 @@ class PQueryApiDriver:
         # enforcing the exact requested artifact type.
         if configured_outputs and not artifact_type_valid:
             raise ValueError(
-                PREDICTION_ARTIFACT_TYPE_NOT_FOUND_MESSAGE.format(
-                    artifact_type))
+                PREDICTION_ARTIFACT_TYPE_NOT_FOUND_MESSAGE.format(artifact_type)
+            )
 
         bp_job_path = await self._ml_job_backend.get_job_home_dir(bp_job_id)
         job_home = HomeDirManager(bp_job_path)
@@ -3439,9 +3630,11 @@ class PQueryApiDriver:
             artifact = resolve_prediction_artifact(job_home, artifact_type)
             if artifact is None:
                 return None
-            partitions: Iterable[str] = (artifact.files
-                                         if artifact.files is not None else
-                                         fsutil.listdir(artifact.root))
+            partitions: Iterable[str] = (
+                artifact.files
+                if artifact.files is not None
+                else fsutil.listdir(artifact.root)
+            )
             artifact_root = artifact.root
 
             helper = fsutil.get_presigned_helper(artifact_root)
@@ -3465,7 +3658,8 @@ class PQueryApiDriver:
         return info
 
     async def get_training_job_warnings(
-            self, job_ids: List[TrainingJobID]) -> Dict[str, ErrWarnResponse]:
+        self, job_ids: List[TrainingJobID]
+    ) -> Dict[str, ErrWarnResponse]:
 
         response: Dict[str, ErrWarnResponse] = {}
         if len(job_ids) > 0:
@@ -3482,14 +3676,15 @@ class PQueryApiDriver:
                 log.exception(e)
                 # Generate an empty response for exceptions
                 for job_id in job_ids:
-                    response[job_id] = ErrWarnResponse(errors=[], warnings=[],
-                                                       info_items=[])
+                    response[job_id] = ErrWarnResponse(
+                        errors=[], warnings=[], info_items=[]
+                    )
 
         return response
 
     async def get_batch_prediction_warnings(
-            self, bp_ids: List[BatchPredictionJobID],
-            ctx: RequestContext) -> Dict[str, ErrWarnResponse]:
+        self, bp_ids: List[BatchPredictionJobID], ctx: RequestContext
+    ) -> Dict[str, ErrWarnResponse]:
 
         response: Dict[str, ErrWarnResponse] = {}
         if len(bp_ids) > 0:
@@ -3507,8 +3702,9 @@ class PQueryApiDriver:
                 log.exception(e)
                 # Generate an empty response for exceptions
                 for bp in bp_ids:
-                    response[bp] = ErrWarnResponse(errors=[], warnings=[],
-                                                   info_items=[])
+                    response[bp] = ErrWarnResponse(
+                        errors=[], warnings=[], info_items=[]
+                    )
 
         return response
 
@@ -3517,16 +3713,18 @@ class PQueryApiDriver:
         job_id: BatchPredictionJobID,
         home_dir: str,
     ) -> Optional[BatchPredictionJobAnchorTime]:
-        return await BatchPredictionJobAnchorTime(
-        ).get_stats_from_per_job_dir.coroutine(job_id, home_dir)
+        return (
+            await BatchPredictionJobAnchorTime().get_stats_from_per_job_dir.coroutine(
+                job_id, home_dir
+            )
+        )
 
     async def get_prediction_anchor_time(
         self,
         job_id: BatchPredictionJobID,
         ctx: RequestContext,
     ) -> BatchPredictionJobAnchorTime:
-        return await BatchPredictionJobAnchorTime().load_from_cache.coroutine(
-            job_id)
+        return await BatchPredictionJobAnchorTime().load_from_cache.coroutine(job_id)
 
     async def get_prediction_num_entities(
         self,
@@ -3550,15 +3748,17 @@ class PQueryApiDriver:
         return num_entities
 
     async def get_prediction_stats(
-            self, id: BatchPredictionJobID,
-            ctx: RequestContext) -> BatchPredictionJobStats:
+        self, id: BatchPredictionJobID, ctx: RequestContext
+    ) -> BatchPredictionJobStats:
         logic = self._batch_prediction_logic()
         job = await logic._get_batch_prediction_entry_if_exists(ctx, id)
         if job is None:
             raise BatchPredictionDoesNotExistError(id)
         if job.config is None:
-            raise ValueError(f"Batch Prediction Job with ID {id} does not "
-                             f"have an associated config object in the DB.")
+            raise ValueError(
+                f'Batch Prediction Job with ID {id} does not '
+                f'have an associated config object in the DB.'
+            )
 
         # Get the coroutine for raw stats
         raw_stats_coro = logic.get_prediction_stats(ctx, id)
@@ -3567,11 +3767,13 @@ class PQueryApiDriver:
         if job.config.transformation is not None:
             # Get the coroutine for transformed stats
             transformed_stats_coro = logic.get_prediction_stats(
-                ctx, id, use_transformed_output=True)
+                ctx, id, use_transformed_output=True
+            )
 
             # Execute them in parallel to decrease endpoint latency
             raw_stats, transformed_stats = await asyncio.gather(
-                raw_stats_coro, transformed_stats_coro)
+                raw_stats_coro, transformed_stats_coro
+            )
 
             return BatchPredictionJobStats(
                 raw_predictions=raw_stats,
@@ -3613,15 +3815,16 @@ class PQueryApiDriver:
         callers operating on an already-persisted graph.
         """
         await self._require_project_access(project_id)
-        return await self._pquery_logic(
-            project_id).get_model_plan_info_with_graph_def(
-                DefaultModelPlanRequest(
-                    query_string=query_string,
-                    graph_id="",
-                    run_mode=run_mode,
-                    has_train_table_weight_col=has_weight_col,
-                    graph_def=build_graph_definition(graph_def),
-                ), self._pquery_settings)
+        return await self._pquery_logic(project_id).get_model_plan_info_with_graph_def(
+            DefaultModelPlanRequest(
+                query_string=query_string,
+                graph_id='',
+                run_mode=run_mode,
+                has_train_table_weight_col=has_weight_col,
+                graph_def=build_graph_definition(graph_def),
+            ),
+            self._pquery_settings,
+        )
 
     async def get_pquery_default_model_plan(
         self,
@@ -3633,10 +3836,14 @@ class PQueryApiDriver:
     ) -> DefaultModelPlanInfo:
         await self._require_project_access(project_id)
         plan_info = await self._pquery_logic(project_id).get_model_plan_info(
-            DefaultModelPlanRequest(query_string=query_string,
-                                    graph_id=graph_id, run_mode=run_mode,
-                                    has_train_table_weight_col=has_weight_col),
-            self._pquery_settings)
+            DefaultModelPlanRequest(
+                query_string=query_string,
+                graph_id=graph_id,
+                run_mode=run_mode,
+                has_train_table_weight_col=has_weight_col,
+            ),
+            self._pquery_settings,
+        )
         return plan_info
 
     async def get_pquery_model_plan_with_graph_def(
@@ -3678,19 +3885,22 @@ class PQueryApiDriver:
         await logic.validate_graph(graph)
 
         plan_info = await self._pquery_logic(
-            project_id).get_model_plan_info_with_graph_def(
-                DefaultModelPlanRequest(
-                    query_string=query_string,
-                    graph_id="",
-                    run_mode=run_mode,
-                    has_train_table_weight_col=has_weight_col,
-                    graph_def=validated_graph_def,
-                ), self._pquery_settings)
+            project_id
+        ).get_model_plan_info_with_graph_def(
+            DefaultModelPlanRequest(
+                query_string=query_string,
+                graph_id='',
+                run_mode=run_mode,
+                has_train_table_weight_col=has_weight_col,
+                graph_def=validated_graph_def,
+            ),
+            self._pquery_settings,
+        )
         return plan_info
 
     async def get_encoders_for_pquery(
-            self, ctx: RequestContext, id: PredictiveQueryID,
-            project_id: ProjectID) -> Optional[Dict[str, str]]:
+        self, ctx: RequestContext, id: PredictiveQueryID, project_id: ProjectID
+    ) -> Optional[Dict[str, str]]:
         """
         Returns the encoders used for a specific predictive query.
 
@@ -3713,15 +3923,14 @@ class PQueryApiDriver:
             log.debug('No training job is available for this Predictive Query')
             return None
         training_job = await self.get_training_job(ctx, job_id)
-        if (training_job is None
-                or training_job.execution.status != JobStatus.DONE):
+        if training_job is None or training_job.execution.status != JobStatus.DONE:
             log.debug('Training job has not yet completed')
             return None
         return await self._ml_job_backend.get_encoders_for_job(ctx, job_id)
 
     async def get_encoders_for_training_job(
-            self, ctx: RequestContext,
-            id: TrainingJobID) -> Optional[Dict[str, str]]:
+        self, ctx: RequestContext, id: TrainingJobID
+    ) -> Optional[Dict[str, str]]:
         """
         Return persisted encoders for a specific training job.
 
@@ -3746,15 +3955,14 @@ class PQueryApiDriver:
             raise TrainingJobEncodersNotAvailableError()
         return encoders
 
-    def _has_weight_col(self, model_plan: ModelPlan,
-                        custom_train_table: bool) -> bool:
+    def _has_weight_col(self, model_plan: ModelPlan, custom_train_table: bool) -> bool:
         """While loading model plan we assume training table has
         a weight column if weight_mode is set and a custom_train_table is used.
         """
-        has_weight_spec = (model_plan.training_table_generation.weight_col
-                           is not None)
-        return (model_plan.optimization.weight_mode is not None
-                and (custom_train_table or has_weight_spec))
+        has_weight_spec = model_plan.training_table_generation.weight_col is not None
+        return model_plan.optimization.weight_mode is not None and (
+            custom_train_table or has_weight_spec
+        )
 
     async def get_model_plans_per_experiment(
         self,
@@ -3773,15 +3981,22 @@ class PQueryApiDriver:
         )
         dir_mgr = HomeDirManager(training_job_dir)
         trial_dirs = dir_mgr.trials()
-        loaded_plans = await asyncio.gather(*[
-            load_json_async(os.path.join(trial_dir, 'model_plan.json'),
-                            ModelPlan, default=None, raise_on_missing=False)
-            for trial_dir in trial_dirs
-        ])
+        loaded_plans = await asyncio.gather(
+            *[
+                load_json_async(
+                    os.path.join(trial_dir, 'model_plan.json'),
+                    ModelPlan,
+                    default=None,
+                    raise_on_missing=False,
+                )
+                for trial_dir in trial_dirs
+            ]
+        )
         trials = [
-            (trial_id, mp) for trial_dir, mp in zip(trial_dirs, loaded_plans)
-            if mp is not None and (
-                trial_id := HomeDirManager.trial_id(trial_dir)) is not None
+            (trial_id, mp)
+            for trial_dir, mp in zip(trial_dirs, loaded_plans)
+            if mp is not None
+            and (trial_id := HomeDirManager.trial_id(trial_dir)) is not None
         ]
 
         train_job_response = await self.get_training_job(ctx, training_job_id)
@@ -3795,8 +4010,10 @@ class PQueryApiDriver:
                     task_type=task_type,
                     query_type=query_type,
                     has_train_table_weight_col=self._has_weight_col(
-                        mp, custom_train_table),
-                ) for _, mp in trials
+                        mp, custom_train_table
+                    ),
+                )
+                for _, mp in trials
             ],
             advanced_options=[],
             trial_ids=[trial_id for trial_id, _ in trials],
@@ -3810,11 +4027,14 @@ class PQueryApiDriver:
         if not graph_snapshot_id:
             return pq_resource.graph.fpid, None
         graph_id, graph_version_info = await self._get_graph_snapshot_info(
-            graph_snapshot_id)
+            graph_snapshot_id
+        )
         if graph_id.fpid != pq_resource.graph.fpid:
-            log.warning(f'Graph data snapshot id={graph_snapshot_id} '
-                        f'overrides the graph defined in predictive query '
-                        f'{pq_resource.name}')
+            log.warning(
+                f'Graph data snapshot id={graph_snapshot_id} '
+                f'overrides the graph defined in predictive query '
+                f'{pq_resource.name}'
+            )
             return graph_id.fpid, graph_version_info
         return pq_resource.graph.fpid, graph_version_info
 
@@ -3842,18 +4062,15 @@ class PQueryApiDriver:
             pquery_name=pq_def.pquery_name,
             query_str=pq_def.query_str,
             graph_fpid=new_graph_fpid,
-            list_distinct_target_is_array=(
-                pq_def.list_distinct_target_is_array),
+            list_distinct_target_is_array=(pq_def.list_distinct_target_is_array),
             task_type=pq_def.task_type,
             query_type=pq_def.query_type,
             lp_bp_layout=pq_def.lp_bp_layout,
         )
         forked_fpid = await pquery_service.add_definition(forked)
-        new_graph_def = await self._get_graph_def_for_pquery(
-            new_graph_fpid, project_id)
+        new_graph_def = await self._get_graph_def_for_pquery(new_graph_fpid, project_id)
         if new_graph_def is None:
-            raise ValueError(
-                f'Graph {new_graph_fpid} not found for snapshot override')
+            raise ValueError(f'Graph {new_graph_fpid} not found for snapshot override')
         forked_resource = PQueryResource(
             name=pq_resource.name,
             query_string=pq_resource.query_string,
@@ -3912,42 +4129,47 @@ class PQueryApiDriver:
 
         warm_start_job_id_obj = TrainingJobID(warm_start_job_id)
         warm_start_job = await self.get_training_job(
-            ctx, warm_start_job_id_obj, strip_expensive_fields=True)
+            ctx, warm_start_job_id_obj, strip_expensive_fields=True
+        )
         if not warm_start_job:
             raise ValueError(
-                f"Warm start training job {warm_start_job_id_obj} not found")
+                f'Warm start training job {warm_start_job_id_obj} not found'
+            )
         if warm_start_job.execution.status != JobStatus.DONE:
             raise ValueError(
-                f"Warm start training job {warm_start_job_id_obj} is not complete. "
-                f"Current status: {warm_start_job.execution.status}")
+                f'Warm start training job {warm_start_job_id_obj} is not complete. '
+                f'Current status: {warm_start_job.execution.status}'
+            )
 
         warm_start_pq_id = await self.get_training_job_pquery_id_v2(
-            ctx, warm_start_job_id_obj)
+            ctx, warm_start_job_id_obj
+        )
         if warm_start_pq_id is None:
             raise ValueError(
-                f"Unable to find predictive query for warm start job {warm_start_job_id_obj}"
+                f'Unable to find predictive query for warm start job {warm_start_job_id_obj}'
             )
         warm_start_task_type, _ = await self.get_pquery_metadata(
-            warm_start_pq_id, ProjectID(warm_start_job.project_id))
+            warm_start_pq_id, ProjectID(warm_start_job.project_id)
+        )
 
         validate_warm_start_task_type(current_task_type, warm_start_task_type)
 
     async def _get_num_entities_from_job_dir(self, home_dir: str):
         batch_pred_table_stats_path = HomeDirManager(home_dir).pred_table_stats
         if not fsutil.exists(batch_pred_table_stats_path):
-            log.debug(f"Stats file not found at {batch_pred_table_stats_path}")
+            log.debug(f'Stats file not found at {batch_pred_table_stats_path}')
             return None
-        pred_table_stats = load_json(batch_pred_table_stats_path,
-                                     Dict[str, Dict[str, Any]])
-        num_entities_stat = Stats.from_config(
-            pred_table_stats.get(NUM_ENTITIES))
+        pred_table_stats = load_json(
+            batch_pred_table_stats_path, Dict[str, Dict[str, Any]]
+        )
+        num_entities_stat = Stats.from_config(pred_table_stats.get(NUM_ENTITIES))
         if num_entities_stat is not None:
             assert isinstance(num_entities_stat, Stats)
             num_entities = num_entities_stat.value
             return num_entities
         else:
             log.warning(
-                "Num entities prediction table stats are unavailable in the job directory."
+                'Num entities prediction table stats are unavailable in the job directory.'
             )
             return None
 
@@ -3957,7 +4179,8 @@ class PQueryApiDriver:
     ):
         cache: BackendCacheManager = get_active_cache()
         pred_table_stats = cache.pquery_table_stats_cache.get_stats(
-            job_id, [NUM_ENTITIES])
+            job_id, [NUM_ENTITIES]
+        )
         num_entities_stat = pred_table_stats.get(NUM_ENTITIES)
         if num_entities_stat is not None:
             assert isinstance(num_entities_stat, Stats)
@@ -3965,7 +4188,7 @@ class PQueryApiDriver:
             return num_entities
         else:
             log.warning(
-                "Num entities prediction table stats are unavailable in the cache."
+                'Num entities prediction table stats are unavailable in the cache.'
             )
             return None
 
@@ -3993,8 +4216,9 @@ class PQueryApiDriver:
         Response:
             str: The complete python script for an SDK training workflow as a string.
         """
-        training_job = await self.get_training_job(ctx, job_id,
-                                                   strip_expensive_fields=True)
+        training_job = await self.get_training_job(
+            ctx, job_id, strip_expensive_fields=True
+        )
 
         if not training_job:
             raise TrainingJobDoesNotExistError(job_id)
@@ -4011,25 +4235,27 @@ class PQueryApiDriver:
             )
 
         project_id = ProjectID(training_job.project_id)
-        configs = await self._graph_logic(
-            project_id).get_graph_metadata_for_sdk(pq_def[pq_fpid].graph_fpid)
+        configs = await self._graph_logic(project_id).get_graph_metadata_for_sdk(
+            pq_def[pq_fpid].graph_fpid
+        )
         connector_configs, table_configs, edge_configs = configs
 
         pq_config: Dict[str, str] = {
-            "graph":
-            "\\" + "graph" + "\\",
-            "query_string":
-            clean_up_pquery_string(pq_def[pq_fpid].query_str, table_configs),
+            'graph': '\\' + 'graph' + '\\',
+            'query_string': clean_up_pquery_string(
+                pq_def[pq_fpid].query_str, table_configs
+            ),
         }
 
         if not training_job.advanced_options:
             raise ValueError(
-                f"Model plan for training job with id {job_id} cannot be found."
+                f'Model plan for training job with id {job_id} cannot be found.'
             )
         model_plan = training_job.advanced_options
 
-        model_plan_as_dict: Dict[
-            str, Any] = recursively_convert_dataclass_to_dict(model_plan)
+        model_plan_as_dict: Dict[str, Any] = recursively_convert_dataclass_to_dict(
+            model_plan
+        )
         model_plan_as_dict = render_str_vals_as_strings(model_plan_as_dict)
 
         encoders = await self._ml_job_backend.get_encoders_for_job(ctx, job_id)
@@ -4038,21 +4264,21 @@ class PQueryApiDriver:
         # as it is not part of SDK/API ModelPlan class.
         if model_plan.training_table_generation:
             training_table_gen_plan: Dict[str, Any] = model_plan_as_dict.pop(
-                "training_table_generation")
+                'training_table_generation'
+            )
 
         else:
             if not training_job.generate_train_table_job_id:
                 raise ValueError(
-                    f"Training table job for training job with id {job_id} cannot be found."
+                    f'Training table job for training job with id {job_id} cannot be found.'
                 )
             train_table_job = await self.get_training_table_generation_job(
-                ctx,
-                GenerateTrainTableJobID(
-                    training_job.generate_train_table_job_id))
+                ctx, GenerateTrainTableJobID(training_job.generate_train_table_job_id)
+            )
 
-            training_table_gen_plan: Dict[
-                str, Any] = recursively_convert_dataclass_to_dict(
-                    train_table_job.config.plan)
+            training_table_gen_plan: Dict[str, Any] = (
+                recursively_convert_dataclass_to_dict(train_table_job.config.plan)
+            )
 
         graph_script = generate_conn_graph_or_table_sdk_script(
             connector_configs,
@@ -4061,6 +4287,10 @@ class PQueryApiDriver:
             project_id=project_id,
         )
         training_script = generate_training_job_sdk_script(
-            pq_config, model_plan_as_dict, training_table_gen_plan,
-            training_job.generate_train_table_job_id, encoders)
+            pq_config,
+            model_plan_as_dict,
+            training_table_gen_plan,
+            training_job.generate_train_table_job_id,
+            encoders,
+        )
         return make_stype_and_dtype_sdk_compat(graph_script + training_script)

@@ -32,8 +32,7 @@ def _build_config(output_format: LoggingOutputFormat):
 def test_get_config_uses_json_formatter():
     config = _build_config(LoggingOutputFormat.JSON)
     assert 'json' in config.formatters
-    assert (config.formatters['json'].cls ==
-            'io_utils.logging_json.JsonLogFormatter')
+    assert config.formatters['json'].cls == 'io_utils.logging_json.JsonLogFormatter'
     assert config.handlers['console'].formatter == 'json'
     assert config.handlers['error_console'].formatter == 'json'
 
@@ -66,7 +65,8 @@ def test_loki_export_uses_the_configured_url(monkeypatch):
 
 
 def test_pytest_fsutil_debug_logs_disabled_overrides_fsutil_logger(
-        monkeypatch: pytest.MonkeyPatch):
+    monkeypatch: pytest.MonkeyPatch,
+):
     monkeypatch.setenv(kumo_logging._PYTEST_ENABLE_FSUTIL_DEBUG_LOGS_ENV, '0')
 
     config = kumo_logging._get_config(
@@ -75,8 +75,7 @@ def test_pytest_fsutil_debug_logs_disabled_overrides_fsutil_logger(
         log_to_file=False,
         log_to_cloud_watch=False,
         log_process_id=False,
-        logging_level_overrides=(
-            kumo_logging._with_pytest_logging_level_overrides({})),
+        logging_level_overrides=(kumo_logging._with_pytest_logging_level_overrides({})),
     )
 
     assert config.loggers['io_utils'].level == 'DEBUG'
@@ -84,7 +83,8 @@ def test_pytest_fsutil_debug_logs_disabled_overrides_fsutil_logger(
 
 
 def test_pytest_fsutil_debug_logs_enabled_keeps_fsutil_debuggable(
-        monkeypatch: pytest.MonkeyPatch):
+    monkeypatch: pytest.MonkeyPatch,
+):
     monkeypatch.setenv(kumo_logging._PYTEST_ENABLE_FSUTIL_DEBUG_LOGS_ENV, '1')
 
     config = kumo_logging._get_config(
@@ -93,8 +93,7 @@ def test_pytest_fsutil_debug_logs_enabled_keeps_fsutil_debuggable(
         log_to_file=False,
         log_to_cloud_watch=False,
         log_process_id=False,
-        logging_level_overrides=(
-            kumo_logging._with_pytest_logging_level_overrides({})),
+        logging_level_overrides=(kumo_logging._with_pytest_logging_level_overrides({})),
     )
 
     assert config.loggers['io_utils'].level == 'DEBUG'
@@ -110,7 +109,7 @@ def test_json_formatter_emits_json():
         fn='/tmp/f.py',
         lno=12,
         msg='hello %s',
-        args=('world', ),
+        args=('world',),
         exc_info=None,
     )
     payload = json.loads(formatter.format(record))
@@ -140,8 +139,7 @@ def test_json_formatter_includes_exception():
     assert 'ValueError: boom' in payload['exception']
 
 
-def test_json_formatter_single_line_with_caplog(
-        caplog: pytest.LogCaptureFixture):
+def test_json_formatter_single_line_with_caplog(caplog: pytest.LogCaptureFixture):
     formatter = JsonLogFormatter()
     logger = py_logging.getLogger('test.json.caplog')
 
@@ -177,7 +175,8 @@ def test_json_line_round_trip_matches_text_line():
     text_formatter = py_logging.Formatter(
         '%(levelname)s|%(name)s|%(module)s|%(filename)s|%(lineno)d|'
         '%(funcName)s|%(process)d|%(processName)s|%(thread)d|'
-        '%(threadName)s|%(message)s')
+        '%(threadName)s|%(message)s'
+    )
     expected_text_line = text_formatter.format(record)
 
     json_formatter = JsonLogFormatter()
@@ -185,9 +184,10 @@ def test_json_line_round_trip_matches_text_line():
     payload = json.loads(json_line)
 
     round_trip_text_line = (
-        f"{payload['level']}|{payload['logger']}|{payload['module']}|"
-        f"{payload['filename']}|{payload['lineno']}|{payload['function']}|"
-        f"{payload['process_id']}|{payload['process_name']}|"
-        f"{payload['thread_id']}|{payload['thread_name']}|"
-        f"{payload['message']}")
+        f'{payload["level"]}|{payload["logger"]}|{payload["module"]}|'
+        f'{payload["filename"]}|{payload["lineno"]}|{payload["function"]}|'
+        f'{payload["process_id"]}|{payload["process_name"]}|'
+        f'{payload["thread_id"]}|{payload["thread_name"]}|'
+        f'{payload["message"]}'
+    )
     assert round_trip_text_line == expected_text_line

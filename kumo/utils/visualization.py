@@ -33,13 +33,14 @@ def visualize_positional_encoding(pe: torch.Tensor, filepath: str):
     plt.close(fig)
 
 
-def visualize_scalar_distribution(data, filepath: str,
-                                  xlabel_name: str = "label",
-                                  xlim: Optional[Tuple] = None):
+def visualize_scalar_distribution(
+    data, filepath: str, xlabel_name: str = 'label', xlim: Optional[Tuple] = None
+):
     import matplotlib
     import matplotlib.pyplot as plt
     import seaborn as sns
-    matplotlib.use("Agg")
+
+    matplotlib.use('Agg')
 
     if isinstance(data, torch.Tensor):
         data = data.numpy()
@@ -52,24 +53,34 @@ def visualize_scalar_distribution(data, filepath: str,
 
     sns.histplot(data, kde=True, ax=plt_ax)
     plt.xlabel(xlabel_name)
-    plt.ylabel("Count")
+    plt.ylabel('Count')
     try:
         buffer = BytesIO()
         fig.savefig(buffer, format='png')
         fsutil.write_binary(filepath, buffer.getvalue())
     except FileNotFoundError:
         logger.warning(
-            "Scalar distribution not saved because {} does not exist.".format(
-                filepath))
+            'Scalar distribution not saved because {} does not exist.'.format(filepath)
+        )
     plt.close(fig)
 
 
-def bar_plot(data, filepath, xlabel_name, ylabel_name, hue=None, color=None,
-             xlabel_rotate=0, order_x=False, dpi: Optional[int] = None):
+def bar_plot(
+    data,
+    filepath,
+    xlabel_name,
+    ylabel_name,
+    hue=None,
+    color=None,
+    xlabel_rotate=0,
+    order_x=False,
+    dpi: Optional[int] = None,
+):
     import matplotlib
     import matplotlib.pyplot as plt
     import seaborn as sns
-    matplotlib.use("Agg")
+
+    matplotlib.use('Agg')
 
     fig = plt.figure()
     plt_ax = fig.add_subplot(111)
@@ -80,8 +91,15 @@ def bar_plot(data, filepath, xlabel_name, ylabel_name, hue=None, color=None,
     if order_x:
         data.sort_values(by=[xlabel_name], ascending=True, inplace=True)
 
-    sns.barplot(x=xlabel_name, y=ylabel_name, data=data, ax=plt_ax, hue=hue,
-                color=color, dodge=False)
+    sns.barplot(
+        x=xlabel_name,
+        y=ylabel_name,
+        data=data,
+        ax=plt_ax,
+        hue=hue,
+        color=color,
+        dodge=False,
+    )
     fig.tight_layout()
 
     try:
@@ -89,8 +107,7 @@ def bar_plot(data, filepath, xlabel_name, ylabel_name, hue=None, color=None,
         fig.savefig(buffer, format='png', dpi=dpi)
         fsutil.write_binary(filepath, buffer.getvalue())
     except FileNotFoundError:
-        logger.warning(
-            "Bar plot not saved because {} does not exist.".format(filepath))
+        logger.warning('Bar plot not saved because {} does not exist.'.format(filepath))
     plt.close(fig)
 
 
@@ -98,7 +115,8 @@ def scatter_plot(data, filepath, xlabel_name, ylabel_name, xlabel_rotate=0):
     import matplotlib
     import matplotlib.pyplot as plt
     import seaborn as sns
-    matplotlib.use("Agg")
+
+    matplotlib.use('Agg')
 
     fig = plt.figure()
     plt_ax = fig.add_subplot(111)
@@ -114,8 +132,8 @@ def scatter_plot(data, filepath, xlabel_name, ylabel_name, xlabel_rotate=0):
         fsutil.write_binary(filepath, buffer.getvalue())
     except FileNotFoundError:
         logger.warning(
-            "Scatter plot not saved because {} does not exist.".format(
-                filepath))
+            'Scatter plot not saved because {} does not exist.'.format(filepath)
+        )
     plt.close(fig)
 
 
@@ -131,7 +149,8 @@ def box_plot(
     import matplotlib
     import matplotlib.pyplot as plt
     import seaborn as sns
-    matplotlib.use("Agg")
+
+    matplotlib.use('Agg')
 
     fig = plt.figure()
     plt_ax = fig.add_subplot(111)
@@ -141,8 +160,14 @@ def box_plot(
     # The argument whis specifies the proportion of the inter-quartile range
     # past the low and high quartiles to extend the plot whiskers.
     # Points outside this range will be identified as outliers.
-    sns.boxplot(x=xlabel_name, y=ylabel_name, data=data, ax=plt_ax,
-                showfliers=outliers, whis=whis)
+    sns.boxplot(
+        x=xlabel_name,
+        y=ylabel_name,
+        data=data,
+        ax=plt_ax,
+        showfliers=outliers,
+        whis=whis,
+    )
     fig.tight_layout()
     # fig1 = plt.gcf()
 
@@ -151,13 +176,13 @@ def box_plot(
         fig.savefig(buffer, format='png')
         fsutil.write_binary(filepath, buffer.getvalue())
     except FileNotFoundError:
-        logger.warning(
-            "Box plot not saved because {} does not exist.".format(filepath))
+        logger.warning('Box plot not saved because {} does not exist.'.format(filepath))
     plt.close(fig)
 
 
-def binary_roc_curve_plot(y_true: np.array, y_score: np.array, filepath: str,
-                          pos_label: int = 1):
+def binary_roc_curve_plot(
+    y_true: np.array, y_score: np.array, filepath: str, pos_label: int = 1
+):
     """
     Plot the ROC curve for binary classification. Adapted from scikit-learn's
     ``examples/model_selection/plot_roc.py`` at commit
@@ -172,21 +197,23 @@ def binary_roc_curve_plot(y_true: np.array, y_score: np.array, filepath: str,
     """
     import matplotlib
     import matplotlib.pyplot as plt
-    matplotlib.use("Agg")
+
+    matplotlib.use('Agg')
     from sklearn.metrics import roc_auc_score, roc_curve
 
     fpr, tpr, _ = roc_curve(y_true, y_score, pos_label=pos_label)
     roc_auc = roc_auc_score(y_true, y_score)
     fig = plt.figure()
-    plt.plot(fpr, tpr, color="darkorange", lw=2,
-             label=f"ROC curve (area={roc_auc:.2f})")
-    plt.plot([0, 1], [0, 1], color="navy", lw=2, linestyle="--", label="Random")
+    plt.plot(
+        fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (area={roc_auc:.2f})'
+    )
+    plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--', label='Random')
     plt.xlim([-0.05, 1.05])
     plt.ylim([-0.05, 1.05])
-    plt.xlabel("False Positive Rate")
-    plt.ylabel("True Positive Rate")
-    plt.title("Receiver Operating Characteristic (ROC)")
-    plt.legend(loc="lower right")
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title('Receiver Operating Characteristic (ROC)')
+    plt.legend(loc='lower right')
     fig.tight_layout()
 
     try:
@@ -195,12 +222,18 @@ def binary_roc_curve_plot(y_true: np.array, y_score: np.array, filepath: str,
         fsutil.write_binary(filepath, buffer.getvalue())
     except FileNotFoundError:
         logger.warning(
-            "ROC curve not saved because {} does not exist.".format(filepath))
+            'ROC curve not saved because {} does not exist.'.format(filepath)
+        )
     plt.close(fig)
 
 
-def binary_pr_curve_plot(y_true: np.array, y_score: np.array, filepath: str,
-                         pos_label: int = 1, positive_rate: float = None):
+def binary_pr_curve_plot(
+    y_true: np.array,
+    y_score: np.array,
+    filepath: str,
+    pos_label: int = 1,
+    positive_rate: float = None,
+):
     """
     Plot the PR curve for binary classification. Adapted from scikit-learn's
     ``examples/model_selection/plot_roc.py`` at commit
@@ -217,24 +250,37 @@ def binary_pr_curve_plot(y_true: np.array, y_score: np.array, filepath: str,
     """
     import matplotlib
     import matplotlib.pyplot as plt
-    matplotlib.use("Agg")
+
+    matplotlib.use('Agg')
     from sklearn.metrics import auc, precision_recall_curve
 
     precision, recall, thresholds = precision_recall_curve(
-        y_true, y_score, pos_label=pos_label)
+        y_true, y_score, pos_label=pos_label
+    )
     pr_auc = auc(recall, precision)
     fig = plt.figure()
-    plt.plot(recall, precision, color="darkorange", lw=2,
-             label=f"PR curve (area={pr_auc:.2f})")
+    plt.plot(
+        recall,
+        precision,
+        color='darkorange',
+        lw=2,
+        label=f'PR curve (area={pr_auc:.2f})',
+    )
     if positive_rate is not None:
-        plt.plot([0, 1], [positive_rate, positive_rate], color="navy", lw=2,
-                 linestyle="--", label="Random")
+        plt.plot(
+            [0, 1],
+            [positive_rate, positive_rate],
+            color='navy',
+            lw=2,
+            linestyle='--',
+            label='Random',
+        )
     plt.xlim([-0.05, 1.05])
     plt.ylim([-0.05, 1.05])
-    plt.xlabel("Recall")
-    plt.ylabel("Precision")
-    plt.title("Precision Recall Curve (PRC)")
-    plt.legend(loc="lower right")
+    plt.xlabel('Recall')
+    plt.ylabel('Precision')
+    plt.title('Precision Recall Curve (PRC)')
+    plt.legend(loc='lower right')
     fig.tight_layout()
 
     try:
@@ -242,13 +288,13 @@ def binary_pr_curve_plot(y_true: np.array, y_score: np.array, filepath: str,
         fig.savefig(buffer, format='png')
         fsutil.write_binary(filepath, buffer.getvalue())
     except FileNotFoundError:
-        logger.warning(
-            "PR curve not saved because {} does not exist.".format(filepath))
+        logger.warning('PR curve not saved because {} does not exist.'.format(filepath))
     plt.close(fig)
 
 
-def binary_confusion_matrix_plot(y_true: np.array, y_pred: np.array,
-                                 filepath: str, pos_label: int = 1):
+def binary_confusion_matrix_plot(
+    y_true: np.array, y_pred: np.array, filepath: str, pos_label: int = 1
+):
     """
     Plot the confusion matrix for binary classification in heatmap. Modified
     from https://medium.com/@dtuk81/confusion-matrix-visualization-fc31e3f30fea
@@ -264,22 +310,20 @@ def binary_confusion_matrix_plot(y_true: np.array, y_pred: np.array,
     import matplotlib.pyplot as plt
     import seaborn as sns
     from sklearn.metrics import confusion_matrix
-    matplotlib.use("Agg")
+
+    matplotlib.use('Agg')
 
     matrix = confusion_matrix(y_true, y_pred)
     num = matrix.sum()
-    names = [
-        'True Negative', 'False Positive', 'False Negative', 'True Positive'
-    ]
-    counts = [f"{value}" for value in matrix.flatten()]
-    percentages = [f"{value:.2f}" for value in matrix.flatten() / num]
+    names = ['True Negative', 'False Positive', 'False Negative', 'True Positive']
+    counts = [f'{value}' for value in matrix.flatten()]
+    percentages = [f'{value:.2f}' for value in matrix.flatten() / num]
 
     num_positive = (y_true == pos_label).sum()
     num_negative = (y_true != pos_label).sum()
-    num_truth = np.array(
-        [num_negative, num_negative, num_positive, num_positive])
+    num_truth = np.array([num_negative, num_negative, num_positive, num_positive])
     labels = [
-        f"{n}\n{c} / {t}\n{p}"
+        f'{n}\n{c} / {t}\n{p}'
         for n, c, t, p in zip(names, counts, num_truth, percentages)
     ]
 
@@ -294,14 +338,17 @@ def binary_confusion_matrix_plot(y_true: np.array, y_pred: np.array,
         fsutil.write_binary(filepath, buffer.getvalue())
     except FileNotFoundError:
         logger.warning(
-            "Confusion matrix not saved because {} does not exist.".format(
-                filepath))
+            'Confusion matrix not saved because {} does not exist.'.format(filepath)
+        )
     plt.close(fig)
 
 
-def visualize_graph(meta_table_configs: List[TableMetadataConfig], name: str,
-                    path: Union[str, BytesIO,
-                                None] = None, show_cols: bool = True):
+def visualize_graph(
+    meta_table_configs: List[TableMetadataConfig],
+    name: str,
+    path: Union[str, BytesIO, None] = None,
+    show_cols: bool = True,
+):
     def has_graphviz() -> bool:
         try:
             import graphviz
@@ -340,14 +387,12 @@ def visualize_graph(meta_table_configs: List[TableMetadataConfig], name: str,
         meta_table_configs = [meta_table_configs]
 
     meta_table_configs_dict = {
-        f'{meta_table_config.data_source}.{meta_table_config.table_name}':
-        meta_table_config
+        f'{meta_table_config.data_source}.{meta_table_config.table_name}': meta_table_config
         for meta_table_config in meta_table_configs
     }
 
     # create list of data sources
-    data_sources = set(table.data_source
-                       for table in meta_table_configs_dict.values())
+    data_sources = set(table.data_source for table in meta_table_configs_dict.values())
 
     for table_name_full, meta_table_config in meta_table_configs_dict.items():
         keys = []
@@ -362,8 +407,7 @@ def visualize_graph(meta_table_configs: List[TableMetadataConfig], name: str,
         cols = []
         if show_cols and meta_table_config.cols:
             cols += [
-                f'{col.name} : {get_stype(col.stype)}'
-                for col in meta_table_config.cols
+                f'{col.name} : {get_stype(col.stype)}' for col in meta_table_config.cols
             ]
             cols = left_align(cols)
 
@@ -407,15 +451,21 @@ def visualize_graph(meta_table_configs: List[TableMetadataConfig], name: str,
             else:
                 label = f' {fkey.name} '
 
-            if (fkey_dst_table.pkey is not None
-                    and fkey_dst_table.pkey.name == dst_key):
+            if fkey_dst_table.pkey is not None and fkey_dst_table.pkey.name == dst_key:
                 headlabel, taillabel = '1', '*'
             else:
                 headlabel, taillabel = '*', '*'
 
-            graph.edge(table_name, fkey_dst_table_name, label=label,
-                       headlabel=headlabel, taillabel=taillabel, minlen='2',
-                       fontsize='11pt', labeldistance='1.5')
+            graph.edge(
+                table_name,
+                fkey_dst_table_name,
+                label=label,
+                headlabel=headlabel,
+                taillabel=taillabel,
+                minlen='2',
+                fontsize='11pt',
+                labeldistance='1.5',
+            )
 
     if isinstance(path, str):
         path = '.'.join(path.split('.')[:-1])
@@ -427,16 +477,16 @@ def visualize_graph(meta_table_configs: List[TableMetadataConfig], name: str,
 
 
 def plot_forecasting(
-        df: pd.DataFrame,
-        entity_col: str,
-        filepath: str,
-        target_col: str = 'TARGET',
-        pred_col: str = 'TARGET_PRED',
-        time_col: str = 'TIMESTAMP',
-        plot_random: bool = True,
-        random_state: int = 42,
-        num_plot_entities: int = 12,
-        time_unit: pd.Timedelta = pd.Timedelta(1, 'd'),
+    df: pd.DataFrame,
+    entity_col: str,
+    filepath: str,
+    target_col: str = 'TARGET',
+    pred_col: str = 'TARGET_PRED',
+    time_col: str = 'TIMESTAMP',
+    plot_random: bool = True,
+    random_state: int = 42,
+    num_plot_entities: int = 12,
+    time_unit: pd.Timedelta = pd.Timedelta(1, 'd'),
 ):
     r"""Plot forecasting truth targets and predicted targets.
 
@@ -459,7 +509,8 @@ def plot_forecasting(
     """
     import matplotlib
     import matplotlib.pyplot as plt
-    matplotlib.use("Agg")
+
+    matplotlib.use('Agg')
 
     if plot_random:
         samples = df.sample(n=num_plot_entities, random_state=random_state)
@@ -484,11 +535,10 @@ def plot_forecasting(
     for (_, (_, row)), ax in zip(enumerate(samples.iterrows()), axes.flatten()):
         targets = row[target_col]
         preds = row[pred_col]
-        timestamps = [(i + 1) * time_unit + row[time_col]
-                      for i in range(forecast_length)]
         timestamps = [
-            timestamp.strftime('%Y-%m-%d %X') for timestamp in timestamps
+            (i + 1) * time_unit + row[time_col] for i in range(forecast_length)
         ]
+        timestamps = [timestamp.strftime('%Y-%m-%d %X') for timestamp in timestamps]
         ax.plot(timestamps, targets, '-o', label=target_col)
         ax.plot(timestamps, preds, '-o', label=pred_col)
         title_max_length = 25

@@ -28,8 +28,7 @@ def _transfer_workers():
     try:
         limit = int(value)
     except ValueError:
-        raise ValueError(
-            f'{TRANSFER_WORKERS_ENV} must be a positive integer') from None
+        raise ValueError(f'{TRANSFER_WORKERS_ENV} must be a positive integer') from None
     if limit < 1:
         raise ValueError(f'{TRANSFER_WORKERS_ENV} must be a positive integer')
     return min(ceiling, limit)
@@ -46,8 +45,8 @@ def concurrency(size, *, upload=False, ranged=False):
     chunk_bytes = CHUNK_BYTES if upload else BULK_DOWNLOAD_CHUNK_BYTES
     maximum = MAX_BULK_DOWNLOAD_CONCURRENCY if ranged else MAX_FILE_CONCURRENCY
     wanted = min(
-        maximum,
-        max(1, (max(0, size - initial) + chunk_bytes - 1) // chunk_bytes))
+        maximum, max(1, (max(0, size - initial) + chunk_bytes - 1) // chunk_bytes)
+    )
     _SLOTS.acquire()
     acquired = 1
     try:

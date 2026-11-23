@@ -24,8 +24,9 @@ class JobWorkflowCancellationMixin:
 
     @workflow.signal
     async def cancel_wf(self, reason: Optional[str] = None):
-        log.warning('Workflow %s receives "cancel_wf" signal, reason=%s',
-                    self.id, reason)
+        log.warning(
+            'Workflow %s receives "cancel_wf" signal, reason=%s', self.id, reason
+        )
         self._cancel_reason = reason or self._cancel_reason
         self._cancelled = True
 
@@ -41,13 +42,12 @@ class JobWorkflowCancellationMixin:
     async def run_until_canceled(self, coro: Awaitable[T]) -> T:
         task = asyncio.ensure_future(coro)
         wait_cancel_task = asyncio.ensure_future(
-            workflow.wait_condition(lambda: self._cancelled))
+            workflow.wait_condition(lambda: self._cancelled)
+        )
         try:
-            await workflow.wait([wait_cancel_task, task],
-                                return_when='FIRST_COMPLETED')
+            await workflow.wait([wait_cancel_task, task], return_when='FIRST_COMPLETED')
         except BaseException as ex:
-            log.warning('Workflow %s interrupted by %s(type=%s)', self.id, ex,
-                        type(ex))
+            log.warning('Workflow %s interrupted by %s(type=%s)', self.id, ex, type(ex))
             # Record workflow cancellation state if applicable.
             self._cancelled = self._cancelled or is_cancelled_exception(ex)
 

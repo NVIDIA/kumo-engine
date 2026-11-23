@@ -3,9 +3,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from http import HTTPStatus
-from test.rest.integ.black_box.project_upload_helpers import upload_project_csv
 
 from fastapi.testclient import TestClient
+
+from test.rest.integ.black_box.project_upload_helpers import upload_project_csv
 
 
 def test_completed_project_upload_has_safe_source_table_config(
@@ -26,7 +27,8 @@ def test_completed_project_upload_has_safe_source_table_config(
 
     response = public_api_client.get(
         f'/v1/projects/{project_id}/connectors/{connector_id}/'
-        'source-tables/orders/config')
+        'source-tables/orders/config'
+    )
 
     assert response.status_code == HTTPStatus.OK, response.text
     assert response.json() == {

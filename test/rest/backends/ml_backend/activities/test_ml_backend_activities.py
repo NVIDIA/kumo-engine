@@ -28,7 +28,7 @@ from statedb.config.common import (
 )
 from statedb.db import MLJobService
 
-GEN_JOB_ID = GeneratePredictionTableJobID("gen-predtable-job-xyz")
+GEN_JOB_ID = GeneratePredictionTableJobID('gen-predtable-job-xyz')
 
 
 @dataclass
@@ -52,32 +52,42 @@ def _bound_input_harness(monkeypatch, *, invalid=None, connector_error=None):
     bp_row = SimpleNamespace(
         id=other_bp_id if invalid == 'wrong_bp_row_id' else bp_id,
         project_id=project_id,
-        config=SimpleNamespace(generate_pred_table_job_id=(
-            other_gen_id if invalid == 'wrong_bp_reference' else gen_id)),
+        config=SimpleNamespace(
+            generate_pred_table_job_id=(
+                other_gen_id if invalid == 'wrong_bp_reference' else gen_id
+            )
+        ),
     )
     persisted = SimpleNamespace(
         id=other_bp_id if invalid == 'wrong_persisted_id' else bp_id,
-        project_id=(ProjectID.generate()
-                    if invalid == 'wrong_persisted_project' else project_id),
+        project_id=(
+            ProjectID.generate() if invalid == 'wrong_persisted_project' else project_id
+        ),
         generate_pred_table_job_id=(
-            other_gen_id if invalid == 'wrong_persisted_gen_id' else gen_id),
+            other_gen_id if invalid == 'wrong_persisted_gen_id' else gen_id
+        ),
         validate_connector_execution_refs=MagicMock(
-            side_effect=(ValueError(connector_error)
-                         if connector_error else None)),
+            side_effect=(ValueError(connector_error) if connector_error else None)
+        ),
     )
     service = SimpleNamespace(
         get_batch_prediction_rows=AsyncMock(
-            return_value=[] if invalid == 'missing_bp_row' else [bp_row]),
+            return_value=[] if invalid == 'missing_bp_row' else [bp_row]
+        ),
         get_generate_pred_table_jobs=AsyncMock(
-            return_value=[] if invalid == 'missing_gen_row' else [
+            return_value=[]
+            if invalid == 'missing_gen_row'
+            else [
                 SimpleNamespace(
-                    id=(other_gen_id
-                        if invalid == 'wrong_gen_row_id' else gen_id),
-                    project_id=(ProjectID.generate()
-                                if invalid == 'wrong_gen_row_project' else
-                                project_id),
+                    id=(other_gen_id if invalid == 'wrong_gen_row_id' else gen_id),
+                    project_id=(
+                        ProjectID.generate()
+                        if invalid == 'wrong_gen_row_project'
+                        else project_id
+                    ),
                 )
-            ]),
+            ]
+        ),
     )
     activities = object.__new__(MLBackendActivities)
     activities._ml_job_service = cast(MLJobService, service)
@@ -97,37 +107,39 @@ def _bound_input_harness(monkeypatch, *, invalid=None, connector_error=None):
     )
 
 
-@pytest.mark.parametrize("coupled", [True, False])
-@patch("rest.backends.ml_backend.activities.ml_backend_activities.load_json")
+@pytest.mark.parametrize('coupled', [True, False])
+@patch('rest.backends.ml_backend.activities.ml_backend_activities.load_json')
 def test_load_persisted_gen_pred_table_input_uses_relationship_owned_home(
-        mock_load_json, monkeypatch, coupled):
+    mock_load_json, monkeypatch, coupled
+):
     bp_id = BatchPredictionJobID.make_random_id()
-    gen_id = (GeneratePredictionTableJobID.as_child_of(bp_id) if coupled else
-              GeneratePredictionTableJobID.make_random_id())
-    expected_input_id = (bp_id if coupled else
-                         BatchPredictionJobID(str(gen_id)))
+    gen_id = (
+        GeneratePredictionTableJobID.as_child_of(bp_id)
+        if coupled
+        else GeneratePredictionTableJobID.make_random_id()
+    )
+    expected_input_id = bp_id if coupled else BatchPredictionJobID(str(gen_id))
     gen_input = MagicMock()
     gen_input.graph_data_compute_input = MagicMock()
     gen_input.graph_version_info = MagicMock()
     mock_load_json.return_value = gen_input
     monkeypatch.setattr(
-        "rest.backends.ml_backend.activities.ml_backend_activities."
-        "get_job_base_dir", lambda: "/data/jobs")
+        'rest.backends.ml_backend.activities.ml_backend_activities.get_job_base_dir',
+        lambda: '/data/jobs',
+    )
 
     input_id, loaded = _load_persisted_gen_pred_table_input(bp_id, gen_id)
 
     assert input_id == expected_input_id
     assert loaded is gen_input
     mock_load_json.assert_called_once_with(
-        HomeDirManager(f"/data/jobs/{expected_input_id}").
-        prediction_job_input_file,
+        HomeDirManager(f'/data/jobs/{expected_input_id}').prediction_job_input_file,
         BatchPredictionJobInput,
     )
 
 
-@patch("rest.backends.ml_backend.activities.ml_backend_activities.load_json")
-def test_load_persisted_gen_pred_table_input_missing_fails_closed(
-        mock_load_json):
+@patch('rest.backends.ml_backend.activities.ml_backend_activities.load_json')
+def test_load_persisted_gen_pred_table_input_missing_fails_closed(mock_load_json):
     bp_id = BatchPredictionJobID.make_random_id()
     gen_id = GeneratePredictionTableJobID.as_child_of(bp_id)
     mock_load_json.side_effect = FileNotFoundError
@@ -138,37 +150,45 @@ def test_load_persisted_gen_pred_table_input_missing_fails_closed(
     assert loaded is None
 
 
-@pytest.mark.parametrize("coupled", [True, False])
+@pytest.mark.parametrize('coupled', [True, False])
 def test_default_persistence_and_locator_share_relationship_owned_home(
-        tmp_path, monkeypatch, coupled):
-    jobs_dir = tmp_path / "jobs"
+    tmp_path, monkeypatch, coupled
+):
+    jobs_dir = tmp_path / 'jobs'
     bp_id = BatchPredictionJobID.make_random_id()
-    gen_id = (GeneratePredictionTableJobID.as_child_of(bp_id) if coupled else
-              GeneratePredictionTableJobID.make_random_id())
-    input_id = (bp_id if coupled else BatchPredictionJobID(str(gen_id)))
+    gen_id = (
+        GeneratePredictionTableJobID.as_child_of(bp_id)
+        if coupled
+        else GeneratePredictionTableJobID.make_random_id()
+    )
+    input_id = bp_id if coupled else BatchPredictionJobID(str(gen_id))
     other_owner = gen_id if coupled else bp_id
     job_input = _PersistedPredictionInput(
         id=str(input_id),
-        graph_data_compute_input={"graph": "pinned"},
-        graph_version_info={"version": "v1"},
+        graph_data_compute_input={'graph': 'pinned'},
+        graph_version_info={'version': 'v1'},
     )
     monkeypatch.setattr(
-        "rest.backends.ml_backend.activities.ml_backend_activities."
-        "get_job_base_dir", lambda: str(jobs_dir))
+        'rest.backends.ml_backend.activities.ml_backend_activities.get_job_base_dir',
+        lambda: str(jobs_dir),
+    )
     monkeypatch.setattr(
-        "rest.backends.ml_backend.activities.ml_backend_activities."
-        "BatchPredictionJobInput", _PersistedPredictionInput)
+        'rest.backends.ml_backend.activities.ml_backend_activities.'
+        'BatchPredictionJobInput',
+        _PersistedPredictionInput,
+    )
 
     # No explicit home: this is the production persistence rule used by the
     # coupled and standalone generate-prediction-table workflows.
-    persist_job_inputs(job_input, {"setting": "value"})
-    expected_input_id, loaded = _load_persisted_gen_pred_table_input(
-        bp_id, gen_id)
+    persist_job_inputs(job_input, {'setting': 'value'})
+    expected_input_id, loaded = _load_persisted_gen_pred_table_input(bp_id, gen_id)
 
     expected_path = HomeDirManager(
-        str(jobs_dir / str(input_id))).prediction_job_input_file
+        str(jobs_dir / str(input_id))
+    ).prediction_job_input_file
     other_path = HomeDirManager(
-        str(jobs_dir / str(other_owner))).prediction_job_input_file
+        str(jobs_dir / str(other_owner))
+    ).prediction_job_input_file
     assert expected_input_id == input_id
     assert loaded == job_input
     assert os.path.isfile(expected_path)
@@ -176,57 +196,69 @@ def test_default_persistence_and_locator_share_relationship_owned_home(
 
 
 @pytest.mark.asyncio
-async def test_bound_gen_pred_input_rechecks_durable_project_identity(
-        monkeypatch):
+async def test_bound_gen_pred_input_rechecks_durable_project_identity(monkeypatch):
     case = _bound_input_harness(monkeypatch)
 
-    assert await case.activities._load_project_bound_gen_pred_table_input(
-        cast(BatchPredictionJobInput, case.bp_input),
-        case.gen_id) is case.persisted
+    assert (
+        await case.activities._load_project_bound_gen_pred_table_input(
+            cast(BatchPredictionJobInput, case.bp_input), case.gen_id
+        )
+        is case.persisted
+    )
     case.service.get_batch_prediction_rows.assert_awaited_once_with(
-        [case.bp_id], project_ids={case.project_id})
+        [case.bp_id], project_ids={case.project_id}
+    )
     case.service.get_generate_pred_table_jobs.assert_awaited_once_with(
-        [case.gen_id], project_ids={case.project_id})
+        [case.gen_id], project_ids={case.project_id}
+    )
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("invalid_boundary", [
-    "missing_bp_row",
-    "wrong_bp_row_id",
-    "wrong_bp_reference",
-    "missing_gen_row",
-    "wrong_gen_row_id",
-    "wrong_gen_row_project",
-    "wrong_persisted_project",
-    "wrong_persisted_id",
-    "wrong_persisted_gen_id",
-])
+@pytest.mark.parametrize(
+    'invalid_boundary',
+    [
+        'missing_bp_row',
+        'wrong_bp_row_id',
+        'wrong_bp_reference',
+        'missing_gen_row',
+        'wrong_gen_row_id',
+        'wrong_gen_row_project',
+        'wrong_persisted_project',
+        'wrong_persisted_id',
+        'wrong_persisted_gen_id',
+    ],
+)
 async def test_bound_gen_pred_input_fails_closed_on_identity_mismatch(
-        monkeypatch, invalid_boundary):
+    monkeypatch, invalid_boundary
+):
     case = _bound_input_harness(monkeypatch, invalid=invalid_boundary)
 
     with pytest.raises(ValueError):
         await case.activities._load_project_bound_gen_pred_table_input(
-            cast(BatchPredictionJobInput, case.bp_input), case.gen_id)
+            cast(BatchPredictionJobInput, case.bp_input), case.gen_id
+        )
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("tamper", ["wrong_project_ref", "extra_output_ref"])
+@pytest.mark.parametrize('tamper', ['wrong_project_ref', 'extra_output_ref'])
 async def test_bound_gen_pred_input_rejects_tampered_connector_refs(
-        monkeypatch, tamper):
+    monkeypatch, tamper
+):
     case = _bound_input_harness(monkeypatch, connector_error=tamper)
 
     with pytest.raises(ValueError, match=tamper):
         await case.activities._load_project_bound_gen_pred_table_input(
-            cast(BatchPredictionJobInput, case.bp_input), case.gen_id)
+            cast(BatchPredictionJobInput, case.bp_input), case.gen_id
+        )
 
     case.persisted.validate_connector_execution_refs.assert_called_once_with()
 
 
-@patch("rest.backends.ml_backend.activities.ml_backend_activities.save_json_atomic")
-@patch("rest.backends.ml_backend.activities.ml_backend_activities.fsutil")
+@patch('rest.backends.ml_backend.activities.ml_backend_activities.save_json_atomic')
+@patch('rest.backends.ml_backend.activities.ml_backend_activities.fsutil')
 def test_persist_job_inputs_overwrites_without_deleting_published_inputs(
-        mock_fsutil, mock_save_json, tmp_path):
+    mock_fsutil, mock_save_json, tmp_path
+):
     job_input = MagicMock()
     job_input.id = GEN_JOB_ID
     ml_job_settings = MagicMock()
@@ -242,18 +274,13 @@ def test_persist_job_inputs_overwrites_without_deleting_published_inputs(
     persist_job_inputs(job_input, ml_job_settings, home_dir)
 
     mock_fsutil.rm.assert_not_called()
-    mock_fsutil.makedirs.assert_called_with(
-        f'{home_dir}/inputs', exist_ok=True)
+    mock_fsutil.makedirs.assert_called_with(f'{home_dir}/inputs', exist_ok=True)
     assert mock_save_json.call_count == 4
     assert mock_save_json.call_args_list == [
-        call(ml_job_settings,
-             f'{home_dir}/inputs/ml_job_settings.json'),
-        call(job_input,
-             f'{home_dir}/inputs/prediction_job_input.json'),
-        call(ml_job_settings,
-             f'{home_dir}/inputs/ml_job_settings.json'),
-        call(job_input,
-             f'{home_dir}/inputs/prediction_job_input.json'),
+        call(ml_job_settings, f'{home_dir}/inputs/ml_job_settings.json'),
+        call(job_input, f'{home_dir}/inputs/prediction_job_input.json'),
+        call(ml_job_settings, f'{home_dir}/inputs/ml_job_settings.json'),
+        call(job_input, f'{home_dir}/inputs/prediction_job_input.json'),
     ]
 
 
@@ -264,7 +291,8 @@ class _FakePredictionJobInput:
 
 
 def test_persist_job_inputs_keeps_previous_input_visible_until_publish(
-        tmp_path, monkeypatch):
+    tmp_path, monkeypatch
+):
     home_dir = str(tmp_path / 'gen-home')
     manager = HomeDirManager(home_dir)
     first = _FakePredictionJobInput('gen-predtable-job', 1)
@@ -288,21 +316,19 @@ def test_persist_job_inputs_keeps_previous_input_visible_until_publish(
     )
     writer.start()
     assert replace_ready.wait(timeout=5)
-    assert load_json(manager.prediction_job_input_file,
-                     dict)['generation'] == 1
+    assert load_json(manager.prediction_job_input_file, dict)['generation'] == 1
     allow_replace.set()
     writer.join(timeout=5)
     assert not writer.is_alive()
-    assert load_json(manager.prediction_job_input_file,
-                     dict)['generation'] == 2
+    assert load_json(manager.prediction_job_input_file, dict)['generation'] == 2
     assert stat.S_IMODE(os.stat(manager.inputs_dir).st_mode) == 0o700
-    assert stat.S_IMODE(
-        os.stat(manager.prediction_job_input_file).st_mode) == 0o600
+    assert stat.S_IMODE(os.stat(manager.prediction_job_input_file).st_mode) == 0o600
 
 
 @pytest.mark.parametrize('scheme', ['abfs', 'abfss'])
 def test_persist_job_inputs_uses_atomic_adls_publication_in_marker_order(
-        tmp_path, monkeypatch, scheme):
+    tmp_path, monkeypatch, scheme
+):
     home_dir = str(tmp_path / 'gen-home')
     job_input = _FakePredictionJobInput('gen-predtable-job', 1)
     settings = {'generation': 1}
@@ -311,10 +337,12 @@ def test_persist_job_inputs_uses_atomic_adls_publication_in_marker_order(
     monkeypatch.setattr(fsutil, 'get_scheme', lambda _path: scheme)
     monkeypatch.setattr(
         'rest.backends.ml_backend.activities.ml_backend_activities.save_json',
-        legacy_save)
+        legacy_save,
+    )
     monkeypatch.setattr(
-        'rest.backends.ml_backend.activities.ml_backend_activities.'
-        'save_json_atomic', atomic_save)
+        'rest.backends.ml_backend.activities.ml_backend_activities.save_json_atomic',
+        atomic_save,
+    )
 
     persist_job_inputs(job_input, settings, home_dir)
 
@@ -327,7 +355,8 @@ def test_persist_job_inputs_uses_atomic_adls_publication_in_marker_order(
 
 
 def test_persist_job_inputs_preserves_legacy_provider_with_explicit_warning(
-        tmp_path, monkeypatch, caplog):
+    tmp_path, monkeypatch, caplog
+):
     scheme = 'dbfs'
     home_dir = str(tmp_path / 'gen-home')
     job_input = _FakePredictionJobInput('gen-predtable-job', 1)
@@ -337,10 +366,12 @@ def test_persist_job_inputs_preserves_legacy_provider_with_explicit_warning(
     monkeypatch.setattr(fsutil, 'get_scheme', lambda _path: scheme)
     monkeypatch.setattr(
         'rest.backends.ml_backend.activities.ml_backend_activities.save_json',
-        legacy_save)
+        legacy_save,
+    )
     monkeypatch.setattr(
-        'rest.backends.ml_backend.activities.ml_backend_activities.'
-        'save_json_atomic', atomic_save)
+        'rest.backends.ml_backend.activities.ml_backend_activities.save_json_atomic',
+        atomic_save,
+    )
 
     with caplog.at_level('WARNING'):
         persist_job_inputs(job_input, settings, home_dir)
@@ -352,7 +383,8 @@ def test_persist_job_inputs_preserves_legacy_provider_with_explicit_warning(
     ]
     atomic_save.assert_not_called()
     warnings = [
-        record.message for record in caplog.records
+        record.message
+        for record in caplog.records
         if 'legacy non-atomic overwrite' in record.message
     ]
     assert len(warnings) == 1

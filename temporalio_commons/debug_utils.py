@@ -54,6 +54,7 @@ class ActivityDebugInfo:
     Debug information about an activity execution, as derived from workflow
     execution event history.
     """
+
     activity_id: str
     activity_type: str
     scheduled_at: datetime
@@ -75,8 +76,11 @@ class ActivityDebugInfo:
 
     @property
     def range_query_to(self) -> str:
-        end_time = (self.closed_at + timedelta(minutes=1) if self.closed_at else
-                    self.scheduled_at + timedelta(days=1))
+        end_time = (
+            self.closed_at + timedelta(minutes=1)
+            if self.closed_at
+            else self.scheduled_at + timedelta(days=1)
+        )
         end_time = min(end_time, datetime.now(timezone.utc))
         return str(int(end_time.timestamp() * 1000))
 
@@ -101,28 +105,23 @@ class ActivityDebugInfo:
         timing_dict = {'scheduled': self.scheduled_at.astimezone().isoformat()}
         if self.started_at:
             timing_dict['started'] = self.started_at.astimezone().isoformat()
-            if (self.schedule_delay
-                    and self.schedule_delay > timedelta(seconds=1)):
+            if self.schedule_delay and self.schedule_delay > timedelta(seconds=1):
                 timing_dict['schedule_delay'] = str(self.schedule_delay)
             if self.closed_at:
                 timing_dict['closed'] = self.closed_at.astimezone().isoformat()
-                if (self.execution_duration
-                        and self.execution_duration > timedelta(seconds=1)):
+                if self.execution_duration and self.execution_duration > timedelta(
+                    seconds=1
+                ):
                     timing_dict['exec_duration'] = str(self.execution_duration)
 
         worker_summary = {}
         if self.worker_info:
             worker_summary = {
-                'worker_name':
-                self.worker_info.worker_name,
-                'instance_id':
-                self.worker_info.instance_id,
-                'container':
-                WORKER_NAME_TO_CONTAINER.get(self.worker_info.worker_name),
-                'started_at':
-                self.worker_info.start_time.isoformat(),
-                'kumo_version':
-                self.worker_info.kumo_version,
+                'worker_name': self.worker_info.worker_name,
+                'instance_id': self.worker_info.instance_id,
+                'container': WORKER_NAME_TO_CONTAINER.get(self.worker_info.worker_name),
+                'started_at': self.worker_info.start_time.isoformat(),
+                'kumo_version': self.worker_info.kumo_version,
             }
 
         return {
@@ -130,7 +129,7 @@ class ActivityDebugInfo:
             'task_queue': self.task_queue,
             'worker': worker_summary,
             'timing (local timezone)': timing_dict,
-            'final status': self.final_status
+            'final status': self.final_status,
         }
 
     def get_log_url(self, deploy_config: DeployEnvConfig) -> str:
@@ -150,10 +149,13 @@ class ActivityDebugInfo:
                 'us-west-2 --document-name AWS-StartInteractiveCommand '
                 '--parameters \'{"command": ["'
                 f'sudo docker logs {worker_container}'
-                '"]}\'')
-            return ('Loki logs is not available on PREPROD. To view the docker '
-                    'container logs for the temporal worker, run the '
-                    f'following command:\n{log_command}')
+                '"]}\''
+            )
+            return (
+                'Loki logs is not available on PREPROD. To view the docker '
+                'container logs for the temporal worker, run the '
+                f'following command:\n{log_command}'
+            )
 
         return 'Log URL unavailable for this deployment.'
 
@@ -193,7 +195,9 @@ class ActivityDebugInfo:
         log.info(
             'Started debug workflow for %s in:\n%s\n'
             'Please use the url to terminate the workflow if not needed.',
-            self.activity_type, debug_wf_url)
+            self.activity_type,
+            debug_wf_url,
+        )
         result = await wf_handle.result()
 
         # Shutdown the worker and associated executor.
@@ -210,8 +214,7 @@ class WorkflowDebugInfo:
     task_queue: str
     web_url: str
     inputs: DecodedData
-    activities: List[
-        ActivityDebugInfo]  # ordered by activity schedule timestamp
+    activities: List[ActivityDebugInfo]  # ordered by activity schedule timestamp
     # Present if the workflow failed due to a criticial failure in an activity
     critical_activity: Optional[ActivityDebugInfo] = None
 
@@ -238,8 +241,8 @@ async def _safe_decode(client: Client, payloads) -> DecodedData:
 # of now, Temporal Cloud has 30d retention for all namespaces while the local
 # Temporal cluster only has 3d retention.
 async def debug_temporal_workflow(
-        wf_id: str,
-        deploy_env: Optional[DeployEnvConfig] = None) -> WorkflowDebugInfo:
+    wf_id: str, deploy_env: Optional[DeployEnvConfig] = None
+) -> WorkflowDebugInfo:
     deploy_env = deploy_env or get_deploy_env()
     temporal_client = TemporalClient(deploy_env)
     client = await temporal_client.get()
@@ -253,8 +256,10 @@ async def debug_temporal_workflow(
                 'Workflow is not found, please make sure workflow id and '
                 'deploy_env is correctly specified and the workflow is not '
                 'older than the retention period. Please make sure the '
-                'workflow %s can be found in Temporal Web UI: %s', wf_id,
-                deploy_env.web_url)
+                'workflow %s can be found in Temporal Web UI: %s',
+                wf_id,
+                deploy_env.web_url,
+            )
             raise WorkflowNotFoundException() from rpc_error
         raise
 
@@ -264,15 +269,16 @@ async def debug_temporal_workflow(
     ws_client = client.workflow_service
     wf_exec_history = await ws_client.get_workflow_execution_history(
         wsv1.GetWorkflowExecutionHistoryRequest(
-            namespace=deploy_env.temporal_namespace, execution=wf_exec))
+            namespace=deploy_env.temporal_namespace, execution=wf_exec
+        )
+    )
 
     events = wf_exec_history.history.events
     event_dict = {event.event_id: event for event in events}
     all_activities: Dict[str, ActivityDebugInfo] = {}
 
     wf_start_event = events[0]
-    assert (wf_start_event.event_type ==
-            EventType.EVENT_TYPE_WORKFLOW_EXECUTION_STARTED)
+    assert wf_start_event.event_type == EventType.EVENT_TYPE_WORKFLOW_EXECUTION_STARTED
     event_attrs = wf_start_event.workflow_execution_started_event_attributes
     task_queue = event_attrs.task_queue.name
     encoded_inputs = event_attrs.input.payloads
@@ -314,14 +320,21 @@ async def debug_temporal_workflow(
                 if worker_info.instance_id != instance_id:
                     log.warning(
                         'Worker %s was hosted on %s when executing %s, '
-                        'but is now running on %s', worker_name, instance_id,
-                        activity_info.activity_type, worker_info.instance_id)
+                        'but is now running on %s',
+                        worker_name,
+                        instance_id,
+                        activity_info.activity_type,
+                        worker_info.instance_id,
+                    )
             else:
                 worker_name = worker_identity
                 worker_info = WorkerInfo(
-                    worker_name, 'n/a',
+                    worker_name,
+                    'n/a',
                     start_time=datetime.fromtimestamp(0, timezone.utc),
-                    workflows=[], activities=[])
+                    workflows=[],
+                    activities=[],
+                )
             activity_info.worker_info = worker_info
 
         if event.event_type == EventType.EVENT_TYPE_ACTIVITY_TASK_COMPLETED:
@@ -330,7 +343,8 @@ async def debug_temporal_workflow(
             activity_info.final_status = 'COMPLETED'
             activity_info.closed_at = event.event_time.ToDatetime(timezone.utc)
             activity_info.outputs = await client.data_converter.decode(
-                attrs.result.payloads)
+                attrs.result.payloads
+            )
             continue
 
         if event.event_type == EventType.EVENT_TYPE_ACTIVITY_TASK_CANCELED:
@@ -345,7 +359,8 @@ async def debug_temporal_workflow(
             attrs = event.activity_task_timed_out_event_attributes
             activity_info = _get_activity_info(attrs)
             activity_info.final_status = TimeoutType.Name(
-                attrs.failure.timeout_failure_info.timeout_type)
+                attrs.failure.timeout_failure_info.timeout_type
+            )
             activity_info.closed_at = event.event_time.ToDatetime(timezone.utc)
             activity_info.failure = str(attrs.failure)
             continue
@@ -371,13 +386,16 @@ async def debug_temporal_workflow(
 
 # Get the id of activity that caused workflow execution failure.
 def _infer_critical_activity_id(wf_desc, last_wf_event) -> Optional[str]:
-    if (wf_desc.status == WorkflowExecutionStatus.FAILED
-            and last_wf_event.event_type
-            == EventType.EVENT_TYPE_WORKFLOW_EXECUTION_FAILED):
+    if (
+        wf_desc.status == WorkflowExecutionStatus.FAILED
+        and last_wf_event.event_type == EventType.EVENT_TYPE_WORKFLOW_EXECUTION_FAILED
+    ):
         attrs = last_wf_event.workflow_execution_failed_event_attributes
         failure = attrs.failure
         if failure.HasField('activity_failure_info'):
-            log.info('Workflow failed due to activity: %s',
-                     failure.activity_failure_info.activity_type)
+            log.info(
+                'Workflow failed due to activity: %s',
+                failure.activity_failure_info.activity_type,
+            )
             return failure.activity_failure_info.activity_id
     return None

@@ -39,8 +39,7 @@ _WAREHOUSE_PATH = '/sql/1.0/warehouses/{compute}'
 _CLUSTER_PATH = '/sql/protocolv1/o/{workspace}/{compute}'
 
 
-def _target_config(
-        connector: SourceConnector) -> DatabricksConnectorResourceConfig:
+def _target_config(connector: SourceConnector) -> DatabricksConnectorResourceConfig:
     r"""Narrows a connector's target to this provider's own.
 
     A host routes on ``connector.source_type``, so in practice this always
@@ -51,8 +50,9 @@ def _target_config(
     config = connector.config
     if not isinstance(config, DatabricksConnectorResourceConfig):
         raise ValueError(
-            f"Connector {connector.id!r} points at a "
-            f"{config.type.value} target, so it cannot be read as Databricks.")
+            f'Connector {connector.id!r} points at a '
+            f'{config.type.value} target, so it cannot be read as Databricks.'
+        )
     return config
 
 
@@ -62,8 +62,10 @@ def _require_workspace_client(client: object) -> None:
     attribute somewhere inside ``databricks.sql``.
     """
     if not isinstance(client, WorkspaceClient):
-        raise TypeError(f"A Databricks session must be a 'databricks.sdk."
-                        f"WorkspaceClient'; got {type(client).__name__!r}.")
+        raise TypeError(
+            f"A Databricks session must be a 'databricks.sdk."
+            f"WorkspaceClient'; got {type(client).__name__!r}."
+        )
 
 
 def _client_for(principal: Principal) -> WorkspaceClient:
@@ -82,15 +84,17 @@ def _client_for(principal: Principal) -> WorkspaceClient:
     credentials = principal.credentials
     if not isinstance(config, DatabricksIdentityConfig):
         raise ValueError(
-            f"Identity {principal.name!r} is a {config.type.value} "
-            f"identity, so it cannot open a Databricks connection.")
+            f'Identity {principal.name!r} is a {config.type.value} '
+            f'identity, so it cannot open a Databricks connection.'
+        )
     if config.authentication is DatabricksAuthenticationKind.AMBIENT:
         return WorkspaceClient()
     if not isinstance(credentials, DatabricksOAuthCredentials):
         raise ValueError(
-            f"Identity {principal.name!r} holds "
-            f"{type(credentials).__name__} credentials; Databricks "
-            f"authenticates a service principal with an OAuth secret.")
+            f'Identity {principal.name!r} holds '
+            f'{type(credentials).__name__} credentials; Databricks '
+            f'authenticates a service principal with an OAuth secret.'
+        )
     # Explicit, so a DATABRICKS_TOKEN set for MLflow cannot leak in.
     return WorkspaceClient(
         host=config.host,
@@ -187,31 +191,35 @@ class _DatabricksSessions:
 
     def _principal(self, connector: SourceConnector) -> Principal:
         return resolve(
-            (getattr(connector, 'identity', None),
-             getattr(connector, 'identity_id', None), self._identity),
+            (
+                getattr(connector, 'identity', None),
+                getattr(connector, 'identity_id', None),
+                self._identity,
+            ),
             connector=connector,
             config_example='DatabricksIdentityConfig(...), credentials=...',
             connector_example='DatabricksConnector(identity=identity, ...)',
-            fallback=(f'A default for sources that name none is also '
-                      f'accepted, as {self._default_hint}.'),
+            fallback=(
+                f'A default for sources that name none is also '
+                f'accepted, as {self._default_hint}.'
+            ),
         )
 
-    def table_location(self, connector: SourceConnector,
-                       table_name: str) -> str:
+    def table_location(self, connector: SourceConnector, table_name: str) -> str:
         return self._qualified(connector, self._bare(connector, table_name))
 
     @staticmethod
-    def _qualified(connector: SourceConnector,
-                   table_name: Optional[str] = None) -> str:
+    def _qualified(connector: SourceConnector, table_name: Optional[str] = None) -> str:
         r"""Borrowed from the connector package rather than restated, because
         backtick escaping is what stands between a catalog-derived name and the
         statement it is interpolated into.
         """
         from kumo_databricks import sql as dbx
+
         config = _target_config(connector)
         parts = (config.catalog, config.schema_name)
         if table_name is not None:
-            parts += (table_name, )
+            parts += (table_name,)
         return dbx.qualified_name(*parts)
 
     @staticmethod
@@ -246,8 +254,10 @@ def _http_path(client: DatabricksSession, connector: SourceConnector) -> str:
         # the day that rule is relaxed: saying so beats formatting `None` into
         # an HTTP path and letting the workspace reject it.
         raise ValueError(
-            f"Connector {connector.id!r} names neither a warehouse nor a "
+            f'Connector {connector.id!r} names neither a warehouse nor a '
             f"cluster to run on. Set exactly one of 'warehouse_id' and "
-            f"'cluster_id'.")
-    return _CLUSTER_PATH.format(workspace=client.get_workspace_id(),
-                                compute=config.cluster_id)
+            f"'cluster_id'."
+        )
+    return _CLUSTER_PATH.format(
+        workspace=client.get_workspace_id(), compute=config.cluster_id
+    )

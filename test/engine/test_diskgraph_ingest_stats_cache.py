@@ -78,18 +78,21 @@ def _install_diskgraph(monkeypatch, edge_stats):
 def _write_ingest_stats(tmp_path):
     path = tmp_path / 'ingest_stats.json'
     path.write_text(
-        json.dumps({
-            'stats': {
-                'source_rows_by_table': {
-                    'users': 10,
-                    'loans': 5,
+        json.dumps(
+            {
+                'stats': {
+                    'source_rows_by_table': {
+                        'users': 10,
+                        'loans': 5,
+                    },
+                    'source_bytes_by_table': {
+                        'users': 1024,
+                        'loans': 512,
+                    },
                 },
-                'source_bytes_by_table': {
-                    'users': 1024,
-                    'loans': 512,
-                },
-            },
-        }))
+            }
+        )
+    )
     return str(path)
 
 
@@ -117,8 +120,7 @@ def test_no_edge_graph_does_not_require_edge_stats(monkeypatch, tmp_path):
 
 def test_edge_graph_still_requires_edge_stats(monkeypatch, tmp_path):
     _install_diskgraph(monkeypatch, edge_stats=None)
-    monkeypatch.setattr(stats_cache, 'get_active_cache',
-                        lambda: _Cache(tmp_path))
+    monkeypatch.setattr(stats_cache, 'get_active_cache', lambda: _Cache(tmp_path))
 
     with pytest.raises(RuntimeError, match='edge_stats.json'):
         stats_cache.copy_ingest_stats_to_backend_cache(
@@ -136,19 +138,19 @@ def test_edge_graph_still_requires_edge_stats(monkeypatch, tmp_path):
     'edge_key',
     [
         'loans__conn__users__conn__user_id__user_id__EDGE_COUNT',
-        'warehouse/loans__conn__warehouse/users__conn__user_id__user_id'
-        '__EDGE_COUNT',
+        'warehouse/loans__conn__warehouse/users__conn__user_id__user_id__EDGE_COUNT',
     ],
 )
 def test_edge_stats_use_source_table_names(monkeypatch, tmp_path, edge_key):
-    edge_stats = json.dumps({
-        edge_key: {
-            'value': 3,
-        },
-    })
+    edge_stats = json.dumps(
+        {
+            edge_key: {
+                'value': 3,
+            },
+        }
+    )
     _install_diskgraph(monkeypatch, edge_stats=edge_stats)
-    monkeypatch.setattr(stats_cache, 'get_active_cache',
-                        lambda: _Cache(tmp_path))
+    monkeypatch.setattr(stats_cache, 'get_active_cache', lambda: _Cache(tmp_path))
 
     stats_cache.copy_ingest_stats_to_backend_cache(
         index_path='/index',
@@ -167,22 +169,25 @@ def test_edge_stats_use_source_table_names(monkeypatch, tmp_path, edge_key):
 
     written = json.loads((tmp_path / 'edge_stats').read_text())
     assert list(written) == [
-        'warehouse/loans__conn__warehouse/users__conn__user_id__user_id'
-        '__EDGE_COUNT',
+        'warehouse/loans__conn__warehouse/users__conn__user_id__user_id__EDGE_COUNT',
     ]
 
 
-def test_num_rows_backfilled_from_diskgraph_node_counts(
-        monkeypatch, tmp_path):
+def test_num_rows_backfilled_from_diskgraph_node_counts(monkeypatch, tmp_path):
     cache = _Cache(tmp_path)
     monkeypatch.setattr(stats_cache, 'get_active_cache', lambda: cache)
     ingest_stats_path = tmp_path / 'ingest_stats.json'
     ingest_stats_path.write_text(
-        json.dumps({'stats': {
-            'node_counts': {
-                'users': 17,
-            },
-        }}))
+        json.dumps(
+            {
+                'stats': {
+                    'node_counts': {
+                        'users': 17,
+                    },
+                }
+            }
+        )
+    )
 
     stats_cache._save_num_rows_from_node_counts(
         str(ingest_stats_path),
@@ -197,26 +202,27 @@ def test_num_rows_backfilled_from_diskgraph_node_counts(
     assert written[TableStatType.NUM_ROWS].data_version == 'tv1'
 
 
-def test_duplicate_counts_returned_without_rewriting_pkey_stats(
-        monkeypatch, tmp_path):
+def test_duplicate_counts_returned_without_rewriting_pkey_stats(monkeypatch, tmp_path):
     def col_stats(num_unique):
-        return json.dumps({
-            'id__ID__COUNT__False': {
-                'value': 100,
-                'approx': False,
-                'data_version': 'tv1',
-            },
-            'id__ID__NUM_UNIQUE__False': {
-                'value': num_unique,
-                'approx': False,
-                'data_version': 'tv1',
-            },
-            'id__ID__UNIQUE_FRACTION__False': {
-                'value': num_unique / 100,
-                'approx': False,
-                'data_version': 'tv1',
-            },
-        })
+        return json.dumps(
+            {
+                'id__ID__COUNT__False': {
+                    'value': 100,
+                    'approx': False,
+                    'data_version': 'tv1',
+                },
+                'id__ID__NUM_UNIQUE__False': {
+                    'value': num_unique,
+                    'approx': False,
+                    'data_version': 'tv1',
+                },
+                'id__ID__UNIQUE_FRACTION__False': {
+                    'value': num_unique / 100,
+                    'approx': False,
+                    'data_version': 'tv1',
+                },
+            }
+        )
 
     diskgraph = types.SimpleNamespace(
         read_col_stats=lambda *_args: col_stats(99),
@@ -254,15 +260,18 @@ def test_duplicate_counts_returned_without_rewriting_pkey_stats(
 
     ingest_stats_path = tmp_path / 'ingest_stats.json'
     ingest_stats_path.write_text(
-        json.dumps({
-            'stats': {
-                'pk_duplicate_counts': {
-                    'users': 1,
-                    'users:shard-00001': 2,
-                    'users:shard-00002': 3,
+        json.dumps(
+            {
+                'stats': {
+                    'pk_duplicate_counts': {
+                        'users': 1,
+                        'users:shard-00001': 2,
+                        'users:shard-00002': 3,
+                    },
                 },
-            },
-        }))
+            }
+        )
+    )
     cache = Cache(tmp_path)
     monkeypatch.setattr(stats_cache, 'get_active_cache', lambda: cache)
 

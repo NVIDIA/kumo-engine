@@ -19,6 +19,7 @@ artifact validator, so we skip the full TT parquet / split.bin / sha256
 plumbing. The autouse ``get_validated_artifact_bundle`` patch remains for the
 separate ``validate_manifest`` path.
 """
+
 from __future__ import annotations
 
 import json
@@ -36,7 +37,8 @@ from kumo.diskgraph._backend import DiskgraphHandle
 from kumo.diskgraph.service import DiskgraphService, MaterializeResult
 
 _PATCH_TARGET = (
-    'kumo.diskgraph.diskgraph_native_tt_artifacts.get_validated_artifact_bundle')
+    'kumo.diskgraph.diskgraph_native_tt_artifacts.get_validated_artifact_bundle'
+)
 
 
 @pytest.fixture(autouse=True)
@@ -45,6 +47,7 @@ def patch_artifact_bundle_validator():
     JSON reader of the manifest path. Orchestration tests don't need
     real TT artifacts on disk; they only need the validator to return
     a manifest-shaped dict for service code to consume."""
+
     def _read(manifest_path: str) -> dict:
         with open(manifest_path) as f:
             return json.load(f)
@@ -61,6 +64,7 @@ def patch_artifact_bundle_validator():
 @dataclass(frozen=True)
 class _MinimalConfig:
     """Stand-in for DiskgraphConfig in tests."""
+
     data_root: str
 
 
@@ -96,26 +100,22 @@ def _make_spec(artifact_root: str, **overrides) -> TaskDatasetMaterializeSpec:
             'node_types': {
                 'USERS': {
                     'feature_columns': ['AGE'],
-                    'mapper_key':
-                    'USERS',
-                    'time_column':
-                    None,
-                    'column_specs': [{
-                        'column_name': 'AGE',
-                        'dtype': 'float',
-                        'stype': 'numerical',
-                        'encoder': {
-                            'name': 'Numerical'
-                        },
-                        'stats': {
-                            'MEAN': 0.0
-                        },
-                    }],
+                    'mapper_key': 'USERS',
+                    'time_column': None,
+                    'column_specs': [
+                        {
+                            'column_name': 'AGE',
+                            'dtype': 'float',
+                            'stype': 'numerical',
+                            'encoder': {'name': 'Numerical'},
+                            'stats': {'MEAN': 0.0},
+                        }
+                    ],
                 },
             },
             'target_encoder_input': None,
         },
-        graph_node_types=('USERS', ),
+        graph_node_types=('USERS',),
         graph_edge_types=(),
     )
     defaults.update(overrides)
@@ -167,16 +167,17 @@ def _setup_tt_manifest(
         stage_counts = {'train': 100, 'val': 20, 'test': 20}
     total = sum(stage_counts.values())
 
-    graph_index_path = os.path.join(str(tmp_path), graph_key,
-                                    graph_data_version)
+    graph_index_path = os.path.join(str(tmp_path), graph_key, graph_data_version)
     tt_extension_path = os.path.join(graph_index_path, 'train_tables', tt_id)
     os.makedirs(tt_extension_path, exist_ok=True)
 
     if task_dataset is None:
         task_dataset = _default_task_dataset(
-            stage_counts, graph_index_path=graph_index_path,
+            stage_counts,
+            graph_index_path=graph_index_path,
             tt_extension_path=tt_extension_path,
-            provided_fields=provided_fields)
+            provided_fields=provided_fields,
+        )
 
     # Gen manifest -- irrelevant to materialize, written only so the path
     # resolves to the bundle dir.
@@ -187,29 +188,24 @@ def _setup_tt_manifest(
     # Durable ingest manifest (the authoritative task_dataset source).
     if not omit_ingest_manifest:
         dg_manifest: dict = {
-            'schema_version':
-            'diskgraph.tt_execute_result.v1',
-            'tt_id':
-            tt_id,
-            'graph_index_path':
-            graph_index_path,
-            'tt_extension_path':
-            tt_extension_path,
-            'diskgraph_manifest_path':
-            os.path.join(tt_extension_path, 'diskgraph_manifest.json'),
+            'schema_version': 'diskgraph.tt_execute_result.v1',
+            'tt_id': tt_id,
+            'graph_index_path': graph_index_path,
+            'tt_extension_path': tt_extension_path,
+            'diskgraph_manifest_path': os.path.join(
+                tt_extension_path, 'diskgraph_manifest.json'
+            ),
         }
         if not omit_task_dataset:
             dg_manifest['task_dataset'] = task_dataset
-        with open(os.path.join(tt_extension_path, 'diskgraph_manifest.json'),
-                  'w') as f:
+        with open(os.path.join(tt_extension_path, 'diskgraph_manifest.json'), 'w') as f:
             json.dump(dg_manifest, f)
 
     # Durable parsed-stats sidecar.
     if not omit_durable_stats:
         _write_durable_stats(manifest_path)
 
-    with open(os.path.join(tt_extension_path, 'train_table_col_stats.json'),
-              'w') as f:
+    with open(os.path.join(tt_extension_path, 'train_table_col_stats.json'), 'w') as f:
         json.dump(
             {
                 'version': 1,
@@ -220,7 +216,9 @@ def _setup_tt_manifest(
                         'value': [[0, 100], [1, 40]],
                     },
                 },
-            }, f)
+            },
+            f,
+        )
 
     return manifest_path
 
@@ -268,8 +266,9 @@ def test_materialize_returns_result_with_manifest(tmp_path) -> None:
     service = _make_service(str(tmp_path))
     handle = _make_handle()
     tt_manifest_path = _setup_tt_manifest(tmp_path)
-    spec = _make_spec(os.path.join(str(tmp_path), 'bundle'),
-                      tt_manifest_path=tt_manifest_path)
+    spec = _make_spec(
+        os.path.join(str(tmp_path), 'bundle'), tt_manifest_path=tt_manifest_path
+    )
 
     result = service.materialize_task_dataset(handle, spec)
 
@@ -283,8 +282,9 @@ def test_materialize_writes_all_expected_files(tmp_path) -> None:
     """The manifest dir contains 7 sidecar files plus the flat runtime manifest."""
     service = _make_service(str(tmp_path))
     tt_manifest_path = _setup_tt_manifest(tmp_path)
-    spec = _make_spec(os.path.join(str(tmp_path), 'bundle'),
-                      tt_manifest_path=tt_manifest_path)
+    spec = _make_spec(
+        os.path.join(str(tmp_path), 'bundle'), tt_manifest_path=tt_manifest_path
+    )
 
     result = service.materialize_task_dataset(_make_handle(), spec)
 
@@ -302,7 +302,8 @@ def test_materialize_writes_all_expected_files(tmp_path) -> None:
     actual = set(os.listdir(result.bundle_dir))
     assert expected == actual
     assert result.runtime_manifest_path == os.path.join(
-        result.bundle_dir, 'runtime_manifest.json')
+        result.bundle_dir, 'runtime_manifest.json'
+    )
 
 
 def _write_durable_stats(manifest_path: str, **overrides) -> dict:
@@ -310,18 +311,12 @@ def _write_durable_stats(manifest_path: str, **overrides) -> dict:
     manifest, mirroring what ``execute_tt_ingest`` publishes into the
     extension (``copy_tt_artifacts_to_extension``)."""
     payload = {
-        'version':
-        2,
-        'kind':
-        'tt_stats',
-        'num_total_rows':
-        140,
-        'num_train_rows':
-        100,
-        'num_entities':
-        50,
-        'num_targets':
-        7,
+        'version': 2,
+        'kind': 'tt_stats',
+        'num_total_rows': 140,
+        'num_train_rows': 100,
+        'num_entities': 50,
+        'num_targets': 7,
     }
     payload.update(overrides)
     stats_path = os.path.join(os.path.dirname(manifest_path), 'stats.json')
@@ -330,8 +325,7 @@ def _write_durable_stats(manifest_path: str, **overrides) -> dict:
     return payload
 
 
-def test_materialize_parsed_stats_from_durable_sidecar_not_gen(
-        tmp_path) -> None:
+def test_materialize_parsed_stats_from_durable_sidecar_not_gen(tmp_path) -> None:
     """CONTRACT: ``parsed_stats`` comes from the durable ``stats.json``
     sidecar that ``execute_tt_ingest`` publishes into the extension. The gen
     ``manifest.json`` is never validated -- point ``spec.tt_manifest_path`` at
@@ -344,8 +338,9 @@ def test_materialize_parsed_stats_from_durable_sidecar_not_gen(
     with open(tt_manifest_path, 'w') as f:
         f.write('this is not json :: gen manifest must never be parsed here')
     durable = _write_durable_stats(tt_manifest_path)
-    spec = _make_spec(os.path.join(str(tmp_path), 'bundle'),
-                      tt_manifest_path=tt_manifest_path)
+    spec = _make_spec(
+        os.path.join(str(tmp_path), 'bundle'), tt_manifest_path=tt_manifest_path
+    )
 
     result = service.materialize_task_dataset(_make_handle(), spec)
 
@@ -361,19 +356,19 @@ def test_materialize_derives_graph_index_id_and_path(tmp_path) -> None:
     fields here so a rename breaks fast at this layer."""
     service = _make_service(str(tmp_path))
     handle = _make_handle(graph_key='my_graph', graph_data_version='v42')
-    tt_manifest_path = _setup_tt_manifest(tmp_path, graph_key='my_graph',
-                                          graph_data_version='v42')
-    spec = _make_spec(os.path.join(str(tmp_path), 'bundle'),
-                      tt_manifest_path=tt_manifest_path)
+    tt_manifest_path = _setup_tt_manifest(
+        tmp_path, graph_key='my_graph', graph_data_version='v42'
+    )
+    spec = _make_spec(
+        os.path.join(str(tmp_path), 'bundle'), tt_manifest_path=tt_manifest_path
+    )
 
     result = service.materialize_task_dataset(handle, spec)
 
-    with open(os.path.join(result.bundle_dir,
-                           'graph_runtime_metadata.json')) as f:
+    with open(os.path.join(result.bundle_dir, 'graph_runtime_metadata.json')) as f:
         grm = json.load(f)
     assert grm['graph_index_id'] == 'my_graph/v42'
-    assert grm['graph_index_path'] == os.path.join(str(tmp_path), 'my_graph',
-                                                   'v42')
+    assert grm['graph_index_path'] == os.path.join(str(tmp_path), 'my_graph', 'v42')
 
 
 def test_materialize_derives_stage_counts(tmp_path) -> None:
@@ -383,8 +378,9 @@ def test_materialize_derives_stage_counts(tmp_path) -> None:
     service = _make_service(str(tmp_path))
     counts = {'train': 500, 'val': 100, 'test': 100}
     tt_manifest_path = _setup_tt_manifest(tmp_path, stage_counts=counts)
-    spec = _make_spec(os.path.join(str(tmp_path), 'bundle'),
-                      tt_manifest_path=tt_manifest_path)
+    spec = _make_spec(
+        os.path.join(str(tmp_path), 'bundle'), tt_manifest_path=tt_manifest_path
+    )
 
     result = service.materialize_task_dataset(_make_handle(), spec)
 
@@ -416,14 +412,13 @@ def test_materialize_stage_table_refs_from_task_dataset(tmp_path) -> None:
     assert set(refs.keys()) == {'train', 'val', 'test'}
     for stage, ref in refs.items():
         assert ref['table_name'] == f'{stage}_seeds'
-        assert ref['index_path'] == os.path.join(str(tmp_path), 'test_graph',
-                                                 'v1', 'train_tables',
-                                                 'tt-test')
+        assert ref['index_path'] == os.path.join(
+            str(tmp_path), 'test_graph', 'v1', 'train_tables', 'tt-test'
+        )
         assert ref['storage_kind'] == 'diskgraph_table'
 
 
-def test_materialize_runtime_manifest_points_at_wheel_stage_tables(
-        tmp_path) -> None:
+def test_materialize_runtime_manifest_points_at_wheel_stage_tables(tmp_path) -> None:
     """The flat ``runtime_manifest.json`` (consumed by the wheel iterator)
     must point each stage at the wheel-produced ``tt_extension_path`` +
     ``table_name``. This was the bug that motivated de-placeholdering:
@@ -431,8 +426,9 @@ def test_materialize_runtime_manifest_points_at_wheel_stage_tables(
     index_path, which the wheel couldn't open."""
     service = _make_service(str(tmp_path))
     tt_manifest_path = _setup_tt_manifest(tmp_path)
-    spec = _make_spec(os.path.join(str(tmp_path), 'bundle'),
-                      tt_manifest_path=tt_manifest_path)
+    spec = _make_spec(
+        os.path.join(str(tmp_path), 'bundle'), tt_manifest_path=tt_manifest_path
+    )
 
     result = service.materialize_task_dataset(_make_handle(), spec)
 
@@ -442,13 +438,12 @@ def test_materialize_runtime_manifest_points_at_wheel_stage_tables(
     assert set(stages.keys()) == {'train', 'val', 'test'}
     for stage, entry in stages.items():
         assert entry['table_name'] == f'{stage}_seeds'
-        assert entry['index_path'] == os.path.join(str(tmp_path), 'test_graph',
-                                                   'v1', 'train_tables',
-                                                   'tt-test')
+        assert entry['index_path'] == os.path.join(
+            str(tmp_path), 'test_graph', 'v1', 'train_tables', 'tt-test'
+        )
 
 
-def test_materialize_reads_authoritative_ingest_manifest_not_gen(
-        tmp_path) -> None:
+def test_materialize_reads_authoritative_ingest_manifest_not_gen(tmp_path) -> None:
     """INVARIANT: post-ingest, the durable ``diskgraph_manifest.json``
     (written by ``execute_tt_ingest``) is the SOLE task_dataset authority.
     The gen ``manifest.json`` is never read at materialize -- even when it
@@ -465,31 +460,33 @@ def test_materialize_reads_authoritative_ingest_manifest_not_gen(
     # Durable ingest manifest (authoritative) with the REAL task_dataset.
     ingest_counts = {'train': 100, 'val': 20, 'test': 20}
     graph_index_path = os.path.join(str(tmp_path), 'test_graph', 'v1')
-    ingest_extension_path = os.path.join(graph_index_path, 'train_tables',
-                                         'tt-test')
-    ingest_td = _default_task_dataset(ingest_counts,
-                                      graph_index_path=graph_index_path,
-                                      tt_extension_path=ingest_extension_path)
+    ingest_extension_path = os.path.join(graph_index_path, 'train_tables', 'tt-test')
+    ingest_td = _default_task_dataset(
+        ingest_counts,
+        graph_index_path=graph_index_path,
+        tt_extension_path=ingest_extension_path,
+    )
     for stage in ingest_td['stages']:
         ingest_td['stages'][stage]['table_name'] = f'INGEST_{stage}'
-    gen_manifest_path = _setup_tt_manifest(tmp_path, stage_counts=ingest_counts,
-                                           task_dataset=ingest_td)
+    gen_manifest_path = _setup_tt_manifest(
+        tmp_path, stage_counts=ingest_counts, task_dataset=ingest_td
+    )
 
     # Gen manifest (transient) WITH a disagreeing task_dataset block -- must
     # never be read, so it being inconsistent (or garbage) cannot affect us.
-    gen_td = _default_task_dataset({
-        'train': 1,
-        'val': 1,
-        'test': 1
-    }, graph_index_path=graph_index_path,
-                                   tt_extension_path=ingest_extension_path)
+    gen_td = _default_task_dataset(
+        {'train': 1, 'val': 1, 'test': 1},
+        graph_index_path=graph_index_path,
+        tt_extension_path=ingest_extension_path,
+    )
     for stage in gen_td['stages']:
         gen_td['stages'][stage]['table_name'] = f'GEN_{stage}'
     with open(gen_manifest_path, 'w') as f:
         json.dump({'version': 1, 'task_dataset': gen_td}, f)
 
-    spec = _make_spec(os.path.join(str(tmp_path), 'bundle'),
-                      tt_manifest_path=gen_manifest_path)
+    spec = _make_spec(
+        os.path.join(str(tmp_path), 'bundle'), tt_manifest_path=gen_manifest_path
+    )
     result = service.materialize_task_dataset(_make_handle(), spec)
 
     with open(result.runtime_manifest_path) as f:
@@ -497,7 +494,8 @@ def test_materialize_reads_authoritative_ingest_manifest_not_gen(
     for stage, entry in rm['stages'].items():
         assert entry['table_name'] == f'INGEST_{stage}', (
             'service consumed the transient gen manifest instead of the '
-            'authoritative diskgraph_manifest.json')
+            'authoritative diskgraph_manifest.json'
+        )
         assert entry['index_path'] == ingest_extension_path
 
     with open(os.path.join(result.bundle_dir, 'split_info.json')) as f:
@@ -509,16 +507,18 @@ def test_materialize_rejects_ingest_manifest_for_other_graph(tmp_path) -> None:
     """A published extension is immutable for one resolved snapshot only."""
     service = _make_service(str(tmp_path))
     tt_manifest_path = _setup_tt_manifest(tmp_path)
-    dg_manifest_path = os.path.join(os.path.dirname(tt_manifest_path),
-                                    'diskgraph_manifest.json')
+    dg_manifest_path = os.path.join(
+        os.path.dirname(tt_manifest_path), 'diskgraph_manifest.json'
+    )
     with open(dg_manifest_path) as f:
         dg_manifest = json.load(f)
     dg_manifest['graph_index_path'] = os.path.join(str(tmp_path), 'other', 'v2')
     with open(dg_manifest_path, 'w') as f:
         json.dump(dg_manifest, f)
 
-    spec = _make_spec(os.path.join(str(tmp_path), 'bundle'),
-                      tt_manifest_path=tt_manifest_path)
+    spec = _make_spec(
+        os.path.join(str(tmp_path), 'bundle'), tt_manifest_path=tt_manifest_path
+    )
     with pytest.raises(RuntimeError, match='graph_index_path'):
         service.materialize_task_dataset(_make_handle(), spec)
 
@@ -527,18 +527,20 @@ def test_materialize_rejects_stage_from_other_extension(tmp_path) -> None:
     """Each stage must be under the same published extension as the manifest."""
     service = _make_service(str(tmp_path))
     tt_manifest_path = _setup_tt_manifest(tmp_path)
-    dg_manifest_path = os.path.join(os.path.dirname(tt_manifest_path),
-                                    'diskgraph_manifest.json')
+    dg_manifest_path = os.path.join(
+        os.path.dirname(tt_manifest_path), 'diskgraph_manifest.json'
+    )
     with open(dg_manifest_path) as f:
         dg_manifest = json.load(f)
-    dg_manifest['task_dataset']['stages']['train']['index_path'] = (
-        os.path.join(str(tmp_path), 'test_graph', 'v1', 'train_tables',
-                     'wrong-extension'))
+    dg_manifest['task_dataset']['stages']['train']['index_path'] = os.path.join(
+        str(tmp_path), 'test_graph', 'v1', 'train_tables', 'wrong-extension'
+    )
     with open(dg_manifest_path, 'w') as f:
         json.dump(dg_manifest, f)
 
-    spec = _make_spec(os.path.join(str(tmp_path), 'bundle'),
-                      tt_manifest_path=tt_manifest_path)
+    spec = _make_spec(
+        os.path.join(str(tmp_path), 'bundle'), tt_manifest_path=tt_manifest_path
+    )
     with pytest.raises(RuntimeError, match='index_path'):
         service.materialize_task_dataset(_make_handle(), spec)
 
@@ -548,16 +550,13 @@ def _predict_ingest_result(tmp_path, *, row_count: int) -> dict:
     tt_id = 'pred_job-abc-123'
     tt_extension_path = os.path.join(graph_index_path, 'train_tables', tt_id)
     return {
-        'schema_version':
-        'diskgraph.tt_execute_result.v1',
-        'tt_id':
-        tt_id,
-        'graph_index_path':
-        graph_index_path,
-        'tt_extension_path':
-        tt_extension_path,
-        'diskgraph_manifest_path':
-        os.path.join(tt_extension_path, 'diskgraph_manifest.json'),
+        'schema_version': 'diskgraph.tt_execute_result.v1',
+        'tt_id': tt_id,
+        'graph_index_path': graph_index_path,
+        'tt_extension_path': tt_extension_path,
+        'diskgraph_manifest_path': os.path.join(
+            tt_extension_path, 'diskgraph_manifest.json'
+        ),
         'task_dataset': {
             'schema_version': 'diskgraph.task_dataset.v1',
             'graph_index_path': graph_index_path,
@@ -574,15 +573,19 @@ def _predict_ingest_result(tmp_path, *, row_count: int) -> dict:
 
 
 def test_materialize_prediction_staging_dir_ingest_only_no_second_gen(
-        tmp_path, monkeypatch) -> None:
+    tmp_path, monkeypatch
+) -> None:
     """One-gen predict (LP): with ``predict_staging_dir`` set, materialize ONLY
     runs ``execute_tt_ingest`` on the KEPT staging dir produced by the generator
     activity — it must NOT call ``execute_tt_gen`` again. The bundle's predict
     stage points at the wheel-returned ``tt_extension_path``."""
     service = _make_service(str(tmp_path))
-    spec = _make_spec(os.path.join(str(tmp_path),
-                                   'bundle'), task_family='link_prediction',
-                      task_type='static_link_prediction', rhs_node_type='ITEMS')
+    spec = _make_spec(
+        os.path.join(str(tmp_path), 'bundle'),
+        task_family='link_prediction',
+        task_type='static_link_prediction',
+        rhs_node_type='ITEMS',
+    )
 
     staging_dir = '/dg_index/train_tables/.pred_job-abc-123.staging'
     calls = {}
@@ -591,18 +594,23 @@ def test_materialize_prediction_staging_dir_ingest_only_no_second_gen(
         # Must NOT be reached on the ingest-only (one-gen) path.
         calls['gen'] = (plan_json, index_path, tt_id)
         raise AssertionError(
-            'execute_tt_gen must not run in materialize on the one-gen path')
+            'execute_tt_gen must not run in materialize on the one-gen path'
+        )
 
     def _fake_ingest(*, staging_dir, index_path, tt_id, predict_stage_name):
-        calls['ingest'] = dict(staging_dir=staging_dir, index_path=index_path,
-                               tt_id=tt_id,
-                               predict_stage_name=predict_stage_name)
+        calls['ingest'] = dict(
+            staging_dir=staging_dir,
+            index_path=index_path,
+            tt_id=tt_id,
+            predict_stage_name=predict_stage_name,
+        )
         return _predict_ingest_result(tmp_path, row_count=7)
 
     monkeypatch.setitem(
-        sys.modules, 'diskgraph',
-        SimpleNamespace(execute_tt_gen=_fake_gen,
-                        execute_tt_ingest=_fake_ingest))
+        sys.modules,
+        'diskgraph',
+        SimpleNamespace(execute_tt_gen=_fake_gen, execute_tt_ingest=_fake_ingest),
+    )
 
     result = service.materialize_prediction_task_dataset(
         _make_handle(),
@@ -622,7 +630,8 @@ def test_materialize_prediction_staging_dir_ingest_only_no_second_gen(
     with open(result.runtime_manifest_path) as f:
         rm = json.load(f)
     assert rm['stages']['predict']['index_path'] == os.path.join(
-        str(tmp_path), 'test_graph', 'v1', 'train_tables', 'pred_job-abc-123')
+        str(tmp_path), 'test_graph', 'v1', 'train_tables', 'pred_job-abc-123'
+    )
     assert rm['stages']['predict']['table_name'] == 'predict_seeds'
     with open(result.manifest_path) as f:
         manifest = json.load(f)
@@ -634,28 +643,31 @@ def test_materialize_prediction_staging_dir_ingest_only_no_second_gen(
     bundle_dir = os.path.dirname(result.manifest_path)
     with open(os.path.join(bundle_dir, 'split_info.json')) as f:
         split_info = json.load(f)
-    assert split_info['stage_seed_times']['predict'] == [
-        9_000_000_000, 9_000_000_000
-    ]
+    assert split_info['stage_seed_times']['predict'] == [9_000_000_000, 9_000_000_000]
 
 
 def test_materialize_prediction_no_anchor_omits_seed_times(
-        tmp_path, monkeypatch) -> None:
+    tmp_path, monkeypatch
+) -> None:
     """Without ``predict_seed_time_ns`` (node prediction / non-LP) the bundle
     carries no predict seed-time range — byte-identical to before the fix."""
     service = _make_service(str(tmp_path))
-    spec = _make_spec(os.path.join(str(tmp_path), 'bundle'),
-                      task_family='node_prediction')
+    spec = _make_spec(
+        os.path.join(str(tmp_path), 'bundle'), task_family='node_prediction'
+    )
 
     def _fake_ingest(*, staging_dir, index_path, tt_id, predict_stage_name):
         return _predict_ingest_result(tmp_path, row_count=3)
 
-    monkeypatch.setitem(sys.modules, 'diskgraph',
-                        SimpleNamespace(execute_tt_ingest=_fake_ingest))
+    monkeypatch.setitem(
+        sys.modules, 'diskgraph', SimpleNamespace(execute_tt_ingest=_fake_ingest)
+    )
 
     result = service.materialize_prediction_task_dataset(
-        _make_handle(), spec,
-        predict_staging_dir='/dg_index/train_tables/.pred_job-abc-123.staging')
+        _make_handle(),
+        spec,
+        predict_staging_dir='/dg_index/train_tables/.pred_job-abc-123.staging',
+    )
 
     bundle_dir = os.path.dirname(result.manifest_path)
     with open(os.path.join(bundle_dir, 'split_info.json')) as f:
@@ -664,18 +676,23 @@ def test_materialize_prediction_no_anchor_omits_seed_times(
 
 
 def test_materialize_prediction_rejects_ingest_for_other_graph(
-        tmp_path, monkeypatch) -> None:
+    tmp_path, monkeypatch
+) -> None:
     """Prediction must reject an ingest result bound to another snapshot."""
     service = _make_service(str(tmp_path))
-    spec = _make_spec(os.path.join(str(tmp_path),
-                                   'bundle'), task_family='link_prediction',
-                      task_type='static_link_prediction')
+    spec = _make_spec(
+        os.path.join(str(tmp_path), 'bundle'),
+        task_family='link_prediction',
+        task_type='static_link_prediction',
+    )
     bad_result = _predict_ingest_result(tmp_path, row_count=3)
     bad_result['graph_index_path'] = os.path.join(str(tmp_path), 'other', 'v2')
 
     monkeypatch.setitem(
-        sys.modules, 'diskgraph',
-        SimpleNamespace(execute_tt_ingest=lambda **_: bad_result))
+        sys.modules,
+        'diskgraph',
+        SimpleNamespace(execute_tt_ingest=lambda **_: bad_result),
+    )
 
     with pytest.raises(RuntimeError, match='graph_index_path'):
         service.materialize_prediction_task_dataset(
@@ -691,8 +708,9 @@ def test_materialize_raises_when_task_dataset_missing(tmp_path) -> None:
     would produce a runtime manifest pointing at non-existent stage tables."""
     service = _make_service(str(tmp_path))
     tt_manifest_path = _setup_tt_manifest(tmp_path, omit_task_dataset=True)
-    spec = _make_spec(os.path.join(str(tmp_path), 'bundle'),
-                      tt_manifest_path=tt_manifest_path)
+    spec = _make_spec(
+        os.path.join(str(tmp_path), 'bundle'), tt_manifest_path=tt_manifest_path
+    )
 
     with pytest.raises(RuntimeError, match='missing ``task_dataset``'):
         service.materialize_task_dataset(_make_handle(), spec)
@@ -704,8 +722,9 @@ def test_materialize_raises_when_ingest_manifest_missing(tmp_path) -> None:
     back to the gen scratch (removed contract)."""
     service = _make_service(str(tmp_path))
     tt_manifest_path = _setup_tt_manifest(tmp_path, omit_ingest_manifest=True)
-    spec = _make_spec(os.path.join(str(tmp_path), 'bundle'),
-                      tt_manifest_path=tt_manifest_path)
+    spec = _make_spec(
+        os.path.join(str(tmp_path), 'bundle'), tt_manifest_path=tt_manifest_path
+    )
 
     with pytest.raises(RuntimeError, match='ingest manifest missing'):
         service.materialize_task_dataset(_make_handle(), spec)
@@ -717,8 +736,9 @@ def test_materialize_raises_when_durable_stats_missing(tmp_path) -> None:
     error -- the old gen-bundle fallback for parsed_stats is removed."""
     service = _make_service(str(tmp_path))
     tt_manifest_path = _setup_tt_manifest(tmp_path, omit_durable_stats=True)
-    spec = _make_spec(os.path.join(str(tmp_path), 'bundle'),
-                      tt_manifest_path=tt_manifest_path)
+    spec = _make_spec(
+        os.path.join(str(tmp_path), 'bundle'), tt_manifest_path=tt_manifest_path
+    )
 
     with pytest.raises(RuntimeError, match='ingest stats sidecar missing'):
         service.materialize_task_dataset(_make_handle(), spec)
@@ -731,8 +751,9 @@ def test_materialize_writes_bundle_stats_sidecar(tmp_path) -> None:
     service = _make_service(str(tmp_path))
     tt_manifest_path = _setup_tt_manifest(tmp_path)
     parsed_stats = _write_durable_stats(tt_manifest_path, num_targets=2)
-    spec = _make_spec(os.path.join(str(tmp_path), 'bundle'),
-                      tt_manifest_path=tt_manifest_path)
+    spec = _make_spec(
+        os.path.join(str(tmp_path), 'bundle'), tt_manifest_path=tt_manifest_path
+    )
 
     result = service.materialize_task_dataset(_make_handle(), spec)
 
@@ -747,8 +768,9 @@ def test_materialize_has_time_false_by_default(tmp_path) -> None:
     task_dataset.columns (timestamp/weight non-null iff present)."""
     service = _make_service(str(tmp_path))
     tt_manifest_path = _setup_tt_manifest(tmp_path)
-    spec = _make_spec(os.path.join(str(tmp_path), 'bundle'),
-                      tt_manifest_path=tt_manifest_path)
+    spec = _make_spec(
+        os.path.join(str(tmp_path), 'bundle'), tt_manifest_path=tt_manifest_path
+    )
 
     result = service.materialize_task_dataset(_make_handle(), spec)
 
@@ -765,8 +787,7 @@ def test_materialize_has_time_from_task_dataset_columns(tmp_path) -> None:
     has_time / has_weight are True. ``provided_fields`` is a legacy alias
     on the fixture that maps to these column names."""
     service = _make_service(str(tmp_path))
-    tt_manifest_path = _setup_tt_manifest(tmp_path,
-                                          provided_fields=['time', 'weight'])
+    tt_manifest_path = _setup_tt_manifest(tmp_path, provided_fields=['time', 'weight'])
     spec = _make_spec(
         os.path.join(str(tmp_path), 'bundle'),
         is_temporal=True,
@@ -787,8 +808,9 @@ def test_materialize_idempotent(tmp_path) -> None:
     """Running materialize twice on the same artifact_root succeeds."""
     service = _make_service(str(tmp_path))
     tt_manifest_path = _setup_tt_manifest(tmp_path)
-    spec = _make_spec(os.path.join(str(tmp_path), 'bundle'),
-                      tt_manifest_path=tt_manifest_path)
+    spec = _make_spec(
+        os.path.join(str(tmp_path), 'bundle'), tt_manifest_path=tt_manifest_path
+    )
 
     result1 = service.materialize_task_dataset(_make_handle(), spec)
     result2 = service.materialize_task_dataset(_make_handle(), spec)
@@ -831,12 +853,12 @@ def test_hosted_target_matches_portable(tmp_path) -> None:
                 'kind': 'tt_train_table_col_stats',
                 'stats_format': 'kumo_col_stats_v1',
                 'stats': {
-                    f'TARGET1__kumo.numerical__{name}__False': {
-                        'value': value
-                    }
+                    f'TARGET1__kumo.numerical__{name}__False': {'value': value}
                     for name, value in stats.items()
                 },
-            }, f)
+            },
+            f,
+        )
     node_types = {
         'USERS': {
             'feature_columns': [],
@@ -852,34 +874,38 @@ def test_hosted_target_matches_portable(tmp_path) -> None:
         },
     }
     # As hosted serializes it: only the default encoder's stats.
-    encoder_config = TypeAdapter(EncoderType).dump_python(
-        Numerical(), mode='json')
+    encoder_config = TypeAdapter(EncoderType).dump_python(Numerical(), mode='json')
     encoder_config.pop('_stats', None)
     hosted_spec = _make_spec(
-        os.path.join(str(tmp_path),
-                     'hosted'), tt_manifest_path=tt_manifest_path,
-        task_family='forecasting', task_type='forecasting', feature_schema={
+        os.path.join(str(tmp_path), 'hosted'),
+        tt_manifest_path=tt_manifest_path,
+        task_family='forecasting',
+        task_type='forecasting',
+        feature_schema={
             'node_types': node_types,
             'target_encoder_input': {
                 'column_name': 'TARGET',
                 'dtype': 'float',
                 'stype': 'numerical',
                 'encoder': encoder_config,
-                'stats': {
-                    'MEAN': 4.2
-                },
+                'stats': {'MEAN': 4.2},
             },
-        })
+        },
+    )
     portable_spec = _make_spec(
-        os.path.join(str(tmp_path),
-                     'portable'), tt_manifest_path=tt_manifest_path,
-        task_family='forecasting', task_type='forecasting', feature_schema={
+        os.path.join(str(tmp_path), 'portable'),
+        tt_manifest_path=tt_manifest_path,
+        task_family='forecasting',
+        task_type='forecasting',
+        feature_schema={
             'node_types': node_types,
             'target_encoder_input': None,
-        })
+        },
+    )
 
     hosted = _make_service(str(tmp_path)).materialize_task_dataset(
-        _make_handle(), hosted_spec)
+        _make_handle(), hosted_spec
+    )
     portable = materialize_task_dataset(
         graph_index_id='test_graph/v1',
         graph_index_path=os.path.join(str(tmp_path), 'test_graph', 'v1'),
@@ -888,11 +914,13 @@ def test_hosted_target_matches_portable(tmp_path) -> None:
 
     hosted_manifest = DiskgraphTaskManifest.load(hosted.manifest_path)
     portable_manifest = DiskgraphTaskManifest.load(portable.manifest_path)
-    assert (hosted_manifest.feature_schema['target_encoder_input'] ==
-            portable_manifest.feature_schema['target_encoder_input'])
+    assert (
+        hosted_manifest.feature_schema['target_encoder_input']
+        == portable_manifest.feature_schema['target_encoder_input']
+    )
     task = ResolvedNumericalTask.from_manifest(hosted_manifest, name='forecast')
     encoders = collect_resolved_encoders(task)
     apply_encoder_overrides(
-        task, encoders,
-        {'train_table.TARGET': MaxLogNumerical(na_strategy='mean')})
+        task, encoders, {'train_table.TARGET': MaxLogNumerical(na_strategy='mean')}
+    )
     assert encoders.target.encoder._stats[ColStatType.MIN] == 3.0

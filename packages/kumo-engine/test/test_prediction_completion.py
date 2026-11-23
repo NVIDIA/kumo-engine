@@ -35,76 +35,94 @@ def prepared_prediction(snapshot, tmp_path, monkeypatch):
 
     trainer = Trainer(ModelPlan())
     trainer._training_result = SimpleNamespace(
-        artifact_paths={}, manifest=None, scoring_defaults=ScoringDefaults())
+        artifact_paths={}, manifest=None, scoring_defaults=ScoringDefaults()
+    )
     trainer._snapshot_id = snapshot.id
     trainer._training_query = 'PREDICT users.label FOR EACH users.id'
-    table = PredictionTable(trainer._training_query, tmp_path, tmp_path, 8,
-                            'tt-1', (123, ), ())
+    table = PredictionTable(
+        trainer._training_query, tmp_path, tmp_path, 8, 'tt-1', (123,), ()
+    )
     monkeypatch.setattr(
         'kumo.engine.trainer.trainer.build_generated_training_task_dataset',
-        lambda **_: _TaskDataset())
-    monkeypatch.setattr(type(trainer), 'scratch_dir',
-                        property(lambda _: tmp_path))
-    monkeypatch.setattr('kumo.engine.trainer.trainer._stage_model_bundle',
-                        lambda *a: tmp_path)
-    monkeypatch.setattr('kumo.engine.trainer.trainer.bundle_task_options',
-                        lambda *a: {'lag_timesteps': 0})
+        lambda **_: _TaskDataset(),
+    )
+    monkeypatch.setattr(type(trainer), 'scratch_dir', property(lambda _: tmp_path))
+    monkeypatch.setattr(
+        'kumo.engine.trainer.trainer._stage_model_bundle', lambda *a: tmp_path
+    )
+    monkeypatch.setattr(
+        'kumo.engine.trainer.trainer.bundle_task_options',
+        lambda *a: {'lag_timesteps': 0},
+    )
     (tmp_path / 'config.json').write_text('{}')
     monkeypatch.setattr(
         prediction,
-        'materialize_prediction_task', lambda *a, **kw: SimpleNamespace(
-            manifest_path='task', bundle_dir='bundle'))
+        'materialize_prediction_task',
+        lambda *a, **kw: SimpleNamespace(manifest_path='task', bundle_dir='bundle'),
+    )
     monkeypatch.setattr(
-        DiskgraphTaskManifest, 'load', lambda *_: SimpleNamespace(
-            task_type='binary_classification', stage_counts={'predict': 8}))
-    monkeypatch.setattr(ResolvedNumericalTask, 'from_manifest',
-                        lambda *a, **kw: None)
-    monkeypatch.setattr('kumo_core.train.diskgraph_nested_trainer.load_encoders',
-                        lambda *_: None)
-    monkeypatch.setattr(prediction, '_prediction_worker_devices', lambda n, accelerator=None:
-                        (None, ) * n)
+        DiskgraphTaskManifest,
+        'load',
+        lambda *_: SimpleNamespace(
+            task_type='binary_classification', stage_counts={'predict': 8}
+        ),
+    )
+    monkeypatch.setattr(ResolvedNumericalTask, 'from_manifest', lambda *a, **kw: None)
+    monkeypatch.setattr(
+        'kumo_core.train.diskgraph_nested_trainer.load_encoders', lambda *_: None
+    )
+    monkeypatch.setattr(
+        prediction,
+        '_prediction_worker_devices',
+        lambda n, accelerator=None: (None,) * n,
+    )
     # Real process startup/error propagation is covered by test_prediction_workers;
     # run the same worker functions here so the real writers/manifests compose.
     monkeypatch.setattr(
-        prediction, '_run_prediction_workers',
-        lambda n, fn, kw: [fn(worker_id=i, **kw) for i in range(n)])
+        prediction,
+        '_run_prediction_workers',
+        lambda n, fn, kw: [fn(worker_id=i, **kw) for i in range(n)],
+    )
     loads = []
 
     def load(task, *args, **kwargs):
         loads.append(kwargs)
-        loss = BinaryCrossEntropyLoss(TaskType.BINARY_CLASSIFICATION,
-                                      threshold=kwargs['binary_threshold'])
+        loss = BinaryCrossEntropyLoss(
+            TaskType.BINARY_CLASSIFICATION, threshold=kwargs['binary_threshold']
+        )
 
         def predict(**options):
             worker = options['partition_id']
             total = options['total_partitions']
             ids = list(range(worker, 8, total))
-            probs = torch.tensor([[.25], [.5], [.75], [float('nan')]] * 2)[ids]
-            frame = pd.DataFrame({
-                'ENTITY':
-                ids,
-                'True_PROB':
-                probs[:, 0].numpy(),
-                'TARGET_PRED':
-                loss.to_prediction(probs.logit()).numpy()
-            })
+            probs = torch.tensor([[0.25], [0.5], [0.75], [float('nan')]] * 2)[ids]
+            frame = pd.DataFrame(
+                {
+                    'ENTITY': ids,
+                    'True_PROB': probs[:, 0].numpy(),
+                    'TARGET_PRED': loss.to_prediction(probs.logit()).numpy(),
+                }
+            )
             frames = {}
             if options['return_predictions']:
                 frames[PredictionArtifactType.PREDICTIONS] = frame
             if options['return_embeddings']:
-                frames[PredictionArtifactType.EMBEDDINGS] = pd.DataFrame({
-                    'ENTITY':
-                    ids,
-                    'EMBEDDING': [[float(i), 1.0] for i in ids]
-                })
+                frames[PredictionArtifactType.EMBEDDINGS] = pd.DataFrame(
+                    {'ENTITY': ids, 'EMBEDDING': [[float(i), 1.0] for i in ids]}
+                )
             stats = {}
             for kind, output_frame in frames.items():
                 writer = StreamingFrameWriter(
                     str(
-                        Path(options['output_dir']) / kind.output_file_name /
-                        f'part-{worker:05d}'), max_file_size=1 << 20,
-                    max_buffer_size=1 << 20, index=False,
-                    stats_sample_rows=1000)
+                        Path(options['output_dir'])
+                        / kind.output_file_name
+                        / f'part-{worker:05d}'
+                    ),
+                    max_file_size=1 << 20,
+                    max_buffer_size=1 << 20,
+                    index=False,
+                    stats_sample_rows=1000,
+                )
                 with writer:
                     writer.write(output_frame)
                 stats[kind] = writer.stats
@@ -118,15 +136,18 @@ def prepared_prediction(snapshot, tmp_path, monkeypatch):
 
 @pytest.mark.parametrize('workers', [1, 2])
 def test_public_completion_uses_selected_files_without_collecting(
-        prepared_prediction, monkeypatch, workers):
+    prepared_prediction, monkeypatch, workers
+):
     trainer, table, loads, snapshot = prepared_prediction
     with monkeypatch.context() as guarded:
-        guarded.setattr(pd, 'read_parquet',
-                        lambda *a, **kw: pytest.fail('eager read'))
-        guarded.setattr(pd, 'concat',
-                        lambda *a, **kw: pytest.fail('eager concat'))
-        result = trainer.predict(table, snapshot=snapshot, num_workers=workers,
-                                 binary_classification_threshold=.5)
+        guarded.setattr(pd, 'read_parquet', lambda *a, **kw: pytest.fail('eager read'))
+        guarded.setattr(pd, 'concat', lambda *a, **kw: pytest.fail('eager concat'))
+        result = trainer.predict(
+            table,
+            snapshot=snapshot,
+            num_workers=workers,
+            binary_classification_threshold=0.5,
+        )
         assert result.num_rows == 8
         assert len(result.files) == workers
         selected = load_prediction_selection(result.selection)
@@ -137,11 +158,12 @@ def test_public_completion_uses_selected_files_without_collecting(
     frame = result.frame.sort_values('ENTITY')
     assert frame['ENTITY'].tolist() == list(range(8))
     assert frame['TARGET_PRED'].tolist() == [False, False, True, False] * 2
-    assert frame['True_PROB'].iloc[:3].tolist() == [.25, .5, .75]
+    assert frame['True_PROB'].iloc[:3].tolist() == [0.25, 0.5, 0.75]
 
 
-def test_failed_worker_never_publishes_selection(prepared_prediction,
-                                                 monkeypatch, tmp_path):
+def test_failed_worker_never_publishes_selection(
+    prepared_prediction, monkeypatch, tmp_path
+):
     trainer, table, _, snapshot = prepared_prediction
 
     def fail(n, fn, kwargs):
@@ -150,14 +172,16 @@ def test_failed_worker_never_publishes_selection(prepared_prediction,
 
     monkeypatch.setattr(prediction, '_run_prediction_workers', fail)
     with pytest.raises(RuntimeError, match='worker one failed'):
-        trainer.predict(table, snapshot=snapshot, num_workers=2,
-                        binary_classification_threshold=.5)
+        trainer.predict(
+            table, snapshot=snapshot, num_workers=2, binary_classification_threshold=0.5
+        )
     assert not list(tmp_path.rglob('_selected_artifacts.json'))
 
 
 @pytest.mark.parametrize('workers', [1, 2])
 def test_connector_export_uses_selected_files_without_collecting(
-        prepared_prediction, monkeypatch, tmp_path, workers):
+    prepared_prediction, monkeypatch, tmp_path, workers
+):
     import pyarrow.parquet as pq
     from kumo_core.object_store_sink import ObjectStoreSinkBackend
     from kumoapi.jobs import PredictionArtifactType as ApiType
@@ -175,42 +199,54 @@ def test_connector_export_uses_selected_files_without_collecting(
             return LocalFileSystem(), coordinate
 
     target = tmp_path / 'exported'
-    output = PredictionOutputConfig(SimpleNamespace(sink_backend=LocalSink()),
-                                    ApiType.PREDICTIONS,
-                                    str(target) + '/')
-    monkeypatch.setattr(pd, 'read_parquet',
-                        lambda *a, **kw: pytest.fail('eager read'))
-    monkeypatch.setattr(pd, 'concat',
-                        lambda *a, **kw: pytest.fail('eager concat'))
-    result = trainer.predict(table, snapshot=snapshot, num_workers=workers,
-                             output_config=output,
-                             binary_classification_threshold=.5)
+    output = PredictionOutputConfig(
+        SimpleNamespace(sink_backend=LocalSink()),
+        ApiType.PREDICTIONS,
+        str(target) + '/',
+    )
+    monkeypatch.setattr(pd, 'read_parquet', lambda *a, **kw: pytest.fail('eager read'))
+    monkeypatch.setattr(pd, 'concat', lambda *a, **kw: pytest.fail('eager concat'))
+    result = trainer.predict(
+        table,
+        snapshot=snapshot,
+        num_workers=workers,
+        output_config=output,
+        binary_classification_threshold=0.5,
+    )
     assert result.num_rows == 8
     assert (target / '_SUCCESS').exists()
     exported = sorted(target.glob('*.parquet'))
     assert len(exported) == len(result.files) == workers
     assert sum(pq.ParquetFile(p).metadata.num_rows for p in exported) == 8
     assert sorted(p.read_bytes() for p in exported) == sorted(
-        Path(p).read_bytes() for p in result.files)
+        Path(p).read_bytes() for p in result.files
+    )
 
 
-def test_unsupported_export_rejected_before_prediction(prepared_prediction,
-                                                       monkeypatch):
+def test_unsupported_export_rejected_before_prediction(
+    prepared_prediction, monkeypatch
+):
     from kumoapi.jobs import PredictionArtifactType as ApiType
 
     from kumo.engine.trainer.output_config import PredictionOutputConfig
 
     trainer, table, _, snapshot = prepared_prediction
     output = PredictionOutputConfig(
-        SimpleNamespace(sink_backend=SimpleNamespace(
-            write_table=lambda *a: None)), ApiType.PREDICTIONS, 'out')
+        SimpleNamespace(sink_backend=SimpleNamespace(write_table=lambda *a: None)),
+        ApiType.PREDICTIONS,
+        'out',
+    )
     monkeypatch.setattr(
         'kumo_core.prediction.materialize_prediction_task',
-        lambda *a, **kw: pytest.fail('must reject before materialization'))
-    with pytest.raises(NotImplementedError,
-                       match='FileArtifactSink.write_files'):
-        trainer.predict(table, snapshot=snapshot, output_config=output,
-                        binary_classification_threshold=.5)
+        lambda *a, **kw: pytest.fail('must reject before materialization'),
+    )
+    with pytest.raises(NotImplementedError, match='FileArtifactSink.write_files'):
+        trainer.predict(
+            table,
+            snapshot=snapshot,
+            output_config=output,
+            binary_classification_threshold=0.5,
+        )
 
 
 @pytest.mark.parametrize('workers', [1, 2])
@@ -229,16 +265,19 @@ def test_separate_exact_output_paths(prepared_prediction, tmp_path, workers):
             return LocalFileSystem(), coordinate
 
     trainer, table, _, snapshot = prepared_prediction
-    connector = SimpleNamespace(source_type='LOCAL_FILE',
-                                sink_backend=LocalSink())
+    connector = SimpleNamespace(source_type='LOCAL_FILE', sink_backend=LocalSink())
     paths = {
         kind: str(tmp_path / kind / 'project') + '/'
         for kind in ('predictions', 'embeddings')
     }
     config = PredictionOutputConfig(connector, output_paths=paths)
-    result = trainer.predict(table, snapshot=snapshot, output_config=config,
-                             num_workers=workers,
-                             binary_classification_threshold=.5)
+    result = trainer.predict(
+        table,
+        snapshot=snapshot,
+        output_config=config,
+        num_workers=workers,
+        binary_classification_threshold=0.5,
+    )
     for kind, path in paths.items():
         files = sorted(Path(path).glob('*.parquet'))
         assert len(files) == workers
@@ -251,27 +290,39 @@ def test_separate_exact_output_paths(prepared_prediction, tmp_path, workers):
         assert not Path(path.rstrip('/') + '_' + kind).exists()
     result.export(config)
     with pytest.raises(ValueError, match='another export'):
-        trainer.predict(table, snapshot=snapshot, output_config=config,
-                        binary_classification_threshold=.5)
+        trainer.predict(
+            table,
+            snapshot=snapshot,
+            output_config=config,
+            binary_classification_threshold=0.5,
+        )
 
 
 def test_export_missing_artifact_does_not_publish_partial_outputs(
-        prepared_prediction, tmp_path):
+    prepared_prediction, tmp_path
+):
     from kumo.engine.trainer.output_config import PredictionOutputConfig
 
     trainer, table, _, snapshot = prepared_prediction
-    result = trainer.predict(table, snapshot=snapshot,
-                             binary_classification_threshold=.5)
+    result = trainer.predict(
+        table, snapshot=snapshot, binary_classification_threshold=0.5
+    )
     writes = []
     connector = SimpleNamespace(
-        source_type='LOCAL_FILE', sink_backend=SimpleNamespace(
-            holds_files=lambda *a: True, filesystem=lambda *a: None,
-            write_files=lambda *a, **kw: writes.append(a)))
+        source_type='LOCAL_FILE',
+        sink_backend=SimpleNamespace(
+            holds_files=lambda *a: True,
+            filesystem=lambda *a: None,
+            write_files=lambda *a, **kw: writes.append(a),
+        ),
+    )
     config = PredictionOutputConfig(
-        connector, output_paths={
+        connector,
+        output_paths={
             'predictions': str(tmp_path / 'predictions') + '/',
             'embeddings': str(tmp_path / 'embeddings') + '/',
-        })
+        },
+    )
     with pytest.raises(ValueError, match='did not generate embeddings'):
         result.export(config)
     assert writes == []
@@ -280,31 +331,38 @@ def test_export_missing_artifact_does_not_publish_partial_outputs(
 @pytest.mark.parametrize('provider', ['s3', 'gcs'])
 @pytest.mark.parametrize('rooted', [False, True])
 def test_exact_paths_reject_destination_aliases_before_writes(
-        provider, rooted, monkeypatch):
+    provider, rooted, monkeypatch
+):
     from kumo.engine import GCSConnector, PredictionOutputConfig, S3Connector
 
-    connector_type, scheme = ((S3Connector, 's3') if provider == 's3' else
-                              (GCSConnector, 'gs'))
+    connector_type, scheme = (
+        (S3Connector, 's3') if provider == 's3' else (GCSConnector, 'gs')
+    )
     root = f'{scheme}://bucket/root'
     connector = connector_type(root_dir=root if rooted else None)
     monkeypatch.setattr(
-        connector.sink_backend, '_filesystem',
-        lambda *a: pytest.fail('must reject before cloud access'))
+        connector.sink_backend,
+        '_filesystem',
+        lambda *a: pytest.fail('must reject before cloud access'),
+    )
     monkeypatch.setattr(
-        connector.sink_backend, 'write_files',
-        lambda *a, **kw: pytest.fail('must reject before writes'))
+        connector.sink_backend,
+        'write_files',
+        lambda *a, **kw: pytest.fail('must reject before writes'),
+    )
     with pytest.raises(ValueError, match='distinct output paths'):
         PredictionOutputConfig(
-            connector, output_paths={
-                'predictions':
-                f'{root}/out.parquet',
-                'embeddings':
-                ('out.parquet' if rooted else f'{root}/%6fut.parquet'),
-            })
+            connector,
+            output_paths={
+                'predictions': f'{root}/out.parquet',
+                'embeddings': ('out.parquet' if rooted else f'{root}/%6fut.parquet'),
+            },
+        )
 
 
 def test_retained_outputs_retry_after_partial_embedding_export(
-        prepared_prediction, tmp_path, monkeypatch):
+    prepared_prediction, tmp_path, monkeypatch
+):
     from kumo_core.object_store_sink import _ArrowExportFiles
 
     from kumo.engine import FileConnector, PredictionOutputConfig
@@ -313,33 +371,41 @@ def test_retained_outputs_retry_after_partial_embedding_export(
     trainer, table, _, snapshot = prepared_prediction
     connector = FileConnector(root_dir=str(tmp_path))
     initial = PredictionOutputConfig(
-        connector, output_paths={
+        connector,
+        output_paths={
             'predictions': 'initial/predictions/',
             'embeddings': 'initial/embeddings/',
-        })
-    result = trainer.predict(table, snapshot=snapshot, output_config=initial,
-                             num_workers=2, binary_classification_threshold=.5)
+        },
+    )
+    result = trainer.predict(
+        table,
+        snapshot=snapshot,
+        output_config=initial,
+        num_workers=2,
+        binary_classification_threshold=0.5,
+    )
     retry = PredictionOutputConfig(
-        connector, output_paths={
+        connector,
+        output_paths={
             'predictions': 'retry/predictions/',
             'embeddings': 'retry/embeddings/',
-        })
-    embeddings = PredictionResult(result.selection,
-                                  PredictionArtifactType.EMBEDDINGS).files
+        },
+    )
+    embeddings = PredictionResult(
+        result.selection, PredictionArtifactType.EMBEDDINGS
+    ).files
     failed_part = Path(embeddings[1]).name
     copy = _ArrowExportFiles.copy_file
 
     def interrupt(storage, source, destination, **kwargs):
         assert not (Path(destination).parent / '_SUCCESS').exists()
-        if '/embeddings/' in destination and Path(
-                destination).name == failed_part:
+        if '/embeddings/' in destination and Path(destination).name == failed_part:
             raise RuntimeError('embedding transfer interrupted')
         return copy(storage, source, destination, **kwargs)
 
     with monkeypatch.context() as patch:
         patch.setattr(_ArrowExportFiles, 'copy_file', interrupt)
-        with pytest.raises(RuntimeError,
-                           match='embedding transfer interrupted'):
+        with pytest.raises(RuntimeError, match='embedding transfer interrupted'):
             result.export(retry)
     prediction_dir = tmp_path / 'retry/predictions'
     embedding_dir = tmp_path / 'retry/embeddings'
@@ -355,14 +421,14 @@ def test_retained_outputs_retry_after_partial_embedding_export(
     result.export(retry)
     for directory in (prediction_dir, embedding_dir):
         assert (directory / '_SUCCESS').exists()
-        frame = pd.concat(
-            pd.read_parquet(path) for path in directory.glob('*.parquet'))
+        frame = pd.concat(pd.read_parquet(path) for path in directory.glob('*.parquet'))
         assert sorted(frame.ENTITY) == list(range(8))
 
 
 @pytest.mark.parametrize('provider', ['s3', 'gcs', 'adls'])
 def test_object_store_retry_keeps_export_identity_and_bypasses_preflight(
-        prepared_prediction, tmp_path, monkeypatch, provider):
+    prepared_prediction, tmp_path, monkeypatch, provider
+):
     from kumo_core.artifact_export import (
         EXPORT_MARKER_NAME,
         ArtifactDestinationConflict,
@@ -379,16 +445,15 @@ def test_object_store_retry_keeps_export_identity_and_bypasses_preflight(
     )
 
     trainer, table, _, snapshot = prepared_prediction
-    result = trainer.predict(table, snapshot=snapshot, num_workers=2,
-                             binary_classification_threshold=.5)
+    result = trainer.predict(
+        table, snapshot=snapshot, num_workers=2, binary_classification_threshold=0.5
+    )
     connectors = {
-        's3':
-        lambda: S3Connector(root_dir='s3://bucket/root'),
-        'gcs':
-        lambda: GCSConnector(root_dir='gs://bucket/root'),
-        'adls':
-        lambda: ADLSConnector(
-            root_dir='abfss://curated@companylake.dfs.core.windows.net/root'),
+        's3': lambda: S3Connector(root_dir='s3://bucket/root'),
+        'gcs': lambda: GCSConnector(root_dir='gs://bucket/root'),
+        'adls': lambda: ADLSConnector(
+            root_dir='abfss://curated@companylake.dfs.core.windows.net/root'
+        ),
     }
     connector = connectors[provider]()
     sink = connector.sink_backend
@@ -396,8 +461,11 @@ def test_object_store_retry_keeps_export_identity_and_bypasses_preflight(
     directory.mkdir()
     filesystem = SubTreeFileSystem(str(directory), LocalFileSystem())
     monkeypatch.setattr(sink, '_filesystem', lambda *args: filesystem)
-    monkeypatch.setattr(sink, 'preflight_write_files',
-                        lambda *a, **kw: pytest.fail('preflight during retry'))
+    monkeypatch.setattr(
+        sink,
+        'preflight_write_files',
+        lambda *a, **kw: pytest.fail('preflight during retry'),
+    )
     output = PredictionOutputConfig(connector, path='out/')
     assert output.write_mode is None
     _, destination = sink._destination(connector, 'out/')
@@ -422,21 +490,23 @@ def test_object_store_retry_keeps_export_identity_and_bypasses_preflight(
     assert len(list(target.glob('*.parquet'))) == 1
     result.export(output)
     with pytest.raises(ArtifactDestinationConflict):
-        sink.write_files(connector, 'out/', list(result.files),
-                         export_id='another-run')
+        sink.write_files(connector, 'out/', list(result.files), export_id='another-run')
     assert (target / EXPORT_MARKER_NAME).read_bytes() == marker
     assert (target / '_SUCCESS').exists()
-    assert sorted(path.read_bytes()
-                  for path in target.glob('*.parquet')) == sorted(
-                      Path(path).read_bytes() for path in result.files)
+    assert sorted(path.read_bytes() for path in target.glob('*.parquet')) == sorted(
+        Path(path).read_bytes() for path in result.files
+    )
     monkeypatch.setattr(
-        _ArrowExportFiles, 'copy_file',
-        lambda *a, **kw: pytest.fail('recopied a complete export'))
+        _ArrowExportFiles,
+        'copy_file',
+        lambda *a, **kw: pytest.fail('recopied a complete export'),
+    )
     result.export(output)
 
 
-def test_xai_starts_after_completed_export_and_cleanup(prepared_prediction,
-                                                       monkeypatch):
+def test_xai_starts_after_completed_export_and_cleanup(
+    prepared_prediction, monkeypatch
+):
     from unittest.mock import Mock
 
     from kumo_core.prediction_explanation_result import (
@@ -457,10 +527,14 @@ def test_xai_starts_after_completed_export_and_cleanup(prepared_prediction,
         return result
 
     monkeypatch.setattr(module._run_manifest, 'finish', finished)
-    monkeypatch.setattr(module, '_collect_garbage',
-                        lambda stage: events.append('cleanup'))
-    monkeypatch.setattr(lifecycle, 'prediction_model_support',
-                        lambda task, model: PredictionExplanationSupport(True, True))
+    monkeypatch.setattr(
+        module, '_collect_garbage', lambda stage: events.append('cleanup')
+    )
+    monkeypatch.setattr(
+        lifecycle,
+        'prediction_model_support',
+        lambda task, model: PredictionExplanationSupport(True, True),
+    )
 
     def replay(**kwargs):
         assert events == ['finished', 'cleanup']
@@ -468,8 +542,9 @@ def test_xai_starts_after_completed_export_and_cleanup(prepared_prediction,
 
     call = Mock(side_effect=replay)
     monkeypatch.setattr(lifecycle, 'explain_prediction', call)
-    result = trainer.predict(table, snapshot=snapshot, explanations=True,
-                             binary_classification_threshold=.5)
+    result = trainer.predict(
+        table, snapshot=snapshot, explanations=True, binary_classification_threshold=0.5
+    )
     call.assert_called_once()
     assert result.num_rows == len(result.frame) == 8
     assert result.manifest.status == 'succeeded'
@@ -478,8 +553,9 @@ def test_xai_starts_after_completed_export_and_cleanup(prepared_prediction,
 
     # The same successful scoring path stays the default with no replay.
     call.reset_mock()
-    result = trainer.predict(table, snapshot=snapshot,
-                             binary_classification_threshold=.5)
+    result = trainer.predict(
+        table, snapshot=snapshot, binary_classification_threshold=0.5
+    )
     call.assert_not_called()
     assert result.num_rows == 8
     assert result.explanations.availability['cohorts'].reason == 'disabled'

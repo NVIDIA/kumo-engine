@@ -24,7 +24,8 @@ class IdentityDBEntry(DBEntry):
     credentials_rotated_at: Optional[datetime]
     config: IdentityConfig = Field(discriminator='type')
     encrypted_credentials: Optional[EncryptedIdentityCredentials] = Field(
-        default=None, discriminator='kind')
+        default=None, discriminator='kind'
+    )
     tombstoned_at: Optional[datetime] = None
 
 

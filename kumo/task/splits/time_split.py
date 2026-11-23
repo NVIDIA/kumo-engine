@@ -65,6 +65,7 @@ class TimeSplit(Split):
         ValueError: If more than one split type is specified or if no split
             type is specified.
     """
+
     _external_args: set[str] = {
         'timestamp_boundaries',
         'offset_boundaries',
@@ -76,13 +77,14 @@ class TimeSplit(Split):
     def __init__(
         self,
         # User-specified arguments
-        timestamp_boundaries: List[Tuple[str, str]] | List[List[str]]
-        | None = None,
+        timestamp_boundaries: List[Tuple[str, str]] | List[List[str]] | None = None,
         offset_boundaries: List[Tuple[Union[int, Literal['-INF']], int]]
-        | List[List[Union[int, Literal['-INF']]]] | None = None,
+        | List[List[Union[int, Literal['-INF']]]]
+        | None = None,
         fractions: List[float] | None = None,
         indices: List[Tuple[Union[int, Literal['-INF']], int]]
-        | List[List[Union[int, Literal['-INF']]]] | None = None,
+        | List[List[Union[int, Literal['-INF']]]]
+        | None = None,
         strict_split_boundaries: bool = True,
         # These arguments come from the Predictive Query and are not specified
         # by the user.
@@ -95,16 +97,19 @@ class TimeSplit(Split):
         self.fractions = fractions
         self.indices = indices
         self.strict_split_boundaries = strict_split_boundaries
-        self.unit = TimeUnit(
-            unit.lower() if isinstance(unit, str) else unit) if unit else None
+        self.unit = (
+            TimeUnit(unit.lower() if isinstance(unit, str) else unit) if unit else None
+        )
 
         self.timeframe_size = timeframe_size
         self.timeframe_size_date_offset = self.int_to_date_offset(
-            timeframe_size, self.unit)
+            timeframe_size, self.unit
+        )
 
         self.anchor_start_offset = anchor_start_offset
         self.anchor_start_offset_date_offset = self.int_to_date_offset(
-            anchor_start_offset, self.unit)
+            anchor_start_offset, self.unit
+        )
 
         # Validate the arguments
         self.validator = TimeSplitValidator(self)
@@ -147,7 +152,7 @@ class TimeSplit(Split):
             return pd.DateOffset(hours=value)
         elif unit == TimeUnit.MINUTES:
             return pd.DateOffset(minutes=value)
-        raise ValueError(f"Invalid unit: {unit}")
+        raise ValueError(f'Invalid unit: {unit}')
 
     def _create_time_range_masks(
         self,
@@ -193,9 +198,11 @@ class TimeSplit(Split):
                 # fits within boundaries.
                 time_with_offsets = time_col
                 if self.strict_split_boundaries:
-                    time_with_offsets = (time_with_offsets +
-                                         self.timeframe_size_date_offset +
-                                         self.anchor_start_offset_date_offset)
+                    time_with_offsets = (
+                        time_with_offsets
+                        + self.timeframe_size_date_offset
+                        + self.anchor_start_offset_date_offset
+                    )
 
                 # NOTE: for train data, i.e. data generated with aggregation,
                 # against the anchor time of the temporal aggregations, the
@@ -217,16 +224,18 @@ class TimeSplit(Split):
 
             # The mask is comprised of rows that fit both criteria.
             mask = torch.from_numpy(rows_after_start) & torch.from_numpy(
-                rows_before_end)
+                rows_before_end
+            )
 
             # If the table has an entity include bit column, we need to make
             # sure the mask only includes rows where the entity include bit
             # is set.
             from kumo.task.training_table import TrainingTable
-            if isinstance(table,
-                          TrainingTable) and table.has_entity_include_bit_col():
+
+            if isinstance(table, TrainingTable) and table.has_entity_include_bit_col():
                 mask &= torch.from_numpy(
-                    table.data.entity_include_bit.values.astype(np.bool_))
+                    table.data.entity_include_bit.values.astype(np.bool_)
+                )
 
             # Convert the mask to a numpy array and construct the mask object.
             mask_arr: np.ndarray = mask.numpy()
@@ -236,12 +245,14 @@ class TimeSplit(Split):
                     tensor=mask,
                     index_tensor=torch.from_numpy(indexed_mask.values),
                     time_period=TimePeriod.cast(start_ts, end_ts),
-                ))
+                )
+            )
 
         return masks
 
     def set_boundaries(
-            self, boundaries: List[Tuple[pd.Timestamp, pd.Timestamp]]) -> None:
+        self, boundaries: List[Tuple[pd.Timestamp, pd.Timestamp]]
+    ) -> None:
         """Set the timestamp boundaries for this split.
 
         Args:
@@ -250,8 +261,7 @@ class TimeSplit(Split):
         """
         self._boundaries = boundaries
 
-    def create_timestamp_boundaries(
-            self) -> List[Tuple[pd.Timestamp, pd.Timestamp]]:
+    def create_timestamp_boundaries(self) -> List[Tuple[pd.Timestamp, pd.Timestamp]]:
         r"""Get timestamp boundaries for each split based on the configured
         timestamp boundaries.
 
@@ -274,8 +284,7 @@ class TimeSplit(Split):
         """
         assert self.timestamp_boundaries is not None
 
-        def to_timestamp(
-                boundary: Union[str, int, Literal['-INF']]) -> pd.Timestamp:
+        def to_timestamp(boundary: Union[str, int, Literal['-INF']]) -> pd.Timestamp:
             if boundary == '-INF':
                 ts = pd.Timestamp.min
             else:
@@ -283,8 +292,10 @@ class TimeSplit(Split):
             assert isinstance(ts, pd.Timestamp)
             return ts
 
-        timestamp_boundaries = [(to_timestamp(start), to_timestamp(end))
-                                for start, end in self.timestamp_boundaries]
+        timestamp_boundaries = [
+            (to_timestamp(start), to_timestamp(end))
+            for start, end in self.timestamp_boundaries
+        ]
 
         # Store the computed boundaries
         self.set_boundaries(timestamp_boundaries)
@@ -346,7 +357,8 @@ class TimeSplit(Split):
         return start_ts, end_ts
 
     def _create_offset_boundaries(
-            self, table: Table) -> List[Tuple[pd.Timestamp, pd.Timestamp]]:
+        self, table: Table
+    ) -> List[Tuple[pd.Timestamp, pd.Timestamp]]:
         r"""Get timestamp boundaries for each split based on the configured
         offset boundaries.
 
@@ -378,8 +390,7 @@ class TimeSplit(Split):
         """
         assert self.offset_boundaries is not None
 
-        def to_timestamp(
-                boundary: Union[str, int, Literal['-INF']]) -> pd.Timestamp:
+        def to_timestamp(boundary: Union[str, int, Literal['-INF']]) -> pd.Timestamp:
             if boundary == '-INF':
                 # Get the earliest timestamp from the table
                 time_col = table.time_col.pandas()
@@ -400,12 +411,12 @@ class TimeSplit(Split):
             start_ts = to_timestamp(start)
             end_ts = to_timestamp(end)
             start_is_inf = start == '-INF'
-            start_ts, end_ts = (self._offset_boundary_start_end_ts_adjustment(
+            start_ts, end_ts = self._offset_boundary_start_end_ts_adjustment(
                 idx=idx,
                 start_ts=start_ts,
                 end_ts=end_ts,
                 start_is_inf=start_is_inf,
-            ))
+            )
             timestamp_boundaries.append((start_ts, end_ts))
 
         # Store the computed boundaries
@@ -413,7 +424,8 @@ class TimeSplit(Split):
         return timestamp_boundaries
 
     def _create_indices_boundaries(
-            self, table: Table) -> List[Tuple[pd.Timestamp, pd.Timestamp]]:
+        self, table: Table
+    ) -> List[Tuple[pd.Timestamp, pd.Timestamp]]:
         r"""Get masks for each split based on the configured indices.
 
         This method takes the configured indices and converts them to timestamp
@@ -449,8 +461,7 @@ class TimeSplit(Split):
         sorted_timestamps_length = len(sorted_timestamps)
 
         # Validate indices before processing
-        self.validator.validate_indices_against_num_timestamps(
-            sorted_timestamps_length)
+        self.validator.validate_indices_against_num_timestamps(sorted_timestamps_length)
 
         # Convert indices to timestamp boundaries
         timestamp_boundaries = []
@@ -472,15 +483,16 @@ class TimeSplit(Split):
             # we need to adjust the start idx by 1 to account for the fact that
             # the start idx is exclusive on raw data (target table) but
             # inclusive on the training data.
-            if (self.timeframe_size_date_offset is not None
-                    and not start_idx_is_inf):
+            if self.timeframe_size_date_offset is not None and not start_idx_is_inf:
                 start_idx += 1
 
             # For temporal queries, we need to adjust the end idx by 1 to
             # account for the fact that the end idx is right inclusive on raw
             # data but right exclusive on the training data.
-            if (self.timeframe_size_date_offset is not None
-                    and idx < self.num_splits - 1):
+            if (
+                self.timeframe_size_date_offset is not None
+                and idx < self.num_splits - 1
+            ):
                 end_idx += 1
 
             start_ts = pd.Timestamp(sorted_timestamps[start_idx])
@@ -502,7 +514,8 @@ class TimeSplit(Split):
         return timestamp_boundaries
 
     def _create_fractions_boundaries(
-            self, table: Table) -> List[Tuple[pd.Timestamp, pd.Timestamp]]:
+        self, table: Table
+    ) -> List[Tuple[pd.Timestamp, pd.Timestamp]]:
         r"""Get masks for each split based on the configured fractions.
 
         This method takes the configured fractions and generates boundaries
@@ -527,6 +540,7 @@ class TimeSplit(Split):
         from kumo_core.training.options import allow_array_targets
 
         from kumo.pquery.train_table_generator import TrainingTableGeneratorV2
+
         assert self.fractions is not None
 
         # Extract the table data and time column name
@@ -543,17 +557,20 @@ class TimeSplit(Split):
         # data: the array-length weighting only applies when the ``TARGET``
         # column actually holds per-row lists. Scalar targets (binary/regression)
         # keep the row-count behavior.
-        has_array_target = (allow_array_targets()
-                            and TARGET in table_data.columns
-                            and len(table_data) > 0
-                            and isinstance(table_data[TARGET].iloc[0],
-                                           (list, np.ndarray)))
+        has_array_target = (
+            allow_array_targets()
+            and TARGET in table_data.columns
+            and len(table_data) > 0
+            and isinstance(table_data[TARGET].iloc[0], (list, np.ndarray))
+        )
         if has_array_target:
             # Group by timestamp and sum the length of TARGET lists for each
             # timestamp
-            unique_times = table_data.groupby(time_col_name).apply(
-                lambda group: sum(len(target)
-                                  for target in group[TARGET])).sort_index()
+            unique_times = (
+                table_data.groupby(time_col_name)
+                .apply(lambda group: sum(len(target) for target in group[TARGET]))
+                .sort_index()
+            )
         else:
             # Standard behavior - count rows per timestamp
             time_col = table_data[time_col_name]
@@ -564,8 +581,7 @@ class TimeSplit(Split):
         num_anchor_dates = len(unique_times)
 
         # Validate we have enough anchor dates
-        self.validator.validate_num_splits_against_num_timestamps(
-            num_anchor_dates)
+        self.validator.validate_num_splits_against_num_timestamps(num_anchor_dates)
 
         # Calculate cumulative ratios for each unique timestamp
         cumulative_counts = unique_times.cumsum()
@@ -582,8 +598,7 @@ class TimeSplit(Split):
             cumsum += frac
 
             # Find the index where cumulative ratio exceeds target
-            idx = np.searchsorted(cumulative_ratios.values, cumsum,
-                                  side='right')
+            idx = np.searchsorted(cumulative_ratios.values, cumsum, side='right')
 
             # Ensure we leave enough anchor dates for remaining splits
             max_allowed_idx = num_anchor_dates - remaining_splits
@@ -592,8 +607,9 @@ class TimeSplit(Split):
 
             # Ensure we move forward at least one anchor date
             if len(split_boundaries) > 0:
-                last_boundary_idx = np.searchsorted(unique_times.index,
-                                                    split_boundaries[-1])
+                last_boundary_idx = np.searchsorted(
+                    unique_times.index, split_boundaries[-1]
+                )
             else:
                 last_boundary_idx = 0
             if idx <= last_boundary_idx:
@@ -628,7 +644,8 @@ class TimeSplit(Split):
         return timestamp_boundaries
 
     def create_boundaries(
-            self, table: Table) -> List[Tuple[pd.Timestamp, pd.Timestamp]]:
+        self, table: Table
+    ) -> List[Tuple[pd.Timestamp, pd.Timestamp]]:
         if self.timestamp_boundaries is not None:
             return self.create_timestamp_boundaries()
         elif self.offset_boundaries is not None:
@@ -657,7 +674,7 @@ class TimeSplit(Split):
                 indicates which rows belong to that split.
         """
         boundaries = self.create_boundaries(table)
-        logger.info(f"Generated TimeSplit Boundaries: {boundaries}")
+        logger.info(f'Generated TimeSplit Boundaries: {boundaries}')
         return self._create_time_range_masks(
             table=table,
             boundaries=boundaries,
@@ -689,32 +706,42 @@ class TimeSplit(Split):
         elif self.fractions is not None:
             return len(self.fractions)
         raise ValueError(
-            "No valid split type found - one of indices, boundaries, or "
-            "fractions must be set")
+            'No valid split type found - one of indices, boundaries, or '
+            'fractions must be set'
+        )
 
     def __repr__(self) -> str:
         if self.indices is not None:
-            return (f'{self.__class__.__name__}('
-                    f'indices={self.indices}, '
-                    f'strict_split_boundaries={self.strict_split_boundaries})')
+            return (
+                f'{self.__class__.__name__}('
+                f'indices={self.indices}, '
+                f'strict_split_boundaries={self.strict_split_boundaries})'
+            )
         elif self.timestamp_boundaries is not None:
-            return (f'{self.__class__.__name__}('
-                    f'timestamp_boundaries={self.timestamp_boundaries}, '
-                    f'strict_split_boundaries={self.strict_split_boundaries})')
+            return (
+                f'{self.__class__.__name__}('
+                f'timestamp_boundaries={self.timestamp_boundaries}, '
+                f'strict_split_boundaries={self.strict_split_boundaries})'
+            )
         elif self.offset_boundaries is not None:
-            return (f'{self.__class__.__name__}('
-                    f'offset_boundaries={self.offset_boundaries}, '
-                    f'strict_split_boundaries={self.strict_split_boundaries})')
+            return (
+                f'{self.__class__.__name__}('
+                f'offset_boundaries={self.offset_boundaries}, '
+                f'strict_split_boundaries={self.strict_split_boundaries})'
+            )
         elif self.fractions is not None:
-            return (f'{self.__class__.__name__}('
-                    f'fractions={self.fractions}, '
-                    f'strict_split_boundaries={self.strict_split_boundaries})')
+            return (
+                f'{self.__class__.__name__}('
+                f'fractions={self.fractions}, '
+                f'strict_split_boundaries={self.strict_split_boundaries})'
+            )
         raise ValueError(
-            "No valid split type found - one of indices, boundaries, or "
-            "fractions must be set")
+            'No valid split type found - one of indices, boundaries, or '
+            'fractions must be set'
+        )
 
 
-class TimeSplitValidator():
+class TimeSplitValidator:
     def __init__(self, split: TimeSplit) -> None:
         self.split = split
 
@@ -725,21 +752,27 @@ class TimeSplitValidator():
             ValueError: If any of anchor_start_offset or timeframe_size
                 is None while others are not None, or vice versa.
         """
-        has_none = (self.split.anchor_start_offset is None
-                    or self.split.timeframe_size is None)
-        all_none = (self.split.anchor_start_offset is None
-                    and self.split.timeframe_size is None)
+        has_none = (
+            self.split.anchor_start_offset is None or self.split.timeframe_size is None
+        )
+        all_none = (
+            self.split.anchor_start_offset is None and self.split.timeframe_size is None
+        )
         if has_none != all_none:
-            raise ValueError("anchor_start_offset, timeframe_size must all be "
-                             "None or all be not None")
+            raise ValueError(
+                'anchor_start_offset, timeframe_size must all be '
+                'None or all be not None'
+            )
 
     def _validate_num_splits(
-        self, data: List[Tuple[Union[int, Literal['-INF']], int]]
+        self,
+        data: List[Tuple[Union[int, Literal['-INF']], int]]
         | List[List[Union[int, Literal['-INF']]]]
         | List[Tuple[pd.Timestamp, pd.Timestamp]]
         | List[List[pd.Timestamp]]
-        | List[Tuple[float, float]] | List[List[float]]
-        | List[float]
+        | List[Tuple[float, float]]
+        | List[List[float]]
+        | List[float],
     ) -> None:
         r"""Validate that the number of splits is between 2 and 3.
 
@@ -751,16 +784,19 @@ class TimeSplitValidator():
             ValueError: If number of splits is less than 2 or more than 3
         """
         if len(data) < 2:
-            raise ValueError("At least two splits are required")
+            raise ValueError('At least two splits are required')
         if len(data) > 3:
-            raise ValueError("No more than three splits is supported")
+            raise ValueError('No more than three splits is supported')
 
     def _validate_tuple_structure(
-        self, data: List[Tuple[Union[int, Literal['-INF']], int]]
+        self,
+        data: List[Tuple[Union[int, Literal['-INF']], int]]
         | List[List[Union[int, Literal['-INF']]]]
-        | List[Tuple[str, str]] | List[List[str]]
-        | List[Tuple[float, float]] | List[List[float]]
-        | List[float]
+        | List[Tuple[str, str]]
+        | List[List[str]]
+        | List[Tuple[float, float]]
+        | List[List[float]]
+        | List[float],
     ) -> None:
         r"""Validate that each item in the data is a tuple/list with exactly
         2 elements.
@@ -773,10 +809,11 @@ class TimeSplitValidator():
                 elements.
         """
         for item in data:
-            if not (isinstance(item, tuple)
-                    or isinstance(item, list)) or len(item) != 2:
-                raise ValueError(
-                    "Data must be a list of tuples with two elements")
+            if (
+                not (isinstance(item, tuple) or isinstance(item, list))
+                or len(item) != 2
+            ):
+                raise ValueError('Data must be a list of tuples with two elements')
 
     def _validate_arg_exclusivity(self) -> None:
         r"""Validates that exactly one split configuration argument is
@@ -798,7 +835,7 @@ class TimeSplitValidator():
             'timestamp_boundaries': self.split.timestamp_boundaries is not None,
             'offset_boundaries': self.split.offset_boundaries is not None,
             'fractions': self.split.fractions is not None,
-            'indices': self.split.indices is not None
+            'indices': self.split.indices is not None,
         }
 
         # Count how many split arguments are set
@@ -807,13 +844,14 @@ class TimeSplitValidator():
         # Must specify exactly one argument
         if num_args_set == 0:
             raise ValueError(
-                "Must specify exactly one of: boundaries, fractions, "
-                "or indices")
+                'Must specify exactly one of: boundaries, fractions, or indices'
+            )
         elif num_args_set > 1:
             # Find which arguments are in conflict
             set_args = [arg for arg, is_set in split_args.items() if is_set]
-            raise ValueError(f"Cannot specify multiple split arguments. Found: "
-                             f"{', '.join(set_args)}")
+            raise ValueError(
+                f'Cannot specify multiple split arguments. Found: {", ".join(set_args)}'
+            )
 
     def _validate_indices_or_boundaries(
         self,
@@ -851,10 +889,11 @@ class TimeSplitValidator():
 
         for idx, item in enumerate(data):
             # Check length
-            if not (isinstance(item, tuple)
-                    or isinstance(item, list)) or len(item) != 2:
-                raise ValueError(
-                    "Data must be a list of tuples with two elements")
+            if (
+                not (isinstance(item, tuple) or isinstance(item, list))
+                or len(item) != 2
+            ):
+                raise ValueError('Data must be a list of tuples with two elements')
 
             # Check ordering
             start = item[0]
@@ -866,9 +905,11 @@ class TimeSplitValidator():
 
             if start > end:  # type: ignore
                 stage = SPLIT_STAGES[idx]
-                raise ValueError(f"The start ({start}) of the "
-                                 f"({stage.value}) split must be strictly "
-                                 f"smaller than the end ({end}).")
+                raise ValueError(
+                    f'The start ({start}) of the '
+                    f'({stage.value}) split must be strictly '
+                    f'smaller than the end ({end}).'
+                )
 
             if idx < len(data) - 1:
                 next_start = data[idx + 1][0]
@@ -876,14 +917,16 @@ class TimeSplitValidator():
                 next_stage = SPLIT_STAGES[idx + 1]
                 if end > next_start:  # type: ignore
                     raise ValueError(
-                        f"The end ({end}) of the "
-                        f"({current_stage.value}) split must be "
-                        f"strictly smaller than the start ({next_start}) of "
-                        f"the next ({next_stage.value}) split.")
+                        f'The end ({end}) of the '
+                        f'({current_stage.value}) split must be '
+                        f'strictly smaller than the start ({next_start}) of '
+                        f'the next ({next_stage.value}) split.'
+                    )
 
     def _validate_indices_are_non_positive(
-        self, data: List[Tuple[int | Literal['-INF'], int]]
-        | List[List[int | Literal['-INF']]]
+        self,
+        data: List[Tuple[int | Literal['-INF'], int]]
+        | List[List[int | Literal['-INF']]],
     ) -> None:
         r"""Validate that all indices are non-positive (<=0) or '-INF' for
         first start.
@@ -904,13 +947,16 @@ class TimeSplitValidator():
                 stage = SPLIT_STAGES[idx]
                 raise ValueError(
                     f"Indices must be integers (except '-INF' for first "
-                    f"start), but got {start, end} for the ({stage.value}) "
-                    f"split")
+                    f'start), but got {start, end} for the ({stage.value}) '
+                    f'split'
+                )
 
             if start > 0 or end > 0:
                 stage = SPLIT_STAGES[idx]
-                raise ValueError(f"Indices must be non-positive (<=0), but got "
-                                 f"{start, end} for the ({stage.value}) split")
+                raise ValueError(
+                    f'Indices must be non-positive (<=0), but got '
+                    f'{start, end} for the ({stage.value}) split'
+                )
 
     def _validate_indices(self) -> None:
         assert self.split.indices is not None
@@ -923,10 +969,11 @@ class TimeSplitValidator():
         return pd.Timestamp(boundary)
 
     def _validate_boundary_values(
-        self, boundaries: List[Tuple[Union[int, Literal['-INF']], int]]
+        self,
+        boundaries: List[Tuple[Union[int, Literal['-INF']], int]]
         | List[List[Union[int, Literal['-INF']]]]
         | List[Tuple[str, str]]
-        | List[List[str]]
+        | List[List[str]],
     ) -> None:
         r"""Validate that boundary values are consistent in type and format.
 
@@ -948,17 +995,19 @@ class TimeSplitValidator():
             for idx, (start, end) in enumerate(boundaries):
                 if not (isinstance(start, str) and isinstance(end, str)):
                     raise ValueError(
-                        f"When using timestamp strings, all boundaries must "
-                        f"be strings. Found non-string values in boundary "
-                        f"{idx}: ({start}, {end})")
+                        f'When using timestamp strings, all boundaries must '
+                        f'be strings. Found non-string values in boundary '
+                        f'{idx}: ({start}, {end})'
+                    )
                 # Validate strings are valid timestamps
                 try:
                     pd.Timestamp(start)
                     pd.Timestamp(end)
                 except ValueError as e:
                     raise ValueError(
-                        f"Invalid timestamp format in boundary {idx}: "
-                        f"({start}, {end}). Error: {e}")
+                        f'Invalid timestamp format in boundary {idx}: '
+                        f'({start}, {end}). Error: {e}'
+                    )
 
         # Case 2: All integers (with optional -INF at first start only)
         elif isinstance(first_val, int) or first_val == '-INF':
@@ -967,29 +1016,33 @@ class TimeSplitValidator():
                 if not isinstance(boundaries[0][1], int):
                     raise ValueError(
                         f"When using '-INF', all other boundary values must "
-                        f"be integers. Found non-integer end value in first "
-                        f"boundary: {boundaries[0][1]}")
+                        f'be integers. Found non-integer end value in first '
+                        f'boundary: {boundaries[0][1]}'
+                    )
             else:
                 if not isinstance(boundaries[0][1], int):
                     raise ValueError(
-                        f"When using integer offsets, all boundaries must "
-                        f"be integers. Found non-integer end value in "
-                        f"first boundary: {boundaries[0][1]}")
+                        f'When using integer offsets, all boundaries must '
+                        f'be integers. Found non-integer end value in '
+                        f'first boundary: {boundaries[0][1]}'
+                    )
 
             # Check remaining boundaries
             for idx, (start, end) in enumerate(boundaries[1:], 1):
                 if not (isinstance(start, int) and isinstance(end, int)):
                     raise ValueError(
-                        f"When using integer offsets, all boundaries must "
+                        f'When using integer offsets, all boundaries must '
                         f"be integers (except optional '-INF' for first "
-                        f"start). Found non-integer values in boundary "
-                        f"{idx}: ({start}, {end})")
+                        f'start). Found non-integer values in boundary '
+                        f'{idx}: ({start}, {end})'
+                    )
 
         else:
             raise ValueError(
-                f"Boundaries must be either all timestamp strings or all "
+                f'Boundaries must be either all timestamp strings or all '
                 f"integer offsets (with optional '-INF' for first start). "
-                f"Found invalid first value: {first_val}")
+                f'Found invalid first value: {first_val}'
+            )
 
     def _validate_timestamp_boundaries(self) -> None:
         boundaries = self.split.timestamp_boundaries
@@ -998,10 +1051,10 @@ class TimeSplitValidator():
         self._validate_boundary_values(boundaries)
 
         # Convert boundaries to comparable format based on type
-        comparable_boundaries = [(pd.Timestamp(start), pd.Timestamp(end))
-                                 for start, end in boundaries]
-        self._validate_indices_or_boundaries(
-            comparable_boundaries)  # type: ignore
+        comparable_boundaries = [
+            (pd.Timestamp(start), pd.Timestamp(end)) for start, end in boundaries
+        ]
+        self._validate_indices_or_boundaries(comparable_boundaries)  # type: ignore
 
     def _validate_offset_boundaries(self) -> None:
         boundaries = self.split.offset_boundaries
@@ -1037,13 +1090,14 @@ class TimeSplitValidator():
             if not 0 <= frac <= 1:
                 stage = SPLIT_STAGES[idx]
                 raise ValueError(
-                    f"The fraction ({frac}) for the ({stage.value}) split "
-                    f"must be between 0 and 1.")
+                    f'The fraction ({frac}) for the ({stage.value}) split '
+                    f'must be between 0 and 1.'
+                )
 
         # Validate sum of fractions
         total = sum(data)
         if abs(total - 1.0) > 1e-6:  # Allow small floating point differences
-            raise ValueError(f"Fractions must sum to 1.0, got {total}")
+            raise ValueError(f'Fractions must sum to 1.0, got {total}')
 
     def validate(self) -> None:
         # Validate timeframe parameters consistency
@@ -1062,8 +1116,7 @@ class TimeSplitValidator():
         elif self.split.fractions is not None:
             self._validate_fractions()
 
-    def validate_indices_against_num_timestamps(self,
-                                                num_timestamps: int) -> None:
+    def validate_indices_against_num_timestamps(self, num_timestamps: int) -> None:
         r"""Validate that all indices are within bounds of available
         timestamps.
 
@@ -1085,17 +1138,18 @@ class TimeSplitValidator():
         # Skip validation for '-INF' start index
         if abs(int(end_idx)) > num_timestamps:
             raise ValueError(
-                f"End index out of bounds for {num_timestamps} timestamps: "
-                f"train split ({start_idx}, {end_idx})")
+                f'End index out of bounds for {num_timestamps} timestamps: '
+                f'train split ({start_idx}, {end_idx})'
+            )
 
         if start_idx != '-INF':
             if abs(int(start_idx)) > num_timestamps:
                 raise ValueError(
-                    f"Start index out of bounds for {num_timestamps} "
-                    f"timestamps: train split ({start_idx}, {end_idx})")
+                    f'Start index out of bounds for {num_timestamps} '
+                    f'timestamps: train split ({start_idx}, {end_idx})'
+                )
 
-    def validate_num_splits_against_num_timestamps(self,
-                                                   num_timestamps: int) -> None:
+    def validate_num_splits_against_num_timestamps(self, num_timestamps: int) -> None:
         """Validate that there are enough timestamps for the requested split.
 
         Args:
@@ -1107,6 +1161,8 @@ class TimeSplitValidator():
         """
         num_splits = self.split.num_splits
         if num_timestamps < num_splits:
-            raise ValueError(f"Not enough timestamps ({num_timestamps}) for "
-                             f"{num_splits} splits. Each split must contain at "
-                             f"least one timestamp.")
+            raise ValueError(
+                f'Not enough timestamps ({num_timestamps}) for '
+                f'{num_splits} splits. Each split must contain at '
+                f'least one timestamp.'
+            )

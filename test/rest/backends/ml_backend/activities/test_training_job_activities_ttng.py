@@ -24,18 +24,9 @@ def test_ttng_postprocess_reads_dataplane_bundle(tmp_path, monkeypatch) -> None:
             'split_payload': {
                 'artifacts_v3': {
                     'timestamp_stage_assignments': [
-                        {
-                            'stage': 'train',
-                            'timestamp': 1_700_000_000
-                        },
-                        {
-                            'stage': 'train',
-                            'timestamp': 1_700_086_400
-                        },
-                        {
-                            'stage': 'val',
-                            'timestamp': 1_700_172_800
-                        },
+                        {'stage': 'train', 'timestamp': 1_700_000_000},
+                        {'stage': 'train', 'timestamp': 1_700_086_400},
+                        {'stage': 'val', 'timestamp': 1_700_172_800},
                     ],
                 },
             },
@@ -45,21 +36,28 @@ def test_ttng_postprocess_reads_dataplane_bundle(tmp_path, monkeypatch) -> None:
     snapshot_id = 'graph-1bf8d6a669f6a6caba68a2393f1044e3@v1'
     graph_fpid, graph_data_version = DataSnapshot.GRAPH.parse_id(snapshot_id)
     data_persist_dir = tmp_path / 'persist'
-    remote_root = (data_persist_dir / 'diskgraph_job_sidecars' /
-                   f'NA-{graph_fpid}' / graph_data_version)
+    remote_root = (
+        data_persist_dir
+        / 'diskgraph_job_sidecars'
+        / f'NA-{graph_fpid}'
+        / graph_data_version
+    )
     remote_bundle = remote_root / 'task_datasets' / 'trainingjob-1'
     remote_bundle.mkdir(parents=True)
     (remote_bundle / 'stats.json').write_text(json.dumps(stats))
     (remote_bundle / 'split_info.json').write_text(json.dumps(split_info))
     (remote_root / 'manifests').mkdir()
     (remote_root / 'manifests' / 'trainingjob-1.json').write_text(
-        json.dumps({
-            'schema_version': 1,
-            'snapshot_id': snapshot_id,
-            'job_id': 'trainingjob-1',
-            'relpaths': ['task_datasets/trainingjob-1'],
-            'bundle_relpath': 'task_datasets/trainingjob-1',
-        }))
+        json.dumps(
+            {
+                'schema_version': 1,
+                'snapshot_id': snapshot_id,
+                'job_id': 'trainingjob-1',
+                'relpaths': ['task_datasets/trainingjob-1'],
+                'bundle_relpath': 'task_datasets/trainingjob-1',
+            }
+        )
+    )
 
     local_index = tmp_path / 'local-index'
     local_bundle = local_index / 'task_datasets' / 'trainingjob-1'
@@ -86,9 +84,11 @@ def test_ttng_postprocess_reads_dataplane_bundle(tmp_path, monkeypatch) -> None:
     assert read_split_info == split_info
     periods = _act._time_periods_from_ttng_stats(read_stats)
     assert periods[TrainingStage.TRAIN].start == datetime.fromtimestamp(
-        1_700_000_000, tz=timezone.utc)
+        1_700_000_000, tz=timezone.utc
+    )
     assert periods[TrainingStage.TRAIN].end == datetime.fromtimestamp(
-        1_700_086_400, tz=timezone.utc)
+        1_700_086_400, tz=timezone.utc
+    )
     sizes = _act._split_sizes_from_ttng_split_info(read_split_info)
     assert (sizes.train, sizes.val, sizes.test) == (12, 3, 2)
 
@@ -96,40 +96,49 @@ def test_ttng_postprocess_reads_dataplane_bundle(tmp_path, monkeypatch) -> None:
 def test_ttng_postprocess_rejects_missing_durable_sidecar(tmp_path) -> None:
     """Missing bundle metadata is an invariant violation, not an empty split."""
     (tmp_path / 'stats.json').write_text('{}')
-    job_config = SimpleNamespace(
-        diskgraph_task_dataset_bundle_dir=str(tmp_path))
+    job_config = SimpleNamespace(diskgraph_task_dataset_bundle_dir=str(tmp_path))
 
     with pytest.raises(RuntimeError, match='split_info'):
         _act._load_ttng_published_metadata(job_config)
 
 
-def test_log_failed_job_returns_saved_train_status(tmp_path, monkeypatch,
-                                                   caplog) -> None:
-    TrainStatus(error_msg='Out-of-memory (OOM) error: x',
-                stacktrace='Traceback ...',
-                warning_msg='Batch size reduced').save(str(tmp_path))
-    monkeypatch.setattr(_act.JobConfig, 'load',
-                        lambda _path: SimpleNamespace(home_dir=str(tmp_path)))
+def test_log_failed_job_returns_saved_train_status(
+    tmp_path, monkeypatch, caplog
+) -> None:
+    TrainStatus(
+        error_msg='Out-of-memory (OOM) error: x',
+        stacktrace='Traceback ...',
+        warning_msg='Batch size reduced',
+    ).save(str(tmp_path))
+    monkeypatch.setattr(
+        _act.JobConfig, 'load', lambda _path: SimpleNamespace(home_dir=str(tmp_path))
+    )
     save_warning = Mock()
     monkeypatch.setattr(_act, '_save_training_warning', save_warning)
 
     with caplog.at_level('WARNING'):
         saved = _act.TrainingJobActivities().log_failed_job(
-            'trainingjob-1', '/tmp/cfg.json')
+            'trainingjob-1', '/tmp/cfg.json'
+        )
 
     assert saved is not None
     assert saved.err_msg == 'Out-of-memory (OOM) error: x'
     assert saved.stacktrace == 'Traceback ...'
     assert 'Traceback ...' in caplog.text
-    save_warning.assert_called_once_with(str(tmp_path), 'trainingjob-1',
-                                         'Batch size reduced')
+    save_warning.assert_called_once_with(
+        str(tmp_path), 'trainingjob-1', 'Batch size reduced'
+    )
 
 
 def test_log_failed_job_returns_none_if_status_load_fails(
-        tmp_path, monkeypatch) -> None:
+    tmp_path, monkeypatch
+) -> None:
     (tmp_path / 'status.json').write_text('{not json')
-    monkeypatch.setattr(_act.JobConfig, 'load',
-                        lambda _path: SimpleNamespace(home_dir=str(tmp_path)))
+    monkeypatch.setattr(
+        _act.JobConfig, 'load', lambda _path: SimpleNamespace(home_dir=str(tmp_path))
+    )
 
-    assert _act.TrainingJobActivities().log_failed_job('trainingjob-1',
-                                                       '/tmp/cfg.json') is None
+    assert (
+        _act.TrainingJobActivities().log_failed_job('trainingjob-1', '/tmp/cfg.json')
+        is None
+    )

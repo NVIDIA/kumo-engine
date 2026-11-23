@@ -30,7 +30,7 @@ from kumo.testing.pquery import get_validated_query
 from kumo.validation import ValidationException
 
 TEST_TASK_NAME = 'SUM_AMOUNT_class'
-TEST_TASK_OUTPUT_DIR = osp.join(osp.dirname(__file__), ".test_files")
+TEST_TASK_OUTPUT_DIR = osp.join(osp.dirname(__file__), '.test_files')
 
 
 def setup_function():
@@ -62,8 +62,7 @@ def teardown_function():
             'Numerical semantic type.',
         ),
         (
-            'PREDICT SUM(TRANSACTIONS.AMOUNT, 0, 2) '
-            'FOR EACH USERS.USER_ID',
+            'PREDICT SUM(TRANSACTIONS.AMOUNT, 0, 2) FOR EACH USERS.USER_ID',
             TaskType.REGRESSION,
             'The target clause is a numerical aggregation (SUM, COUNT, etc).',
         ),
@@ -89,8 +88,7 @@ def teardown_function():
             'selected.',
         ),
         (
-            'PREDICT SUM(TRANSACTIONS.AMOUNT, 0, 2) > 30 '
-            'FOR EACH USERS.USER_ID',
+            'PREDICT SUM(TRANSACTIONS.AMOUNT, 0, 2) > 30 FOR EACH USERS.USER_ID',
             TaskType.BINARY_CLASSIFICATION,
             'The target clause is a condition or logical operation, and is '
             'an ID or Categorical Boolean',
@@ -120,13 +118,15 @@ def basic_test_graph(tmp_path: pathlib.Path) -> Graph:
     dates = pd.Series(pd.date_range(start='1/1/2018', end='1/30/2018'))
     dates = pd.concat([dates, dates], axis=0, ignore_index=True)
     types = ['A', 'B'] * 10 + ['A', 'C'] * 10 + ['B', 'C'] * 10
-    target_df = pd.DataFrame({
-        'TRANS_ID': range(len(dates)),
-        'USER_ID': [0] * 30 + [1] * 30,
-        'AMOUNT': [1.0] * len(dates),
-        'DATE': dates,
-        'TYPE': types
-    })
+    target_df = pd.DataFrame(
+        {
+            'TRANS_ID': range(len(dates)),
+            'USER_ID': [0] * 30 + [1] * 30,
+            'AMOUNT': [1.0] * len(dates),
+            'DATE': dates,
+            'TYPE': types,
+        }
+    )
     graph = Graph('test')
 
     def persist_dfs(dfs: List[pd.DataFrame], names: List[str]):
@@ -138,8 +138,9 @@ def basic_test_graph(tmp_path: pathlib.Path) -> Graph:
     persist_dfs([entity_df, target_df], ['USERS', 'TRANS'])
 
     graph = Graph()
-    data_source = ParquetConnector("pandas_converted",
-                                   osp.join(temp_path, 'pandas_converted'))
+    data_source = ParquetConnector(
+        'pandas_converted', osp.join(temp_path, 'pandas_converted')
+    )
     graph.connect(data_source)
 
     graph.add('USERS', pkey='USER_ID')
@@ -155,13 +156,18 @@ def basic_test_graph(tmp_path: pathlib.Path) -> Graph:
     return graph
 
 
-@pytest.mark.parametrize('query, expected_errors', [
-    ('PREDICT USERS.USER_ID FOR EACH USERS.USER_ID', ['row 1, column 8']),
-    ('PREDICT USERS.USER_ID > 0 FOR EACH USERS.USER_ID', ['row 1, column 8']),
-    ('PREDICT (USERS.USER_ID > 0) OR (USERS.USER_ID = 0) '
-     'FOR EACH USERS.USER_ID WHERE USERS.USER_ID > 1',
-     ['row 1, column 32', 'row 1, column 9']),
-])
+@pytest.mark.parametrize(
+    'query, expected_errors',
+    [
+        ('PREDICT USERS.USER_ID FOR EACH USERS.USER_ID', ['row 1, column 8']),
+        ('PREDICT USERS.USER_ID > 0 FOR EACH USERS.USER_ID', ['row 1, column 8']),
+        (
+            'PREDICT (USERS.USER_ID > 0) OR (USERS.USER_ID = 0) '
+            'FOR EACH USERS.USER_ID WHERE USERS.USER_ID > 1',
+            ['row 1, column 32', 'row 1, column 9'],
+        ),
+    ],
+)
 def test_predictive_query_no_predict_entity(
     basic_test_graph: Graph,
     query: str,
@@ -179,14 +185,19 @@ def test_predictive_query_no_predict_entity(
         assert expected_error in error.message
 
 
-@pytest.mark.parametrize('split', [
-    DateOffsetSplit(offsets=[-7, 0]),
-    TimeRangeSplit([
-        (pd.Timestamp('1990-01-01'), pd.Timestamp('1995-01-01')),
-        (pd.Timestamp('1995-01-01'), pd.Timestamp('1995-06-01')),
-        (pd.Timestamp('1995-06-01'), pd.Timestamp('1996-01-01')),
-    ])
-])
+@pytest.mark.parametrize(
+    'split',
+    [
+        DateOffsetSplit(offsets=[-7, 0]),
+        TimeRangeSplit(
+            [
+                (pd.Timestamp('1990-01-01'), pd.Timestamp('1995-01-01')),
+                (pd.Timestamp('1995-01-01'), pd.Timestamp('1995-06-01')),
+                (pd.Timestamp('1995-06-01'), pd.Timestamp('1996-01-01')),
+            ]
+        ),
+    ],
+)
 def test_predictive_query_set_split(split, basic_test_graph, tempdir):
     graph = copy.deepcopy(basic_test_graph)
     query = 'PREDICT COUNT(TRANS.*, 2, 7, hours) FOR EACH USERS.USER_ID'
@@ -215,7 +226,8 @@ def test_predictive_query_set_split(split, basic_test_graph, tempdir):
     ],
 )
 def test_default_date_offset_split_preserves_flexible_boundaries(
-        basic_test_graph, task_type, expected_flexible_boundaries):
+    basic_test_graph, task_type, expected_flexible_boundaries
+):
     query = 'PREDICT COUNT(TRANS.*, 2, 7, hours) FOR EACH USERS.USER_ID'
     pquery = PredictiveQueryV2(
         name='default_split_flexible_boundaries',
@@ -237,25 +249,23 @@ def test_col_not_in_graph(basic_test_graph):
     parsed_query = parser.to_parsed_predictive_query(query)
     _, response = validator.validate_predictive_query(parsed_query)
     assert not response.ok
-    assert "'USERSS_ID' does not exist in table 'USERS'" in response.errors[
-        0].message
+    assert "'USERSS_ID' does not exist in table 'USERS'" in response.errors[0].message
 
     query = 'PREDICT TRANS.TYPEE FOR EACH TRANS.TRANS_ID'
     parsed_query = parser.to_parsed_predictive_query(query)
     _, response = validator.validate_predictive_query(parsed_query)
     assert not response.ok
-    assert "'TYPEE' does not exist in table 'TRANS'" in response.errors[
-        0].message
+    assert "'TYPEE' does not exist in table 'TRANS'" in response.errors[0].message
 
     query = 'PREDICT TRANS.TYPE FOR EACH TRANS.TRANS_ID WHERE USERS.AGESS > 21'
     parsed_query = parser.to_parsed_predictive_query(query)
     _, response = validator.validate_predictive_query(parsed_query)
     assert not response.ok
-    assert "Column 'AGESS' does not exist in table 'USERS'" in response.errors[
-        0].message
+    assert (
+        "Column 'AGESS' does not exist in table 'USERS'" in response.errors[0].message
+    )
 
-    query = (
-        'PREDICT TRANS.TYPE FOR EACH TRANS.TRANS_ID WHERE TRANS.TYPEE = "A"')
+    query = 'PREDICT TRANS.TYPE FOR EACH TRANS.TRANS_ID WHERE TRANS.TYPEE = "A"'
     parsed_query = parser.to_parsed_predictive_query(query)
     _, response = validator.validate_predictive_query(parsed_query)
     assert not response.ok
@@ -343,8 +353,7 @@ def test_forecasting_aggregation_unit_validation(basic_test_graph, tempdir):
     query = 'PREDICT COUNT(TRANS.*, 0, 1, months) FOR EACH USERS.USER_ID'
     validated_predictive_query = get_validated_query(graph, query)
 
-    with pytest.raises(ValidationException,
-                       match="Forecasting does not support month"):
+    with pytest.raises(ValidationException, match='Forecasting does not support month'):
         PredictiveQueryV2(
             name='test_query_v1',
             graph=graph,
@@ -509,17 +518,21 @@ def _static_link_pred_pquery(
     lp_bp_layout: Optional[str] = None,
     split=None,
 ) -> PredictiveQueryV2:
-    graph = create_lp_graph(root_dir=tempdir.name, num_entities=3,
-                            key_name_match=False, set_entity_time_col=False,
-                            set_trans_time_col=False)
+    graph = create_lp_graph(
+        root_dir=tempdir.name,
+        num_entities=3,
+        key_name_match=False,
+        set_entity_time_col=False,
+        set_trans_time_col=False,
+    )
     graph['PRODUCTS'].remove_time_col()
-    query = ('PREDICT LIST_DISTINCT(TRANS.PRODUCT_ID_FK) RANK TOP 2 '
-             'FOR EACH USERS.USER_ID')
+    query = (
+        'PREDICT LIST_DISTINCT(TRANS.PRODUCT_ID_FK) RANK TOP 2 FOR EACH USERS.USER_ID'
+    )
     validated_predictive_query = get_validated_query(graph, query)
     kwargs = {}
     if list_distinct_target_is_array is not None:
-        kwargs['list_distinct_target_is_array'] = (
-            list_distinct_target_is_array)
+        kwargs['list_distinct_target_is_array'] = list_distinct_target_is_array
     if split is not None:
         kwargs['split'] = split
     return PredictiveQueryV2(
@@ -537,12 +550,20 @@ def test_link_pred_shape_generator_defaults_preserve_direct_call_contract():
     from kumo.pquery import batch_pred_table_generator
     from kumo.pquery.train_table_generator import TrainingTableGeneratorV2
 
-    train_default = signature(
-        TrainingTableGeneratorV2.generate_table,
-    ).parameters['list_distinct_target_is_array'].default
-    pred_default = signature(
-        batch_pred_table_generator.PredictionTableGeneratorV2.generate_table,
-    ).parameters['list_distinct_target_is_array'].default
+    train_default = (
+        signature(
+            TrainingTableGeneratorV2.generate_table,
+        )
+        .parameters['list_distinct_target_is_array']
+        .default
+    )
+    pred_default = (
+        signature(
+            batch_pred_table_generator.PredictionTableGeneratorV2.generate_table,
+        )
+        .parameters['list_distinct_target_is_array']
+        .default
+    )
 
     assert train_default is None
     assert pred_default is False
@@ -553,10 +574,10 @@ def test_train_generator_omitted_shape_preserves_resolved_default():
 
     generator = TrainingTableGeneratorV2.__new__(TrainingTableGeneratorV2)
     generator.list_distinct_target_is_array = True
-    generator.stats_manager = SimpleNamespace(
-        list_distinct_target_is_array=None)
+    generator.stats_manager = SimpleNamespace(list_distinct_target_is_array=None)
     generator.train_table_validator = SimpleNamespace(
-        list_distinct_target_is_array=None)
+        list_distinct_target_is_array=None
+    )
 
     assert generator.set_list_distinct_target_is_array(None) is True
     assert generator.list_distinct_target_is_array is True
@@ -585,8 +606,7 @@ def test_static_link_pred_explicit_array_shape_uses_array_split(
     assert pquery.list_distinct_target_is_array is True
     assert isinstance(pquery.get_default_split(), RandomLinkSplit)
     pquery.table_generator.stats_manager._train_table_stats = object()
-    task = pquery.create_task(
-        train_table_path=osp.join(tempdir.name, 'train_table'))
+    task = pquery.create_task(train_table_path=osp.join(tempdir.name, 'train_table'))
     assert task.list_distinct_target_is_array is True
     assert isinstance(task.train_table.split, RandomLinkSplit)
     assert task.train_table.time_col is None
@@ -656,12 +676,13 @@ def test_default_split_for_temporal_link_pred(create_lp_graph, tempdir):
     link prediction tasks.
     """
     # Create a basic graph for link prediction
-    graph = create_lp_graph(root_dir=tempdir.name, num_entities=3,
-                            key_name_match=False)
+    graph = create_lp_graph(root_dir=tempdir.name, num_entities=3, key_name_match=False)
 
     # Create a temporal link prediction query
-    query = ('PREDICT LIST_DISTINCT(TRANS.PRODUCT_ID_FK, 3, 7) RANK TOP 2 FOR '
-             'EACH USERS.USER_ID')
+    query = (
+        'PREDICT LIST_DISTINCT(TRANS.PRODUCT_ID_FK, 3, 7) RANK TOP 2 FOR '
+        'EACH USERS.USER_ID'
+    )
     validated_predictive_query = get_validated_query(graph, query)
 
     # Create the predictive query with decoupled splits enabled
@@ -747,6 +768,7 @@ def test_default_split_for_static_query(create_static_node_pred_graph):
 class TestParseQueryStringV2ForecastBootstrap:
     """Tests for parse_query_string_v2 FORECAST syntax and bootstrap
     lag_timesteps behavior."""
+
     def test_forecast_syntax_sets_forecast_length(
         self,
         create_node_pred_graph,
@@ -756,24 +778,29 @@ class TestParseQueryStringV2ForecastBootstrap:
         from kumo.pquery.parser import parse_query_string_v2
 
         graph = create_node_pred_graph('test_graph', tempdir.name)
-        query = ("PREDICT SUM(TRANSACTIONS.AMOUNT, 0, 2) "
-                 "FORECAST 3 TIMEFRAMES "
-                 "FOR EACH USERS.USER_ID")
+        query = (
+            'PREDICT SUM(TRANSACTIONS.AMOUNT, 0, 2) '
+            'FORECAST 3 TIMEFRAMES '
+            'FOR EACH USERS.USER_ID'
+        )
 
         config = parse_query_string_v2('test', graph, query)
 
         assert config.forecast_length == 3
 
     def test_forecast_syntax_sets_bootstrap_lag_timesteps(
-            self, create_node_pred_graph, tempdir):
+        self, create_node_pred_graph, tempdir
+    ):
         """FORECAST syntax should set lag_timesteps=1 as bootstrap default
         so the pquery can be constructed before model plan is consulted."""
         from kumo.pquery.parser import parse_query_string_v2
 
         graph = create_node_pred_graph('test_graph', tempdir.name)
-        query = ("PREDICT SUM(TRANSACTIONS.AMOUNT, 0, 2) "
-                 "FORECAST 3 TIMEFRAMES "
-                 "FOR EACH USERS.USER_ID")
+        query = (
+            'PREDICT SUM(TRANSACTIONS.AMOUNT, 0, 2) '
+            'FORECAST 3 TIMEFRAMES '
+            'FOR EACH USERS.USER_ID'
+        )
 
         config = parse_query_string_v2('test', graph, query)
 
@@ -789,8 +816,7 @@ class TestParseQueryStringV2ForecastBootstrap:
         from kumo.pquery.parser import parse_query_string_v2
 
         graph = create_node_pred_graph('test_graph', tempdir.name)
-        query = ("PREDICT SUM(TRANSACTIONS.AMOUNT, 0, 2) "
-                 "FOR EACH USERS.USER_ID")
+        query = 'PREDICT SUM(TRANSACTIONS.AMOUNT, 0, 2) FOR EACH USERS.USER_ID'
 
         config = parse_query_string_v2('test', graph, query)
 
@@ -811,9 +837,11 @@ class TestParseQueryStringV2ForecastBootstrap:
         from kumo.pquery.parser import parse_query_string_v2
 
         graph = create_node_pred_graph('test_graph', tempdir.name)
-        query = ("PREDICT SUM(TRANSACTIONS.AMOUNT, 0, 2) "
-                 "FORECAST 3 TIMEFRAMES "
-                 "FOR EACH USERS.USER_ID")
+        query = (
+            'PREDICT SUM(TRANSACTIONS.AMOUNT, 0, 2) '
+            'FORECAST 3 TIMEFRAMES '
+            'FOR EACH USERS.USER_ID'
+        )
 
         # Step 1: Parser extracts forecast_length from FORECAST syntax
         config = parse_query_string_v2('test', graph, query)
@@ -851,11 +879,15 @@ class TestParseQueryStringV2SyntaxError:
     surfaces) instead of the parser's bare ValueError (which the data-backend
     allowlist masks as a generic "contact Kumo support" 500). Regression guard
     for finding 018."""
-    @pytest.mark.parametrize('bad_query', [
-        'PREDICT FOR EACH',
-        'this is not a query',
-        'PREDICT COUNT( FOR EACH USERS.USER_ID',
-    ])
+
+    @pytest.mark.parametrize(
+        'bad_query',
+        [
+            'PREDICT FOR EACH',
+            'this is not a query',
+            'PREDICT COUNT( FOR EACH USERS.USER_ID',
+        ],
+    )
     def test_syntax_error_raises_validation_exception_not_value_error(
         self,
         create_node_pred_graph,
@@ -873,42 +905,67 @@ class TestParseQueryStringV2SyntaxError:
         # ValueError), so pytest.raises(ValidationException) would not catch it.
         assert not isinstance(exc_info.value, ValueError)
         # The parser's actionable diagnostic is preserved, not discarded.
-        assert 'Encountered the following issues during parsing' in str(
-            exc_info.value)
+        assert 'Encountered the following issues during parsing' in str(exc_info.value)
 
 
-@pytest.mark.parametrize('split_expression', [
-    'RandomSplit([0.6, 0.3, 0.1], seed=17)',
-    'TemporalSplit([0.6, 0.3, 0.1])',
-])
+@pytest.mark.parametrize(
+    'split_expression',
+    [
+        'RandomSplit([0.6, 0.3, 0.1], seed=17)',
+        'TemporalSplit([0.6, 0.3, 0.1])',
+    ],
+)
 def test_explicit_static_link_split_preserves_hosted_normalization(
-        create_lp_graph, tempdir, split_expression):
+    create_lp_graph, tempdir, split_expression
+):
     from kumo.task.splits.parsing import get_split
 
-    pquery = _static_link_pred_pquery(create_lp_graph, tempdir,
-                                      list_distinct_target_is_array=True,
-                                      split=get_split(split_expression))
+    pquery = _static_link_pred_pquery(
+        create_lp_graph,
+        tempdir,
+        list_distinct_target_is_array=True,
+        split=get_split(split_expression),
+    )
     assert type(pquery.split) is RandomLinkSplit
     assert pquery.split.ratio == [0.6, 0.3, 0.1]
     assert not hasattr(pquery.split, 'seed')
 
 
-@pytest.mark.parametrize('entity_time, query, accepted', [
-    (True, 'PREDICT LIST_DISTINCT(TRANS.PRODUCT_ID_FK) RANK TOP 2 '
-     'FOR EACH USERS.USER_ID', False),
-    (False, 'PREDICT LIST_DISTINCT(TRANS.PRODUCT_ID_FK) RANK TOP 2 '
-     'FOR EACH USERS.USER_ID', True),
-    (True, 'PREDICT LIST_DISTINCT(TRANS.PRODUCT_ID_FK, 0, 7) RANK TOP 2 '
-     'FOR EACH USERS.USER_ID', True),
-])
+@pytest.mark.parametrize(
+    'entity_time, query, accepted',
+    [
+        (
+            True,
+            'PREDICT LIST_DISTINCT(TRANS.PRODUCT_ID_FK) RANK TOP 2 '
+            'FOR EACH USERS.USER_ID',
+            False,
+        ),
+        (
+            False,
+            'PREDICT LIST_DISTINCT(TRANS.PRODUCT_ID_FK) RANK TOP 2 '
+            'FOR EACH USERS.USER_ID',
+            True,
+        ),
+        (
+            True,
+            'PREDICT LIST_DISTINCT(TRANS.PRODUCT_ID_FK, 0, 7) RANK TOP 2 '
+            'FOR EACH USERS.USER_ID',
+            True,
+        ),
+    ],
+)
 def test_hosted_query_validation_owns_the_static_link_time_rule(
-        create_lp_graph, tempdir, entity_time, query, accepted):
+    create_lp_graph, tempdir, entity_time, query, accepted
+):
     from kumo.pquery.parser import parse_query_string_v2
 
-    graph = create_lp_graph(root_dir=tempdir.name, num_entities=3,
-                            key_name_match=False,
-                            set_entity_time_col=entity_time,
-                            set_trans_time_col=', 0, 7)' in query)
+    graph = create_lp_graph(
+        root_dir=tempdir.name,
+        num_entities=3,
+        key_name_match=False,
+        set_entity_time_col=entity_time,
+        set_trans_time_col=', 0, 7)' in query,
+    )
     graph['PRODUCTS'].remove_time_col()
     if accepted:
         parse_query_string_v2('test', graph, query)

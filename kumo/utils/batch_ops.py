@@ -45,8 +45,9 @@ def remove_nones(input: List[Optional[T]]) -> Tuple[List[T], List[int]]:
     return result, none_idxs
 
 
-def insert_nones(input: Union[List[T], List[Optional[T]]],
-                 none_idxs: List[int]) -> List[Optional[T]]:
+def insert_nones(
+    input: Union[List[T], List[Optional[T]]], none_idxs: List[int]
+) -> List[Optional[T]]:
     """Insert None entries such that the output list has None entries at the
     given set of indexes. This is generally called after `remove_nones`, in
     order to restore a list to its original length after passing it to another
@@ -63,8 +64,7 @@ def insert_nones(input: Union[List[T], List[Optional[T]]],
 
 
 def replace_nones(input: List[Optional[T]], default: T) -> List[T]:
-    """Insert the given default value for all items that are None.
-    """
+    """Insert the given default value for all items that are None."""
     result: List[T] = []
     for item in input:
         if item is None:
@@ -96,7 +96,7 @@ def log_errors(input: List[Union[T, Exception]]) -> List[Optional[T]]:
         if frame is not None and frame.f_back is not None:
             func = frame.f_back.f_code
             log.warn(
-                "Encountered %s errors at %s in %s:%i: %s",
+                'Encountered %s errors at %s in %s:%i: %s',
                 n_errors,
                 func.co_name,
                 func.co_filename,
@@ -105,7 +105,7 @@ def log_errors(input: List[Union[T, Exception]]) -> List[Optional[T]]:
             )
         else:
             log.warn(
-                "Encountered %s errors: %s",
+                'Encountered %s errors: %s',
                 n_errors,
                 errors_to_log,
             )

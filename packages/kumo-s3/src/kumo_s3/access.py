@@ -15,9 +15,10 @@ from kumo_core.sources.errors import (
     TransientSourceError,
 )
 from kumo_core.sources.object_store_access import ObjectStoreAccess, refreshing
-from kumo_s3.session import anonymous_filesystem
 from pyarrow import fs
 from pyarrow.fs import FileSystem
+
+from kumo_s3.session import anonymous_filesystem
 
 #: Each chunk is one ranged GET: at 2.5 GB/s, 8 MiB is ~300 requests a
 #: second where Arrow's default 1 MiB is ~2,400, against S3's 5,500 per prefix.
@@ -32,9 +33,13 @@ def _object_identity(source: FileSystem, path: str) -> tuple[str, ...]:
         etag = metadata.get('ETag')
         if not etag:
             raise TransientSourceError(
-                f'No S3 object identity was returned for {path}.')
-        return (etag.decode(), metadata.get('VersionId',
-                                            b'').decode(), str(stream.size()))
+                f'No S3 object identity was returned for {path}.'
+            )
+        return (
+            etag.decode(),
+            metadata.get('VersionId', b'').decode(),
+            str(stream.size()),
+        )
 
 
 def source_access(
@@ -53,8 +58,9 @@ def source_access(
 
     options = {
         key: value
-        for key, value in (options or {}).items() if key not in
-        {'access_key', 'secret_key', 'session_token', 'region', 'anonymous'}
+        for key, value in (options or {}).items()
+        if key
+        not in {'access_key', 'secret_key', 'session_token', 'region', 'anonymous'}
     }
     if endpoint_url:
         options.setdefault('endpoint_override', endpoint_url)
@@ -63,28 +69,31 @@ def source_access(
     if endpoint:
         endpoint = str(endpoint)
         if '://' not in endpoint:
-            endpoint = f"{options.get('scheme', 'https')}://{endpoint}"
+            endpoint = f'{options.get("scheme", "https")}://{endpoint}'
 
     def signed() -> fs.S3FileSystem | None:
-        return kumo_s3.filesystem(bucket, session=session,
-                                  endpoint_url=endpoint,
-                                  default_region=default_region,
-                                  options=options)
+        return kumo_s3.filesystem(
+            bucket,
+            session=session,
+            endpoint_url=endpoint,
+            default_region=default_region,
+            options=options,
+        )
 
     filesystem = signed()
     credentials = session.get_credentials() if filesystem else None
     if filesystem is None:
         if not allow_anonymous:
             raise ReconnectRequiredError(
-                'The selected S3 identity has no usable credentials.',
-                table=bucket)
+                'The selected S3 identity has no usable credentials.', table=bucket
+            )
         filesystem = anonymous_filesystem(
-            bucket, region=default_region or session.region_name,
-            options=options)
+            bucket, region=default_region or session.region_name, options=options
+        )
     lock = threading.Lock()
     current = [
         credentials.get_frozen_credentials() if credentials else None,
-        filesystem
+        filesystem,
     ]
 
     def refreshed() -> fs.FileSystem:
@@ -104,8 +113,11 @@ def source_access(
         source_bucket, separator, key = path.partition('/')
         if source_bucket != bucket or not separator or not key:
             raise ValueError('S3 source path is outside the selected bucket.')
-        with NamedTemporaryFile(dir=os.path.dirname(os.path.abspath(target)),
-                                prefix='.kumo-s3-', delete=False) as temporary:
+        with NamedTemporaryFile(
+            dir=os.path.dirname(os.path.abspath(target)),
+            prefix='.kumo-s3-',
+            delete=False,
+        ) as temporary:
             staging = temporary.name
         source = refreshed()
         try:
@@ -120,25 +132,30 @@ def source_access(
                     ) from error
                 if after != before:
                     raise TransientSourceError(
-                        f'{path} was replaced while it was being copied.')
+                        f'{path} was replaced while it was being copied.'
+                    )
 
             try:
-                fs.copy_files(path, staging, source_filesystem=source,
-                              destination_filesystem=fs.LocalFileSystem(),
-                              chunk_size=_CHUNK)
+                fs.copy_files(
+                    path,
+                    staging,
+                    source_filesystem=source,
+                    destination_filesystem=fs.LocalFileSystem(),
+                    chunk_size=_CHUNK,
+                )
             except Exception:
                 verify()
                 raise
             verify()
             if os.path.getsize(staging) != int(before[-1]):
                 raise TransientSourceError(
-                    f'copied {os.path.getsize(staging)} of {before[-1]} '
-                    f'bytes of {path}')
+                    f'copied {os.path.getsize(staging)} of {before[-1]} bytes of {path}'
+                )
             os.replace(staging, target)
         finally:
             with suppress(OSError):
                 os.unlink(staging)
 
     return ObjectStoreAccess(
-        refreshing(refreshed) if credentials else filesystem, fetch,
-        object_identity)
+        refreshing(refreshed) if credentials else filesystem, fetch, object_identity
+    )

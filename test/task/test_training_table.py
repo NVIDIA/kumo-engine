@@ -34,11 +34,13 @@ TASK_NAME = 'SYNTHETIC'
 
 
 def _create_csv_training_table(tmp_path: pathlib.Path) -> TrainingTable:
-    pd.DataFrame({
-        'col_1': [1],
-        'col_2': [2],
-        'fkey_1': [3],
-    }).to_csv(tmp_path / f'{TEST_TABLE_NAME}.csv', index=False)
+    pd.DataFrame(
+        {
+            'col_1': [1],
+            'col_2': [2],
+            'fkey_1': [3],
+        }
+    ).to_csv(tmp_path / f'{TEST_TABLE_NAME}.csv', index=False)
     connector = CSVConnector(CONNECTOR_NAME, str(tmp_path))
     return _create_training_table(connector)
 
@@ -70,16 +72,18 @@ def test_config_and_repr(tmp_path: pathlib.Path):
 
     # Test saving and loading a training table config
     config: TrainingTableConfig = training_table.config()
-    assert str(training_table) == ('TrainingTable(\n'
-                                   '  name=csv.test_train_table,\n'
-                                   '  data_source=csv,\n'
-                                   '  target_col=col_1,\n'
-                                   '  fkeys=[fkey_1],\n'
-                                   '  cols=[col_1, col_2],\n'
-                                   '  time_col=???,\n'
-                                   '  weight_col=???,\n'
-                                   '  entity_include_bit_col=???,\n'
-                                   ')')
+    assert str(training_table) == (
+        'TrainingTable(\n'
+        '  name=csv.test_train_table,\n'
+        '  data_source=csv,\n'
+        '  target_col=col_1,\n'
+        '  fkeys=[fkey_1],\n'
+        '  cols=[col_1, col_2],\n'
+        '  time_col=???,\n'
+        '  weight_col=???,\n'
+        '  entity_include_bit_col=???,\n'
+        ')'
+    )
 
     # Ensure connector is also in config
     assert config.connector is not None
@@ -143,15 +147,16 @@ def test_one_class_bounded_distribution_raises_validation_error():
             num_entities=3,
             num_targets=1,
             target_distribution={},
-        ), )
+        ),
+    )
 
     with pytest.raises(TrainingTableSplitError, match='only one target value'):
-        training_table.validate_training_table_stats([TrainingStage.TRAIN],
-                                                     stats)
+        training_table.validate_training_table_stats([TrainingStage.TRAIN], stats)
 
 
-MANUAL_SPLIT = ManualSplit(col='precomputed_split', train_value=0, val_value=1,
-                           test_value=2)
+MANUAL_SPLIT = ManualSplit(
+    col='precomputed_split', train_value=0, val_value=1, test_value=2
+)
 
 
 def _training_table_with_split_stats(split, *, min_date, max_date):
@@ -166,14 +171,15 @@ def _training_table_with_split_stats(split, *, min_date, max_date):
             target_distribution={},
             min_date=min_date,
             max_date=max_date,
-        ), )
+        ),
+    )
     return training_table
 
 
 def test_prediction_horizon_reads_per_stage_stats_under_a_manual_split():
-    training_table = _training_table_with_split_stats(MANUAL_SPLIT,
-                                                      min_date='2024-01-01',
-                                                      max_date='2024-02-01')
+    training_table = _training_table_with_split_stats(
+        MANUAL_SPLIT, min_date='2024-01-01', max_date='2024-02-01'
+    )
 
     horizon = training_table.prediction_horizon(TrainingStage.TRAIN)
 
@@ -183,9 +189,9 @@ def test_prediction_horizon_reads_per_stage_stats_under_a_manual_split():
 def test_prediction_horizon_is_none_when_the_stage_has_no_dates():
     # A stage with no dates has no horizon -- the existing absence handling,
     # reached now that provenance is no longer consulted first.
-    training_table = _training_table_with_split_stats(MANUAL_SPLIT,
-                                                      min_date=None,
-                                                      max_date=None)
+    training_table = _training_table_with_split_stats(
+        MANUAL_SPLIT, min_date=None, max_date=None
+    )
 
     assert training_table.prediction_horizon(TrainingStage.TRAIN) is None
 
@@ -193,24 +199,23 @@ def test_prediction_horizon_is_none_when_the_stage_has_no_dates():
 def test_prediction_horizon_answers_the_same_for_every_split_family():
     # The answer comes from the rows, so two tables with identical stats must
     # agree regardless of which split produced them.
-    manual = _training_table_with_split_stats(MANUAL_SPLIT,
-                                              min_date='2024-01-01',
-                                              max_date='2024-02-01')
+    manual = _training_table_with_split_stats(
+        MANUAL_SPLIT, min_date='2024-01-01', max_date='2024-02-01'
+    )
     random_split = _training_table_with_split_stats(
-        RandomSplit([0.8, 0.1, 0.1]), min_date='2024-01-01',
-        max_date='2024-02-01')
+        RandomSplit([0.8, 0.1, 0.1]), min_date='2024-01-01', max_date='2024-02-01'
+    )
 
-    assert (manual.prediction_horizon(
-        TrainingStage.TRAIN) == random_split.prediction_horizon(
-            TrainingStage.TRAIN))
+    assert manual.prediction_horizon(
+        TrainingStage.TRAIN
+    ) == random_split.prediction_horizon(TrainingStage.TRAIN)
 
 
 def test_time_period_reads_precomputed_stages_under_a_manual_split():
     training_table = TrainingTable.__new__(TrainingTable)
     training_table.split = MANUAL_SPLIT
     period = TimePeriod.cast('2024-01-01', '2024-02-01')
-    training_table._data = SimpleNamespace(
-        time_periods={TrainingStage.TRAIN: period})
+    training_table._data = SimpleNamespace(time_periods={TrainingStage.TRAIN: period})
 
     assert training_table.time_period(TrainingStage.TRAIN) is period
 
@@ -221,6 +226,6 @@ def test_time_period_without_time_stats_still_names_its_precondition():
     training_table._data = SimpleNamespace(time_periods={})
 
     with pytest.raises(
-            ValidationException,
-            match='Ensure the training table has a real time column'):
+        ValidationException, match='Ensure the training table has a real time column'
+    ):
         training_table.time_period(TrainingStage.TRAIN)

@@ -114,7 +114,7 @@ def _consume_background_future(future: asyncio.Future) -> None:
 
 
 async def get_graph_snapshot_info(
-    graph_snapshot_id: snapshot_interfaces.GraphSnapshotID
+    graph_snapshot_id: snapshot_interfaces.GraphSnapshotID,
 ) -> Tuple[GraphIDv2, GraphDataVersionInfo]:
     """
     Helper function to lookup persisted graph data version for the given
@@ -126,16 +126,15 @@ async def get_graph_snapshot_info(
     version_info_path = cache.graph_cache.version_info_path(graph_id, data_ver)
     graph_version_info = None
     for attempt in range(5):
-        graph_version_info = (await
-                              load_many_json.coroutine([version_info_path],
-                                                       GraphDataVersionInfo))[0]
+        graph_version_info = (
+            await load_many_json.coroutine([version_info_path], GraphDataVersionInfo)
+        )[0]
         if graph_version_info:
             break
         if attempt < 4:
             await asyncio.sleep(0.5)
     if not graph_version_info:
-        raise ValueError(
-            GRAPH_SNAPSHOT_NOT_FOUND_MESSAGE.format(graph_snapshot_id))
+        raise ValueError(GRAPH_SNAPSHOT_NOT_FOUND_MESSAGE.format(graph_snapshot_id))
     assert graph_version_info.graph_data_version == data_ver
     return graph_id, graph_version_info
 
@@ -161,8 +160,9 @@ def _hydrate_graph_config_source_from_graph_def(
         connector_id = getattr(source_table, 'connector_id', None)
         source_table_name = table_def.get_source_table_name()
 
-        if connector_id and (not table_cfg.data_source
-                             or table_cfg.data_source == 'default'):
+        if connector_id and (
+            not table_cfg.data_source or table_cfg.data_source == 'default'
+        ):
             table_cfg.data_source = str(connector_id)
         if source_table_name and not table_cfg.source_name:
             table_cfg.source_name = str(source_table_name)
@@ -188,12 +188,12 @@ def _build_ingest_graph_config(
         ver = name_to_ver.get(TableName(table.table_name))
         if ver is not None:
             table._data_version = ver
-    return _hydrate_graph_config_source_from_graph_def(graph_obj.config(),
-                                                       graph_def)
+    return _hydrate_graph_config_source_from_graph_def(graph_obj.config(), graph_def)
 
 
 class DataSnapshotApiDriver:
     """RPC service for table/graph data snapshot APIs."""
+
     def __init__(
         self,
         data_backend_ctx: DataBackendContext,
@@ -207,8 +207,7 @@ class DataSnapshotApiDriver:
 
     def _require_state_services(self) -> StateServices:
         if self._state_services is None:
-            raise RuntimeError(
-                "DataSnapshotApiDriver StateServices is not configured")
+            raise RuntimeError('DataSnapshotApiDriver StateServices is not configured')
         return self._state_services
 
     def _table_service(self):
@@ -249,9 +248,11 @@ class DataSnapshotApiDriver:
         table_ids: List[FPID],
     ) -> List[TableDBEntryV2]:
         table_db_entries_map = await self._table_service().get_table_entries(
-            project_id, table_ids)
+            project_id, table_ids
+        )
         return [
-            table_db_entries_map[table_id] for table_id in table_ids
+            table_db_entries_map[table_id]
+            for table_id in table_ids
             if table_id in table_db_entries_map
         ]
 
@@ -262,7 +263,7 @@ class DataSnapshotApiDriver:
     ) -> TableDBEntryV2:
         table_db_entry = await self._get_table_entry(project_id, fpid)
         if table_db_entry is None:
-            raise KeyError(f"Table with id {fpid} not found in database")
+            raise KeyError(f'Table with id {fpid} not found in database')
         return table_db_entry
 
     async def _get_many_table_definitions(
@@ -277,7 +278,8 @@ class DataSnapshotApiDriver:
             table_fpids.append(table_fpid)
 
         table_db_entries_map = await self._table_service().get_table_entries(
-            project_id, table_fpids)
+            project_id, table_fpids
+        )
         table_defs: List[Union[TableDefinition, Exception]] = []
         for table_id, table_fpid in zip(table_ids, table_fpids):
             table_db_entry = table_db_entries_map.get(table_fpid)
@@ -294,7 +296,8 @@ class DataSnapshotApiDriver:
     ) -> Tuple[GraphIDv2, GraphDefinition]:
         graph_id = GraphIDv2.compose(fpid=graph_fpid)
         graph_def = await self._graph_service().get_graph_definition(
-            project_id, graph_fpid)
+            project_id, graph_fpid
+        )
         if graph_def is None:
             raise KeyError(f'graph-{graph_fpid} is not found.')
         return graph_id, graph_def
@@ -317,25 +320,29 @@ class DataSnapshotApiDriver:
         project_id: ProjectID,
     ) -> EdgeHealthStats:
         data_compute_input = await self._graph_service().get_graph_cache_input(
-            graph_id, project_id=project_id)
+            graph_id, project_id=project_id
+        )
 
         link_stats = await DataBackend.get_edge_stats(
             self._data_backend_ctx,
             data_compute_input,
             graph_version_info,
         )
-        edge_stats = EdgeHealthStats(is_ready=link_stats is not None,
-                                     link_stats=link_stats)
+        edge_stats = EdgeHealthStats(
+            is_ready=link_stats is not None, link_stats=link_stats
+        )
 
         pquery_id, _ = GraphIDv2.parse(graph_id)
         if edge_stats.link_stats:
             for edge in edge_stats.link_stats:
                 if edge.col_a:
                     edge.col_a.table_id = TableIDv2.update(
-                        TableIDv2(edge.col_a.table_id), pquery_id, False)
+                        TableIDv2(edge.col_a.table_id), pquery_id, False
+                    )
                 if edge.col_b:
                     edge.col_b.table_id = TableIDv2.update(
-                        TableIDv2(edge.col_b.table_id), pquery_id, False)
+                        TableIDv2(edge.col_b.table_id), pquery_id, False
+                    )
         return edge_stats
 
     async def create_graph_snapshot(
@@ -362,8 +369,7 @@ class DataSnapshotApiDriver:
         snapshot.
         """
         await self.require_project_access(project_id, _current_user_ctx.get())
-        graph_id, graph_def = await self._get_graph_by_fpid(
-            project_id, graph_fpid)
+        graph_id, graph_def = await self._get_graph_by_fpid(project_id, graph_fpid)
 
         # Create a snapshot for each table in this graph.
         table_snapshot_ids = await self._create_many_table_snapshots(
@@ -374,8 +380,9 @@ class DataSnapshotApiDriver:
         )
 
         table_versions: Dict[TableID, TableDataVersion] = {}
-        for table_name, table_snapshot_id in zip(graph_def.tables.keys(),
-                                                 table_snapshot_ids):
+        for table_name, table_snapshot_id in zip(
+            graph_def.tables.keys(), table_snapshot_ids
+        ):
             fpid, data_ver = DataSnapshot.TABLE.parse_id(table_snapshot_id)
             table_id = TableIDv2.compose(None, table_name, fpid)
             table_versions[table_id] = TableDataVersion(data_ver)
@@ -384,8 +391,9 @@ class DataSnapshotApiDriver:
         # This is slightly different from GraphLogic.start_graph_refresh()
         # by computing and saving graph data vesion even before launching the
         # GraphRefreshWorkflow.
-        data_compute_input = (await self._get_graph_data_compute_input(
-            graph_id, project_id))
+        data_compute_input = await self._get_graph_data_compute_input(
+            graph_id, project_id
+        )
         # Pin the per-table data versions instead of mutating the (now
         # immutable) TableDefinition. `refresh_graph_data_version` reads
         # from `pinned_data_versions` to override the latest-version fetch.
@@ -396,34 +404,37 @@ class DataSnapshotApiDriver:
             data_compute_input,
         )
         graph_entry = await self._graph_service().get_graph_entry(
-            project_id, graph_fpid)
+            project_id, graph_fpid
+        )
         if graph_entry and graph_entry.alias:
             version_info.graph_name = graph_entry.alias
         elif base_graph_name:
-            version_info.graph_name = f"{base_graph_name} (modified)"
+            version_info.graph_name = f'{base_graph_name} (modified)'
         else:
             version_info.graph_name = None
         # Re-save version_info to persist graph_name. This is necessary for
         # single-table graphs (no column_groups) where start_refresh_graph
         # returns early and never calls save_graph_data_version.
         await DataBackendActivities.save_graph_data_version(
-            data_compute_input, version_info)
+            data_compute_input, version_info
+        )
         connector_ids = tuple(data_compute_input.connectors)
-        fresh_references = await self._connector_service(
-        ).fresh_execution_refs_for_workflow(
-            _current_user_ctx.get(),
-            tuple(data_compute_input.connectors.values()),
-            CONNECTOR_GRAPH_ACTIONS,
+        fresh_references = (
+            await self._connector_service().fresh_execution_refs_for_workflow(
+                _current_user_ctx.get(),
+                tuple(data_compute_input.connectors.values()),
+                CONNECTOR_GRAPH_ACTIONS,
+            )
         )
         data_compute_input.connectors = dict(
-            zip(connector_ids, fresh_references, strict=True))
+            zip(connector_ids, fresh_references, strict=True)
+        )
         await DataBackend.start_refresh_graph(
             self._data_backend_ctx,
             data_compute_input,
             version_info,
         )
-        return DataSnapshot.GRAPH.format_id(graph_fpid,
-                                            version_info.graph_data_version)
+        return DataSnapshot.GRAPH.format_id(graph_fpid, version_info.graph_data_version)
 
     async def get_graph_snapshot(
         self,
@@ -442,18 +453,20 @@ class DataSnapshotApiDriver:
         # definition.
         if graph_def and graph_version:
             graph_fpid = graph_def.fpid
-            graph_snapshot_id = DataSnapshot.GRAPH.format_id(
-                graph_fpid, graph_version)
+            graph_snapshot_id = DataSnapshot.GRAPH.format_id(graph_fpid, graph_version)
             graph_id, version_info = await self._get_graph_snapshot_info(
-                graph_snapshot_id)
+                graph_snapshot_id
+            )
         else:
             if not graph_snapshot_id:
                 raise ValueError(
-                    "Please provide a valid graph snapshot ID or a" +
-                    " valid graph definition and graph version" +
-                    " to fetch a graph snapshot.")
+                    'Please provide a valid graph snapshot ID or a'
+                    + ' valid graph definition and graph version'
+                    + ' to fetch a graph snapshot.'
+                )
             graph_id, version_info = await self._get_graph_snapshot_info(
-                graph_snapshot_id)
+                graph_snapshot_id
+            )
             graph_fpid, _ = DataSnapshot.GRAPH.parse_id(graph_snapshot_id)
 
             _, graph_def = await self._get_graph_by_fpid(project_id, graph_fpid)
@@ -465,13 +478,15 @@ class DataSnapshotApiDriver:
         ] = {}
         for table_name, table_def in graph_def.tables.items():
             id = DataSnapshot.TABLE.format_id(
-                table_def.fpid, version_info.table_data_versions[table_name])
+                table_def.fpid, version_info.table_data_versions[table_name]
+            )
             table_ids[table_name] = id
             fpid, data_ver = DataSnapshot.TABLE.parse_id(id)
             table_snapshot_ids[fpid] = TableDataVersion(data_ver)
 
         table_snapshots = await self._get_many_kumo_table_snapshots(
-            project_id, table_snapshot_ids)
+            project_id, table_snapshot_ids
+        )
 
         graph_ingest_state = _merge_table_ingest_job_states(table_snapshots)
         if graph_def.col_groups:
@@ -479,8 +494,7 @@ class DataSnapshotApiDriver:
                 str(graph_id),
                 version_info.graph_data_version,
             )
-            graph_refresh_state = await self._graph_refresh_job_state(
-                refresh_wf_id)
+            graph_refresh_state = await self._graph_refresh_job_state(refresh_wf_id)
             if graph_refresh_state is not None:
                 graph_ingest_state = _merge_graph_ingest_job_states(
                     graph_ingest_state,
@@ -492,8 +506,7 @@ class DataSnapshotApiDriver:
                 id=graph_snapshot_id,
                 table_ids=table_ids,
                 stages={
-                    snapshot_interfaces.GraphSnapshotStage.INGEST:
-                    graph_ingest_state,
+                    snapshot_interfaces.GraphSnapshotStage.INGEST: graph_ingest_state,
                     # TODO: add compute_edge_stats stage?
                 },
                 graph_name=version_info.graph_name,
@@ -521,7 +534,8 @@ class DataSnapshotApiDriver:
         }.get(description.status)
         if status is None:
             raise ValueError(
-                f'Unsupported WorkflowExecutionStatus {description.status}')
+                f'Unsupported WorkflowExecutionStatus {description.status}'
+            )
 
         state = snapshot_interfaces.JobState(
             status=status,
@@ -562,9 +576,11 @@ class DataSnapshotApiDriver:
         # Get edge stats from the backend
         await self.require_project_access(project_id, _current_user_ctx.get())
         graph_id, graph_version_info = await self._get_graph_snapshot_info(
-            graph_snapshot_id)
+            graph_snapshot_id
+        )
         state_edge_stats = await self._get_state_graph_edge_stats(
-            graph_id, graph_version_info, project_id)
+            graph_id, graph_version_info, project_id
+        )
         return state_edge_stats
 
     async def get_edge_health(
@@ -589,7 +605,8 @@ class DataSnapshotApiDriver:
         await self.require_project_access(project_id, _current_user_ctx.get())
         # Get edge stats from the backend
         v1_stats: EdgeHealthStats = await self.get_ui_edge_health(
-            graph_snapshot_id, project_id)
+            graph_snapshot_id, project_id
+        )
 
         # Get information about the graph definition
         graph_fpid, _ = DataSnapshot.GRAPH.parse_id(graph_snapshot_id)
@@ -598,8 +615,7 @@ class DataSnapshotApiDriver:
 
         # If not ready, early return
         if not v1_stats.is_ready:
-            return graph_interfaces.EdgeHealthResponse(is_ready=False,
-                                                       statistics={})
+            return graph_interfaces.EdgeHealthResponse(is_ready=False, statistics={})
         assert v1_stats.link_stats is not None
 
         # If ready, process into public-facing api class
@@ -624,21 +640,21 @@ class DataSnapshotApiDriver:
                 use_reversed_edge = True
 
             # Extract values, make sure they're all specified
-            absolute_src_in_dst: Optional[float] = (stat.matches.a_in_b
-                                                    if not use_reversed_edge
-                                                    else stat.matches.b_in_a)
-            absolute_dst_in_src: Optional[float] = (stat.matches.b_in_a
-                                                    if not use_reversed_edge
-                                                    else stat.matches.a_in_b)
+            absolute_src_in_dst: Optional[float] = (
+                stat.matches.a_in_b if not use_reversed_edge else stat.matches.b_in_a
+            )
+            absolute_dst_in_src: Optional[float] = (
+                stat.matches.b_in_a if not use_reversed_edge else stat.matches.a_in_b
+            )
             assert absolute_src_in_dst is not None
             assert absolute_dst_in_src is not None
 
-            percent_src_in_dst: Optional[float] = (stat.percents.a_in_b
-                                                   if not use_reversed_edge else
-                                                   stat.percents.b_in_a)
-            percent_dst_in_src: Optional[float] = (stat.percents.b_in_a
-                                                   if not use_reversed_edge else
-                                                   stat.percents.a_in_b)
+            percent_src_in_dst: Optional[float] = (
+                stat.percents.a_in_b if not use_reversed_edge else stat.percents.b_in_a
+            )
+            percent_dst_in_src: Optional[float] = (
+                stat.percents.b_in_a if not use_reversed_edge else stat.percents.a_in_b
+            )
             assert percent_src_in_dst is not None
             assert percent_dst_in_src is not None
 
@@ -656,8 +672,7 @@ class DataSnapshotApiDriver:
             )
             statistics[edge.fully_qualified_name] = stats
 
-        return graph_interfaces.EdgeHealthResponse(is_ready=True,
-                                                   statistics=statistics)
+        return graph_interfaces.EdgeHealthResponse(is_ready=True, statistics=statistics)
 
     async def create_table_snapshot(
         self,
@@ -681,9 +696,11 @@ class DataSnapshotApiDriver:
         """
         await self.require_project_access(project_id, _current_user_ctx.get())
         table_definition = await self._canonicalize_custom_sql_name(
-            table_definition, project_id)
+            table_definition, project_id
+        )
         table_db_entry = await self._require_reachable_table_entry(
-            table_definition, project_id)
+            table_definition, project_id
+        )
         data_ver = await self._trigger_state_services_table_refresh(
             table_db_entry,
             refresh_source=refresh_source,
@@ -703,21 +720,20 @@ class DataSnapshotApiDriver:
             return []
 
         table_definitions = [
-            await self._canonicalize_custom_sql_name(table_definition,
-                                                     project_id)
+            await self._canonicalize_custom_sql_name(table_definition, project_id)
             for table_definition in table_definitions
         ]
-        table_fpids = [
-            table_definition.fpid for table_definition in table_definitions
-        ]
+        table_fpids = [table_definition.fpid for table_definition in table_definitions]
         table_entries_by_fpid = await self._table_service().get_table_entries(
-            project_id, table_fpids)
+            project_id, table_fpids
+        )
         table_entries: List[TableDBEntryV2] = []
         for table_definition in table_definitions:
             table_entry = table_entries_by_fpid.get(table_definition.fpid)
             if table_entry is None:
                 table_entry = await self._ensure_table_entry_with_state_services(
-                    table_definition, project_id)
+                    table_definition, project_id
+                )
             table_entries.append(table_entry)
 
         data_versions = await self._trigger_many_state_services_table_refresh(
@@ -753,8 +769,10 @@ class DataSnapshotApiDriver:
         if not table_definition.is_sql:
             return table_definition
         connector = await self._connector_service().get_for_project(
-            ProjectID(project_id), table_definition.get_connector_id(),
-            _current_user_ctx.get())
+            ProjectID(project_id),
+            table_definition.get_connector_id(),
+            _current_user_ctx.get(),
+        )
         connector_type = ConnectorType(connector.config.type.value)
         return canonicalize_custom_sql_source(table_definition, connector_type)
 
@@ -770,22 +788,24 @@ class DataSnapshotApiDriver:
         definition, or holds a nameless one that no saved graph references.
         """
         entry = await self._table_service().get_table_entry(
-            project_id, table_definition.fpid)
+            project_id, table_definition.fpid
+        )
         if entry is None:
             raise ValueError(
                 'This table is not saved in this project, so there is nothing '
                 'to snapshot. Save the table with table.save(name), or save '
-                'the graph it belongs to, and then request the snapshot.')
+                'the graph it belongs to, and then request the snapshot.'
+            )
         if entry.alias:
             return cast(TableDBEntryV2, entry)
         graphs = await self._graph_service().list_graphs(project_id)
-        if any(entry.id in graph.table_name_to_dbid.values()
-               for graph in graphs):
+        if any(entry.id in graph.table_name_to_dbid.values() for graph in graphs):
             return cast(TableDBEntryV2, entry)
         raise ValueError(
             'This table is stored without a name and no saved graph uses it, '
             'so it cannot be snapshotted. Give it a name with '
-            'table.save(name), and then request the snapshot.')
+            'table.save(name), and then request the snapshot.'
+        )
 
     async def _ensure_table_entry_with_state_services(
         self,
@@ -795,23 +815,26 @@ class DataSnapshotApiDriver:
         table_service = self._table_service()
 
         table_db_entry = await table_service.get_table_entry(
-            project_id, table_definition.fpid)
+            project_id, table_definition.fpid
+        )
         if table_db_entry is not None:
             return table_db_entry
 
-        await self._validate_new_table_with_state_services(
-            table_definition, project_id)
+        await self._validate_new_table_with_state_services(table_definition, project_id)
         table_db_entry = await table_service.save_table_definition(
-            project_id, table_definition)
+            project_id, table_definition
+        )
 
         # Verify the saved definition through the StateServices read API. This
         # mirrors the legacy readback before refresh without opening StateDB
         # storage.
         table_def = await table_service.get_table_definition(
-            project_id, table_definition.fpid)
+            project_id, table_definition.fpid
+        )
         if table_def is None:
             raise TableDoesNotExistError(
-                TableIDv2.compose(None, TableName('NA'), table_definition.fpid))
+                TableIDv2.compose(None, TableName('NA'), table_definition.fpid)
+            )
         return table_db_entry
 
     async def _validate_new_table_with_state_services(
@@ -823,10 +846,12 @@ class DataSnapshotApiDriver:
 
         source_table = table_definition.source_table
         is_file_source = isinstance(
-            source_table, (S3SourceTable, GCSSourceTable, ADLSSourceTable))
+            source_table, (S3SourceTable, GCSSourceTable, ADLSSourceTable)
+        )
         if is_file_source and source_table.connector_id is None:
             raise ConnectorError(
-                "File source tables require a project-owned connector_id.")
+                'File source tables require a project-owned connector_id.'
+            )
 
         await TableLogic(
             self._data_backend_ctx,
@@ -862,10 +887,12 @@ class DataSnapshotApiDriver:
             for table_entry in table_entries:
                 table_def = table_entry.config
                 connector_id = table_def.get_connector_id()
-                execution_ref = (await
-                                 connector_service.execution_ref_for_project(
-                                     _current_user_ctx.get(), project_id,
-                                     connector_id, CONNECTOR_GRAPH_ACTIONS))
+                execution_ref = await connector_service.execution_ref_for_project(
+                    _current_user_ctx.get(),
+                    project_id,
+                    connector_id,
+                    CONNECTOR_GRAPH_ACTIONS,
+                )
                 issued_refs.append(execution_ref)
         except BaseException:
             await self._run_table_refresh_cleanup(
@@ -875,12 +902,16 @@ class DataSnapshotApiDriver:
             raise
 
         prepare_batch = asyncio.gather(
-            *(self._prepare_state_services_table_refresh_with_connector(
-                table_entry,
-                execution_ref,
-                refresh_source=refresh_source,
-            ) for table_entry, execution_ref in zip(table_entries, issued_refs)
-              ), return_exceptions=True)
+            *(
+                self._prepare_state_services_table_refresh_with_connector(
+                    table_entry,
+                    execution_ref,
+                    refresh_source=refresh_source,
+                )
+                for table_entry, execution_ref in zip(table_entries, issued_refs)
+            ),
+            return_exceptions=True,
+        )
         try:
             prepared_results = await asyncio.shield(prepare_batch)
         except BaseException:
@@ -889,52 +920,72 @@ class DataSnapshotApiDriver:
                 label='table refresh preparation',
             )
             prepared = [
-                result for result in (settled or [])
+                result
+                for result in (settled or [])
                 if isinstance(result, _PreparedTableRefresh)
             ]
             await self._run_table_refresh_cleanup(
-                self._revoke_table_refresh_authorizations(issued_refs + [
-                    result.execution_ref
-                    for result in prepared if result.execution_ref is not None
-                ]),
+                self._revoke_table_refresh_authorizations(
+                    issued_refs
+                    + [
+                        result.execution_ref
+                        for result in prepared
+                        if result.execution_ref is not None
+                    ]
+                ),
                 label='cancelled preparation capability revocation',
             )
             raise
-        preparation_error = next((result for result in prepared_results
-                                  if isinstance(result, BaseException)), None)
+        preparation_error = next(
+            (
+                result
+                for result in prepared_results
+                if isinstance(result, BaseException)
+            ),
+            None,
+        )
         prepared = [
-            result for result in prepared_results
+            result
+            for result in prepared_results
             if isinstance(result, _PreparedTableRefresh)
         ]
         workflow_refs = [
-            result.execution_ref for result in prepared
+            result.execution_ref
+            for result in prepared
             if result.execution_ref is not None
         ]
         if preparation_error is not None:
             await self._run_table_refresh_cleanup(
-                self._revoke_table_refresh_authorizations(issued_refs +
-                                                          workflow_refs),
+                self._revoke_table_refresh_authorizations(issued_refs + workflow_refs),
                 label='failed preparation capability revocation',
             )
-            log.error('Preparing a table refresh batch failed (error_type=%s)',
-                      type(preparation_error).__name__)
+            log.error(
+                'Preparing a table refresh batch failed (error_type=%s)',
+                type(preparation_error).__name__,
+            )
             raise ConnectorError(
                 'Unable to prepare all table refreshes; please retry.'
             ) from None
 
-        launchable = [
-            result for result in prepared if result.execution_ref is not None
-        ]
+        launchable = [result for result in prepared if result.execution_ref is not None]
         start_batch = asyncio.gather(
-            *(DataBackend.start_refresh_table(
-                self._data_backend_ctx,
-                result.execution_ref,
-                result.table_entry.config,
-                result.data_version,
-                alias=(TableName(result.table_entry.alias)
-                       if result.table_entry.alias else None),
-                defer_col_stats_validation=defer_col_stats_validation,
-            ) for result in launchable), return_exceptions=True)
+            *(
+                DataBackend.start_refresh_table(
+                    self._data_backend_ctx,
+                    result.execution_ref,
+                    result.table_entry.config,
+                    result.data_version,
+                    alias=(
+                        TableName(result.table_entry.alias)
+                        if result.table_entry.alias
+                        else None
+                    ),
+                    defer_col_stats_validation=defer_col_stats_validation,
+                )
+                for result in launchable
+            ),
+            return_exceptions=True,
+        )
         try:
             start_results = await asyncio.shield(start_batch)
         except BaseException:
@@ -954,9 +1005,9 @@ class DataSnapshotApiDriver:
             )
             raise
         start_error = next(
-            (result
-             for result in start_results if isinstance(result, BaseException)),
-            None)
+            (result for result in start_results if isinstance(result, BaseException)),
+            None,
+        )
         if start_error is not None:
             started_workflow_ids = [
                 result for result in start_results if isinstance(result, str)
@@ -968,11 +1019,14 @@ class DataSnapshotApiDriver:
                 ),
                 label='failed table refresh rollback',
             )
-            log.error('Starting a table refresh batch failed (error_type=%s)',
-                      type(start_error).__name__)
+            log.error(
+                'Starting a table refresh batch failed (error_type=%s)',
+                type(start_error).__name__,
+            )
             raise ConnectorError(
                 'Unable to start all table refreshes; partial starts were '
-                'rolled back. Please retry.') from None
+                'rolled back. Please retry.'
+            ) from None
         return [result.data_version for result in prepared]
 
     async def _settle_table_refresh_batch(
@@ -1031,9 +1085,9 @@ class DataSnapshotApiDriver:
         table_def = table_entry.config
         connector_id = table_def.get_connector_id()
         source_table_name = str(table_def.get_source_table_name())
-        src_table_data_ver = (
-            await get_active_cache().table_version_cache.get.coroutine(
-                connector_id, source_table_name))
+        src_table_data_ver = await get_active_cache().table_version_cache.get.coroutine(
+            connector_id, source_table_name
+        )
 
         # A version probe binds its capability to the one-activity workflow;
         # the later table-refresh workflow must receive a fresh capability. A
@@ -1046,36 +1100,38 @@ class DataSnapshotApiDriver:
         version_ref_consumed = table_def.is_sql or force_source_refresh
         if version_ref_consumed:
             try:
-                src_table_data_ver = await DataBackend.get_table_data_version_in_activity(
-                    self._data_backend_ctx,
-                    execution_ref,
-                    source_table_name,
-                    refresh_table_version=force_source_refresh,
-                    table_def=table_def,
+                src_table_data_ver = (
+                    await DataBackend.get_table_data_version_in_activity(
+                        self._data_backend_ctx,
+                        execution_ref,
+                        source_table_name,
+                        refresh_table_version=force_source_refresh,
+                        table_def=table_def,
+                    )
                 )
             except (FileNotFoundError, ConnectorError) as err:
                 raise _table_read_error_v2(table_def, err)
         data_ver = TableDataVersion(src_table_data_ver)
-        refresh_result = (await DataBackend.get_many_table_refresh_results([
-            (table_def, data_ver)
-        ]))[0]
+        refresh_result = (
+            await DataBackend.get_many_table_refresh_results([(table_def, data_ver)])
+        )[0]
         if refresh_result:
-            refresh_wf_id = TableRefreshWorkflow.compose_wf_id(
-                table_def, data_ver)
+            refresh_wf_id = TableRefreshWorkflow.compose_wf_id(table_def, data_ver)
             if not refresh_result.status.completed:
                 tclient = self._data_backend_ctx.temporal_client()
                 wf_desc = await tclient.get_workflow_desc(refresh_wf_id)
-                if (wf_desc
-                        and wf_desc.status == WorkflowExecutionStatus.RUNNING):
-                    log.info("Table refresh workflow is already running: %s",
-                             refresh_wf_id)
+                if wf_desc and wf_desc.status == WorkflowExecutionStatus.RUNNING:
+                    log.info(
+                        'Table refresh workflow is already running: %s', refresh_wf_id
+                    )
                     return _PreparedTableRefresh(table_entry, data_ver, None)
 
-            if (refresh_result.status == AsyncDataTaskStatus.DONE
-                    and refresh_result.stage == TableRefreshStage.COMPLETED
-                    and not refresh_source):
-                log.info("Table refresh is already completed, wf: %s",
-                         refresh_wf_id)
+            if (
+                refresh_result.status == AsyncDataTaskStatus.DONE
+                and refresh_result.stage == TableRefreshStage.COMPLETED
+                and not refresh_source
+            ):
+                log.info('Table refresh is already completed, wf: %s', refresh_wf_id)
                 return _PreparedTableRefresh(table_entry, data_ver, None)
 
             # Forced re-ingest over an existing (terminal or in-flight) result:
@@ -1091,14 +1147,14 @@ class DataSnapshotApiDriver:
             # re-ingest semantics are unchanged: the workflow still relaunches
             # below.
             if refresh_source:
-                await DataBackend.reset_table_refresh_markers(
-                    table_def, data_ver)
+                await DataBackend.reset_table_refresh_markers(table_def, data_ver)
 
         if version_ref_consumed:
-            execution_ref, = await self._connector_service(
-            ).fresh_execution_refs_for_workflow(
+            (
+                execution_ref,
+            ) = await self._connector_service().fresh_execution_refs_for_workflow(
                 _current_user_ctx.get(),
-                (execution_ref, ),
+                (execution_ref,),
                 CONNECTOR_GRAPH_ACTIONS,
             )
         return _PreparedTableRefresh(table_entry, data_ver, execution_ref)
@@ -1107,10 +1163,13 @@ class DataSnapshotApiDriver:
         self,
         references: List[ConnectorExecutionRef],
     ) -> None:
-        tokens = sorted({
-            reference.authorization_token
-            for reference in references if reference.authorization_token
-        })
+        tokens = sorted(
+            {
+                reference.authorization_token
+                for reference in references
+                if reference.authorization_token
+            }
+        )
         if not tokens:
             return
         try:
@@ -1123,17 +1182,16 @@ class DataSnapshotApiDriver:
             raise
         except BaseException as error:
             log.error(
-                'Preparing table refresh capability revocation failed '
-                '(error_type=%s)',
+                'Preparing table refresh capability revocation failed (error_type=%s)',
                 type(error).__name__,
             )
             return
         for result in results:
             if isinstance(result, BaseException):
                 log.error(
-                    'Revoking a table refresh capability failed '
-                    '(error_type=%s)',
-                    type(result).__name__)
+                    'Revoking a table refresh capability failed (error_type=%s)',
+                    type(result).__name__,
+                )
 
     async def _rollback_table_refresh_batch(
         self,
@@ -1149,10 +1207,10 @@ class DataSnapshotApiDriver:
             for attempt in range(3):
                 try:
                     if handle is None:
-                        handle = await temporal_client.get_workflow_handle(
-                            workflow_id)
+                        handle = await temporal_client.get_workflow_handle(workflow_id)
                     await handle.terminate(
-                        reason='Rolling back partial table refresh batch')
+                        reason='Rolling back partial table refresh batch'
+                    )
                     return
                 except asyncio.CancelledError:
                     raise
@@ -1160,8 +1218,10 @@ class DataSnapshotApiDriver:
                     if attempt == 2:
                         log.error(
                             'Rolling back table refresh workflow %s '
-                            'failed (error_type=%s)', workflow_id,
-                            type(error).__name__)
+                            'failed (error_type=%s)',
+                            workflow_id,
+                            type(error).__name__,
+                        )
                         return
                     await asyncio.sleep(0.05 * (2**attempt))
 
@@ -1170,8 +1230,9 @@ class DataSnapshotApiDriver:
         # and guarantees that a bounded/failed termination cannot leave a
         # confirmed partial start authorized.
         await self._revoke_table_refresh_authorizations(references)
-        await asyncio.gather(*(terminate(workflow_id)
-                               for workflow_id in sorted(set(workflow_ids))))
+        await asyncio.gather(
+            *(terminate(workflow_id) for workflow_id in sorted(set(workflow_ids)))
+        )
 
     async def get_table_snapshot(
         self,
@@ -1180,8 +1241,9 @@ class DataSnapshotApiDriver:
     ) -> snapshot_interfaces.TableSnapshotResource:
         await self.require_project_access(project_id, _current_user_ctx.get())
         fpid, data_ver = DataSnapshot.TABLE.parse_id(id)
-        return await self._get_kumo_table_snapshot(project_id, fpid,
-                                                   TableDataVersion(data_ver))
+        return await self._get_kumo_table_snapshot(
+            project_id, fpid, TableDataVersion(data_ver)
+        )
 
     async def get_table_definition(
         self,
@@ -1211,14 +1273,16 @@ class DataSnapshotApiDriver:
         """
         # Assemble list of table ids and versions
         graph_snapshot = await self.get_graph_snapshot(
-            GraphSnapshotRequest(graph_snapshot_id=snapshot_id), project_id)
+            GraphSnapshotRequest(graph_snapshot_id=snapshot_id), project_id
+        )
         table_ids = []
         table_versions = []
-        for (table_name, table_snapshot_id) in (
-                graph_snapshot.snapshot_resource.table_ids.items()):
+        for (
+            table_name,
+            table_snapshot_id,
+        ) in graph_snapshot.snapshot_resource.table_ids.items():
             fpid, table_version = DataSnapshot.TABLE.parse_id(table_snapshot_id)
-            table_ids.append(
-                TableIDv2.compose(None, TableName(table_name), fpid))
+            table_ids.append(TableIDv2.compose(None, TableName(table_name), fpid))
             table_versions.append(table_version)
 
         # Assemble table definitions
@@ -1231,37 +1295,46 @@ class DataSnapshotApiDriver:
         cache = get_active_cache()
 
         stats = await cache.get_many_min_exact_stats.coroutine(
-            [(table.source_table_id.make_versioned_id(version),
-              table.fingerprint())
-             for version, table in zip(table_versions, tables)],
-            skip_col_stats=True)
+            [
+                (table.source_table_id.make_versioned_id(version), table.fingerprint())
+                for version, table in zip(table_versions, tables)
+            ],
+            skip_col_stats=True,
+        )
 
         try:
-            total_rows = sum(({} if stat is None else stat.table_stats
-                              )[TableStatType.NUM_ROWS].value for stat in stats)
+            total_rows = sum(
+                ({} if stat is None else stat.table_stats)[TableStatType.NUM_ROWS].value
+                for stat in stats
+            )
         except KeyError:
             total_rows = None
 
         try:
-            total_size_bytes = sum(({} if stat is None else stat.table_stats
-                                    )[TableStatType.SOURCE_SIZE].value
-                                   for stat in stats)
+            total_size_bytes = sum(
+                ({} if stat is None else stat.table_stats)[
+                    TableStatType.SOURCE_SIZE
+                ].value
+                for stat in stats
+            )
         except KeyError:
             total_size_bytes = None
 
-        return GraphSnapshotStatsResponse(total_rows=total_rows,
-                                          total_size_bytes=total_size_bytes)
+        return GraphSnapshotStatsResponse(
+            total_rows=total_rows, total_size_bytes=total_size_bytes
+        )
 
     async def _get_kumo_table_snapshot(
-            self, project_id: ProjectID, fpid: FPID,
-            data_ver: TableDataVersion) -> TableSnapshotResource:
+        self, project_id: ProjectID, fpid: FPID, data_ver: TableDataVersion
+    ) -> TableSnapshotResource:
         table_db_entry = await self._get_required_table_entry(project_id, fpid)
 
         table_db_entries = [table_db_entry]
         table_versions = {fpid: data_ver}
         resolved_table = (table_db_entry.config, data_ver)
         refresh_results = await DataBackend.get_many_table_refresh_results(
-            [resolved_table])
+            [resolved_table]
+        )
         workflow_descs = await self._resolve_snapshot_table_states(
             table_db_entries,
             table_versions,
@@ -1276,20 +1349,25 @@ class DataSnapshotApiDriver:
         snapshot_id = DataSnapshot.TABLE.format_id(fpid, data_ver)
         connector_id = resolved_def.get_connector_id()
         resource = TableSnapshotResource(
-            id=snapshot_id, table_definition=table_db_entry.config, stages={
-                snapshot_interfaces.TableSnapshotStage.INGEST:
-                snapshot_interfaces.JobState(),
-                snapshot_interfaces.TableSnapshotStage.MIN_COL_STATS:
-                snapshot_interfaces.JobState(),
-                snapshot_interfaces.TableSnapshotStage.FULL_COL_STATS:
-                snapshot_interfaces.JobState(),
-            }, name_alias=table_db_entry.alias,
+            id=snapshot_id,
+            table_definition=table_db_entry.config,
+            stages={
+                snapshot_interfaces.TableSnapshotStage.INGEST: snapshot_interfaces.JobState(),
+                snapshot_interfaces.TableSnapshotStage.MIN_COL_STATS: snapshot_interfaces.JobState(),
+                snapshot_interfaces.TableSnapshotStage.FULL_COL_STATS: snapshot_interfaces.JobState(),
+            },
+            name_alias=table_db_entry.alias,
             timestamps=table_db_entry.timestamps,
-            connector=ConnectorLink(name=str(connector_id), id=connector_id))
+            connector=ConnectorLink(name=str(connector_id), id=connector_id),
+        )
 
-        log.info('Table snapshot for %s.%s@%s has refresh result: %s',
-                 connector_id, resolved_def.cache_key(), data_ver,
-                 table_refresh_result)
+        log.info(
+            'Table snapshot for %s.%s@%s has refresh result: %s',
+            connector_id,
+            resolved_def.cache_key(),
+            data_ver,
+            table_refresh_result,
+        )
 
         # There could be a delay between kicking off table refresh workflow
         # (upon creation of table snapshot resource) and writing the table
@@ -1300,9 +1378,9 @@ class DataSnapshotApiDriver:
             wf_desc = preloaded_wf_desc
             if wf_desc is None:
                 refresh_wf_id = TableRefreshWorkflow.compose_wf_id(
-                    resolved_def, data_ver)
-                wf_desc = await self._temporal_client.get_workflow_desc(
-                    refresh_wf_id)
+                    resolved_def, data_ver
+                )
+                wf_desc = await self._temporal_client.get_workflow_desc(refresh_wf_id)
             if not wf_desc:
                 # There must be a TableRefreshWorkflow execution associated
                 # with this snapshot. Otherwise, most likely the table snapshot
@@ -1314,8 +1392,7 @@ class DataSnapshotApiDriver:
                 # Table refresh workflow is running but hasn't written
                 # table_refresh_result yet
                 time_elapsed = now_utc() - wf_desc.start_time
-                is_prod = (self._data_backend_ctx._config.deploy_mode ==
-                           DeployStage.PROD)
+                is_prod = self._data_backend_ctx._config.deploy_mode == DeployStage.PROD
 
                 # Typically the delay is a few seconds. If this takes too long,
                 # asynchronously send an alert Kumo to investigate:
@@ -1324,43 +1401,51 @@ class DataSnapshotApiDriver:
                         f'[WARNING] TableRefreshWorkflow id={wf_desc.id}, '
                         f'run_id={wf_desc.run_id} has been running for: '
                         f'{time_elapsed.total_seconds()} without saving table '
-                        f'refresh result, please investigate!')
-                    asyncio.ensure_future(
-                        send_slack_message.coroutine(warning_msg))
+                        f'refresh result, please investigate!'
+                    )
+                    asyncio.ensure_future(send_slack_message.coroutine(warning_msg))
                 return resource
 
-            wf_failed = (wf_desc.status in [
+            wf_failed = wf_desc.status in [
                 WorkflowExecutionStatus.TIMED_OUT,
-                WorkflowExecutionStatus.FAILED
-            ])
-            wf_canceled = (wf_desc.status in [
+                WorkflowExecutionStatus.FAILED,
+            ]
+            wf_canceled = wf_desc.status in [
                 WorkflowExecutionStatus.TERMINATED,
-                WorkflowExecutionStatus.CANCELED
-            ])
+                WorkflowExecutionStatus.CANCELED,
+            ]
             if wf_canceled or wf_failed:
                 ingest_stage = resource.stages[
-                    snapshot_interfaces.TableSnapshotStage.INGEST]
+                    snapshot_interfaces.TableSnapshotStage.INGEST
+                ]
                 ingest_stage.end_time = wf_desc.close_time
-                ingest_stage.status = (JobStatus.CANCELLED
-                                       if wf_desc.status in [
-                                           WorkflowExecutionStatus.CANCELED,
-                                           WorkflowExecutionStatus.TERMINATED
-                                       ] else JobStatus.FAILED)
+                ingest_stage.status = (
+                    JobStatus.CANCELLED
+                    if wf_desc.status
+                    in [
+                        WorkflowExecutionStatus.CANCELED,
+                        WorkflowExecutionStatus.TERMINATED,
+                    ]
+                    else JobStatus.FAILED
+                )
 
                 # Set colstat stage as CANCELED because ingest didn't succeed:
-                resource.stages[snapshot_interfaces.TableSnapshotStage.
-                                MIN_COL_STATS].status = JobStatus.CANCELLED
-                resource.stages[snapshot_interfaces.TableSnapshotStage.
-                                FULL_COL_STATS].status = JobStatus.CANCELLED
+                resource.stages[
+                    snapshot_interfaces.TableSnapshotStage.MIN_COL_STATS
+                ].status = JobStatus.CANCELLED
+                resource.stages[
+                    snapshot_interfaces.TableSnapshotStage.FULL_COL_STATS
+                ].status = JobStatus.CANCELLED
                 return resource
 
         # Populate INGEST job state:
-        ingest_task_result = (await DataBackend.get_many_table_refresh_results(
-            tables=[(resolved_def, data_ver)],
-            stage=TableRefreshStage.INGEST_TABLE,
-        ))[0]
-        ingest_stage = resource.stages[
-            snapshot_interfaces.TableSnapshotStage.INGEST]
+        ingest_task_result = (
+            await DataBackend.get_many_table_refresh_results(
+                tables=[(resolved_def, data_ver)],
+                stage=TableRefreshStage.INGEST_TABLE,
+            )
+        )[0]
+        ingest_stage = resource.stages[snapshot_interfaces.TableSnapshotStage.INGEST]
         _update_snapshot_job_state(ingest_stage, ingest_task_result)
         _merge_snapshot_job_state_warnings(ingest_stage, table_refresh_result)
         if ingest_task_result is None or not ingest_task_result.ok:
@@ -1369,11 +1454,10 @@ class DataSnapshotApiDriver:
         # table stats can be added after ingestion
         table_stats = get_active_cache().get_table_stats(
             resolved_def.fingerprint(),
-            [TableStatType.SOURCE_SIZE, TableStatType.NUM_ROWS], data_ver)
-        exact_stats = ExactStats({
-            k: v.config()
-            for k, v in table_stats.items()
-        }, {})
+            [TableStatType.SOURCE_SIZE, TableStatType.NUM_ROWS],
+            data_ver,
+        )
+        exact_stats = ExactStats({k: v.config() for k, v in table_stats.items()}, {})
         resource.stats = get_table_stats(exact_stats)
 
         # MIN_COL_STATS should finish before full column stats; check this
@@ -1382,15 +1466,20 @@ class DataSnapshotApiDriver:
             await DataBackend.get_many_table_refresh_results(
                 tables=[(resolved_def, data_ver)],
                 stage=TableRefreshStage.COMPUTE_MIN_COL_STATS,
-            ))[0]
+            )
+        )[0]
         min_colstat_stage = resource.stages[
-            snapshot_interfaces.TableSnapshotStage.MIN_COL_STATS]
+            snapshot_interfaces.TableSnapshotStage.MIN_COL_STATS
+        ]
         _update_snapshot_job_state(min_colstat_stage, min_colstat_task_result)
         if min_colstat_task_result is None or not min_colstat_task_result.ok:
-            if (min_colstat_task_result is not None
-                    and min_colstat_task_result.status.completed):
-                resource.stages[snapshot_interfaces.TableSnapshotStage.
-                                FULL_COL_STATS].status = JobStatus.CANCELLED
+            if (
+                min_colstat_task_result is not None
+                and min_colstat_task_result.status.completed
+            ):
+                resource.stages[
+                    snapshot_interfaces.TableSnapshotStage.FULL_COL_STATS
+                ].status = JobStatus.CANCELLED
             return resource
 
         # FULL_COL_STATS can be checked iff MIN_COL_STATS has succeeded:
@@ -1398,9 +1487,11 @@ class DataSnapshotApiDriver:
             await DataBackend.get_many_table_refresh_results(
                 tables=[(resolved_def, data_ver)],
                 stage=TableRefreshStage.COMPUTE_FULL_COL_STATS,
-            ))[0]
+            )
+        )[0]
         full_colstat_stage = resource.stages[
-            snapshot_interfaces.TableSnapshotStage.FULL_COL_STATS]
+            snapshot_interfaces.TableSnapshotStage.FULL_COL_STATS
+        ]
         _update_snapshot_job_state(full_colstat_stage, full_colstat_task_result)
 
         # Fetch minimum column stats:
@@ -1415,32 +1506,33 @@ class DataSnapshotApiDriver:
             compute_missing_stats=False,
             # min_colstat_task_result already checked above
             check_refresh_status=False,
-            table_data_version=data_ver)
+            table_data_version=data_ver,
+        )
 
         # time range must wait for min col stats
         min_col_stats = {
-            k.name: {
-                k: v.config()
-                for k, v in v.items()
-            }
-            for k, v in stats_dict.items() if k.name == resolved_def.time_col
+            k.name: {k: v.config() for k, v in v.items()}
+            for k, v in stats_dict.items()
+            if k.name == resolved_def.time_col
         }
         exact_stats = ExactStats({}, min_col_stats)
         resource.time_range = get_full_time_range(resolved_def, exact_stats)
 
         if full_colstat_task_result and full_colstat_task_result.ok:
-            full_stats_dict = (
-                ColStatsSet.FULL_ENCODER.get_stats_types(resolved_def))
+            full_stats_dict = ColStatsSet.FULL_ENCODER.get_stats_types(resolved_def)
 
-            stats_dict.update(await DataBackend.get_min_col_stats(
-                connector_spec=None,
-                table=resolved_def,
-                stats_dict=full_stats_dict,
-                approx_sample_size=-1,  # unused.
-                compute_missing_stats=False,
-                # full_colstat_task_result already checked above
-                check_refresh_status=False,
-                table_data_version=data_ver))
+            stats_dict.update(
+                await DataBackend.get_min_col_stats(
+                    connector_spec=None,
+                    table=resolved_def,
+                    stats_dict=full_stats_dict,
+                    approx_sample_size=-1,  # unused.
+                    compute_missing_stats=False,
+                    # full_colstat_task_result already checked above
+                    check_refresh_status=False,
+                    table_data_version=data_ver,
+                )
+            )
 
         for col in stats_dict:
             stats = stats_dict[col]
@@ -1450,11 +1542,11 @@ class DataSnapshotApiDriver:
                     stats={
                         # We must convert to Dict[str, Any] and consumers
                         # must convert back to Dict[ColStatType, Stats]
-                        str(k.value):
-                        SnapshotStat(**dataclasses.asdict(s.config()))
+                        str(k.value): SnapshotStat(**dataclasses.asdict(s.config()))
                         for k, s in stats.items()
                     },
-                ))
+                )
+            )
 
         return resource
 
@@ -1481,12 +1573,13 @@ class DataSnapshotApiDriver:
         """
         # Fetch all table DB entries to construct table responses
         table_ids = list(table_versions.keys())
-        table_db_entries = await self._get_many_table_entries(
-            project_id, table_ids)
-        resolved_tables = [(table.config, table_versions[table.id])
-                           for table in table_db_entries]
-        resolved_refresh_results = (
-            await DataBackend.get_many_table_refresh_results(resolved_tables))
+        table_db_entries = await self._get_many_table_entries(project_id, table_ids)
+        resolved_tables = [
+            (table.config, table_versions[table.id]) for table in table_db_entries
+        ]
+        resolved_refresh_results = await DataBackend.get_many_table_refresh_results(
+            resolved_tables
+        )
         resolved_workflow_descs = await self._resolve_snapshot_table_states(
             table_db_entries,
             table_versions,
@@ -1500,48 +1593,46 @@ class DataSnapshotApiDriver:
         # To resolve this, we check whether the table refresh workflow has
         # been registered with temporal:
         resources: List[snapshot_interfaces.TableSnapshotResource] = []
-        for (refresh_result, (t_def, t_ver), table_db_entry,
-             preloaded_wf_desc) in zip(resolved_refresh_results,
-                                       resolved_tables, table_db_entries,
-                                       resolved_workflow_descs):
+        for refresh_result, (t_def, t_ver), table_db_entry, preloaded_wf_desc in zip(
+            resolved_refresh_results,
+            resolved_tables,
+            table_db_entries,
+            resolved_workflow_descs,
+        ):
             # Construct response Resource object array
             data_ver = t_ver
-            snapshot_id = DataSnapshot.TABLE.format_id(table_db_entry.id,
-                                                       data_ver)
+            snapshot_id = DataSnapshot.TABLE.format_id(table_db_entry.id, data_ver)
             resource = snapshot_interfaces.TableSnapshotResource(
                 id=snapshot_id,
                 table_definition=table_db_entry.config,
                 stages={
-                    snapshot_interfaces.TableSnapshotStage.INGEST:
-                    snapshot_interfaces.JobState(),
-                    snapshot_interfaces.TableSnapshotStage.MIN_COL_STATS:
-                    snapshot_interfaces.JobState(),
-                    snapshot_interfaces.TableSnapshotStage.FULL_COL_STATS:
-                    snapshot_interfaces.JobState(),
+                    snapshot_interfaces.TableSnapshotStage.INGEST: snapshot_interfaces.JobState(),
+                    snapshot_interfaces.TableSnapshotStage.MIN_COL_STATS: snapshot_interfaces.JobState(),
+                    snapshot_interfaces.TableSnapshotStage.FULL_COL_STATS: snapshot_interfaces.JobState(),
                 },
             )
 
             if not refresh_result:
                 wf_desc = preloaded_wf_desc
                 if wf_desc is None:
-                    refresh_wf_id = TableRefreshWorkflow.compose_wf_id(
-                        t_def, data_ver)
+                    refresh_wf_id = TableRefreshWorkflow.compose_wf_id(t_def, data_ver)
                     wf_desc = await self._temporal_client.get_workflow_desc(
-                        refresh_wf_id)
+                        refresh_wf_id
+                    )
                 if not wf_desc:
                     # There must be a TableRefreshWorkflow execution associated
                     # with this snapshot. Otherwise, most likely
                     # the table snapshot id is wrong/mispelled:
-                    raise KeyError(
-                        f'Table snapshot {resource.id} is not found.')
+                    raise KeyError(f'Table snapshot {resource.id} is not found.')
 
                 assert wf_desc.status is not None
                 if wf_desc.status == WorkflowExecutionStatus.RUNNING:
                     # Table refresh workflow is running but hasn't written
                     # table_refresh_result yet
                     time_elapsed = now_utc() - wf_desc.start_time
-                    is_prod = (self._data_backend_ctx._config.deploy_mode ==
-                               DeployStage.PROD)
+                    is_prod = (
+                        self._data_backend_ctx._config.deploy_mode == DeployStage.PROD
+                    )
 
                     # Typically the delay is a few seconds. If this takes
                     # too long, asynchronously send an alert
@@ -1551,51 +1642,59 @@ class DataSnapshotApiDriver:
                             f'[WARNING] TableRefreshWorkflow id={wf_desc.id}, '
                             f'run_id={wf_desc.run_id} has been running for: '
                             f'{time_elapsed.total_seconds()} without saving '
-                            f'table refresh result, please investigate!')
-                        asyncio.ensure_future(
-                            send_slack_message.coroutine(warning_msg))
+                            f'table refresh result, please investigate!'
+                        )
+                        asyncio.ensure_future(send_slack_message.coroutine(warning_msg))
                     resources.append(resource)
                     continue
 
-                wf_failed = (wf_desc.status in [
+                wf_failed = wf_desc.status in [
                     WorkflowExecutionStatus.TIMED_OUT,
-                    WorkflowExecutionStatus.FAILED
-                ])
-                wf_canceled = (wf_desc.status in [
+                    WorkflowExecutionStatus.FAILED,
+                ]
+                wf_canceled = wf_desc.status in [
                     WorkflowExecutionStatus.TERMINATED,
-                    WorkflowExecutionStatus.CANCELED
-                ])
+                    WorkflowExecutionStatus.CANCELED,
+                ]
                 if wf_canceled or wf_failed:
                     ingest_stage = resource.stages[
-                        snapshot_interfaces.TableSnapshotStage.INGEST]
+                        snapshot_interfaces.TableSnapshotStage.INGEST
+                    ]
                     ingest_stage.end_time = wf_desc.close_time
                     ingest_stage.status = (
-                        JobStatus.CANCELLED if wf_desc.status in [
+                        JobStatus.CANCELLED
+                        if wf_desc.status
+                        in [
                             WorkflowExecutionStatus.CANCELED,
-                            WorkflowExecutionStatus.TERMINATED
-                        ] else JobStatus.FAILED)
+                            WorkflowExecutionStatus.TERMINATED,
+                        ]
+                        else JobStatus.FAILED
+                    )
 
                     # Set colstat stage as CANCELED because
                     # ingest didn't succeed:
-                    resource.stages[snapshot_interfaces.TableSnapshotStage.
-                                    MIN_COL_STATS].status = JobStatus.CANCELLED
-                    resource.stages[snapshot_interfaces.TableSnapshotStage.
-                                    FULL_COL_STATS].status = JobStatus.CANCELLED
+                    resource.stages[
+                        snapshot_interfaces.TableSnapshotStage.MIN_COL_STATS
+                    ].status = JobStatus.CANCELLED
+                    resource.stages[
+                        snapshot_interfaces.TableSnapshotStage.FULL_COL_STATS
+                    ].status = JobStatus.CANCELLED
                     resources.append(resource)
                     continue
             else:
                 resources.append(resource)
 
         # Populate INGEST job state:
-        ingest_task_results = (await DataBackend.get_many_table_refresh_results(
+        ingest_task_results = await DataBackend.get_many_table_refresh_results(
             resolved_tables,
             TableRefreshStage.INGEST_TABLE,
-        ))
-        for (ingest_result, refresh_result,
-             resource) in zip(ingest_task_results, resolved_refresh_results,
-                              resources):
+        )
+        for ingest_result, refresh_result, resource in zip(
+            ingest_task_results, resolved_refresh_results, resources
+        ):
             ingest_stage = resource.stages[
-                snapshot_interfaces.TableSnapshotStage.INGEST]
+                snapshot_interfaces.TableSnapshotStage.INGEST
+            ]
             _update_snapshot_job_state(ingest_stage, ingest_result)
             _merge_snapshot_job_state_warnings(ingest_stage, refresh_result)
 
@@ -1614,32 +1713,35 @@ class DataSnapshotApiDriver:
         existing Temporal workflow. Connector identity is part of the immutable
         table definition, so there is no alternate-connector candidate search.
         """
-        workflow_descs: List[Optional[WorkflowExecutionDescription]] = [
-            None
-        ] * len(resolved_tables)
+        workflow_descs: List[Optional[WorkflowExecutionDescription]] = [None] * len(
+            resolved_tables
+        )
         missing_indexes = [
-            index for index, result in enumerate(refresh_results)
-            if result is None
+            index for index, result in enumerate(refresh_results) if result is None
         ]
-        missing_workflows = await asyncio.gather(*[
-            self._temporal_client.get_workflow_desc(
-                TableRefreshWorkflow.compose_wf_id(*resolved_tables[index]))
-            for index in missing_indexes
-        ])
+        missing_workflows = await asyncio.gather(
+            *[
+                self._temporal_client.get_workflow_desc(
+                    TableRefreshWorkflow.compose_wf_id(*resolved_tables[index])
+                )
+                for index in missing_indexes
+            ]
+        )
         for index, workflow_desc in zip(missing_indexes, missing_workflows):
             if workflow_desc is None:
                 table_entry = table_db_entries[index]
                 snapshot_id = DataSnapshot.TABLE.format_id(
-                    table_entry.id, table_versions[table_entry.id])
+                    table_entry.id, table_versions[table_entry.id]
+                )
                 raise KeyError(f'Table snapshot {snapshot_id} is not found.')
             workflow_descs[index] = workflow_desc
         return workflow_descs
 
 
-def _update_snapshot_job_state(job_state: snapshot_interfaces.JobState,
-                               stage_result: Optional[TableDataTaskResult]):
-    if (not stage_result
-            or stage_result.status == AsyncDataTaskStatus.NOT_STARTED):
+def _update_snapshot_job_state(
+    job_state: snapshot_interfaces.JobState, stage_result: Optional[TableDataTaskResult]
+):
+    if not stage_result or stage_result.status == AsyncDataTaskStatus.NOT_STARTED:
         job_state.status = JobStatus.NOT_STARTED
     elif stage_result.status == AsyncDataTaskStatus.IN_PROGRESS:
         job_state.status = JobStatus.RUNNING
@@ -1648,8 +1750,9 @@ def _update_snapshot_job_state(job_state: snapshot_interfaces.JobState,
         job_state.end_time = stage_result.updated_at
         job_state.status = JobStatus(stage_result.status.name)
         # Populate error/warning.
-        job_state.error = (stage_result.error
-                           or stage_result.validation.error_message() or None)
+        job_state.error = (
+            stage_result.error or stage_result.validation.error_message() or None
+        )
         if job_state.error:
             job_state.status = JobStatus.FAILED
         job_state.warnings = [
@@ -1670,7 +1773,7 @@ def _merge_snapshot_job_state_warnings(
 
 
 def _merge_table_ingest_job_states(
-    table_snapshots: List[snapshot_interfaces.TableSnapshotResource]
+    table_snapshots: List[snapshot_interfaces.TableSnapshotResource],
 ) -> snapshot_interfaces.JobState:
     """Merge per-table INGEST job states into one graph-level JobState.
 
@@ -1680,20 +1783,17 @@ def _merge_table_ingest_job_states(
     iteration order, and aggregates per-table errors and warnings.
     """
     job_states = [
-        t.stages[snapshot_interfaces.TableSnapshotStage.INGEST]
-        for t in table_snapshots
+        t.stages[snapshot_interfaces.TableSnapshotStage.INGEST] for t in table_snapshots
     ]
 
-    failed = any(s.status == snapshot_interfaces.JobStatus.FAILED
-                 for s in job_states)
-    canceled = any(s.status == snapshot_interfaces.JobStatus.CANCELLED
-                   for s in job_states)
-    all_done = all(s.status == snapshot_interfaces.JobStatus.DONE
-                   for s in job_states)
+    failed = any(s.status == snapshot_interfaces.JobStatus.FAILED for s in job_states)
+    canceled = any(
+        s.status == snapshot_interfaces.JobStatus.CANCELLED for s in job_states
+    )
+    all_done = all(s.status == snapshot_interfaces.JobStatus.DONE for s in job_states)
 
     if not all_done and not failed and not canceled:
-        return snapshot_interfaces.JobState(
-            snapshot_interfaces.JobStatus.RUNNING)
+        return snapshot_interfaces.JobState(snapshot_interfaces.JobStatus.RUNNING)
 
     if failed:
         status = snapshot_interfaces.JobStatus.FAILED
@@ -1707,8 +1807,9 @@ def _merge_table_ingest_job_states(
     start_time = None
     errors = []
     warnings = []
-    for table_snapshot_id, job_state in zip([t.id for t in table_snapshots],
-                                            job_states):
+    for table_snapshot_id, job_state in zip(
+        [t.id for t in table_snapshots], job_states
+    ):
         if end_time is None:
             end_time = job_state.end_time
         elif job_state.end_time:
@@ -1722,15 +1823,13 @@ def _merge_table_ingest_job_states(
         if job_state.error:
             errors.append(job_state.error)
         elif job_state.status in [snapshot_interfaces.JobStatus.CANCELLED]:
-            errors.append(
-                f'{table_snapshot_id} ended in {job_state.status} state')
+            errors.append(f'{table_snapshot_id} ended in {job_state.status} state')
         if job_state.warnings:
             warning_msg = '\n'.join(job_state.warnings)
             warnings.append(f'{table_snapshot_id} has warnings: {warning_msg}')
 
     error = '\n'.join(errors) if errors else None
-    return snapshot_interfaces.JobState(status, start_time, end_time, warnings,
-                                        error)
+    return snapshot_interfaces.JobState(status, start_time, end_time, warnings, error)
 
 
 def _merge_graph_ingest_job_states(
@@ -1742,16 +1841,20 @@ def _merge_graph_ingest_job_states(
         return table_state
 
     start_times = [
-        value for value in (
+        value
+        for value in (
             table_state.start_time,
             graph_refresh_state.start_time,
-        ) if value is not None
+        )
+        if value is not None
     ]
     end_times = [
-        value for value in (
+        value
+        for value in (
             table_state.end_time,
             graph_refresh_state.end_time,
-        ) if value is not None
+        )
+        if value is not None
     ]
     graph_refresh_state.start_time = min(start_times) if start_times else None
     graph_refresh_state.end_time = max(end_times) if end_times else None

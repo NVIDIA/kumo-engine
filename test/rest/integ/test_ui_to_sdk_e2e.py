@@ -5,7 +5,6 @@
 import dataclasses
 import json
 import time
-from test.rest.integ.training_budget import clamp_e2e_training_budget
 
 import kumoapi.model_plan as plan_api
 import pytest
@@ -30,6 +29,7 @@ from statedb.config.common import (
 )
 from statedb.db.services import StateServices
 from temporalio_commons import TemporalClient
+from test.rest.integ.training_budget import clamp_e2e_training_budget
 
 # Poll cadence for confirming the persisted training-job status reached a
 # terminal state before kicking off batch prediction. Mirrors the proven-green
@@ -59,15 +59,16 @@ def _wait_for_training_terminal(
             TrainingJobResponse,
         )
         if job.execution.status in {
-                JobStatus.DONE,
-                JobStatus.FAILED,
-                JobStatus.CANCELLED,
+            JobStatus.DONE,
+            JobStatus.FAILED,
+            JobStatus.CANCELLED,
         }:
             return job
         time.sleep(POLL_INTERVAL_SECONDS)
     raise TimeoutError(
-        f"Training job {training_job_id} did not reach a terminal status "
-        f"within {MAX_POLL_SECONDS}s")
+        f'Training job {training_job_id} did not reach a terminal status '
+        f'within {MAX_POLL_SECONDS}s'
+    )
 
 
 # This e2e drives the real DG-native training pipeline via /v0/training_jobs/
@@ -90,8 +91,8 @@ def _wait_for_training_terminal(
 # DG coverage without the stale-worker dependency -- same scoping as
 # ``test_warm_start_training_e2e``, ``test_e2e`` and ``test_e2e_public_api``.
 pytestmark = [
-    pytest.mark.usefixtures("_pool_subprocesses"),
-    pytest.mark.parametrize("storage_backend", ["local"], indirect=True),
+    pytest.mark.usefixtures('_pool_subprocesses'),
+    pytest.mark.parametrize('storage_backend', ['local'], indirect=True),
 ]
 
 
@@ -108,18 +109,20 @@ async def test_prediction_ui_to_sdk_e2e(
     # canonical project upload connector, so remap the same local fixture root
     # to the real project upload resource before creating the graph.
     source_connector_id = ConnectorID(
-        next(iter(
-            graph_definition_v2.tables.values())).source_table.connector_id)
+        next(iter(graph_definition_v2.tables.values())).source_table.connector_id
+    )
     source_connector = await state_services.connectors.get_internal(
-        ProjectID(default_project_id), source_connector_id)
+        ProjectID(default_project_id), source_connector_id
+    )
     upload_connector_id = (
         await state_services.connectors.register_project_upload_connector(
-            ProjectID(default_project_id), source_connector.config.root_dir))
+            ProjectID(default_project_id), source_connector.config.root_dir
+        )
+    )
     graph_definition_v2 = dataclasses.replace(
         graph_definition_v2,
         tables={
-            table_name:
-            dataclasses.replace(
+            table_name: dataclasses.replace(
                 table,
                 source_table=dataclasses.replace(
                     table.source_table,
@@ -130,7 +133,8 @@ async def test_prediction_ui_to_sdk_e2e(
         },
     )
     graph_definition_internal = GraphDefinition(
-        **dataclasses.asdict(graph_definition_v2))
+        **dataclasses.asdict(graph_definition_v2)
+    )
     graph_id = post_and_expect_success(
         client,
         '/v1/graphs/',
@@ -143,8 +147,7 @@ async def test_prediction_ui_to_sdk_e2e(
 
     assert graph_fpid is not None
 
-    pquery_str = (
-        'PREDICT COUNT(transactions.*, 0, 30) FOR EACH customers.customer_id')
+    pquery_str = 'PREDICT COUNT(transactions.*, 0, 30) FOR EACH customers.customer_id'
     payload = plan_api.SuggestModelPlanRequest(
         query_string=pquery_str,
         graph_id=graph_id.id,
@@ -164,15 +167,14 @@ async def test_prediction_ui_to_sdk_e2e(
     training_request = TrainingJobRequest(
         predictive_query=pquery_str,
         graph_definition=graph_definition_internal,
-        training_table_gen_plan=model_plan.suggested_model_plan.model_plan.
-        training_table_generation,
+        training_table_gen_plan=model_plan.suggested_model_plan.model_plan.training_table_generation,
         model_plan=model_plan.suggested_model_plan.model_plan,
         project_id=ProjectID(default_project_id),
     )
 
     training_job_id = post_and_expect_success(
         client,
-        "/v0/training_jobs/train",
+        '/v0/training_jobs/train',
         training_request,
         TrainingJobID,
     )
@@ -192,8 +194,9 @@ async def test_prediction_ui_to_sdk_e2e(
         default_project_id,
     )
     assert training_job.execution.status == JobStatus.DONE, (
-        f"Training failed with status={training_job.execution.status}, "
-        f"results={training_job.execution.results}")
+        f'Training failed with status={training_job.execution.status}, '
+        f'results={training_job.execution.results}'
+    )
 
     prediction_request = BatchPredictionInternalRequest(
         training_job_id,
@@ -204,38 +207,38 @@ async def test_prediction_ui_to_sdk_e2e(
 
     bp_job_id = post_and_expect_success(
         client,
-        "/v1/batch_prediction_jobs/",
+        '/v1/batch_prediction_jobs/',
         prediction_request,
         IDResponse,
     )
 
     predict_sdk_script = get_and_expect_success(
         client,
-        f"/v1/batch_prediction_jobs/{bp_job_id.id}/sdk",
+        f'/v1/batch_prediction_jobs/{bp_job_id.id}/sdk',
         {'project_id': default_project_id},
         str,
     )
     predict_sdk_script = json.loads(predict_sdk_script)
 
-    assert predict_sdk_script != ""
-    compile(predict_sdk_script, "<generated-prediction-sdk>", "exec")
+    assert predict_sdk_script != ''
+    compile(predict_sdk_script, '<generated-prediction-sdk>', 'exec')
     assert f'project="{default_project_id}"' in predict_sdk_script
-    assert "root_dir=" not in predict_sdk_script
+    assert 'root_dir=' not in predict_sdk_script
     components = [
         # Load existing model (not retrain)
-        "kumo.PredictiveQuery.load_from_training_job(",
-        "kumo.Trainer.load(",
-        "kumo.TrainingJob(",
+        'kumo.PredictiveQuery.load_from_training_job(',
+        'kumo.Trainer.load(',
+        'kumo.TrainingJob(',
         # Prediction components
-        "prediction_table_config",
-        "pred_table = pquery.generate_prediction_table(",
-        "batch_prediction_options",
-        "output_configurations",
-        "prediction_job = trainer.predict(",
+        'prediction_table_config',
+        'pred_table = pquery.generate_prediction_table(',
+        'batch_prediction_options',
+        'output_configurations',
+        'prediction_job = trainer.predict(',
     ]
 
     for component in components:
         assert component in predict_sdk_script
 
     # Should NOT contain full training pipeline
-    assert "trainer.fit(" not in predict_sdk_script
+    assert 'trainer.fit(' not in predict_sdk_script

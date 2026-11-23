@@ -6,8 +6,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Generic, TypeVar
 
-_K = TypeVar("_K")
-_V = TypeVar("_V")
+_K = TypeVar('_K')
+_V = TypeVar('_V')
 
 
 @dataclass(frozen=True)

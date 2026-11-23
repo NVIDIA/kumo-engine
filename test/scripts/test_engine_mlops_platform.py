@@ -13,7 +13,8 @@ import pytest
 
 DIRECTORY = Path(__file__).resolve().parents[2] / 'packages/kumo-engine/test'
 SPEC = importlib.util.spec_from_file_location(
-    'platform_runner', DIRECTORY / 'wheel_mlops_platform.py')
+    'platform_runner', DIRECTORY / 'wheel_mlops_platform.py'
+)
 assert SPEC is not None and SPEC.loader is not None
 platform = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(platform)
@@ -52,14 +53,18 @@ def test_attempt_resources_are_scoped_and_reconstructible(name, tmp_path):
     assert restored.model == a.model and restored.artifact_root == a.artifact_root
 
 
-@pytest.mark.parametrize('cause,expected', [
-    (TimeoutError('service timed out'), False),
-    (FileNotFoundError('stage absent'), False),
-    (PermissionError('wrapper only'), False),
-    (PermissionError(errno.EACCES, 'denied'), True),
-])
+@pytest.mark.parametrize(
+    'cause,expected',
+    [
+        (TimeoutError('service timed out'), False),
+        (FileNotFoundError('stage absent'), False),
+        (PermissionError('wrapper only'), False),
+        (PermissionError(errno.EACCES, 'denied'), True),
+    ],
+)
 def test_probe_wrapper_does_not_turn_transport_errors_into_denial_proof(
-        cause, expected):
+    cause, expected
+):
     wrapped = PermissionError('MLOps cannot write under artifact_root')
     wrapped.__cause__ = cause
     assert platform.denied_access(wrapped) is expected
@@ -69,7 +74,8 @@ def test_probe_wrapper_does_not_turn_transport_errors_into_denial_proof(
 @pytest.mark.parametrize('notebook', [False, True])
 @pytest.mark.parametrize('workspace', [None, 'workspace-123'])
 def test_notebook_launch_requires_kernel_and_passes_only_identifiers(
-        phase, notebook, workspace, tmp_path, monkeypatch):
+    phase, notebook, workspace, tmp_path, monkeypatch
+):
     import sys
 
     profile = tmp_path / 'profile.json'
@@ -81,15 +87,23 @@ def test_notebook_launch_requires_kernel_and_passes_only_identifiers(
     else:
         monkeypatch.setenv('SNOWFLAKE_WORKSPACE_ID', workspace)
     identity = ['ACCOUNT', 'USER', 'ROLE']
-    session = SimpleNamespace(sql=lambda sql: SimpleNamespace(
-        collect=lambda: [[123]] if 'CURRENT_SESSION' in sql else [identity]))
+    session = SimpleNamespace(
+        sql=lambda sql: SimpleNamespace(
+            collect=lambda: [[123]] if 'CURRENT_SESSION' in sql else [identity]
+        )
+    )
     extension = 'snowflake_notebook_utils.ipython_execution_context_monitor_extension'
-    shell = SimpleNamespace(extension_manager=SimpleNamespace(
-        loaded={extension} if notebook else set()))
-    monkeypatch.setitem(sys.modules, 'IPython',
-                        SimpleNamespace(get_ipython=lambda: shell))
-    monkeypatch.setitem(sys.modules, 'snowflake.snowpark.context',
-                        SimpleNamespace(get_active_session=lambda: session))
+    shell = SimpleNamespace(
+        extension_manager=SimpleNamespace(loaded={extension} if notebook else set())
+    )
+    monkeypatch.setitem(
+        sys.modules, 'IPython', SimpleNamespace(get_ipython=lambda: shell)
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        'snowflake.snowpark.context',
+        SimpleNamespace(get_active_session=lambda: session),
+    )
     calls = []
 
     def run(command, **kwargs):
@@ -97,55 +111,66 @@ def test_notebook_launch_requires_kernel_and_passes_only_identifiers(
         if phase == 'negative':
             output = Path(command[command.index('--output-dir') + 1])
             assert (output / 'platform.json').is_file()
-            (output / 'negative.json').write_text(
-                json.dumps(dict(status='passed')))
+            (output / 'negative.json').write_text(json.dumps(dict(status='passed')))
         return SimpleNamespace(returncode=1)
 
     monkeypatch.setattr(platform.subprocess, 'run', run)
-    args = dict(config=profile, wheel=tmp_path / 'candidate.whl',
-                expected_version='1.2.3', output_dir=tmp_path / 'evidence',
-                phase=phase)
+    args = dict(
+        config=profile,
+        wheel=tmp_path / 'candidate.whl',
+        expected_version='1.2.3',
+        output_dir=tmp_path / 'evidence',
+        phase=phase,
+    )
     if not notebook:
-        with pytest.raises(platform.PlatformUnavailable,
-                           match='notebook kernel'):
+        with pytest.raises(platform.PlatformUnavailable, match='notebook kernel'):
             platform.run_notebook(**args)
         assert not calls
         return
     result = platform.run_notebook(**args)
-    assert result == dict(returncode=1,
-                          summary=dict(status='passed') if phase else None)
+    assert result == dict(
+        returncode=1, summary=dict(status='passed') if phase else None
+    )
     if phase:
         assert calls[0][0][-2:] == ['--phase', 'negative']
     command, options = calls[0]
     assert options['timeout'] == (300 if phase else None)
     assert command[1] == '-I' and '--execute-platform' in command
     assert json.loads(options['env'][platform.NOTEBOOK_CONTEXT]) == dict(
-        session='123', workspace=workspace, notebook_extension=True,
-        identity=identity)
+        session='123', workspace=workspace, notebook_extension=True, identity=identity
+    )
     assert platform.NOTEBOOK_CONTEXT not in platform.os.environ
     assert options['env']['MPLBACKEND'] == 'Agg'
     assert platform.os.environ['MPLBACKEND'] == inline_backend
 
 
 @pytest.mark.parametrize(
-    'identity',
-    [['ACCOUNT', 'USER', 'ROLE'], ['ACCOUNT', 'SERVICE_USER', 'ROLE']])
-def test_notebook_worker_identity_is_checked_before_mlops(
-        identity, monkeypatch):
+    'identity', [['ACCOUNT', 'USER', 'ROLE'], ['ACCOUNT', 'SERVICE_USER', 'ROLE']]
+)
+def test_notebook_worker_identity_is_checked_before_mlops(identity, monkeypatch):
     import sys
 
     instance = platform.Snowflake(config(), 'abcdef123456')
     monkeypatch.setattr(
-        instance, 'placement',
-        lambda: dict(notebook=dict(identity=['ACCOUNT', 'USER', 'ROLE'])))
-    connector = SimpleNamespace(session=lambda: SimpleNamespace(
-        sql=lambda _: SimpleNamespace(collect=lambda: [identity])))
+        instance,
+        'placement',
+        lambda: dict(notebook=dict(identity=['ACCOUNT', 'USER', 'ROLE'])),
+    )
+    connector = SimpleNamespace(
+        session=lambda: SimpleNamespace(
+            sql=lambda _: SimpleNamespace(collect=lambda: [identity])
+        )
+    )
     monkeypatch.setitem(
-        sys.modules, 'kumo.engine',
-        SimpleNamespace(SnowflakeConnector=SimpleNamespace(
-            from_spcs_env=lambda **_: connector)))
-    monkeypatch.setitem(sys.modules, 'kumo',
-                        SimpleNamespace(engine=sys.modules['kumo.engine']))
+        sys.modules,
+        'kumo.engine',
+        SimpleNamespace(
+            SnowflakeConnector=SimpleNamespace(from_spcs_env=lambda **_: connector)
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules, 'kumo', SimpleNamespace(engine=sys.modules['kumo.engine'])
+    )
     if identity[1] == 'SERVICE_USER':
         with pytest.raises(platform.PlatformUnavailable, match='differs'):
             _ = instance.connector
@@ -154,30 +179,31 @@ def test_notebook_worker_identity_is_checked_before_mlops(
 
 
 @pytest.mark.parametrize(
-    'case', ['denied', 'local-spool', 'missing', 'timeout', 'writable'])
+    'case', ['denied', 'local-spool', 'missing', 'timeout', 'writable']
+)
 @pytest.mark.parametrize('name', platform.PLATFORMS)
 def test_negative_requires_real_permission_denial(case, name, monkeypatch):
     import sys
 
     denied = {
-        'sagemaker':
-        's3://test-bucket/denied',
-        'snowflake':
-        '@KUMO_TEST_DB.YOUR_TEST_SCHEMA.DENIED_STAGE/mlops-validation',
-        'databricks':
-        '/Volumes/kumo_test_catalogue/kumo_test/test_denied/mlops-validation',
+        'sagemaker': 's3://test-bucket/denied',
+        'snowflake': '@KUMO_TEST_DB.YOUR_TEST_SCHEMA.DENIED_STAGE/mlops-validation',
+        'databricks': '/Volumes/kumo_test_catalogue/kumo_test/test_denied/mlops-validation',
     }[name]
-    instance = platform.Backend({
-        **config(name), 'denied_artifact_root': denied
-    }, 'abcdef123456')
+    instance = platform.Backend(
+        {**config(name), 'denied_artifact_root': denied}, 'abcdef123456'
+    )
     instance.connector = object()
 
     def mlops(root, **kwargs):
         assert root == (instance.connector, denied + '/abcdef123456')
         if case == 'writable':
             return object()
-        error = PermissionError(errno.EACCES, 'write denied') if case in (
-            'denied', 'local-spool') else PermissionError('Could not write')
+        error = (
+            PermissionError(errno.EACCES, 'write denied')
+            if case in ('denied', 'local-spool')
+            else PermissionError('Could not write')
+        )
         if case == 'denied':
 
             class ProviderDenied(RuntimeError):
@@ -209,8 +235,9 @@ def test_negative_requires_real_permission_denial(case, name, monkeypatch):
         with pytest.raises(AssertionError, match='was writable'):
             instance.negative()
     else:
-        with pytest.raises(platform.PlatformUnavailable,
-                           match='without permission-denial'):
+        with pytest.raises(
+            platform.PlatformUnavailable, match='without permission-denial'
+        ):
             instance.negative()
 
 
@@ -224,17 +251,18 @@ def test_denied_databricks_root_can_use_an_isolated_catalog():
     assert result['denied_artifact_root'] == denied
 
 
-@pytest.mark.parametrize('denied', [
-    '/Volumes/readonly/schema/volume/../other',
-    '/Volumes/readonly/schema/volume/path?query=invalid',
-    '/Volumes/readonly/schema/volume//path',
-    '/Volumes/readonly/schema/volume',
-])
+@pytest.mark.parametrize(
+    'denied',
+    [
+        '/Volumes/readonly/schema/volume/../other',
+        '/Volumes/readonly/schema/volume/path?query=invalid',
+        '/Volumes/readonly/schema/volume//path',
+        '/Volumes/readonly/schema/volume',
+    ],
+)
 def test_denied_databricks_root_rejects_unsafe_paths(denied):
     with pytest.raises(ValueError, match='Volume test-prefix'):
-        platform.validate({
-            **config('databricks'), 'denied_artifact_root': denied
-        })
+        platform.validate({**config('databricks'), 'denied_artifact_root': denied})
 
 
 @pytest.mark.parametrize('name', ['snowflake', 'databricks', 'sagemaker'])
@@ -244,8 +272,9 @@ def test_typed_databricks_denial_without_error_code_stays_provider_scoped(name):
     assert denied.error_code is None
     wrapped = PermissionError('artifact write failed')
     wrapped.__cause__ = denied
-    assert platform.denied_access(wrapped, provider_only=True,
-                                  provider=name) is (name == 'databricks')
+    assert platform.denied_access(wrapped, provider_only=True, provider=name) is (
+        name == 'databricks'
+    )
 
 
 @pytest.mark.parametrize('name', ['snowflake', 'databricks', 'sagemaker'])
@@ -254,8 +283,9 @@ def test_aws_denial_is_accepted_only_for_selected_aws_provider(name):
     cause = RuntimeError('provider denied')
     cause.response = {'Error': {'Code': 'AccessDenied'}}
     error.__cause__ = cause
-    assert platform.denied_access(error, provider_only=True,
-                                  provider=name) is (name == 'sagemaker')
+    assert platform.denied_access(error, provider_only=True, provider=name) is (
+        name == 'sagemaker'
+    )
     assert not platform.denied_access(
-        PermissionError(errno.EACCES, 'local spool'), provider_only=True,
-        provider=name)
+        PermissionError(errno.EACCES, 'local spool'), provider_only=True, provider=name
+    )

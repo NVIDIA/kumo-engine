@@ -36,23 +36,25 @@ SNOWFLAKE_SERVICE: Optional[str] = os.getenv('SNOWFLAKE_SERVICE')
 
 # Environment variables used for databricks credentials
 DATABRICKS_TOKEN = EnvVar('DATABRICKS_TOKEN', type=str, default_value='')
-DATABRICKS_CLIENT_ID = EnvVar('DATABRICKS_CLIENT_ID', type=str,
-                              default_value='')
-DATABRICKS_CLIENT_SECRET = EnvVar('DATABRICKS_CLIENT_SECRET', type=str,
-                                  default_value='')
+DATABRICKS_CLIENT_ID = EnvVar('DATABRICKS_CLIENT_ID', type=str, default_value='')
+DATABRICKS_CLIENT_SECRET = EnvVar(
+    'DATABRICKS_CLIENT_SECRET', type=str, default_value=''
+)
 # Environment variables used for databricks environment config
 DATABRICKS_HOST = EnvVar('DATABRICKS_HOST', type=str, default_value='')
-DATABRICKS_CLUSTER_ID = EnvVar('DATABRICKS_CLUSTER_ID', type=str,
-                               default_value='')
-DATABRICKS_WAREHOUSE_ID = EnvVar('DATABRICKS_WAREHOUSE_ID', type=str,
-                                 default_value='')
+DATABRICKS_CLUSTER_ID = EnvVar('DATABRICKS_CLUSTER_ID', type=str, default_value='')
+DATABRICKS_WAREHOUSE_ID = EnvVar('DATABRICKS_WAREHOUSE_ID', type=str, default_value='')
 # Environment variable indicating if running tests
 KUMO_TESTING = EnvVar('KUMO_TESTING', type=bool, default_value=False)
 
 # Cloud provider flag - indicates if deployed on GCP (vs AWS default)
 IS_GCP_DEPLOY = EnvVar(
-    name="IS_GCP_DEPLOY", type=bool, required=False, default_value=False,
-    description="Whether deployed on GCP (default is AWS)").parse_value()
+    name='IS_GCP_DEPLOY',
+    type=bool,
+    required=False,
+    default_value=False,
+    description='Whether deployed on GCP (default is AWS)',
+).parse_value()
 
 
 @blocking_func()
@@ -91,19 +93,26 @@ _TEMPORAL_SERVER = EnvVar(
     default_value=TemporalServerLocation.CLOUD,
 )
 REGION_SUFFIX = EnvVar('REGION_SUFFIX', str, required=False, default_value='')
-_INSTANCE_ID = EnvVar('INSTANCE_ID', str, required=False,
-                      default_value=get_instance_id())
-_TEMPORAL_CERT_DIR = EnvVar('TEMPORAL_CERT_DIR', str, required=False,
-                            default_value='')
+_INSTANCE_ID = EnvVar(
+    'INSTANCE_ID', str, required=False, default_value=get_instance_id()
+)
+_TEMPORAL_CERT_DIR = EnvVar('TEMPORAL_CERT_DIR', str, required=False, default_value='')
 
 _CUSTOM_S3_DATA_PLANE_BUCKET = EnvVar(
-    name='CUSTOM_S3_DATA_PLANE_BUCKET', type=str, required=False,
-    default_value='', description='Custom S3 bucket for customers '
-    'who need physical isolation')
+    name='CUSTOM_S3_DATA_PLANE_BUCKET',
+    type=str,
+    required=False,
+    default_value='',
+    description='Custom S3 bucket for customers who need physical isolation',
+)
 
 _CUSTOM_REST_PERSIST_DIR = EnvVar(
-    name='CUSTOM_REST_PERSIST_DIR', type=str, required=False, default_value='',
-    description='Custom dir to keep persistent data (DB, models, etc)')
+    name='CUSTOM_REST_PERSIST_DIR',
+    type=str,
+    required=False,
+    default_value='',
+    description='Custom dir to keep persistent data (DB, models, etc)',
+)
 
 DEVTEST_NAMESPACE = 'devtest'
 
@@ -118,21 +127,25 @@ _DEPLOY_STAGE_TO_TEMPORAL_NAMESPACE = {
 }
 
 # Registries of docker images.
-ECR_REGISTRY = "926922431314.dkr.ecr.us-west-2.amazonaws.com/kumo/"
+ECR_REGISTRY = '926922431314.dkr.ecr.us-west-2.amazonaws.com/kumo/'
 
 DEFAULT_REGISTRY = EnvVar(
-    name="DEFAULT_REGISTRY",
+    name='DEFAULT_REGISTRY',
     type=str,
     default_value=ECR_REGISTRY,
-    description="Default registry for docker images",
+    description='Default registry for docker images',
 ).parse_value()
-_CUSTOM_TEMPORAL_NAMESPACE = EnvVar('TEMPORAL_NAMESPACE', type=str,
-                                    required=False, default_value='',
-                                    description='Temporal namespace')
+_CUSTOM_TEMPORAL_NAMESPACE = EnvVar(
+    'TEMPORAL_NAMESPACE',
+    type=str,
+    required=False,
+    default_value='',
+    description='Temporal namespace',
+)
 
 # A string that can be used as a kubernetes label, to describe the deploy
 # environment of a particular pod/job/etc.
-K8sDeployEnvLabel = NewType("K8sDeployEnvLabel", str)
+K8sDeployEnvLabel = NewType('K8sDeployEnvLabel', str)
 
 _SLACK_URL = EnvVar('SLACK_URL', str, default_value='')
 _CUSTOMER_SLACK_URL = EnvVar('CUSTOMER_SLACK_URL', str, default_value='')
@@ -144,14 +157,14 @@ DEFAULT_CACHE_RELATIVE_DIR = osp.join('.cache', 'kumo')
 def _source_repo_root() -> Optional[str]:
     for parent in Path(__file__).resolve().parents:
         if (parent / 'pyproject.toml').exists() and (
-                parent / 'service_framework').is_dir():
+            parent / 'service_framework'
+        ).is_dir():
             return str(parent)
     return None
 
 
 def _default_cache_dir() -> str:
-    return osp.join(_source_repo_root() or os.getcwd(),
-                    DEFAULT_CACHE_RELATIVE_DIR)
+    return osp.join(_source_repo_root() or os.getcwd(), DEFAULT_CACHE_RELATIVE_DIR)
 
 
 def _is_local_filesystem_path(path: str) -> bool:
@@ -159,6 +172,7 @@ def _is_local_filesystem_path(path: str) -> bool:
         return False
 
     from io_utils.fsutil.uri import LocalURI, ParseURI
+
     try:
         return isinstance(ParseURI(path), LocalURI)
     except ValueError:
@@ -188,22 +202,25 @@ def get_snowflake_connection_string() -> str:
 
 
 @blocking_func()
-def send_slack_message(message: str, url: Optional[str] = None,
-                       customer_specific_url: Optional[str] = None,
-                       timeout: float = 2.0):
+def send_slack_message(
+    message: str,
+    url: Optional[str] = None,
+    customer_specific_url: Optional[str] = None,
+    timeout: float = 2.0,
+):
     """
     This function makes a blocking call to post a slack message for notifying
     failures, be careful with using this in async functions.
     """
     urls = [
-        url or _SLACK_URL.parse_value(), customer_specific_url
-        or _CUSTOMER_SLACK_URL.parse_value()
+        url or _SLACK_URL.parse_value(),
+        customer_specific_url or _CUSTOMER_SLACK_URL.parse_value(),
     ]
     for url in urls:
         if url:
             try:
-                data = {"text": message, "link_names": True}
+                data = {'text': message, 'link_names': True}
                 headers = {'Content-type': 'application/json'}
                 requests.post(url, json=data, headers=headers, timeout=timeout)
             except Exception:
-                log.exception(f"Failed to send slack message to {url}.")
+                log.exception(f'Failed to send slack message to {url}.')

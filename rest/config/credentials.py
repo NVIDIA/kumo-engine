@@ -28,8 +28,7 @@ def _make_root_validator(expected_type: str):
         values = before_validator_dict(values)
         type = values.pop('_type', None)
         if type is not None and type != expected_type:
-            raise ValueError(
-                f'Unexpected credential type: {type} vs {expected_type}')
+            raise ValueError(f'Unexpected credential type: {type} vs {expected_type}')
 
         new_values = {}
         for field, value in values.items():
@@ -56,7 +55,7 @@ class UsernamePassword(AsDictMixin):
     def as_dict(self) -> Dict[str, EncryptedStr]:
         return {
             'user': EncryptedStr(self.username),
-            'password': EncryptedStr(self.password)
+            'password': EncryptedStr(self.password),
         }
 
 
@@ -75,6 +74,7 @@ class KeyPair(AsDictMixin):
     """
     Private key pair for snowflake authentication.
     """
+
     _type: Literal['keypair'] = 'keypair'
 
     private_key: Optional[SecretStr] = None
@@ -109,6 +109,7 @@ class AWSFederatedCredentials:
 @dataclass(frozen=True, repr=False)
 class AWSAmbientCredentials:
     """Process-local marker for one attested refreshable AWS role session."""
+
     __temporal_serializable__: ClassVar[bool] = False
     session: Any
     approved_role_arn: str
@@ -143,8 +144,9 @@ class AWSAccessKeyCredentials:
             'provider': 's3',
             'aws_access_key_id': self.access_key_id.get_secret_value(),
             'aws_secret_access_key': self.secret_access_key.get_secret_value(),
-            'aws_session_token': (self.session_token.get_secret_value()
-                                  if self.session_token else None),
+            'aws_session_token': (
+                self.session_token.get_secret_value() if self.session_token else None
+            ),
             'region': self.region,
         }
         if self.connection is not None:
@@ -159,6 +161,7 @@ class GoogleCloudCredentials:
     Google credential objects contain refresh tokens and signed assertions and
     are intentionally neither representable nor Temporal-serializable.
     """
+
     __temporal_serializable__: ClassVar[bool] = False
     provider: Literal['bigquery', 'gcs']
     credential: Any
@@ -169,8 +172,11 @@ class GoogleCloudCredentials:
 
     def as_dict(self) -> Dict[str, Any]:
         credential = self.credential
-        if (self.provider == 'bigquery' and self.billing_project_id
-                and hasattr(credential, 'with_quota_project')):
+        if (
+            self.provider == 'bigquery'
+            and self.billing_project_id
+            and hasattr(credential, 'with_quota_project')
+        ):
             credential = credential.with_quota_project(self.billing_project_id)
         result = {
             'provider': self.provider,
@@ -198,7 +204,13 @@ class AzureFederatedCredentials:
         }
 
 
-Credentials = Union[UsernamePassword, DatabricksCredentials, KeyPair,
-                    AWSFederatedCredentials, AWSAmbientCredentials,
-                    AWSAccessKeyCredentials,
-                    GoogleCloudCredentials, AzureFederatedCredentials]
+Credentials = Union[
+    UsernamePassword,
+    DatabricksCredentials,
+    KeyPair,
+    AWSFederatedCredentials,
+    AWSAmbientCredentials,
+    AWSAccessKeyCredentials,
+    GoogleCloudCredentials,
+    AzureFederatedCredentials,
+]

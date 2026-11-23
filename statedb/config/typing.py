@@ -159,9 +159,7 @@ TO_PYARROW_DTYPE = {
 }
 
 PYARROW_TO_DTYPE = {
-    v:
-    k if k not in (Dtype.byte,
-                   Dtype.int16) else Dtype.int32
+    v: k if k not in (Dtype.byte, Dtype.int16) else Dtype.int32
     for k, v in TO_PYARROW_DTYPE.items()
     if k is not Dtype.unsupported
 }
@@ -175,8 +173,7 @@ def to_pyarrow_type(dtype: Any) -> Any:
         # NOTE: Since this function is currently only used for table
         # metadata inference, this conditional is used to stop customer
         # data from using the internal list `Dtype`
-        return TO_PYARROW_DTYPE[kumo_dtype] if not kumo_dtype.is_list(
-        ) else None
+        return TO_PYARROW_DTYPE[kumo_dtype] if not kumo_dtype.is_list() else None
     return None
 
 
@@ -229,12 +226,10 @@ def pyarrow_to_dtype(dtype: Any) -> Any:
         kumo_dtype = Dtype.stringlist
     else:
         kumo_dtype = PYARROW_TO_DTYPE[dtype]
-    return kumo_dtype if not kumo_dtype.is_list(
-    ) else Dtype.unsupported
+    return kumo_dtype if not kumo_dtype.is_list() else Dtype.unsupported
 
 
-def to_dtype(dtype: Any,
-             ser: Optional[pd.Series] = None) -> Dtype:
+def to_dtype(dtype: Any, ser: Optional[pd.Series] = None) -> Dtype:
     if is_datetime64_any_dtype(dtype):
         return Dtype.date
     if isinstance(dtype, pd.CategoricalDtype):
@@ -246,9 +241,11 @@ def to_dtype(dtype: Any,
             # to infer the dtype:
             for i in range(min(len(ser), _MAX_NUM_ROWS_FOR_DTYPE_INFERENCE)):
                 # pd.isna can't be called on a list
-                if (not isinstance(ser.iloc[i], list)
-                        and not isinstance(ser.iloc[i], np.ndarray)
-                        and pd.isna(ser.iloc[i])) or len(ser.iloc[i]) == 0:
+                if (
+                    not isinstance(ser.iloc[i], list)
+                    and not isinstance(ser.iloc[i], np.ndarray)
+                    and pd.isna(ser.iloc[i])
+                ) or len(ser.iloc[i]) == 0:
                     continue
                 elif isinstance(ser.iloc[i][0], float):
                     return Dtype.floatlist
@@ -260,14 +257,12 @@ def to_dtype(dtype: Any,
             # Snowflake object-dtype timestamps must be typed temporal, not
             # string, or MIN/MAX get dropped. infer_dtype also catches
             # np.datetime64 scalars an isinstance(date) probe would miss.
-            if pd.api.types.infer_dtype(ser) in {
-                    'datetime', 'date', 'datetime64'
-            }:
+            if pd.api.types.infer_dtype(ser) in {'datetime', 'date', 'datetime64'}:
                 return Dtype.date
 
     # Check to propagate more meaningful error message
     if dtype not in TO_DTYPE:
-        raise KeyError(f"Unsupported data type: {dtype}.")
+        raise KeyError(f'Unsupported data type: {dtype}.')
 
     return TO_DTYPE[dtype]
 
@@ -295,6 +290,7 @@ PathDict = Dict[str, str]
 
 class EdgeDirection(Enum):
     r"""Defines the ways to materialize edges."""
+
     SRC_TO_DST = 'src_to_dst'
     DST_TO_SRC = 'dst_to_src'
     BOTH = 'both'
@@ -307,5 +303,6 @@ class EdgeDirection(Enum):
 
 class ContentType(Enum):
     r"""Defines the content to list from KumoBench and StateDB."""
+
     GRAPHS = 'graphs'
     QUERIES = 'queries'

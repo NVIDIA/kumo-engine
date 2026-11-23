@@ -51,8 +51,9 @@ from statedb.utils.errors import (
 # Reach into sys.modules because the package re-exports the function
 # under the same name as the module.
 activity_module = sys.modules[
-    'rest.backends.data_backend.activities.ingest_table_data_activity_v2']
-ingest_table_data_activity_v2 = (activity_module.ingest_table_data_activity_v2)
+    'rest.backends.data_backend.activities.ingest_table_data_activity_v2'
+]
+ingest_table_data_activity_v2 = activity_module.ingest_table_data_activity_v2
 
 
 def _table_and_connector_spec() -> tuple[TableDefinition, ConnectorSpec]:
@@ -61,10 +62,7 @@ def _table_and_connector_spec() -> tuple[TableDefinition, ConnectorSpec]:
         cols=[],
         source_table=S3SourceTable(
             connector_id=connector_id,
-            source={
-                'mode': 'relative',
-                'path': 'test_table'
-            },
+            source={'mode': 'relative', 'path': 'test_table'},
             file_type=FileType.PARQUET,
         ),
         pkey=None,
@@ -79,33 +77,34 @@ def _table_and_connector_spec() -> tuple[TableDefinition, ConnectorSpec]:
 @contextmanager
 def _activity_patches():
     with mock.patch.multiple(
-            activity_module,
-            get_connector_from_spec=mock.DEFAULT,
-            data_backend_cache=mock.DEFAULT,
-            activity=mock.DEFAULT,
-            IngestionValidator=mock.DEFAULT,
-            get_kumo_version=mock.DEFAULT,
-            _stored_materialization_size=mock.DEFAULT,
+        activity_module,
+        get_connector_from_spec=mock.DEFAULT,
+        data_backend_cache=mock.DEFAULT,
+        activity=mock.DEFAULT,
+        IngestionValidator=mock.DEFAULT,
+        get_kumo_version=mock.DEFAULT,
+        _stored_materialization_size=mock.DEFAULT,
     ) as patches:
         patches['_stored_materialization_size'].return_value = 123
-        with mock.patch.object(activity_module, 'setup_backend_cache',
-                               create=True) as setup_backend_cache:
+        with mock.patch.object(
+            activity_module, 'setup_backend_cache', create=True
+        ) as setup_backend_cache:
             patches['setup_backend_cache'] = setup_backend_cache
             yield patches
 
 
 def _object_source() -> dict:
     return {
-        'type':
-        'object_store_parquet',
-        'objects': [{
-            'path': 's3://customer-bucket/root/test_table/part.parquet',
-            'size': 345,
-            'e_tag': 'etag',
-            'version': None,
-        }],
-        'auth_profile':
-        'ambient',
+        'type': 'object_store_parquet',
+        'objects': [
+            {
+                'path': 's3://customer-bucket/root/test_table/part.parquet',
+                'size': 345,
+                'e_tag': 'etag',
+                'version': None,
+            }
+        ],
+        'auth_profile': 'ambient',
     }
 
 
@@ -120,10 +119,12 @@ def _run_file_ingest(
     source = _object_source()
     connector = mock.Mock(spec=CompositeFileConnector)
     if live_direct is None:
-        connector.uses_direct_diskgraph_source_for.side_effect = (
-            AssertionError('frozen decision must not be reprobed'))
+        connector.uses_direct_diskgraph_source_for.side_effect = AssertionError(
+            'frozen decision must not be reprobed'
+        )
         connector.diskgraph_source.side_effect = AssertionError(
-            'frozen manifest must not be relisted')
+            'frozen manifest must not be relisted'
+        )
     else:
         connector.uses_direct_diskgraph_source_for.return_value = live_direct
         connector.diskgraph_source.return_value = source
@@ -133,8 +134,9 @@ def _run_file_ingest(
     )
 
     with _activity_patches() as patches:
-        patches['IngestionValidator'].return_value.pre_ingestion.return_value \
-            = ValidationResponse()
+        patches[
+            'IngestionValidator'
+        ].return_value.pre_ingestion.return_value = ValidationResponse()
         cache = patches['data_backend_cache'].return_value
         cache.direct_diskgraph_source_decision.get.return_value = decision
         cache.materialization_stage.get_stage.return_value = cached_stage
@@ -157,27 +159,25 @@ def test_v2_zero_rows_raises_validation_error():
     """A connector reporting num_rows=0 from its unload must surface a
     'Table ingestion check failed' ValidationError."""
     with _activity_patches() as patches:
-        patches['IngestionValidator'].return_value.pre_ingestion.return_value \
-            = ValidationResponse()
-        patches['data_backend_cache'].return_value \
-            .materialization_stage.get_stage.return_value = None
+        patches[
+            'IngestionValidator'
+        ].return_value.pre_ingestion.return_value = ValidationResponse()
+        patches[
+            'data_backend_cache'
+        ].return_value.materialization_stage.get_stage.return_value = None
         patches['activity'].info.return_value.workflow_id = 'test_wf_id'
         patches['get_kumo_version'].return_value = 'test_version'
 
         connector = mock.Mock(spec=SQLConnector)
         connector.name = 'fake'
-        connector.export_table.return_value = ExportMetrics(
-            num_rows=0, source_size=0)
+        connector.export_table.return_value = ExportMetrics(num_rows=0, source_size=0)
         patches['get_connector_from_spec'].return_value = connector
 
         table = TableDefinition(
             cols=[],
             source_table=S3SourceTable(
                 connector_id=f'connector_{"0" * 32}',
-                source={
-                    'mode': 'relative',
-                    'path': 'test_table'
-                },
+                source={'mode': 'relative', 'path': 'test_table'},
                 file_type=FileType.PARQUET,
             ),
             pkey=None,
@@ -189,8 +189,8 @@ def test_v2_zero_rows_raises_validation_error():
         )
 
         _, response = ingest_table_data_activity_v2(
-            connector_spec, table, 'v1', 'job_id',
-            mock.Mock(spec=DeployEnvConfig))
+            connector_spec, table, 'v1', 'job_id', mock.Mock(spec=DeployEnvConfig)
+        )
 
         assert not response.ok
         assert any('0 rows' in e.message for e in response.errors)
@@ -208,8 +208,9 @@ def test_v2_none_num_rows_persists_source_size_only_no_empty_error():
     for a number already in hand.
     """
     with _activity_patches() as patches:
-        patches['IngestionValidator'].return_value.pre_ingestion.return_value \
-            = ValidationResponse()
+        patches[
+            'IngestionValidator'
+        ].return_value.pre_ingestion.return_value = ValidationResponse()
         cache = patches['data_backend_cache'].return_value
         cache.materialization_stage.get_stage.return_value = None
         cache.materialization_stage.get.return_value = None
@@ -220,17 +221,15 @@ def test_v2_none_num_rows_persists_source_size_only_no_empty_error():
         connector = mock.Mock(spec=SQLConnector)
         connector.name = 'fake'
         connector.export_table.return_value = ExportMetrics(
-            num_rows=None, source_size=123)
+            num_rows=None, source_size=123
+        )
         patches['get_connector_from_spec'].return_value = connector
 
         table = TableDefinition(
             cols=[],
             source_table=S3SourceTable(
                 connector_id=f'connector_{"0" * 32}',
-                source={
-                    'mode': 'relative',
-                    'path': 'test_table'
-                },
+                source={'mode': 'relative', 'path': 'test_table'},
                 file_type=FileType.PARQUET,
             ),
             pkey=None,
@@ -242,8 +241,8 @@ def test_v2_none_num_rows_persists_source_size_only_no_empty_error():
         )
 
         _, response = ingest_table_data_activity_v2(
-            connector_spec, table, 'v1', 'job_id',
-            mock.Mock(spec=DeployEnvConfig))
+            connector_spec, table, 'v1', 'job_id', mock.Mock(spec=DeployEnvConfig)
+        )
 
         # ``None == 0`` is False: no spurious "0 rows" ingestion failure.
         assert response.ok
@@ -263,8 +262,9 @@ def test_v2_deferred_none_num_rows_persists_export_size_only():
     local mirror or treating the unknown count as an empty source.
     """
     with _activity_patches() as patches:
-        patches['IngestionValidator'].return_value.pre_ingestion.return_value \
-            = ValidationResponse()
+        patches[
+            'IngestionValidator'
+        ].return_value.pre_ingestion.return_value = ValidationResponse()
         cache = patches['data_backend_cache'].return_value
         cache.materialization_stage.get_stage.return_value = None
         cache.materialization_stage.get.return_value = None
@@ -274,13 +274,14 @@ def test_v2_deferred_none_num_rows_persists_export_size_only():
         connector = mock.Mock(spec=SQLConnector)
         connector.name = 'fake'
         connector.export_table.return_value = ExportMetrics(
-            num_rows=None, source_size=123)
+            num_rows=None, source_size=123
+        )
         patches['get_connector_from_spec'].return_value = connector
         table, connector_spec = _table_and_connector_spec()
 
         _, response = ingest_table_data_activity_v2(
-            connector_spec, table, 'v1', 'job_id',
-            mock.Mock(spec=DeployEnvConfig))
+            connector_spec, table, 'v1', 'job_id', mock.Mock(spec=DeployEnvConfig)
+        )
 
         assert response.ok
         assert not any('0 rows' in error.message for error in response.errors)
@@ -297,21 +298,23 @@ def test_provider_failure_is_absent_from_error_trace_and_logs(caplog):
         pass
 
     with _activity_patches() as patches:
-        patches['IngestionValidator'].return_value.pre_ingestion.return_value \
-            = ValidationResponse()
+        patches[
+            'IngestionValidator'
+        ].return_value.pre_ingestion.return_value = ValidationResponse()
         patches['activity'].info.return_value.workflow_id = 'test_wf_id'
         patches['get_connector_from_spec'].side_effect = ProviderFailure(
-            provider_secret)
+            provider_secret
+        )
         table, connector_spec = _table_and_connector_spec()
 
         with pytest.raises(TableIngestionError) as caught:
-            ingest_table_data_activity_v2(connector_spec, table, 'v1', 'job_id',
-                                          mock.Mock(spec=DeployEnvConfig))
+            ingest_table_data_activity_v2(
+                connector_spec, table, 'v1', 'job_id', mock.Mock(spec=DeployEnvConfig)
+            )
 
     rendered_trace = ''.join(traceback.format_exception(caught.value))
     assert caught.value.http_code == 422
-    assert caught.value.message == (
-        activity_module.SAFE_TABLE_INGESTION_ERROR_MESSAGE)
+    assert caught.value.message == (activity_module.SAFE_TABLE_INGESTION_ERROR_MESSAGE)
     assert caught.value.__cause__ is None
     assert provider_secret not in str(caught.value)
     assert provider_secret not in rendered_trace
@@ -321,16 +324,19 @@ def test_provider_failure_is_absent_from_error_trace_and_logs(caplog):
 def test_allowlisted_identity_outage_preserves_safe_public_error(caplog):
     safe_message = 'Identity resolution is temporarily unavailable.'
     with _activity_patches() as patches:
-        patches['IngestionValidator'].return_value.pre_ingestion.return_value \
-            = ValidationResponse()
+        patches[
+            'IngestionValidator'
+        ].return_value.pre_ingestion.return_value = ValidationResponse()
         patches['activity'].info.return_value.workflow_id = 'test_wf_id'
-        patches['get_connector_from_spec'].side_effect = (
-            IdentityResolutionUnavailableError(message=safe_message))
+        patches[
+            'get_connector_from_spec'
+        ].side_effect = IdentityResolutionUnavailableError(message=safe_message)
         table, connector_spec = _table_and_connector_spec()
 
         with pytest.raises(IdentityResolutionUnavailableError) as caught:
-            ingest_table_data_activity_v2(connector_spec, table, 'v1', 'job_id',
-                                          mock.Mock(spec=DeployEnvConfig))
+            ingest_table_data_activity_v2(
+                connector_spec, table, 'v1', 'job_id', mock.Mock(spec=DeployEnvConfig)
+            )
 
     assert caught.value.http_code == 503
     assert caught.value.message == safe_message
@@ -342,19 +348,24 @@ def test_oom_export_failure_preserves_specific_nonretryable_error():
     through the ingestion sanitizer, keeping its actionable message and
     non-retryable marking instead of flattening to the generic ingestion
     error (which suggests a retry that would deterministically re-OOM)."""
-    oom_message = ('The worker ran out of memory while ingesting the '
-                   "Databricks table 'large_embs_articles'.")
+    oom_message = (
+        'The worker ran out of memory while ingesting the '
+        "Databricks table 'large_embs_articles'."
+    )
     with _activity_patches() as patches:
-        patches['IngestionValidator'].return_value.pre_ingestion.return_value \
-            = ValidationResponse()
+        patches[
+            'IngestionValidator'
+        ].return_value.pre_ingestion.return_value = ValidationResponse()
         patches['activity'].info.return_value.workflow_id = 'test_wf_id'
-        patches['get_connector_from_spec'].side_effect = (
-            TableIngestionOutOfMemoryError(oom_message))
+        patches['get_connector_from_spec'].side_effect = TableIngestionOutOfMemoryError(
+            oom_message
+        )
         table, connector_spec = _table_and_connector_spec()
 
         with pytest.raises(TableIngestionOutOfMemoryError) as caught:
-            ingest_table_data_activity_v2(connector_spec, table, 'v1', 'job_id',
-                                          mock.Mock(spec=DeployEnvConfig))
+            ingest_table_data_activity_v2(
+                connector_spec, table, 'v1', 'job_id', mock.Mock(spec=DeployEnvConfig)
+            )
 
     assert caught.value.http_code == 422
     assert caught.value.non_retryable is True
@@ -367,16 +378,16 @@ def test_timestamp_inference_provider_failure_is_sanitized(caplog):
     table, connector_spec = _table_and_connector_spec()
 
     with mock.patch(
-            'rest.backends.data_backend.activities.data_backend_activities.'
-            'get_connector_from_spec',
-            side_effect=RuntimeError(provider_secret),
+        'rest.backends.data_backend.activities.data_backend_activities.'
+        'get_connector_from_spec',
+        side_effect=RuntimeError(provider_secret),
     ):
         with pytest.raises(TableIngestionError) as caught:
             data_backend_activities.DataBackendActivities.update_table_timestamp_units(
-                table, connector_spec, None, None)
+                table, connector_spec, None, None
+            )
 
-    assert caught.value.message == (
-        activity_module.SAFE_TABLE_INGESTION_ERROR_MESSAGE)
+    assert caught.value.message == (activity_module.SAFE_TABLE_INGESTION_ERROR_MESSAGE)
     assert provider_secret not in str(caught.value)
     assert provider_secret not in caplog.text
 
@@ -397,10 +408,12 @@ def test_timestamp_reconstruction_preserves_multicategorical_delimiter():
         time_col='event_time',
     )
     inferred_cols = [
-        SimpleNamespace(name='tags', dtype=Dtype.string, timestamp_unit=None,
-                        metadata={}),
-        SimpleNamespace(name='event_time', dtype=Dtype.time, timestamp_unit='s',
-                        metadata={}),
+        SimpleNamespace(
+            name='tags', dtype=Dtype.string, timestamp_unit=None, metadata={}
+        ),
+        SimpleNamespace(
+            name='event_time', dtype=Dtype.time, timestamp_unit='s', metadata={}
+        ),
     ]
     kumo_table = SimpleNamespace(
         cols=inferred_cols,
@@ -409,13 +422,19 @@ def test_timestamp_reconstruction_preserves_multicategorical_delimiter():
     )
     connector = mock.MagicMock()
 
-    with mock.patch.object(data_backend_activities, 'get_connector_from_spec',
-                           return_value=connector), mock.patch.object(
-                               data_backend_activities,
-                               'table_args_to_kumo_table',
-                               return_value=kumo_table):
-        updated = data_backend_activities.DataBackendActivities \
-            .update_table_timestamp_units(table, connector_spec, None, None)
+    with (
+        mock.patch.object(
+            data_backend_activities, 'get_connector_from_spec', return_value=connector
+        ),
+        mock.patch.object(
+            data_backend_activities, 'table_args_to_kumo_table', return_value=kumo_table
+        ),
+    ):
+        updated = (
+            data_backend_activities.DataBackendActivities.update_table_timestamp_units(
+                table, connector_spec, None, None
+            )
+        )
 
     updated_cols = {col.name: col for col in updated.cols}
     assert updated_cols['tags'].multicategorical_delimiter == '|'
@@ -425,8 +444,9 @@ def test_timestamp_reconstruction_preserves_multicategorical_delimiter():
 
 def _run_successful_v2_ingest(connector_name: str, table_connector_id: str):
     with _activity_patches() as patches:
-        patches['IngestionValidator'].return_value.pre_ingestion.return_value \
-            = ValidationResponse()
+        patches[
+            'IngestionValidator'
+        ].return_value.pre_ingestion.return_value = ValidationResponse()
         cache = patches['data_backend_cache'].return_value
         cache.materialization_stage.get_stage.return_value = None
         cache.materialization_stage.get.return_value = None
@@ -435,30 +455,26 @@ def _run_successful_v2_ingest(connector_name: str, table_connector_id: str):
 
         connector = mock.Mock(spec=SQLConnector)
         connector.name = connector_name
-        connector.export_table.return_value = ExportMetrics(
-            num_rows=2, source_size=10)
+        connector.export_table.return_value = ExportMetrics(num_rows=2, source_size=10)
         patches['get_connector_from_spec'].return_value = connector
 
         table = TableDefinition(
             cols=[],
             source_table=S3SourceTable(
                 connector_id=table_connector_id,
-                source={
-                    'mode': 'relative',
-                    'path': 'test_table'
-                },
+                source={'mode': 'relative', 'path': 'test_table'},
                 file_type=FileType.PARQUET,
             ),
             pkey=None,
             time_col=None,
         )
         connector_spec = ConnectorSpec(
-            connector_id=ConnectorID(table_connector_id),
-            connector_config=mock.Mock())
+            connector_id=ConnectorID(table_connector_id), connector_config=mock.Mock()
+        )
 
         _, response = ingest_table_data_activity_v2(
-            connector_spec, table, 'v1', 'job_id',
-            mock.Mock(spec=DeployEnvConfig))
+            connector_spec, table, 'v1', 'job_id', mock.Mock(spec=DeployEnvConfig)
+        )
         connector.close.assert_called_once_with()
 
     assert response.ok
@@ -481,7 +497,8 @@ def test_v2_ingest_metadata_uses_persisted_table_connector_identity():
         'v1',
     )
     cache.materialization_stage.put.assert_called_once_with(
-        table.fingerprint(), 'v1', MaterializationStage.INGEST, save=True)
+        table.fingerprint(), 'v1', MaterializationStage.INGEST, save=True
+    )
 
 
 def test_v2_ingest_custom_sql_dispatches_export_query():
@@ -492,20 +509,21 @@ def test_v2_ingest_custom_sql_dispatches_export_query():
     materialization."""
     connector_id = f'connector_{"a" * 32}'
     with (
-            _activity_patches() as patches,
-            mock.patch.object(
-                activity_module,
-                'advisory_read_only_check',
-                wraps=activity_module.advisory_read_only_check,
-            ) as read_only_check,
-            mock.patch.object(
-                activity_module,
-                'validate_connector_sql_scope',
-                wraps=activity_module.validate_connector_sql_scope,
-            ) as scope_check,
+        _activity_patches() as patches,
+        mock.patch.object(
+            activity_module,
+            'advisory_read_only_check',
+            wraps=activity_module.advisory_read_only_check,
+        ) as read_only_check,
+        mock.patch.object(
+            activity_module,
+            'validate_connector_sql_scope',
+            wraps=activity_module.validate_connector_sql_scope,
+        ) as scope_check,
     ):
-        patches['IngestionValidator'].return_value.pre_ingestion.return_value \
-            = ValidationResponse()
+        patches[
+            'IngestionValidator'
+        ].return_value.pre_ingestion.return_value = ValidationResponse()
         cache = patches['data_backend_cache'].return_value
         cache.materialization_stage.get_stage.return_value = None
         cache.materialization_stage.get.return_value = None
@@ -516,8 +534,7 @@ def test_v2_ingest_custom_sql_dispatches_export_query():
         connector.name = connector_id
         connector.database = 'DB'
         connector.schema_name = 'S'
-        connector.export_query.return_value = ExportMetrics(
-            num_rows=4, source_size=40)
+        connector.export_query.return_value = ExportMetrics(num_rows=4, source_size=40)
         patches['get_connector_from_spec'].return_value = connector
 
         sql = 'SELECT item_key, total FROM sales WHERE total > 0'
@@ -529,11 +546,13 @@ def test_v2_ingest_custom_sql_dispatches_export_query():
                 Column(name='item_key', stype=Stype.ID, dtype=Dtype.string),
                 Column(name='total', stype=Stype.numerical, dtype=Dtype.float),
             ],
-            source_table=CustomSQLSourceTable(connector_id=connector_id,
-                                              connector_type='snowflake',
-                                              sql=raw_sql,
-                                              table='custom_sql_abc',
-                                              referenced_tables=['sales']),
+            source_table=CustomSQLSourceTable(
+                connector_id=connector_id,
+                connector_type='snowflake',
+                sql=raw_sql,
+                table='custom_sql_abc',
+                referenced_tables=['sales'],
+            ),
             pkey='item_key',
             time_col=None,
         )
@@ -544,21 +563,23 @@ def test_v2_ingest_custom_sql_dispatches_export_query():
         # is what runs ``export_query``.
         connector_spec = ConnectorSpec(
             connector_id=ConnectorID(connector_id),
-            connector_config=SnowflakeConnector(name=connector_id,
-                                                account='acc',
-                                                warehouse='COMPUTE',
-                                                database='DB',
-                                                schema_name='S').config())
+            connector_config=SnowflakeConnector(
+                name=connector_id,
+                account='acc',
+                warehouse='COMPUTE',
+                database='DB',
+                schema_name='S',
+            ).config(),
+        )
 
         _, response = ingest_table_data_activity_v2(
-            connector_spec, table, 'v1', 'job_id',
-            mock.Mock(spec=DeployEnvConfig))
+            connector_spec, table, 'v1', 'job_id', mock.Mock(spec=DeployEnvConfig)
+        )
 
     assert response.ok
     read_only_check.assert_called_once_with(raw_sql, mock.ANY)
     scope_check.assert_called_once_with(raw_sql, mock.ANY, connector)
-    connector.export_query.assert_called_once_with(sql, table.fingerprint(),
-                                                   'v1')
+    connector.export_query.assert_called_once_with(sql, table.fingerprint(), 'v1')
     connector.export_table.assert_not_called()
 
 
@@ -572,11 +593,9 @@ def test_v2_file_ingest_persists_decision_before_materialization(is_direct):
     source = listed_source if is_direct else None
 
     assert response.ok
-    connector.uses_direct_diskgraph_source_for.assert_called_once_with(
-        'test_table')
+    connector.uses_direct_diskgraph_source_for.assert_called_once_with('test_table')
     if is_direct:
-        connector.diskgraph_source.assert_called_once_with(
-            source_name='test_table')
+        connector.diskgraph_source.assert_called_once_with(source_name='test_table')
         cache.materialization_stage.get_stage.assert_not_called()
     else:
         connector.diskgraph_source.assert_not_called()
@@ -589,9 +608,7 @@ def test_v2_file_ingest_persists_decision_before_materialization(is_direct):
     cache.direct_diskgraph_source_decision.put.assert_called_once()
     decision = cache.direct_diskgraph_source_decision.put.call_args.args[3]
     assert decision == DirectDiskgraphSourceDecision(source=source)
-    assert cache.direct_diskgraph_source_decision.put.call_args.kwargs == {
-        'save': True
-    }
+    assert cache.direct_diskgraph_source_decision.put.call_args.kwargs == {'save': True}
     cache.materialization_stage.put.assert_not_called()
     connector.close.assert_called_once_with()
 
@@ -654,27 +671,34 @@ def test_v2_staged_file_ingest_ignores_legacy_diskgraph_cache():
 def test_validate_file_ingest_uses_frozen_decision_without_connector(is_direct):
     table, connector_spec = _table_and_connector_spec()
     decision = DirectDiskgraphSourceDecision(
-        source=_object_source() if is_direct else None, )
+        source=_object_source() if is_direct else None,
+    )
     cache = mock.Mock()
     cache.direct_diskgraph_source_decision.get.return_value = decision
     validator = mock.Mock()
     validator.post_ingestion.return_value = ValidationResponse()
 
-    with mock.patch.object(
+    with (
+        mock.patch.object(
+            data_backend_activities, 'data_backend_cache', return_value=cache
+        ),
+        mock.patch.object(
+            data_backend_activities, 'IngestionValidator', return_value=validator
+        ),
+        mock.patch.object(
             data_backend_activities,
-            'data_backend_cache', return_value=cache), mock.patch.object(
-                data_backend_activities, 'IngestionValidator',
-                return_value=validator), mock.patch.object(
-                    data_backend_activities, 'get_connector_from_spec',
-                    side_effect=AssertionError(
-                        'frozen decision must not resolve the connector')):
-        response = (
-            data_backend_activities.DataBackendActivities.validate_table_ingest(
-                table,
-                'v1',
-                mock.Mock(spec=DeployEnvConfig),
-                connector_spec=connector_spec,
-            ))
+            'get_connector_from_spec',
+            side_effect=AssertionError(
+                'frozen decision must not resolve the connector'
+            ),
+        ),
+    ):
+        response = data_backend_activities.DataBackendActivities.validate_table_ingest(
+            table,
+            'v1',
+            mock.Mock(spec=DeployEnvConfig),
+            connector_spec=connector_spec,
+        )
 
     assert response.ok
     cache.direct_diskgraph_source_decision.get.assert_called_once_with(
@@ -721,16 +745,18 @@ def test_v2_databricks_physical_table_materializes_through_reader():
     """
     connector_id = f'connector_{"d" * 32}'
     with _activity_patches() as patches:
-        patches['IngestionValidator'].return_value.pre_ingestion.return_value \
-            = ValidationResponse()
+        patches[
+            'IngestionValidator'
+        ].return_value.pre_ingestion.return_value = ValidationResponse()
         cache = patches['data_backend_cache'].return_value
         cache.materialization_stage.get_stage.return_value = None
         patches['activity'].info.return_value.workflow_id = 'test_wf_id'
         patches['get_kumo_version'].return_value = 'test_version'
 
         connector = _databricks_connector_mock(connector_id)
-        connector.export_table.return_value = ExportMetrics(num_rows=12,
-                                                            source_size=345)
+        connector.export_table.return_value = ExportMetrics(
+            num_rows=12, source_size=345
+        )
         patches['get_connector_from_spec'].return_value = connector
         table = TableDefinition(
             cols=[
@@ -762,9 +788,11 @@ def test_v2_databricks_physical_table_materializes_through_reader():
         graph_table_count=None,
     )
     cache.materialization_stage.get_stage.assert_called_once_with(
-        table.fingerprint(), 'v1', check_local=True)
+        table.fingerprint(), 'v1', check_local=True
+    )
     cache.materialization_stage.put.assert_called_once_with(
-        table.fingerprint(), 'v1', MaterializationStage.INGEST, save=True)
+        table.fingerprint(), 'v1', MaterializationStage.INGEST, save=True
+    )
     saved_stats = cache.add_table_stats.call_args.args[1]
     assert not any(stat.approx for stat in saved_stats.values())
     connector.close.assert_called_once_with()
@@ -776,20 +804,22 @@ def test_v2_databricks_custom_sql_stages_through_the_reader():
     so its NUM_ROWS is exact rather than an optimizer estimate."""
     connector_id = f'connector_{"d" * 32}'
     with (
-            _activity_patches() as patches,
-            mock.patch.object(activity_module, 'advisory_read_only_check'),
-            mock.patch.object(activity_module, 'validate_connector_sql_scope'),
+        _activity_patches() as patches,
+        mock.patch.object(activity_module, 'advisory_read_only_check'),
+        mock.patch.object(activity_module, 'validate_connector_sql_scope'),
     ):
-        patches['IngestionValidator'].return_value.pre_ingestion.return_value \
-            = ValidationResponse()
+        patches[
+            'IngestionValidator'
+        ].return_value.pre_ingestion.return_value = ValidationResponse()
         cache = patches['data_backend_cache'].return_value
         cache.materialization_stage.get_stage.return_value = None
         patches['activity'].info.return_value.workflow_id = 'test_wf_id'
         patches['get_kumo_version'].return_value = 'test_version'
 
         connector = _databricks_connector_mock(connector_id)
-        connector.export_query.return_value = ExportMetrics(num_rows=12,
-                                                            source_size=345)
+        connector.export_query.return_value = ExportMetrics(
+            num_rows=12, source_size=345
+        )
         patches['get_connector_from_spec'].return_value = connector
         sql = 'SELECT item_key, total FROM sales WHERE total > 0'
         table = TableDefinition(
@@ -797,11 +827,13 @@ def test_v2_databricks_custom_sql_stages_through_the_reader():
                 Column(name='item_key', stype=Stype.ID, dtype=Dtype.string),
                 Column(name='total', stype=Stype.numerical, dtype=Dtype.float),
             ],
-            source_table=CustomSQLSourceTable(connector_id=connector_id,
-                                              connector_type='databricks',
-                                              sql=sql,
-                                              table='custom_sql_abc',
-                                              referenced_tables=['sales']),
+            source_table=CustomSQLSourceTable(
+                connector_id=connector_id,
+                connector_type='databricks',
+                sql=sql,
+                table='custom_sql_abc',
+                referenced_tables=['sales'],
+            ),
             pkey='item_key',
             time_col=None,
         )
@@ -816,11 +848,11 @@ def test_v2_databricks_custom_sql_stages_through_the_reader():
 
     assert response.ok
     assert table.is_sql
-    connector.export_query.assert_called_once_with(sql, table.fingerprint(),
-                                                   'v1')
+    connector.export_query.assert_called_once_with(sql, table.fingerprint(), 'v1')
     connector.export_table.assert_not_called()
     cache.materialization_stage.put.assert_called_once_with(
-        table.fingerprint(), 'v1', MaterializationStage.INGEST, save=True)
+        table.fingerprint(), 'v1', MaterializationStage.INGEST, save=True
+    )
     saved_stats = cache.add_table_stats.call_args.args[1]
     assert saved_stats[TableStatType.NUM_ROWS].value == 12
     assert not any(stat.approx for stat in saved_stats.values())
@@ -830,11 +862,17 @@ def test_v2_databricks_custom_sql_stages_through_the_reader():
 @pytest.mark.parametrize('is_sql', [True, False], ids=['custom_sql', 'table'])
 def test_validate_databricks_ingest_checks_staged_parquet_either_way(is_sql):
     connector_id = f'connector_{"d" * 32}'
-    source_table = (CustomSQLSourceTable(
-        connector_id=connector_id, connector_type='databricks',
-        sql='SELECT item_key FROM sales', table='custom_sql_abc',
-        referenced_tables=['sales']) if is_sql else DatabricksSourceTable(
-            databricks_connector_id=connector_id, table='orders'))
+    source_table = (
+        CustomSQLSourceTable(
+            connector_id=connector_id,
+            connector_type='databricks',
+            sql='SELECT item_key FROM sales',
+            table='custom_sql_abc',
+            referenced_tables=['sales'],
+        )
+        if is_sql
+        else DatabricksSourceTable(databricks_connector_id=connector_id, table='orders')
+    )
     table = TableDefinition(
         cols=[Column(name='item_key', stype=Stype.ID, dtype=Dtype.string)],
         source_table=source_table,
@@ -845,23 +883,26 @@ def test_validate_databricks_ingest_checks_staged_parquet_either_way(is_sql):
     validator = mock.Mock()
     validator.post_ingestion.return_value = ValidationResponse()
 
-    with mock.patch.object(
-            data_backend_activities, 'data_backend_cache',
-            return_value=mock.Mock()), mock.patch.object(
-                data_backend_activities, 'IngestionValidator',
-                return_value=validator), mock.patch.object(
-                    data_backend_activities, 'get_connector_from_spec',
-                    return_value=connector):
-        response = (
-            data_backend_activities.DataBackendActivities.validate_table_ingest(
-                table,
-                'v1',
-                mock.Mock(spec=DeployEnvConfig),
-                connector_spec=ConnectorSpec(
-                    connector_id=ConnectorID(connector_id),
-                    connector_config=mock.Mock(),
-                ),
-            ))
+    with (
+        mock.patch.object(
+            data_backend_activities, 'data_backend_cache', return_value=mock.Mock()
+        ),
+        mock.patch.object(
+            data_backend_activities, 'IngestionValidator', return_value=validator
+        ),
+        mock.patch.object(
+            data_backend_activities, 'get_connector_from_spec', return_value=connector
+        ),
+    ):
+        response = data_backend_activities.DataBackendActivities.validate_table_ingest(
+            table,
+            'v1',
+            mock.Mock(spec=DeployEnvConfig),
+            connector_spec=ConnectorSpec(
+                connector_id=ConnectorID(connector_id),
+                connector_config=mock.Mock(),
+            ),
+        )
 
     assert response.ok
     validator.post_ingestion.assert_called_once_with(
@@ -889,36 +930,46 @@ def test_v2_ingest_metadata_keeps_connector_reference():
         'v1',
     )
     cache.materialization_stage.put.assert_called_once_with(
-        table.fingerprint(), 'v1', MaterializationStage.INGEST, save=True)
+        table.fingerprint(), 'v1', MaterializationStage.INGEST, save=True
+    )
 
 
-@pytest.mark.parametrize(('parts', 'expected_size'), [
-    ([], 0),
-    ([b'123', b'4567'], 7),
-])
+@pytest.mark.parametrize(
+    ('parts', 'expected_size'),
+    [
+        ([], 0),
+        ([b'123', b'4567'], 7),
+    ],
+)
 def test_stored_materialization_size_uses_existing_filesystem_size(
-        parts, expected_size, tmp_path, monkeypatch):
+    parts, expected_size, tmp_path, monkeypatch
+):
     path = tmp_path / 'materialized'
     path.mkdir()
     for index, contents in enumerate(parts):
         (path / f'part-{index}.parquet').write_bytes(contents)
-    monkeypatch.setattr(activity_module, 'get_materialize_path',
-                        lambda *_args: str(path))
+    monkeypatch.setattr(
+        activity_module, 'get_materialize_path', lambda *_args: str(path)
+    )
 
-    assert activity_module._stored_materialization_size(
-        mock.sentinel.fingerprint, 'v1',
-        MaterializationStage.INGEST) == expected_size
+    assert (
+        activity_module._stored_materialization_size(
+            mock.sentinel.fingerprint, 'v1', MaterializationStage.INGEST
+        )
+        == expected_size
+    )
 
 
-def test_stored_materialization_size_rejects_missing_directory(
-        tmp_path, monkeypatch):
+def test_stored_materialization_size_rejects_missing_directory(tmp_path, monkeypatch):
     path = tmp_path / 'missing-materialization'
-    monkeypatch.setattr(activity_module, 'get_materialize_path',
-                        lambda *_args: str(path))
+    monkeypatch.setattr(
+        activity_module, 'get_materialize_path', lambda *_args: str(path)
+    )
 
     with pytest.raises(FileNotFoundError) as excinfo:
         activity_module._stored_materialization_size(
-            mock.sentinel.fingerprint, 'v1', MaterializationStage.INGEST)
+            mock.sentinel.fingerprint, 'v1', MaterializationStage.INGEST
+        )
 
     assert str(path) in str(excinfo.value)
 
@@ -931,13 +982,15 @@ VENDOR_TEXT = 'ProgrammingError sqlstate=42501 s3://bucket/x?sig=SECRET'
 def _raise_from_ingest(error: Exception) -> TableIngestionError:
     table, connector_spec = _table_and_connector_spec()
     with _activity_patches() as patches:
-        patches['IngestionValidator'].return_value.pre_ingestion.return_value \
-            = ValidationResponse()
+        patches[
+            'IngestionValidator'
+        ].return_value.pre_ingestion.return_value = ValidationResponse()
         patches['activity'].info.return_value.workflow_id = 'test_wf_id'
         patches['get_connector_from_spec'].side_effect = error
         with pytest.raises(TableIngestionError) as caught:
-            ingest_table_data_activity_v2(connector_spec, table, 'v1', 'job_id',
-                                          mock.Mock(spec=DeployEnvConfig))
+            ingest_table_data_activity_v2(
+                connector_spec, table, 'v1', 'job_id', mock.Mock(spec=DeployEnvConfig)
+            )
     return caught.value
 
 
@@ -945,33 +998,47 @@ SAFE_SOURCE_ERROR_CASES = [
     pytest.param(
         RowCountMismatchError(expected=1000, actual=997, table='orders'),
         "Table 'orders' was read incompletely: the source returned 997 rows "
-        'but reported 1000', id='row_count'),
-    pytest.param(SourceNotFoundError(VENDOR_TEXT, table='orders'),
-                 "Table 'orders' does not exist in the source",
-                 id='source_not_found'),
+        'but reported 1000',
+        id='row_count',
+    ),
+    pytest.param(
+        SourceNotFoundError(VENDOR_TEXT, table='orders'),
+        "Table 'orders' does not exist in the source",
+        id='source_not_found',
+    ),
     pytest.param(
         SchemaChangedError(VENDOR_TEXT, table='orders'),
-        "The columns of table 'orders' changed while Kumo was "
-        'reading it', id='schema_changed'),
-    pytest.param(SourceAccessDeniedError(VENDOR_TEXT, table='orders'),
-                 "Kumo is not permitted to read table 'orders'",
-                 id='access_denied'),
-    pytest.param(ReconnectRequiredError(VENDOR_TEXT, table='orders'),
-                 "read table 'orders' is no longer authorized",
-                 id='reconnect_required'),
-    pytest.param(UnsupportedReadModeError(VENDOR_TEXT, table='orders'),
-                 "Kumo cannot read table 'orders' by any method",
-                 id='unsupported_mode'),
+        "The columns of table 'orders' changed while Kumo was reading it",
+        id='schema_changed',
+    ),
+    pytest.param(
+        SourceAccessDeniedError(VENDOR_TEXT, table='orders'),
+        "Kumo is not permitted to read table 'orders'",
+        id='access_denied',
+    ),
+    pytest.param(
+        ReconnectRequiredError(VENDOR_TEXT, table='orders'),
+        "read table 'orders' is no longer authorized",
+        id='reconnect_required',
+    ),
+    pytest.param(
+        UnsupportedReadModeError(VENDOR_TEXT, table='orders'),
+        "Kumo cannot read table 'orders' by any method",
+        id='unsupported_mode',
+    ),
     pytest.param(
         RowCountMismatchError(expected=8, actual=3),
         "Table 'test_table' was read incompletely: the source returned 3 "
-        'rows but reported 8', id='table_name_from_definition'),
+        'rows but reported 8',
+        id='table_name_from_definition',
+    ),
 ]
 
 
 @pytest.mark.parametrize('error, expected', SAFE_SOURCE_ERROR_CASES)
 def test_self_authored_source_error_reaches_user_with_its_own_message(
-        error, expected, caplog):
+    error, expected, caplog
+):
     """The last case carries no ``table`` of its own: the name falls back to
     the definition being ingested, so the message stays specific."""
     raised = _raise_from_ingest(error)
@@ -989,11 +1056,15 @@ def test_self_authored_source_errors_do_not_share_a_message():
     assert len(set(templates)) == len(templates)
 
 
-@pytest.mark.parametrize('error', [
-    PermanentSourceError(VENDOR_TEXT, table='orders'),
-    TransientSourceError(VENDOR_TEXT, table='orders'),
-    SourceError(VENDOR_TEXT, table='orders'),
-], ids=lambda error: type(error).__name__)
+@pytest.mark.parametrize(
+    'error',
+    [
+        PermanentSourceError(VENDOR_TEXT, table='orders'),
+        TransientSourceError(VENDOR_TEXT, table='orders'),
+        SourceError(VENDOR_TEXT, table='orders'),
+    ],
+    ids=lambda error: type(error).__name__,
+)
 def test_vendor_wrapped_source_error_stays_generic(error, caplog):
     raised = _raise_from_ingest(error)
 
@@ -1004,12 +1075,15 @@ def test_vendor_wrapped_source_error_stays_generic(error, caplog):
 
 
 @pytest.mark.parametrize(
-    'error, non_retryable', [
+    'error, non_retryable',
+    [
         (TransientSourceError('throttled'), False),
         (SourceAccessDeniedError('denied', table='orders'), True),
         (PermanentSourceError('unclassified'), True),
         (RowCountMismatchError(expected=8, actual=3, table='orders'), True),
-    ], ids=['transient', 'access_denied', 'permanent', 'row_count'])
+    ],
+    ids=['transient', 'access_denied', 'permanent', 'row_count'],
+)
 def test_source_error_retryability_follows_the_taxonomy(error, non_retryable):
     assert _raise_from_ingest(error).non_retryable is non_retryable
 
@@ -1017,8 +1091,9 @@ def test_source_error_retryability_follows_the_taxonomy(error, non_retryable):
 def test_no_source_error_type_is_left_unclassified():
     """A source error added later must be given a message or declared opaque
     rather than silently landing on the generic one."""
-    declared = (set(activity_module._SAFE_SOURCE_ERROR_MESSAGES)
-                | set(activity_module._OPAQUE_SOURCE_ERRORS))
+    declared = set(activity_module._SAFE_SOURCE_ERROR_MESSAGES) | set(
+        activity_module._OPAQUE_SOURCE_ERRORS
+    )
     pending, defined = [SourceError], set()
     while pending:
         error_type = pending.pop()

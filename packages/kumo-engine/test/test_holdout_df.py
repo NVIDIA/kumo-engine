@@ -31,38 +31,38 @@ def graph(tmp_path_factory):
     data.mkdir()
     pd.DataFrame({'ID': np.arange(50)}).to_parquet(data / 'ents.parquet')
     pd.DataFrame({'IID': np.arange(20)}).to_parquet(data / 'items.parquet')
-    pd.DataFrame({
-        'EID':
-        np.arange(3000),
-        'ENT_ID':
-        rng.integers(0, 50, 3000),
-        'ITEM_ID':
-        rng.integers(0, 20, 3000),
-        'TS':
-        pd.Timestamp('2024-01-01') +
-        pd.to_timedelta(rng.integers(0, 120, 3000), unit='D'),
-        'V':
-        rng.normal(size=3000),
-    }).to_parquet(data / 'events.parquet')
+    pd.DataFrame(
+        {
+            'EID': np.arange(3000),
+            'ENT_ID': rng.integers(0, 50, 3000),
+            'ITEM_ID': rng.integers(0, 20, 3000),
+            'TS': pd.Timestamp('2024-01-01')
+            + pd.to_timedelta(rng.integers(0, 120, 3000), unit='D'),
+            'V': rng.normal(size=3000),
+        }
+    ).to_parquet(data / 'events.parquet')
     connector = kumo.FileConnector(root_dir=str(data))
-    ents = kumo.Table.from_source_table(connector['ents.parquet'],
-                                        primary_key='ID').infer_metadata()
-    items = kumo.Table.from_source_table(connector['items.parquet'],
-                                         primary_key='IID').infer_metadata()
-    events = kumo.Table.from_source_table(
-        connector['events.parquet'], primary_key='EID',
-        time_column='TS').infer_metadata().with_column(
-            'ENT_ID', stype=Stype.ID).with_column('ITEM_ID', stype=Stype.ID)
+    ents = kumo.Table.from_source_table(
+        connector['ents.parquet'], primary_key='ID'
+    ).infer_metadata()
+    items = kumo.Table.from_source_table(
+        connector['items.parquet'], primary_key='IID'
+    ).infer_metadata()
+    events = (
+        kumo.Table.from_source_table(
+            connector['events.parquet'], primary_key='EID', time_column='TS'
+        )
+        .infer_metadata()
+        .with_column('ENT_ID', stype=Stype.ID)
+        .with_column('ITEM_ID', stype=Stype.ID)
+    )
     graph = kumo.Graph(
-        tables={
-            'ents': ents,
-            'items': items,
-            'events': events
-        },
+        tables={'ents': ents, 'items': items, 'events': events},
         edges=[
             Edge(src_table='events', fkey='ENT_ID', dst_table='ents'),
             Edge(src_table='events', fkey='ITEM_ID', dst_table='items'),
-        ])
+        ],
+    )
     yield graph, graph.snapshot()
     kumo.configure(scratch_dir=previous)
 
@@ -81,13 +81,11 @@ def _fit(graph, query, refit_trainval=True, refit_full=False, explain=False):
     # refit_full splits each epoch's batches across 3 stages.
     plan.optimization.max_steps_per_epoch = 3 if refit_full else 2
     trainer = kumo.Trainer(model_plan=plan)
-    return trainer.fit(pquery.generate_training_table(snapshot),
-                       snapshot=snapshot)
+    return trainer.fit(pquery.generate_training_table(snapshot), snapshot=snapshot)
 
 
 def test_holdout_df_after_fit(graph):
-    result = _fit(graph, 'PREDICT COUNT(events.*, 0, 7, days) > 0 '
-                  'FOR EACH ents.ID')
+    result = _fit(graph, 'PREDICT COUNT(events.*, 0, 7, days) > 0 FOR EACH ents.ID')
 
     frame = result.holdout_df()
 
@@ -102,13 +100,17 @@ def test_holdout_df_after_fit(graph):
     assert embedded_model(result.manifest).holdout is None
 
 
-@pytest.mark.parametrize('refit_trainval,refit_full,explain,model', [
-    (False, False, False, 'fit'),
-    (True, False, True, 'refit_trainval'),
-    (True, True, True, None),
-])
-def test_holdout_is_the_published_models(graph, refit_trainval, refit_full,
-                                         explain, model):
+@pytest.mark.parametrize(
+    'refit_trainval,refit_full,explain,model',
+    [
+        (False, False, False, 'fit'),
+        (True, False, True, 'refit_trainval'),
+        (True, True, True, None),
+    ],
+)
+def test_holdout_is_the_published_models(
+    graph, refit_trainval, refit_full, explain, model
+):
     result = _fit(graph, QUERY, refit_trainval, refit_full, explain)
 
     assert result.manifest.fit_mode == (model or 'refit_full')
@@ -117,19 +119,21 @@ def test_holdout_is_the_published_models(graph, refit_trainval, refit_full,
         assert result.manifest.holdout is None
     else:
         suffix = '' if model == 'fit' else '_refit_trainval'
-        assert re.fullmatch(rf'version_\d+{suffix}',
-                            result.holdout_path.parent.name)
+        assert re.fullmatch(rf'version_\d+{suffix}', result.holdout_path.parent.name)
         assert len(result.holdout_df()) > 0
         assert result.manifest.holdout.rows == len(result.holdout_df())
 
     if explain:
         explanations = result.explanations
-        assert all(a.available and a.generation_failure is None
-                   for a in explanations.availability.values())
+        assert all(
+            a.available and a.generation_failure is None
+            for a in explanations.availability.values()
+        )
         assert explanations.gradient_scores().tables
         assert explanations.cohort_keys()
         store = explanations.sample(
-            explanations.samples()[0].artifact_id).subgraph_store
+            explanations.samples()[0].artifact_id
+        ).subgraph_store
         assert store.root_id in store.tables['ents']
         # TEST explanations describe the train/validation refit, also when
         # refit_full publishes a model without a holdout.
@@ -142,8 +146,9 @@ def test_holdout_is_the_published_models(graph, refit_trainval, refit_full,
 
 def test_no_holdout(graph):
     result = _fit(
-        graph, 'PREDICT LIST_DISTINCT(events.ITEM_ID, 0, 7, days) '
-        'RANK TOP 3 FOR EACH ents.ID')
+        graph,
+        'PREDICT LIST_DISTINCT(events.ITEM_ID, 0, 7, days) RANK TOP 3 FOR EACH ents.ID',
+    )
 
     assert result.holdout_path is None
     assert not result.holdout_truncated
@@ -152,18 +157,19 @@ def test_no_holdout(graph):
         result.holdout_df()
 
 
-def test_a_loaded_or_fetched_model_keeps_its_holdout(graph, tmp_path,
-                                                     monkeypatch):
+def test_a_loaded_or_fetched_model_keeps_its_holdout(graph, tmp_path, monkeypatch):
     monkeypatch.setattr('kumo_core.train.output._HOLDOUT_MAX_BYTES', 1000)
     result = _fit(graph, QUERY)
     expected = result.holdout_df()
     registry = kumo.FileConnector(root_dir=str(tmp_path))
-    registry.sink_backend.publish_model(registry, str(result.bundle_dir),
-                                        path='models/m')
+    registry.sink_backend.publish_model(
+        registry, str(result.bundle_dir), path='models/m'
+    )
 
-    for loaded in (kumo.Trainer.load(result.bundle_dir).result,
-                   kumo.Trainer.load_from_connector(registry,
-                                                    path='models/m').result):
+    for loaded in (
+        kumo.Trainer.load(result.bundle_dir).result,
+        kumo.Trainer.load_from_connector(registry, path='models/m').result,
+    ):
         assert loaded.bundle_id == result.bundle_id
         assert loaded.holdout_truncated is True
         pd.testing.assert_frame_equal(loaded.holdout_df(), expected)
@@ -171,8 +177,9 @@ def test_a_loaded_or_fetched_model_keeps_its_holdout(graph, tmp_path,
 
 
 def test_a_bundle_without_a_holdout_says_so(graph, monkeypatch):
-    monkeypatch.setattr('kumo.engine.trainer.trainer._bundle_holdout',
-                        lambda result: None)
+    monkeypatch.setattr(
+        'kumo.engine.trainer.trainer._bundle_holdout', lambda result: None
+    )
     result = _fit(graph, QUERY)
 
     loaded = kumo.Trainer.load(result.bundle_dir).result
@@ -185,8 +192,11 @@ def test_truncation_is_recorded(tmp_path):
     frame = pd.DataFrame({'ENTITY': np.arange(1000), 'x': np.zeros(1000)})
     output = EvalOutput(metrics={}, df=frame)
 
-    output.save_df(str(tmp_path), TrainingStage.TEST,
-                   max_size=int(frame.memory_usage(deep=True).sum() / 4))
+    output.save_df(
+        str(tmp_path),
+        TrainingStage.TEST,
+        max_size=int(frame.memory_usage(deep=True).sum() / 4),
+    )
     path, truncated = _find_holdout(str(tmp_path))
 
     assert truncated
@@ -213,7 +223,8 @@ def test_fit_reports_truncation(graph, monkeypatch, caplog):
 @pytest.mark.parametrize('content', ['{not json', '{}', None])
 def test_unreadable_size_record_does_not_fail_fit(tmp_path, caplog, content):
     EvalOutput(metrics={}, df=pd.DataFrame({'ENTITY': [1, 2]})).save_df(
-        str(tmp_path), TrainingStage.TEST)
+        str(tmp_path), TrainingStage.TEST
+    )
     meta = tmp_path / 'test_df_meta.json'
     if content is None:
         meta.unlink()
@@ -230,8 +241,9 @@ def test_unreadable_size_record_does_not_fail_fit(tmp_path, caplog, content):
 def test_an_empty_test_split_fails_the_fit_with_a_clear_message(graph):
     graph, snapshot = graph
     pquery = kumo.PredictiveQuery(
-        graph=graph,
-        query='PREDICT COUNT(events.*, 0, 30, days) > 15 FOR EACH ents.ID')
+        graph=graph, query='PREDICT COUNT(events.*, 0, 30, days) > 15 FOR EACH ents.ID'
+    )
     with pytest.raises(ValueError, match='test split is empty'):
         kumo.Trainer(pquery.suggest_model_plan(snapshot)).fit(
-            pquery.generate_training_table(snapshot), snapshot=snapshot)
+            pquery.generate_training_table(snapshot), snapshot=snapshot
+        )

@@ -11,10 +11,7 @@ def test_build_binary_class_weight():
     target = torch.tensor([0, 1, 0, 1, 1], dtype=torch.long)
     class_weight = build_binary_class_weight(
         target=target,
-        class_weight_map={
-            False: 3.0,
-            True: 1.0
-        },
+        class_weight_map={False: 3.0, True: 1.0},
         out_dtype=torch.float,
     )
     torch.testing.assert_close(
@@ -24,7 +21,7 @@ def test_build_binary_class_weight():
 
 
 def test_build_binary_class_weight_missing_class():
-    with pytest.raises(ValueError, match="Missing majority sampling weights"):
+    with pytest.raises(ValueError, match='Missing majority sampling weights'):
         build_binary_class_weight(
             target=torch.tensor([0, 1], dtype=torch.long),
             class_weight_map={True: 1.0},

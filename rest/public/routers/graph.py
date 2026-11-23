@@ -38,50 +38,48 @@ class GraphRouter:
         self._graph_driver = graph_driver
 
         self.router = APIRouter(
-            prefix="/graphs",
-            tags=["API v1 (Under Development): Graphs"],
+            prefix='/graphs',
+            tags=['API v1 (Under Development): Graphs'],
             dependencies=[Depends(api_key_auth)],
         )
 
         self.router.add_api_route(
-            "",
+            '',
             self.create_graph,
             response_model=IDResponse,
             methods=['POST'],
-            summary="Create a new graph with its full definition.",
+            summary='Create a new graph with its full definition.',
             responses={
                 HTTPStatus.UNPROCESSABLE_ENTITY: {
-                    'description':
-                    "Unable to create a new Graph as the its definition is "
-                    "invalid."
+                    'description': 'Unable to create a new Graph as the its definition is '
+                    'invalid.'
                 }
             },
         )
 
         self.router.add_api_route(
-            "/infer_links",
+            '/infer_links',
             self.infer_links,
             response_model=api.GraphDefinition,
             methods=['POST'],
-            summary="Infer links in a graph.",
+            summary='Infer links in a graph.',
         )
 
         self.router.add_api_route(
-            "/{graph_id_or_alias}",
+            '/{graph_id_or_alias}',
             self.get_graph,
             response_model=api.GraphResource,
             methods=['GET'],
-            summary="Get a graph with its full definition by id or alias",
+            summary='Get a graph with its full definition by id or alias',
             responses={
                 HTTPStatus.NOT_FOUND: {
-                    'description':
-                    "Unable to find the graph with the given id or name alias."
+                    'description': 'Unable to find the graph with the given id or name alias.'
                 }
             },
         )
 
         self.router.add_api_route(
-            "/validate",
+            '/validate',
             self.validate,
             response_model=ValidationResponse,
             methods=['POST'],
@@ -95,10 +93,11 @@ class GraphRouter:
         project_id: Annotated[str, Query()],
         name_alias: Annotated[str | None, Query(max_length=64)] = None,
         force_rename: Annotated[
-            bool, Query(description=_force_graph_rename_desc)] = False,
+            bool, Query(description=_force_graph_rename_desc)
+        ] = False,
         skip_validation: Annotated[
-            bool,
-            Query(description="Skip graph validation after creation")] = False,
+            bool, Query(description='Skip graph validation after creation')
+        ] = False,
     ) -> IDResponse:
         with wrap_driver_errors():
             name_alias = ID(name_alias) if name_alias else None
@@ -132,21 +131,24 @@ class GraphRouter:
         with wrap_driver_errors(), wrap_validation_exceptions():
             if _FP_SUFFIX_SEPARATOR in graph_id_or_alias:
                 if not graph_id_or_alias.startswith('graph-'):
-                    raise ValueError(f'Graph resource id is malformed '
-                                     f': {graph_id_or_alias}')
+                    raise ValueError(
+                        f'Graph resource id is malformed : {graph_id_or_alias}'
+                    )
                 try:
                     fpid = GraphIDv2.parse(graph_id_or_alias)[1]
                     assert fpid is not None
                 except BaseException:
-                    raise ValueError(f'Graph resource id is malformed '
-                                     f': {graph_id_or_alias}')
+                    raise ValueError(
+                        f'Graph resource id is malformed : {graph_id_or_alias}'
+                    )
                 graph_def, _, _ = await self._graph_driver.get_graph_v2(
-                    fpid, ProjectID(project_id))
+                    fpid, ProjectID(project_id)
+                )
             else:
                 alias = ID(graph_id_or_alias)
-                graph_def, _, _ = (await
-                                   self._graph_driver.get_graph_v2_by_alias(
-                                       alias, ProjectID(project_id)))
+                graph_def, _, _ = await self._graph_driver.get_graph_v2_by_alias(
+                    alias, ProjectID(project_id)
+                )
             return graph_def
 
     async def validate(

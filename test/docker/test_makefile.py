@@ -5,6 +5,7 @@
 
 ``make -n`` prints the recipe text verbatim, which is the argv these builds would expose.
 """
+
 import os
 import re
 import shutil
@@ -17,11 +18,20 @@ FAKE_TOKEN = 'ghp_FAKEdoNotUse0000000000000000000000000'
 
 
 def _expand(target: str, tmp_path: Path, *args: str) -> str:
-    env = dict(os.environ, GITHUB_TOKEN=FAKE_TOKEN,
-               GITHUB_NPM_ACCESS_TOKEN=FAKE_TOKEN, TMPDIR=str(tmp_path))
+    env = dict(
+        os.environ,
+        GITHUB_TOKEN=FAKE_TOKEN,
+        GITHUB_NPM_ACCESS_TOKEN=FAKE_TOKEN,
+        TMPDIR=str(tmp_path),
+    )
     recipe = subprocess.run(
-        ['make', '-n', '-f', str(MAKEFILE), target, *args], cwd=REPO_ROOT, env=env,
-        capture_output=True, text=True, check=True).stdout
+        ['make', '-n', '-f', str(MAKEFILE), target, *args],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
     # build-ui-local's $(shell mktemp -d) runs even under -n, and BSD mktemp
     # ignores TMPDIR, so remove the context by the name make chose.
     for context in re.findall(r'^cp -r docker/\. (\S+)/$', recipe, re.M):
@@ -31,7 +41,9 @@ def _expand(target: str, tmp_path: Path, *args: str) -> str:
 
 def test_backend_build_uses_no_github_credentials(tmp_path):
     for variant in ('cpu', 'gpu'):
-        recipe = _expand('build-backend-local', tmp_path, f'KUMO_BACKEND_VARIANT={variant}')
+        recipe = _expand(
+            'build-backend-local', tmp_path, f'KUMO_BACKEND_VARIANT={variant}'
+        )
 
         assert FAKE_TOKEN not in recipe
         assert 'GITHUB_TOKEN' not in recipe

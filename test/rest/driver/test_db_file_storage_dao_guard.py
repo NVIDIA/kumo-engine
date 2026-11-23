@@ -4,10 +4,8 @@
 
 from pathlib import Path
 
-FORBIDDEN_SYMBOL = "DBFileStorageDAO"
-TARGET_MODULES = (
-    Path("test/rest/driver/test_table_driver.py"),
-)
+FORBIDDEN_SYMBOL = 'DBFileStorageDAO'
+TARGET_MODULES = (Path('test/rest/driver/test_table_driver.py'),)
 
 
 def test_driver_tests_do_not_depend_on_db_file_storage_dao() -> None:
@@ -16,7 +14,7 @@ def test_driver_tests_do_not_depend_on_db_file_storage_dao() -> None:
 
     for relative_path in TARGET_MODULES:
         file_path = repo_root / relative_path
-        contents = file_path.read_text(encoding="utf-8")
+        contents = file_path.read_text(encoding='utf-8')
         if FORBIDDEN_SYMBOL in contents:
             offenders.append(str(relative_path))
 

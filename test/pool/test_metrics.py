@@ -6,6 +6,7 @@
 Metric objects are process-global singletons. Values are read back through the
 metric objects' label children rather than scraping the HTTP endpoint.
 """
+
 from pool import metrics
 from pool.dataclasses import (
     DataplaneBackup,
@@ -42,26 +43,28 @@ def test_update_state_gauges_counts_every_enum_member():
     state = PoolState(
         placement_state=K8sPlacementState(),
         snapshots={
-            'snap-a':
-            SnapshotPlacement(worker='w1', state=SnapshotState.READY,
-                              leases=['job-1', 'job-2']),
-            'snap-b':
-            SnapshotPlacement(worker='w1', state=SnapshotState.READY,
-                              leases=['job-3']),
-            'snap-c':
-            SnapshotPlacement(worker='w2', state=SnapshotState.INGESTING),
+            'snap-a': SnapshotPlacement(
+                worker='w1', state=SnapshotState.READY, leases=['job-1', 'job-2']
+            ),
+            'snap-b': SnapshotPlacement(
+                worker='w1', state=SnapshotState.READY, leases=['job-3']
+            ),
+            'snap-c': SnapshotPlacement(worker='w2', state=SnapshotState.INGESTING),
         },
         dataplane_backups={
-            'snap-a': DataplaneBackup(snapshot_id='snap-a',
-                                      dataplane_path='/x'),
+            'snap-a': DataplaneBackup(snapshot_id='snap-a', dataplane_path='/x'),
         },
         local_copies={
-            'snap-a:w1':
-            SnapshotLocalCopyRecord(snapshot_id='snap-a', pool_worker_uid='w1',
-                                    local_state=SnapshotLocalCopyState.WARM),
-            'snap-c:w2':
-            SnapshotLocalCopyRecord(snapshot_id='snap-c', pool_worker_uid='w2',
-                                    local_state=SnapshotLocalCopyState.EVICTED),
+            'snap-a:w1': SnapshotLocalCopyRecord(
+                snapshot_id='snap-a',
+                pool_worker_uid='w1',
+                local_state=SnapshotLocalCopyState.WARM,
+            ),
+            'snap-c:w2': SnapshotLocalCopyRecord(
+                snapshot_id='snap-c',
+                pool_worker_uid='w2',
+                local_state=SnapshotLocalCopyState.EVICTED,
+            ),
         },
     )
     inventory = {
@@ -108,8 +111,9 @@ def test_inc_sweep_delete_and_error():
     base_local = _counter(metrics.POOL_LIFECYCLE_SWEEP_DELETES, type='local')
     metrics.inc_sweep_delete('local')
     metrics.inc_sweep_delete('local', count=2)
-    assert _counter(metrics.POOL_LIFECYCLE_SWEEP_DELETES,
-                    type='local') == base_local + 3
+    assert (
+        _counter(metrics.POOL_LIFECYCLE_SWEEP_DELETES, type='local') == base_local + 3
+    )
 
     # count=0 is a no-op.
     metrics.inc_sweep_delete('dataplane', count=0)
@@ -117,8 +121,9 @@ def test_inc_sweep_delete_and_error():
 
     base_err = _counter(metrics.POOL_CONTROLLER_ERRORS, call='place_snapshot')
     metrics.inc_error('place_snapshot')
-    assert _counter(metrics.POOL_CONTROLLER_ERRORS,
-                    call='place_snapshot') == base_err + 1
+    assert (
+        _counter(metrics.POOL_CONTROLLER_ERRORS, call='place_snapshot') == base_err + 1
+    )
 
 
 def test_observe_placement_records_histogram():
@@ -131,20 +136,22 @@ def test_update_state_gauges_worker_capacity_and_activity():
     state = PoolState(
         placement_state=K8sPlacementState(),
         snapshots={
-            'snap-a':
-            SnapshotPlacement(worker='w1', state=SnapshotState.READY,
-                              leases=['j1', 'j2'], lease_paths={
-                                  'j1': 'durable',
-                                  'j2': 'overflow'
-                              }),
+            'snap-a': SnapshotPlacement(
+                worker='w1',
+                state=SnapshotState.READY,
+                leases=['j1', 'j2'],
+                lease_paths={'j1': 'durable', 'j2': 'overflow'},
+            ),
         },
     )
     inventory = {
-        'w1':
-        WorkerInventory(
+        'w1': WorkerInventory(
             pool_worker_uid='w1',
             state=WorkerStateSnapshot(ssd_total_bytes=1000, ssd_used_bytes=400),
-            status=WorkerStatus.READY, gpu_slots_total=2, gpu_slots_in_use=1),
+            status=WorkerStatus.READY,
+            gpu_slots_total=2,
+            gpu_slots_in_use=1,
+        ),
     }
     # Active jobs are counted from the controller's lease->activity map
     # (one open lease == one running activity placement), not worker heartbeats.
@@ -155,35 +162,38 @@ def test_update_state_gauges_worker_capacity_and_activity():
 
     metrics.update_state_gauges(state, inventory, lease_activity)
 
-    assert _gauge(metrics.POOL_WORKER_SSD_TOTAL_BYTES,
-                  pool_worker_uid='w1') == 1000
-    assert _gauge(metrics.POOL_WORKER_SSD_USED_BYTES,
-                  pool_worker_uid='w1') == 400
-    assert _gauge(metrics.POOL_WORKER_GPU_SLOTS_TOTAL,
-                  pool_worker_uid='w1') == 2
-    assert _gauge(metrics.POOL_WORKER_GPU_SLOTS_IN_USE,
-                  pool_worker_uid='w1') == 1
+    assert _gauge(metrics.POOL_WORKER_SSD_TOTAL_BYTES, pool_worker_uid='w1') == 1000
+    assert _gauge(metrics.POOL_WORKER_SSD_USED_BYTES, pool_worker_uid='w1') == 400
+    assert _gauge(metrics.POOL_WORKER_GPU_SLOTS_TOTAL, pool_worker_uid='w1') == 2
+    assert _gauge(metrics.POOL_WORKER_GPU_SLOTS_IN_USE, pool_worker_uid='w1') == 1
     # j1 is durable -> charged to home worker w1; j2 is overflow -> "overflow".
-    assert _gauge(metrics.POOL_ACTIVE_ACTIVITIES, pool_worker_uid='w1',
-                  activity='GEN_TT') == 1
-    assert _gauge(metrics.POOL_ACTIVE_ACTIVITIES, pool_worker_uid='overflow',
-                  activity='MATERIALIZE_TRAINING_TASK') == 1
+    assert (
+        _gauge(metrics.POOL_ACTIVE_ACTIVITIES, pool_worker_uid='w1', activity='GEN_TT')
+        == 1
+    )
+    assert (
+        _gauge(
+            metrics.POOL_ACTIVE_ACTIVITIES,
+            pool_worker_uid='overflow',
+            activity='MATERIALIZE_TRAINING_TASK',
+        )
+        == 1
+    )
     assert _gauge(metrics.POOL_LEASES_BY_ROUTE, route='durable') == 1
     assert _gauge(metrics.POOL_LEASES_BY_ROUTE, route='overflow') == 1
 
 
 def test_update_state_gauges_clears_departed_worker_series():
     w = {
-        'w1':
-        WorkerInventory(
+        'w1': WorkerInventory(
             pool_worker_uid='w1',
             state=WorkerStateSnapshot(ssd_total_bytes=500, ssd_used_bytes=50),
-            status=WorkerStatus.READY),
+            status=WorkerStatus.READY,
+        ),
     }
     state = PoolState(placement_state=K8sPlacementState())
     metrics.update_state_gauges(state, w, {})
-    assert _gauge(metrics.POOL_WORKER_SSD_TOTAL_BYTES,
-                  pool_worker_uid='w1') == 500
+    assert _gauge(metrics.POOL_WORKER_SSD_TOTAL_BYTES, pool_worker_uid='w1') == 500
     # Worker departs → its per-uid series must be cleared, not frozen at 500.
     metrics.update_state_gauges(state, {}, {})
     samples = {

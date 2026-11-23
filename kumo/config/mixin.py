@@ -37,13 +37,13 @@ logger = logging.getLogger(__name__)
 
 def _resolve_config_target(target: Any) -> Any:
     if not isinstance(target, str) or not target:
-        raise ValueError("config target must be a non-empty string")
+        raise ValueError('config target must be a non-empty string')
     try:
         owner = locate(target)
     except (AttributeError, ImportError, ValueError) as error:
-        raise ValueError(f"unsupported config target: {target}") from error
+        raise ValueError(f'unsupported config target: {target}') from error
     if owner is None:
-        raise ValueError(f"unsupported config target: {target}")
+        raise ValueError(f'unsupported config target: {target}')
     return owner
 
 
@@ -55,6 +55,7 @@ class ConfigMixin:
     dataclass are automatically passed as function arguments with the
     same name, and vice versa.
     """
+
     def config(self, data_cls: Any | None = None) -> Any:
         r"""Creates a serializable configuration of the class.
 
@@ -66,9 +67,11 @@ class ConfigMixin:
         """
         data_cls = data_cls or dataclass_from_class(self.__class__)
         if data_cls is None:
-            raise ValueError(f"Could not find the configuration class that "
-                             f"belongs to '{self.__class__.__name__}'. Please "
-                             f"register it in the global configuration store.")
+            raise ValueError(
+                f'Could not find the configuration class that '
+                f"belongs to '{self.__class__.__name__}'. Please "
+                f'register it in the global configuration store.'
+            )
 
         kwargs: dict[str, Any] = {}
         for field in fields(data_cls):
@@ -94,17 +97,19 @@ class ConfigMixin:
             data_cls = dataclass_from_class(cls)
             if data_cls is None:
                 raise ValueError(
-                    f"Could not find the configuration class that "
+                    f'Could not find the configuration class that '
                     f"belongs to '{cls.__name__}'. Please "
-                    f"register it in the global configuration store.")
+                    f'register it in the global configuration store.'
+                )
         field_names = {field.name for field in fields(data_cls)}
         if isinstance(cfg, dict):
             unknown_keys = set(cfg.keys()) - field_names
             if len(unknown_keys) > 0:
                 warnings.warn(
                     f"'{cls.__name__}' is being initialized from a "
-                    f"configuration that includes the unknown attribute(s) "
-                    f"{unknown_keys}, which will be ignored")
+                    f'configuration that includes the unknown attribute(s) '
+                    f'{unknown_keys}, which will be ignored'
+                )
             params = {k: v for k, v in cfg.items() if k in field_names}
             # Convert the data class into a `kumo_dataclass` in case it is not
             # one yet. We check for the existence of `pydantic` attributes here
@@ -124,16 +129,14 @@ class ConfigMixin:
         # field signature for dataclasses; for non-dataclass classes it is a
         # no-op and the plain reflection is used.
         from kumo.utils.dataclass import _real_dataclass_init_signature
+
         with _real_dataclass_init_signature(cls):
             params = dict(inspect.signature(cls.__init__).parameters)
         params.pop('args', None)
         params.pop('kwargs', None)
 
         # Transform the values according to the customization function
-        field_values: dict[str, Any] = {
-            key: getattr(cfg, key)
-            for key in field_names
-        }
+        field_values: dict[str, Any] = {key: getattr(cfg, key) for key in field_names}
         field_values = cls.customize_from_config(field_values)
         field_names = set(field_values.keys())
 
@@ -159,15 +162,15 @@ class ConfigMixin:
     def customize_config(self, values: dict[str, Any]) -> dict[str, Any]:
         r"""Customizes the output of :meth:`config`.
 
-            Args:
-                values: A dictionary containing a key for each field in the
-                    config dataclass, and the value of the field on the
-                    :class:`ConfigMixin` subclass
+        Args:
+            values: A dictionary containing a key for each field in the
+                config dataclass, and the value of the field on the
+                :class:`ConfigMixin` subclass
 
-            Returns:
-                A dictionary with the same shape as the function argument, but
-                    containing modified values for each field, which will be
-                    passed to the constructor of the dataclass.
+        Returns:
+            A dictionary with the same shape as the function argument, but
+                containing modified values for each field, which will be
+                passed to the constructor of the dataclass.
         """
         return values
 
@@ -175,15 +178,15 @@ class ConfigMixin:
     def customize_from_config(cls, values: dict[str, Any]) -> dict[str, Any]:
         r"""Customizes the output of :meth:`from_config`.
 
-            Args:
-                values: A dictionary containing a key for each field in the
-                    config dataclass, and the value of the field on the config
-                    dataclass.
+        Args:
+            values: A dictionary containing a key for each field in the
+                config dataclass, and the value of the field on the config
+                dataclass.
 
-            Returns:
-                A dictionary with the same shape as the function argument, but
-                    containing modified values for each field, which will be
-                    used to construct the original class.
+        Returns:
+            A dictionary with the same shape as the function argument, but
+                containing modified values for each field, which will be
+                used to construct the original class.
         """
         return values
 
@@ -197,17 +200,24 @@ class ConfigMixin:
         """
         import difflib
         import pprint
+
         file = file if file is not None else sys.stdout
         cfg = asdict(self.config())
         other_cfg = asdict(other.config())
         if cfg == other_cfg:
             print('No differences found.', file=file)
         else:
-            print('\n' + '\n'.join(
-                difflib.unified_diff(
-                    pprint.pformat(cfg).splitlines(),
-                    pprint.pformat(other_cfg).splitlines(), n=6)),
-                  file=file)
+            print(
+                '\n'
+                + '\n'.join(
+                    difflib.unified_diff(
+                        pprint.pformat(cfg).splitlines(),
+                        pprint.pformat(other_cfg).splitlines(),
+                        n=6,
+                    )
+                ),
+                file=file,
+            )
 
     def __eq__(self, other: Any) -> bool:
         if not isinstance(other, self.__class__):
@@ -270,9 +280,10 @@ def _recursive_from_config(value: Any) -> Any:
             return value
         return cls(**value)
     elif isinstance(value, dict) and _CONFIG_TYPE_KEY in value:
-        if (set(value) != {
-                _CONFIG_TYPE_KEY, _MARSHALLED_FUNCTION_CODE_KEY
-        } or value[_CONFIG_TYPE_KEY] != _MARSHALLED_FUNCTION_TYPE):
+        if (
+            set(value) != {_CONFIG_TYPE_KEY, _MARSHALLED_FUNCTION_CODE_KEY}
+            or value[_CONFIG_TYPE_KEY] != _MARSHALLED_FUNCTION_TYPE
+        ):
             raise ValueError('Invalid tagged Kumo config payload')
         code = value[_MARSHALLED_FUNCTION_CODE_KEY]
         if not isinstance(code, (bytes, bytearray)):
@@ -290,9 +301,8 @@ def _recursive_from_config(value: Any) -> Any:
         return {k: _recursive_from_config(v) for k, v in value.items()}
     elif isinstance(value, (bytes, bytearray)):
         return value
-    elif (isinstance(value, str)
-          and value.startswith(_KUMO_INTERNAL_TIMESTAMP_PREFIX)):
-        time_value = value[len(_KUMO_INTERNAL_TIMESTAMP_PREFIX):]
+    elif isinstance(value, str) and value.startswith(_KUMO_INTERNAL_TIMESTAMP_PREFIX):
+        time_value = value[len(_KUMO_INTERNAL_TIMESTAMP_PREFIX) :]
         if time_value is pd.NaT or time_value is None:
             return pd.NaT
         try:
@@ -326,15 +336,14 @@ def _recursive_from_config(value: Any) -> Any:
             if normalized is None:
                 return pd.NaT
             return pd.Timestamp(normalized)
-        except (pd.errors.OutOfBoundsDatetime, OverflowError, ValueError,
-                TypeError):
+        except (pd.errors.OutOfBoundsDatetime, OverflowError, ValueError, TypeError):
             logger.warning(
-                f"Time value {time_value} in config is invalid, using pd.NaT")
+                f'Time value {time_value} in config is invalid, using pd.NaT'
+            )
             return pd.NaT
 
-    elif (isinstance(value, str)
-          and value.startswith(_PANDAS_DATE_OFFSET_PREFIX)):
-        date_offset_value = value[len(_PANDAS_DATE_OFFSET_PREFIX):]
+    elif isinstance(value, str) and value.startswith(_PANDAS_DATE_OFFSET_PREFIX):
+        date_offset_value = value[len(_PANDAS_DATE_OFFSET_PREFIX) :]
         return pd.DateOffset(**ast.literal_eval(date_offset_value))
     else:
         return value
@@ -387,8 +396,7 @@ def construct_object_string_from_config(obj: Any) -> str:
     for key, value in obj_fields.items():
         if key.startswith('_'):
             continue
-        if (hasattr(obj, '_external_args')
-                and key not in obj._external_args):  # type: ignore
+        if hasattr(obj, '_external_args') and key not in obj._external_args:  # type: ignore
             continue
 
         if isinstance(value, Enum):
@@ -399,4 +407,4 @@ def construct_object_string_from_config(obj: Any) -> str:
         else:
             parameters.append(f'{key}={value}')
 
-    return f"{obj_cls_name}({', '.join(parameters)})"
+    return f'{obj_cls_name}({", ".join(parameters)})'

@@ -23,6 +23,7 @@ Plus pool-specific behavior tests:
   worker must be serialized by the per-instance semaphore so a single
   GPU isn't fought over.
 """
+
 import asyncio
 import contextlib
 import contextvars
@@ -36,10 +37,6 @@ import threading
 import time
 from dataclasses import replace as dataclass_replace
 from pathlib import Path
-from test.pool.prediction_materialization_lock_helper import (
-    hold_prediction_extension_shared_lock,
-    hold_prediction_materialization_ownership,
-)
 from types import SimpleNamespace
 from unittest import mock
 from unittest.mock import AsyncMock as _MockController
@@ -91,14 +88,17 @@ from rest.backends.ml_backend.ml_job_output_store import MLJobOutputStore
 from rest.config.ml_backend import JobState
 from rest.config.training_job import TrainingJobProgress
 from temporalio_commons.error_utils import is_error_non_retryable
+from test.pool.prediction_materialization_lock_helper import (
+    hold_prediction_extension_shared_lock,
+    hold_prediction_materialization_ownership,
+)
 
 
 class _DiskgraphCorruptionError(RuntimeError):
     """Local stand-in for the optional native diskgraph exception."""
 
 
-_FAKE_DISKGRAPH = SimpleNamespace(
-    DiskgraphCorruptionError=_DiskgraphCorruptionError)
+_FAKE_DISKGRAPH = SimpleNamespace(DiskgraphCorruptionError=_DiskgraphCorruptionError)
 
 
 def test_process_identity_detects_live_sibling_behind_zombie_leader() -> None:
@@ -118,8 +118,7 @@ def test_process_identity_detects_live_sibling_behind_zombie_leader() -> None:
     assert identity.has_live_tasks
 
 
-def test_process_identity_falls_back_to_live_leader_for_empty_task_race(
-) -> None:
+def test_process_identity_falls_back_to_live_leader_for_empty_task_race() -> None:
     identity = _ProcessIdentity(
         pid=100,
         process_group_id=100,
@@ -136,11 +135,14 @@ def test_process_identity_falls_back_to_live_leader_for_empty_task_race(
     assert identity.has_live_tasks
 
 
-@pytest.mark.parametrize(('task_group_exited', 'expected_live'), [
-    (False, True),
-    (None, True),
-    (True, False),
-])
+@pytest.mark.parametrize(
+    ('task_group_exited', 'expected_live'),
+    [
+        (False, True),
+        (None, True),
+        (True, False),
+    ],
+)
 def test_process_identity_empty_zombie_snapshot_uses_pidfd_group_state(
     task_group_exited: bool | None,
     expected_live: bool,
@@ -162,11 +164,14 @@ def test_process_identity_empty_zombie_snapshot_uses_pidfd_group_state(
     assert identity.has_live_tasks is expected_live
 
 
-@pytest.mark.parametrize(('task_group_exited', 'expected_live'), [
-    (False, True),
-    (None, True),
-    (True, False),
-])
+@pytest.mark.parametrize(
+    ('task_group_exited', 'expected_live'),
+    [
+        (False, True),
+        (None, True),
+        (True, False),
+    ],
+)
 def test_process_identity_uses_pidfd_when_task_state_is_unavailable(
     task_group_exited: bool | None,
     expected_live: bool,
@@ -189,7 +194,8 @@ def test_process_identity_uses_pidfd_when_task_state_is_unavailable(
 
 
 def test_read_process_task_states_distinguishes_unavailable_directory(
-        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     def _unavailable(_path: str) -> None:
         raise FileNotFoundError('synthetic unavailable task directory')
 
@@ -198,12 +204,14 @@ def test_read_process_task_states_distinguishes_unavailable_directory(
     assert activities._read_process_task_states(100) is None
 
 
-@pytest.mark.skipif(not sys.platform.startswith('linux'),
-                    reason='process identity uses Linux procfs and pidfds')
+@pytest.mark.skipif(
+    not sys.platform.startswith('linux'),
+    reason='process identity uses Linux procfs and pidfds',
+)
 def test_read_process_identity_retains_live_pidfd_when_tasks_unavailable(
-        monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(activities, '_read_process_task_states',
-                        lambda _pid: None)
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(activities, '_read_process_task_states', lambda _pid: None)
     monkeypatch.setattr(activities, 'pidfd_process_exited', lambda _pid: False)
 
     identity = activities._read_process_identity(os.getpid())
@@ -214,7 +222,8 @@ def test_read_process_identity_retains_live_pidfd_when_tasks_unavailable(
 
 
 def test_read_process_identity_uses_pidfd_for_empty_zombie_snapshot(
-        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     proc_stat = SimpleNamespace(st_dev=1, st_ino=2)
     pid_namespace = SimpleNamespace(st_dev=3, st_ino=4)
 
@@ -223,10 +232,10 @@ def test_read_process_identity_uses_pidfd_for_empty_zombie_snapshot(
 
     pidfd_calls = []
     monkeypatch.setattr(activities.os, 'stat', _stat)
-    monkeypatch.setattr(activities, '_read_process_task_states', lambda _pid:
-                        ())
-    monkeypatch.setattr(activities, 'pidfd_process_exited',
-                        lambda pid: pidfd_calls.append(pid) or False)
+    monkeypatch.setattr(activities, '_read_process_task_states', lambda _pid: ())
+    monkeypatch.setattr(
+        activities, 'pidfd_process_exited', lambda pid: pidfd_calls.append(pid) or False
+    )
     process_stat = b'100 (probe) Z 1 100 100 ' + b'0 ' * 15 + b'5'
     with mock.patch('builtins.open', mock.mock_open(read_data=process_stat)):
         identity = activities._read_process_identity(100)
@@ -238,7 +247,7 @@ def test_read_process_identity_uses_pidfd_for_empty_zombie_snapshot(
 
 
 def _make_instance(
-    storage_mode: PoolStorageMode = PoolStorageMode.DAEMON_ON_PVC
+    storage_mode: PoolStorageMode = PoolStorageMode.DAEMON_ON_PVC,
 ) -> SnapshotActivities:
     return SnapshotActivities(
         pool_worker_uid='test-uid',
@@ -252,9 +261,9 @@ def _make_prediction_job_input():
     from kumo_core.types import PredictionArtifactType
 
     return SimpleNamespace(
-        config=SimpleNamespace(outputs=[
-            SimpleNamespace(artifact_type=PredictionArtifactType.PREDICTIONS)
-        ]),
+        config=SimpleNamespace(
+            outputs=[SimpleNamespace(artifact_type=PredictionArtifactType.PREDICTIONS)]
+        ),
         output_connectors={},
     )
 
@@ -331,7 +340,8 @@ def _close_runner_while_diskgraph_call_is_active(
                 download,
                 join_on_cancel=True,
                 cancellation_cleanup_dir=str(target),
-            ))
+            )
+        )
         assert await asyncio.to_thread(started.wait, 1)
         return task
 
@@ -365,8 +375,7 @@ def test_schedule_activity_heartbeat_on_event_loop():
 
     _schedule_activity_heartbeat(activity_loop)
 
-    activity_loop.call_soon_threadsafe.assert_called_once_with(
-        activity.heartbeat)
+    activity_loop.call_soon_threadsafe.assert_called_once_with(activity.heartbeat)
 
 
 @pytest.mark.asyncio
@@ -393,7 +402,8 @@ async def test_diskgraph_cancellation_cleans_late_credentials(tmp_path):
     activate_blockbuster_guard(mode=BlockBusterMode.RAISE)
     try:
         task = asyncio.create_task(
-            _run_diskgraph_async(prepare, abandonment_cleanup_dir=str(target)))
+            _run_diskgraph_async(prepare, abandonment_cleanup_dir=str(target))
+        )
         assert await asyncio.to_thread(started.wait, 1)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -512,17 +522,21 @@ def test_prediction_materialization_holds_ownership_through_upload(tmp_path):
         events.append('upload')
 
     config = SimpleNamespace(diskgraph_index_path=str(tmp_path))
-    with mock.patch('kumo_core.job_config.PredictionConfig.load',
-                    return_value=config), \
-            mock.patch('pool.activities.prediction_materialization_ownership',
-                       ownership), \
-            mock.patch('pool.activities.materialize_prediction_task',
-                       materialize), \
-            mock.patch('pool.activities.upload_job_sidecars_from_config_path',
-                       upload):
+    with (
+        mock.patch('kumo_core.job_config.PredictionConfig.load', return_value=config),
+        mock.patch('pool.activities.prediction_materialization_ownership', ownership),
+        mock.patch('pool.activities.materialize_prediction_task', materialize),
+        mock.patch('pool.activities.upload_job_sidecars_from_config_path', upload),
+    ):
         result = _materialize_and_upload_prediction_task(
-            'graph-1@v1', job_input, 'settings', False, 'pred-config.json',
-            None, 's3://persist')
+            'graph-1@v1',
+            job_input,
+            'settings',
+            False,
+            'pred-config.json',
+            None,
+            's3://persist',
+        )
 
     assert result == ('pred-config.json', 'task', 'response')
     assert events == ['lock', 'materialize', 'upload', 'unlock']
@@ -532,47 +546,61 @@ def test_prediction_materialization_upload_failure_releases_for_retry(tmp_path):
     job_input = SimpleNamespace(id='bp-job-1')
     config = SimpleNamespace(diskgraph_index_path=str(tmp_path))
     upload = mock.MagicMock(side_effect=[RuntimeError('upload failed'), None])
-    materialize = mock.MagicMock(return_value=('pred-config.json', 'task',
-                                               'response'))
+    materialize = mock.MagicMock(return_value=('pred-config.json', 'task', 'response'))
 
-    with mock.patch('kumo_core.job_config.PredictionConfig.load',
-                    return_value=config), \
-            mock.patch('pool.activities.materialize_prediction_task',
-                       materialize), \
-            mock.patch('pool.activities.upload_job_sidecars_from_config_path',
-                       upload):
+    with (
+        mock.patch('kumo_core.job_config.PredictionConfig.load', return_value=config),
+        mock.patch('pool.activities.materialize_prediction_task', materialize),
+        mock.patch('pool.activities.upload_job_sidecars_from_config_path', upload),
+    ):
         with pytest.raises(RuntimeError, match='upload failed'):
-            _materialize_and_upload_prediction_task('graph-1@v1', job_input,
-                                                    'settings', False,
-                                                    'pred-config.json', None,
-                                                    's3://persist')
+            _materialize_and_upload_prediction_task(
+                'graph-1@v1',
+                job_input,
+                'settings',
+                False,
+                'pred-config.json',
+                None,
+                's3://persist',
+            )
         result = _materialize_and_upload_prediction_task(
-            'graph-1@v1', job_input, 'settings', False, 'pred-config.json',
-            None, 's3://persist')
+            'graph-1@v1',
+            job_input,
+            'settings',
+            False,
+            'pred-config.json',
+            None,
+            's3://persist',
+        )
 
     assert result == ('pred-config.json', 'task', 'response')
     assert materialize.call_count == 2
     assert upload.call_count == 2
 
 
-def test_prediction_materialization_missing_index_preserves_materializer_error(
-):
+def test_prediction_materialization_missing_index_preserves_materializer_error():
     job_input = SimpleNamespace(id='bp-job-1')
     config = SimpleNamespace(diskgraph_index_path=None)
     precise_error = ValueError('missing exact DiskGraph snapshot binding')
     upload = mock.MagicMock()
 
-    with mock.patch('kumo_core.job_config.PredictionConfig.load',
-                    return_value=config), \
-            mock.patch('pool.activities.materialize_prediction_task',
-                       side_effect=precise_error), \
-            mock.patch('pool.activities.upload_job_sidecars_from_config_path',
-                       upload):
+    with (
+        mock.patch('kumo_core.job_config.PredictionConfig.load', return_value=config),
+        mock.patch(
+            'pool.activities.materialize_prediction_task', side_effect=precise_error
+        ),
+        mock.patch('pool.activities.upload_job_sidecars_from_config_path', upload),
+    ):
         with pytest.raises(ValueError) as raised:
-            _materialize_and_upload_prediction_task('graph-1@v1', job_input,
-                                                    'settings', False,
-                                                    'pred-config.json', None,
-                                                    's3://persist')
+            _materialize_and_upload_prediction_task(
+                'graph-1@v1',
+                job_input,
+                'settings',
+                False,
+                'pred-config.json',
+                None,
+                's3://persist',
+            )
 
     assert raised.value is precise_error
     upload.assert_not_called()
@@ -583,17 +611,24 @@ def test_prediction_materialization_missing_index_cannot_succeed_unpublished():
     config = SimpleNamespace(diskgraph_index_path=None)
     upload = mock.MagicMock()
 
-    with mock.patch('kumo_core.job_config.PredictionConfig.load',
-                    return_value=config), \
-            mock.patch('pool.activities.materialize_prediction_task',
-                       return_value=('pred-config.json', 'task', 'response')), \
-            mock.patch('pool.activities.upload_job_sidecars_from_config_path',
-                       upload):
+    with (
+        mock.patch('kumo_core.job_config.PredictionConfig.load', return_value=config),
+        mock.patch(
+            'pool.activities.materialize_prediction_task',
+            return_value=('pred-config.json', 'task', 'response'),
+        ),
+        mock.patch('pool.activities.upload_job_sidecars_from_config_path', upload),
+    ):
         with pytest.raises(ValueError, match='cannot be safely published'):
-            _materialize_and_upload_prediction_task('graph-1@v1', job_input,
-                                                    'settings', False,
-                                                    'pred-config.json', None,
-                                                    's3://persist')
+            _materialize_and_upload_prediction_task(
+                'graph-1@v1',
+                job_input,
+                'settings',
+                False,
+                'pred-config.json',
+                None,
+                's3://persist',
+            )
 
     upload.assert_not_called()
 
@@ -622,14 +657,17 @@ def test_diskgraph_runner_shutdown_joins_writer_and_cleans_exact_tree(tmp_path):
             break
         time.sleep(0.01)
     assert runner_started.exists(), (
-        f'child exited {process.exitcode} before starting the runner')
+        f'child exited {process.exitcode} before starting the runner'
+    )
 
     process.join(timeout=3)
     if process.is_alive():
         process.terminate()
         process.join(timeout=2)
-        pytest.fail('runner shutdown spun after connector release '
-                    f'(connector_finished={connector_finished.exists()})')
+        pytest.fail(
+            'runner shutdown spun after connector release '
+            f'(connector_finished={connector_finished.exists()})'
+        )
 
     assert process.exitcode == 0
     assert connector_finished.read_text() == 'complete\n'
@@ -646,8 +684,7 @@ async def test_diskgraph_off_loop_dispatch_preserves_contextvars():
 
 
 @pytest.mark.asyncio
-async def test_diskgraph_cancellation_joins_download_and_removes_exact_tree(
-        tmp_path):
+async def test_diskgraph_cancellation_joins_download_and_removes_exact_tree(tmp_path):
     """Cancellation waits for a late writer, then removes its exact root."""
     target = tmp_path / 'snapshot-download'
     sibling = tmp_path / 'other-snapshot-download'
@@ -671,7 +708,8 @@ async def test_diskgraph_cancellation_joins_download_and_removes_exact_tree(
             download,
             join_on_cancel=True,
             cancellation_cleanup_dir=str(target),
-        ))
+        )
+    )
     assert await asyncio.to_thread(started.wait, 1)
     cancelled_at = time.monotonic()
     task.cancel()
@@ -695,8 +733,7 @@ async def test_diskgraph_cancellation_joins_download_and_removes_exact_tree(
 
 
 @pytest.mark.asyncio
-async def test_cancelled_download_holds_same_snapshot_lock_until_cleanup(
-        tmp_path):
+async def test_cancelled_download_holds_same_snapshot_lock_until_cleanup(tmp_path):
     locks = PerSnapshotLocks()
     target = tmp_path / 'snapshot-download'
     other_target = tmp_path / 'other-snapshot-download'
@@ -757,7 +794,8 @@ async def test_cancelled_download_holds_same_snapshot_lock_until_cleanup(
 
 @pytest.mark.asyncio
 async def test_cancelled_download_exception_is_logged_but_outcome_is_cancelled(
-        tmp_path, caplog):
+    tmp_path, caplog
+):
     target = tmp_path / 'snapshot-download'
     started = threading.Event()
     release = threading.Event()
@@ -774,7 +812,8 @@ async def test_cancelled_download_exception_is_logged_but_outcome_is_cancelled(
             download,
             join_on_cancel=True,
             cancellation_cleanup_dir=str(target),
-        ))
+        )
+    )
     assert await asyncio.to_thread(started.wait, 1)
     task.cancel()
     release.set()
@@ -784,8 +823,10 @@ async def test_cancelled_download_exception_is_logged_but_outcome_is_cancelled(
             await task
 
     assert not target.exists()
-    assert any('failed after its caller was cancelled' in record.getMessage()
-               for record in caplog.records)
+    assert any(
+        'failed after its caller was cancelled' in record.getMessage()
+        for record in caplog.records
+    )
 
 
 def test_clean_in_progress_snapshots_removes_non_warm_dirs(tmp_path):
@@ -823,8 +864,7 @@ def test_clean_in_progress_snapshots_removes_non_warm_dirs(tmp_path):
     assert non_snapshot_cache.exists()
 
 
-def test_iter_local_snapshot_dirs_skips_unreadable_lost_found(
-        tmp_path, monkeypatch):
+def test_iter_local_snapshot_dirs_skips_unreadable_lost_found(tmp_path, monkeypatch):
     # Regression for the diskgraph worker daemon CrashLoopBackOff on ext4
     # PVCs (e.g. Azure managed disks): the mount root carries a root-owned,
     # 0700 ``lost+found`` the non-root worker cannot ``scandir``. The scan
@@ -856,6 +896,7 @@ def test_iter_local_snapshot_dirs_skips_unreadable_lost_found(
 def test_long_lived_start_creates_heartbeat_task():
     """DAEMON_ON_PVC workers spawn a background periodic-heartbeat task
     (one initial heartbeat + the loop)."""
+
     async def run() -> None:
         instance = _make_instance(PoolStorageMode.DAEMON_ON_PVC)
 
@@ -865,14 +906,19 @@ def test_long_lived_start_creates_heartbeat_task():
             return []
 
         with (
-                mock.patch('pool.activities._clean_in_progress_snapshots',
-                           side_effect=clean_in_progress),
-                mock.patch('pool.activities.get_service') as get_service,
-                mock.patch('pool.activities._probe_local_disks',
-                           return_value=((0, 0, None), (0, 0, None))),
+            mock.patch(
+                'pool.activities._clean_in_progress_snapshots',
+                side_effect=clean_in_progress,
+            ),
+            mock.patch('pool.activities.get_service') as get_service,
+            mock.patch(
+                'pool.activities._probe_local_disks',
+                return_value=((0, 0, None), (0, 0, None)),
+            ),
         ):
-            get_service.return_value.list_ready_handles.coroutine = (
-                mock.AsyncMock(return_value=[]))
+            get_service.return_value.list_ready_handles.coroutine = mock.AsyncMock(
+                return_value=[]
+            )
             await instance.start()
             assert instance._heartbeat_task is not None
             assert not instance._heartbeat_task.done()
@@ -886,10 +932,13 @@ def test_long_lived_start_creates_heartbeat_task():
 def test_ephemeral_start_skips_periodic_heartbeat():
     """Activity-scoped workers emit only the initial heartbeat — no periodic
     loop, since the pod is short-lived."""
+
     async def run() -> None:
         instance = _make_instance(PoolStorageMode.ACTIVITY_ON_PVC)
-        with mock.patch('pool.activities._probe_local_disks',
-                        return_value=((0, 0, None), (0, 0, None))):
+        with mock.patch(
+            'pool.activities._probe_local_disks',
+            return_value=((0, 0, None), (0, 0, None)),
+        ):
             await instance.start()
             assert instance._heartbeat_task is None
             await instance.stop()  # idempotent no-op
@@ -908,10 +957,13 @@ def test_stop_idempotent_when_never_started():
 def test_heartbeat_long_lived_does_not_report_gpu_slots():
     """Daemon heartbeats do not carry GPU slots; controller owns durable GPU
     capacity from the persisted tier and in-use slots from leases."""
+
     async def run() -> None:
         instance = _make_instance(PoolStorageMode.DAEMON_ON_PVC)
-        with mock.patch('pool.activities._probe_local_disks',
-                        return_value=((0, 0, None), (0, 0, None))):
+        with mock.patch(
+            'pool.activities._probe_local_disks',
+            return_value=((0, 0, None), (0, 0, None)),
+        ):
             await instance._send_status_report()
         report = instance._controller.report_status.await_args.args[0]
         assert not hasattr(report.state, 'gpu_slots_total')
@@ -924,10 +976,13 @@ def test_heartbeat_activity_scoped_does_not_report_gpu_slots():
     """Activity-scoped pods also omit GPU slots; the controller skips
     their inventory entirely (``is_activity_scoped`` branch in
     ``report_status``)."""
+
     async def run() -> None:
         instance = _make_instance(PoolStorageMode.ACTIVITY_ON_PVC)
-        with mock.patch('pool.activities._probe_local_disks',
-                        return_value=((0, 0, None), (0, 0, None))):
+        with mock.patch(
+            'pool.activities._probe_local_disks',
+            return_value=((0, 0, None), (0, 0, None)),
+        ):
             await instance._send_status_report()
         report = instance._controller.report_status.await_args.args[0]
         assert not hasattr(report.state, 'gpu_slots_total')
@@ -941,9 +996,9 @@ def test_heartbeat_activity_scoped_does_not_report_gpu_slots():
     ('ssd_device', 'dataplane_device', 'same_filesystem'),
     [(101, 202, False), (101, 101, True)],
 )
-async def test_dataplane_capacity_status_report(tmp_path, ssd_device,
-                                                dataplane_device,
-                                                same_filesystem):
+async def test_dataplane_capacity_status_report(
+    tmp_path, ssd_device, dataplane_device, same_filesystem
+):
     from service_framework._raw_deploy_config import DiskgraphConfig
 
     data_root = tmp_path / 'ssd'
@@ -955,12 +1010,14 @@ async def test_dataplane_capacity_status_report(tmp_path, ssd_device,
     )
 
     with (
-            mock.patch('pool.activities.deploy_env', return_value=config),
-            mock.patch(
-                'pool.activities._probe_local_disks',
-                return_value=((10_000, 4_000, ssd_device), (3_000, 2_500,
-                                                            dataplane_device)),
+        mock.patch('pool.activities.deploy_env', return_value=config),
+        mock.patch(
+            'pool.activities._probe_local_disks',
+            return_value=(
+                (10_000, 4_000, ssd_device),
+                (3_000, 2_500, dataplane_device),
             ),
+        ),
     ):
         await instance._send_status_report()
 
@@ -976,11 +1033,13 @@ async def test_dataplane_capacity_status_report(tmp_path, ssd_device,
 def test_combined_disk_probe_contains_unexpected_exception():
     from pool import activities
 
-    with mock.patch('pool.activities._probe_local_disk',
-                    side_effect=RuntimeError('unexpected')):
-        assert activities._probe_local_disks('/ssd',
-                                             '/dataplane') == ((0, 0, None),
-                                                               (0, 0, None))
+    with mock.patch(
+        'pool.activities._probe_local_disk', side_effect=RuntimeError('unexpected')
+    ):
+        assert activities._probe_local_disks('/ssd', '/dataplane') == (
+            (0, 0, None),
+            (0, 0, None),
+        )
 
 
 @pytest.mark.asyncio
@@ -1000,9 +1059,8 @@ async def test_status_report_disk_probe_is_bounded_and_single_flight():
     retained_task = None
     try:
         with (
-                mock.patch('pool.activities._probe_local_disks',
-                           side_effect=blocked_probe),
-                mock.patch('pool.activities._DISK_PROBE_WAIT_SECS', 0.01),
+            mock.patch('pool.activities._probe_local_disks', side_effect=blocked_probe),
+            mock.patch('pool.activities._DISK_PROBE_WAIT_SECS', 0.01),
         ):
             ticker = asyncio.create_task(asyncio.sleep(0))
             await instance._send_status_report()
@@ -1050,21 +1108,19 @@ async def test_disk_probe_cache_expiry_and_recovery():
     trailing_task = None
     try:
         with (
-                mock.patch('pool.activities._probe_local_disks',
-                           side_effect=probe),
-                mock.patch('pool.activities._DISK_PROBE_WAIT_SECS', 0.01),
-                mock.patch('pool.activities._DISK_TELEMETRY_MAX_AGE_SECS',
-                           60.0),
+            mock.patch('pool.activities._probe_local_disks', side_effect=probe),
+            mock.patch('pool.activities._DISK_PROBE_WAIT_SECS', 0.01),
+            mock.patch('pool.activities._DISK_TELEMETRY_MAX_AGE_SECS', 60.0),
         ):
-            assert await instance._resolve_disk_telemetry('/ssd',
-                                                          '/dp') == first
-            assert await instance._resolve_disk_telemetry('/ssd',
-                                                          '/dp') == first
+            assert await instance._resolve_disk_telemetry('/ssd', '/dp') == first
+            assert await instance._resolve_disk_telemetry('/ssd', '/dp') == first
             await _wait_for_thread_event(refresh_started)
 
             now[0] += 61.0
-            assert await instance._resolve_disk_telemetry(
-                '/ssd', '/dp') == ((0, 0, None), (0, 0, None))
+            assert await instance._resolve_disk_telemetry('/ssd', '/dp') == (
+                (0, 0, None),
+                (0, 0, None),
+            )
             assert calls == 2
 
             release_refresh.set()
@@ -1073,8 +1129,7 @@ async def test_disk_probe_cache_expiry_and_recovery():
             await _wait_for_task_done(retained_task)
             await retained_task
 
-            assert await instance._resolve_disk_telemetry('/ssd',
-                                                          '/dp') == second
+            assert await instance._resolve_disk_telemetry('/ssd', '/dp') == second
             trailing_task = instance._disk_probe_task
     finally:
         release_refresh.set()
@@ -1088,8 +1143,9 @@ async def test_disk_probe_cache_expiry_and_recovery():
 async def test_disk_probe_task_exception_is_unknown_and_retryable():
     instance = _make_instance()
 
-    with mock.patch('pool.activities._probe_local_disks',
-                    side_effect=RuntimeError('unexpected')):
+    with mock.patch(
+        'pool.activities._probe_local_disks', side_effect=RuntimeError('unexpected')
+    ):
         telemetry = await instance._resolve_disk_telemetry('/ssd', '/dp')
 
     assert telemetry == ((0, 0, None), (0, 0, None))
@@ -1109,10 +1165,12 @@ async def test_cancelled_report_preserves_in_flight_disk_probe():
 
     retained_task = None
     try:
-        with mock.patch('pool.activities._probe_local_disks',
-                        side_effect=blocked_probe):
+        with mock.patch(
+            'pool.activities._probe_local_disks', side_effect=blocked_probe
+        ):
             report = asyncio.create_task(
-                instance._resolve_disk_telemetry('/ssd', '/dp'))
+                instance._resolve_disk_telemetry('/ssd', '/dp')
+            )
             await _wait_for_thread_event(started)
             retained_task = instance._disk_probe_task
             report.cancel()
@@ -1146,9 +1204,8 @@ async def test_stop_and_restart_do_not_duplicate_blocked_disk_probe():
     retained_task = None
     try:
         with (
-                mock.patch('pool.activities._probe_local_disks',
-                           side_effect=blocked_probe),
-                mock.patch('pool.activities._DISK_PROBE_WAIT_SECS', 0.01),
+            mock.patch('pool.activities._probe_local_disks', side_effect=blocked_probe),
+            mock.patch('pool.activities._DISK_PROBE_WAIT_SECS', 0.01),
         ):
             await instance.start()
             assert started.is_set()
@@ -1216,10 +1273,10 @@ async def test_daemon_disk_checks_pass_blockbuster_raise(tmp_path):
 
         instance._send_status_report = mock.AsyncMock()
         with (
-                mock.patch('pool.activities.get_service',
-                           return_value=fake_service),
-                mock.patch('pool.activities.get_persist_dir',
-                           return_value=str(dataplane_root)),
+            mock.patch('pool.activities.get_service', return_value=fake_service),
+            mock.patch(
+                'pool.activities.get_persist_dir', return_value=str(dataplane_root)
+            ),
         ):
             result = await instance._ensure_snapshot_local(_TEST_SNAPSHOT_ID)
             assert result is cached
@@ -1239,7 +1296,8 @@ def test_dataplane_capacity_probe_missing_leaf_uses_existing_ancestor(tmp_path):
     from pool import activities
 
     total, used, device = activities._probe_local_disk(
-        str(tmp_path / 'missing' / 'leaf'))
+        str(tmp_path / 'missing' / 'leaf')
+    )
 
     assert total > 0
     assert 0 <= used <= total
@@ -1259,8 +1317,9 @@ def test_dataplane_capacity_probe_preserves_writer_available_bytes(tmp_path):
 def test_dataplane_capacity_probe_oserror_is_unknown(tmp_path):
     from pool import activities
 
-    with mock.patch('pool.activities.shutil.disk_usage',
-                    side_effect=OSError('unavailable')):
+    with mock.patch(
+        'pool.activities.shutil.disk_usage', side_effect=OSError('unavailable')
+    ):
         assert activities._probe_local_disk(str(tmp_path)) == (0, 0, None)
 
 
@@ -1279,16 +1338,20 @@ async def test_status_reports_are_serialized_with_ready_snapshot_capture():
 
     instance._controller.report_status.side_effect = report_status
     instance._ready_snapshots.add('snap-1')
-    with mock.patch('pool.activities._probe_local_disks',
-                    return_value=((0, 0, None), (0, 0, None))):
+    with mock.patch(
+        'pool.activities._probe_local_disks', return_value=((0, 0, None), (0, 0, None))
+    ):
         heartbeat = asyncio.create_task(instance._send_status_report())
         await first_started.wait()
 
         instance._ready_snapshots.discard('snap-1')
         corruption = asyncio.create_task(
             instance._send_status_report(
-                WorkerEvent(type=WorkerEventType.SSD_CACHE_CORRUPTED,
-                            snapshot_id='snap-1')))
+                WorkerEvent(
+                    type=WorkerEventType.SSD_CACHE_CORRUPTED, snapshot_id='snap-1'
+                )
+            )
+        )
         await asyncio.sleep(0)
         assert len(reports) == 1
 
@@ -1390,6 +1453,7 @@ async def test_activity_scope_application_error_non_retryable():
     "fail this activity, don't retry" signal — used by activity bodies
     to short-circuit Temporal's retry policy. Same exit-0 behavior."""
     from temporalio.exceptions import ApplicationError
+
     instance = _make_instance(PoolStorageMode.ACTIVITY_ON_PVC)
     with pytest.raises(ApplicationError):
         async with instance._activity_scope():
@@ -1404,6 +1468,7 @@ async def test_activity_scope_application_error_retryable_sets_failed_flag():
     will schedule another attempt, so the pod must exit 1 so K8s
     restarts and the retry lands on the fresh pod."""
     from temporalio.exceptions import ApplicationError
+
     instance = _make_instance(PoolStorageMode.ACTIVITY_ON_PVC)
     with pytest.raises(ApplicationError):
         async with instance._activity_scope():
@@ -1474,9 +1539,10 @@ async def test_place_snapshot_activity_translates_rpc_error(non_retryable):
     fake_client = _MockController()
     fake_client.place_snapshot.side_effect = rpc_err
 
-    with mock.patch('pool.activities.get_controller_client',
-                    return_value=fake_client), \
-            mock.patch('pool.activities.deploy_env'):
+    with (
+        mock.patch('pool.activities.get_controller_client', return_value=fake_client),
+        mock.patch('pool.activities.deploy_env'),
+    ):
         with pytest.raises(ApplicationError) as excinfo:
             await place_snapshot_activity(request)
 
@@ -1504,55 +1570,61 @@ async def test_release_snapshot_activity_translates_rpc_error(non_retryable):
     fake_client = _MockController()
     fake_client.release_lease.side_effect = rpc_err
 
-    with mock.patch('pool.activities.get_controller_client',
-                    return_value=fake_client), \
-            mock.patch('pool.activities.deploy_env'):
+    with (
+        mock.patch('pool.activities.get_controller_client', return_value=fake_client),
+        mock.patch('pool.activities.deploy_env'),
+    ):
         with pytest.raises(ApplicationError) as excinfo:
             await release_snapshot_activity(
-                'NA-deadbeefdeadbeefdeadbeefdeadbeef@v1', 'job-1')
+                'NA-deadbeefdeadbeefdeadbeefdeadbeef@v1', 'job-1'
+            )
 
     assert excinfo.value.non_retryable is non_retryable
     assert excinfo.value.type == 'PoolWorkerNotFoundError'
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize((
-    'error_type', 'expected_non_retryable', 'expected_public_message'
-), [
-    (
-        'ProvisionTimeoutError',
-        False,
-        'Your job could not acquire a GPU/compute worker within the '
-        'allowed time. GPU capacity may be temporarily limited. '
-        'Please retry; if the problem persists, contact Kumo support.',
-    ),
-    (
-        'ProvisionTerminalError',
-        False,
-        'Your job could not start because the compute pod failed to '
-        'initialize (e.g. bad image tag, missing secret, or invalid '
-        'container configuration). This is an infrastructure issue — '
-        'please contact Kumo support.',
-    ),
-    (
-        'InsufficientDataplaneCapacityError',
-        True,
-        'Your graph cannot be ingested because the local dataplane volume '
-        'does not have enough available space. Free or expand that volume, '
-        'move the dataplane root to supported object storage, or reduce the '
-        'dataset size.',
-    ),
-    (
-        'ExistingWorkerUnavailableError',
-        True,
-        ('The DiskGraph worker reserved for your job is no longer '
-         'available. This is an infrastructure issue, not a problem with '
-         'your graph or model. Please retry; if the problem persists, '
-         'contact Kumo support.'),
-    ),
-])
+@pytest.mark.parametrize(
+    ('error_type', 'expected_non_retryable', 'expected_public_message'),
+    [
+        (
+            'ProvisionTimeoutError',
+            False,
+            'Your job could not acquire a GPU/compute worker within the '
+            'allowed time. GPU capacity may be temporarily limited. '
+            'Please retry; if the problem persists, contact Kumo support.',
+        ),
+        (
+            'ProvisionTerminalError',
+            False,
+            'Your job could not start because the compute pod failed to '
+            'initialize (e.g. bad image tag, missing secret, or invalid '
+            'container configuration). This is an infrastructure issue — '
+            'please contact Kumo support.',
+        ),
+        (
+            'InsufficientDataplaneCapacityError',
+            True,
+            'Your graph cannot be ingested because the local dataplane volume '
+            'does not have enough available space. Free or expand that volume, '
+            'move the dataplane root to supported object storage, or reduce the '
+            'dataset size.',
+        ),
+        (
+            'ExistingWorkerUnavailableError',
+            True,
+            (
+                'The DiskGraph worker reserved for your job is no longer '
+                'available. This is an infrastructure issue, not a problem with '
+                'your graph or model. Please retry; if the problem persists, '
+                'contact Kumo support.'
+            ),
+        ),
+    ],
+)
 async def test_place_snapshot_activity_includes_public_exception_for_placement_errors(
-        error_type, expected_non_retryable, expected_public_message):
+    error_type, expected_non_retryable, expected_public_message
+):
     """Pool placement errors include a PublicException in ApplicationError.details.
 
     This ensures that the normal public-exception extraction path can surface
@@ -1587,9 +1659,10 @@ async def test_place_snapshot_activity_includes_public_exception_for_placement_e
     fake_client = _MockController()
     fake_client.place_snapshot.side_effect = rpc_err
 
-    with mock.patch('pool.activities.get_controller_client',
-                    return_value=fake_client), \
-            mock.patch('pool.activities.deploy_env'):
+    with (
+        mock.patch('pool.activities.get_controller_client', return_value=fake_client),
+        mock.patch('pool.activities.deploy_env'),
+    ):
         with pytest.raises(ApplicationError) as excinfo:
             await place_snapshot_activity(request)
 
@@ -1608,15 +1681,15 @@ def test_class_methods_are_activities():
     to be a Temporal activity has the marker."""
     instance = _make_instance()
     for name in [
-            'ensure_snapshot',
-            'delete_snapshot',
-            'gen_tt',
-            'build_ttng_custom_pred_table_bundle',
-            'build_ttng_custom_train_table_bundle',
-            'materialize_training_task',
-            'materialize_prediction_task',
-            'train',
-            'predict',
+        'ensure_snapshot',
+        'delete_snapshot',
+        'gen_tt',
+        'build_ttng_custom_pred_table_bundle',
+        'build_ttng_custom_train_table_bundle',
+        'materialize_training_task',
+        'materialize_prediction_task',
+        'train',
+        'predict',
     ]:
         method = getattr(instance, name)
         # Attribute fallthrough on bound methods reaches the underlying
@@ -1643,10 +1716,10 @@ async def test_build_ttng_custom_train_table_bundle_ensures_snapshot_first():
         delegated['fn'] = fn
         delegated['args'] = args
 
-    with mock.patch.object(instance, '_ensure_snapshot',
-                           _fake_ensure_snapshot), \
-            mock.patch('pool.activities._run_diskgraph_async',
-                       _fake_run_diskgraph_async):
+    with (
+        mock.patch.object(instance, '_ensure_snapshot', _fake_ensure_snapshot),
+        mock.patch('pool.activities._run_diskgraph_async', _fake_run_diskgraph_async),
+    ):
         await instance.build_ttng_custom_train_table_bundle(
             'graph-11111111111111111111111111111111@v1',
             'job-input',
@@ -1660,32 +1733,40 @@ async def test_build_ttng_custom_train_table_bundle_ensures_snapshot_first():
     assert order[1] == 'delegate'
     # Delegated to the real (undecorated) gen body with the job args, minus the
     # snapshot_id (which is pool-routing metadata, not a gen input).
-    from rest.backends.ml_backend.activities.materialize_training_task import \
-        build_ttng_custom_train_table_bundle as _gen_body
+    from rest.backends.ml_backend.activities.materialize_training_task import (
+        build_ttng_custom_train_table_bundle as _gen_body,
+    )
+
     assert delegated['fn'] is _gen_body
-    assert delegated['args'] == ('job-input', 'settings',
-                                 's3://bucket/custom_train_table', 'weight')
+    assert delegated['args'] == (
+        'job-input',
+        'settings',
+        's3://bucket/custom_train_table',
+        'weight',
+    )
 
     order.clear()
-    with mock.patch.object(instance, '_ensure_snapshot',
-                           _fake_ensure_snapshot), \
-            mock.patch('pool.activities._run_diskgraph_async',
-                       _fake_run_diskgraph_async):
+    with (
+        mock.patch.object(instance, '_ensure_snapshot', _fake_ensure_snapshot),
+        mock.patch('pool.activities._run_diskgraph_async', _fake_run_diskgraph_async),
+    ):
         await instance.build_ttng_custom_pred_table_bundle(
             'graph-11111111111111111111111111111111@v1',
             'job-input',
             'settings',
             'abfss://filesystem@account.dfs.core.windows.net/custom_pred.parquet',
         )
-    from rest.backends.ml_backend.activities.materialize_prediction_task import \
-        build_ttng_custom_pred_table_bundle as _pred_body
-    assert order == [
-        'ensure:graph-11111111111111111111111111111111@v1', 'delegate'
-    ]
+    from rest.backends.ml_backend.activities.materialize_prediction_task import (
+        build_ttng_custom_pred_table_bundle as _pred_body,
+    )
+
+    assert order == ['ensure:graph-11111111111111111111111111111111@v1', 'delegate']
     assert delegated['fn'] is _pred_body
     assert delegated['args'] == (
-        'job-input', 'settings',
-        'abfss://filesystem@account.dfs.core.windows.net/custom_pred.parquet')
+        'job-input',
+        'settings',
+        'abfss://filesystem@account.dfs.core.windows.net/custom_pred.parquet',
+    )
 
 
 # ----------------------------------------------------------------------
@@ -1701,6 +1782,7 @@ class _FakeProc:
     "subprocess exits after SIGTERM" / "subprocess only dies on
     SIGKILL".
     """
+
     def __init__(self, *, exit_after_term: bool, exit_after_kill: bool = True):
         self.pid = 12345
         self.returncode = None
@@ -1733,6 +1815,7 @@ class _FakeProc:
 class _ClosedStreamReader:
     """Minimal asyncio.StreamReader stand-in whose read returns
     EOF (b'') immediately so the drain task short-circuits."""
+
     async def read(self, _size: int) -> bytes:
         return b''
 
@@ -1743,12 +1826,12 @@ class _FailedStreamReader:
 
 
 @pytest.mark.asyncio
-async def test_subprocess_output_drain_handles_long_tqdm_carriage_returns(
-        caplog):
+async def test_subprocess_output_drain_handles_long_tqdm_carriage_returns(caplog):
     reader = asyncio.StreamReader(limit=64)
     updates = [f'Predicting {index}/5000'.encode() for index in range(5000)]
-    reader.feed_data(b'\r'.join(updates) + b'\rprediction complete\n'
-                     b'unterminated final record')
+    reader.feed_data(
+        b'\r'.join(updates) + b'\rprediction complete\nunterminated final record'
+    )
     reader.feed_eof()
 
     with caplog.at_level('INFO'):
@@ -1759,8 +1842,7 @@ async def test_subprocess_output_drain_handles_long_tqdm_carriage_returns(
     assert any(message.endswith('Predicting 4999/5000') for message in messages)
     assert sum('Predicting ' in message for message in messages) == 2
     assert any(message.endswith('prediction complete') for message in messages)
-    assert any(
-        message.endswith('unterminated final record') for message in messages)
+    assert any(message.endswith('unterminated final record') for message in messages)
 
 
 @pytest.mark.asyncio
@@ -1786,12 +1868,10 @@ async def test_subprocess_output_drain_failure_terminates_child(monkeypatch):
     async def _fake_create_subprocess_exec(*_args, **_kwargs):
         return fake_proc
 
-    monkeypatch.setattr('asyncio.create_subprocess_exec',
-                        _fake_create_subprocess_exec)
+    monkeypatch.setattr('asyncio.create_subprocess_exec', _fake_create_subprocess_exec)
 
     with pytest.raises(RuntimeError, match='stdout read failed'):
-        await _run_kumo_subprocess('kumo-pred', 'job-1', '/tmp/cfg.json',
-                                   mock.Mock())
+        await _run_kumo_subprocess('kumo-pred', 'job-1', '/tmp/cfg.json', mock.Mock())
 
     assert fake_proc.terminate_called
     assert not fake_proc.kill_called
@@ -1806,9 +1886,9 @@ async def test_subprocess_output_drain_failure_terminates_child(monkeypatch):
         (0, False, False, 'Training'),
     ],
 )
-def test_training_progress_output_selects_stage(iterations_remaining,
-                                                refit_trainval, refit_full,
-                                                stage_name):
+def test_training_progress_output_selects_stage(
+    iterations_remaining, refit_trainval, refit_full, stage_name
+):
     output = training_progress_output(
         TrainingJobProgress(iterations_remaining=iterations_remaining),
         SimpleNamespace(
@@ -1825,14 +1905,14 @@ def test_training_progress_output_selects_stage(iterations_remaining,
 
 def test_training_progress_output_skips_missing_progress():
     output = training_progress_output(
-        None, SimpleNamespace(refit_trainval=False, refit_full=False))
+        None, SimpleNamespace(refit_trainval=False, refit_full=False)
+    )
 
     assert output is None
 
 
 @pytest.mark.asyncio
-async def test_kumo_pred_subprocess_does_not_publish_training_progress(
-        monkeypatch):
+async def test_kumo_pred_subprocess_does_not_publish_training_progress(monkeypatch):
     fake_proc = _FakeProc(exit_after_term=False)
     subprocess_kwargs = {}
 
@@ -1848,10 +1928,8 @@ async def test_kumo_pred_subprocess_does_not_publish_training_progress(
         fake_proc._exit_event.set()
 
     heartbeat.side_effect = _finish_on_heartbeat
-    monkeypatch.setattr('asyncio.create_subprocess_exec',
-                        _fake_create_subprocess_exec)
-    monkeypatch.setattr('pool.activities._SUBPROCESS_HEARTBEAT_INTERVAL_SECS',
-                        0)
+    monkeypatch.setattr('asyncio.create_subprocess_exec', _fake_create_subprocess_exec)
+    monkeypatch.setattr('pool.activities._SUBPROCESS_HEARTBEAT_INTERVAL_SECS', 0)
     monkeypatch.setattr('pool.activities.activity.heartbeat', heartbeat)
     monkeypatch.setattr('pool.activities.publish_training_progress', publish)
     # yapf's auto-wrap for this line produces flake8 E251 (mismatched spaces
@@ -1865,14 +1943,16 @@ async def test_kumo_pred_subprocess_does_not_publish_training_progress(
     # yapf: enable
     monkeypatch.delenv('KUMO_BP_OUTPUT_SPOOL_ROOT', raising=False)
 
-    result = await _run_kumo_subprocess('kumo-pred', 'job-1', '/tmp/cfg.json',
-                                        mock.Mock())
+    result = await _run_kumo_subprocess(
+        'kumo-pred', 'job-1', '/tmp/cfg.json', mock.Mock()
+    )
 
     assert result == 'SUCCEEDED'
     assert subprocess_kwargs['start_new_session'] is True
     heartbeat.assert_called_once()
     assert subprocess_kwargs['env']['KUMO_BP_OUTPUT_SPOOL_ROOT'] == (
-        '/mnt/localssd/bp-output-spool')
+        '/mnt/localssd/bp-output-spool'
+    )
     publish.assert_not_awaited()
 
 
@@ -1887,16 +1967,13 @@ async def test_kumo_pred_subprocess_preserves_explicit_spool_root(monkeypatch):
         subprocess_kwargs.update(kwargs)
         return fake_proc
 
-    monkeypatch.setattr('asyncio.create_subprocess_exec',
-                        _fake_create_subprocess_exec)
+    monkeypatch.setattr('asyncio.create_subprocess_exec', _fake_create_subprocess_exec)
     monkeypatch.setenv('KUMO_BP_OUTPUT_SPOOL_ROOT', '/explicit/spool')
 
-    result = await _run_kumo_subprocess('kumo-pred', 'job-1', '/tmp/cfg.json',
-                                        None)
+    result = await _run_kumo_subprocess('kumo-pred', 'job-1', '/tmp/cfg.json', None)
 
     assert result == 'SUCCEEDED'
-    assert subprocess_kwargs['env']['KUMO_BP_OUTPUT_SPOOL_ROOT'] == (
-        '/explicit/spool')
+    assert subprocess_kwargs['env']['KUMO_BP_OUTPUT_SPOOL_ROOT'] == ('/explicit/spool')
 
 
 @pytest.mark.asyncio
@@ -1908,18 +1985,17 @@ async def test_subprocess_nonzero_exit_returns_failed(monkeypatch):
     async def _fake_create_subprocess_exec(*_args, **_kwargs):
         return fake_proc
 
-    monkeypatch.setattr('asyncio.create_subprocess_exec',
-                        _fake_create_subprocess_exec)
+    monkeypatch.setattr('asyncio.create_subprocess_exec', _fake_create_subprocess_exec)
 
-    result = await _run_kumo_subprocess('kumo-pred', 'job-1', '/tmp/cfg.json',
-                                        None)
+    result = await _run_kumo_subprocess('kumo-pred', 'job-1', '/tmp/cfg.json', None)
 
     assert result == 'FAILED'
 
 
 @pytest.mark.asyncio
 async def test_kumo_auto_progress_publish_timeout_does_not_block_subprocess(
-        monkeypatch):
+    monkeypatch,
+):
     fake_proc = _FakeProc(exit_after_term=False)
 
     async def _fake_create_subprocess_exec(*_args, **_kwargs):
@@ -1933,8 +2009,10 @@ async def test_kumo_auto_progress_publish_timeout_does_not_block_subprocess(
 
     async def _fake_wait_for(coro, timeout):
         nonlocal publish_timeout_seen
-        if (timeout == TRAINING_PROGRESS_PUBLISH_TIMEOUT_SECS
-                and not publish_timeout_seen):
+        if (
+            timeout == TRAINING_PROGRESS_PUBLISH_TIMEOUT_SECS
+            and not publish_timeout_seen
+        ):
             publish_timeout_seen = True
             coro.close()
             fake_proc.returncode = 0
@@ -1943,19 +2021,17 @@ async def test_kumo_auto_progress_publish_timeout_does_not_block_subprocess(
         return await real_wait_for(coro, timeout)
 
     heartbeat = mock.Mock()
-    monkeypatch.setattr("asyncio.create_subprocess_exec",
-                        _fake_create_subprocess_exec)
-    monkeypatch.setattr("asyncio.wait_for", _fake_wait_for)
-    monkeypatch.setattr("pool.activities._SUBPROCESS_HEARTBEAT_INTERVAL_SECS",
-                        0)
-    monkeypatch.setattr("pool.activities.activity.heartbeat", heartbeat)
-    monkeypatch.setattr("pool.activities.publish_training_progress",
-                        _slow_publish)
+    monkeypatch.setattr('asyncio.create_subprocess_exec', _fake_create_subprocess_exec)
+    monkeypatch.setattr('asyncio.wait_for', _fake_wait_for)
+    monkeypatch.setattr('pool.activities._SUBPROCESS_HEARTBEAT_INTERVAL_SECS', 0)
+    monkeypatch.setattr('pool.activities.activity.heartbeat', heartbeat)
+    monkeypatch.setattr('pool.activities.publish_training_progress', _slow_publish)
 
-    result = await _run_kumo_subprocess("kumo-auto", "job-1", "/tmp/cfg.json",
-                                        mock.Mock())
+    result = await _run_kumo_subprocess(
+        'kumo-auto', 'job-1', '/tmp/cfg.json', mock.Mock()
+    )
 
-    assert result == "SUCCEEDED"
+    assert result == 'SUCCEEDED'
     assert publish_timeout_seen is True
     heartbeat.assert_called_once()
 
@@ -2000,10 +2076,10 @@ async def test_subprocess_cancellation_sends_sigterm():
         return fake_proc
 
     async def _runner():
-        with mock.patch('asyncio.create_subprocess_exec',
-                        _fake_create_subprocess_exec):
-            await _run_kumo_subprocess('kumo-auto', 'job-1', '/tmp/cfg.json',
-                                       mock.Mock())
+        with mock.patch('asyncio.create_subprocess_exec', _fake_create_subprocess_exec):
+            await _run_kumo_subprocess(
+                'kumo-auto', 'job-1', '/tmp/cfg.json', mock.Mock()
+            )
 
     task = asyncio.create_task(_runner())
     # Let _run_kumo_subprocess get past the create_subprocess_exec call
@@ -2013,10 +2089,10 @@ async def test_subprocess_cancellation_sends_sigterm():
     with pytest.raises(asyncio.CancelledError):
         await task
 
-    assert fake_proc.terminate_called, (
-        'workflow cancel should SIGTERM the subprocess')
+    assert fake_proc.terminate_called, 'workflow cancel should SIGTERM the subprocess'
     assert not fake_proc.kill_called, (
-        'subprocess exited cleanly on SIGTERM; SIGKILL must not fire')
+        'subprocess exited cleanly on SIGTERM; SIGKILL must not fire'
+    )
 
 
 @pytest.mark.asyncio
@@ -2047,11 +2123,11 @@ async def test_subprocess_cancellation_falls_back_to_sigkill():
         return await real_wait_for(coro, timeout)
 
     async def _runner():
-        with mock.patch('asyncio.create_subprocess_exec',
-                        _fake_create_subprocess_exec):
+        with mock.patch('asyncio.create_subprocess_exec', _fake_create_subprocess_exec):
             with mock.patch('asyncio.wait_for', _fake_wait_for):
-                await _run_kumo_subprocess('kumo-auto', 'job-1',
-                                           '/tmp/cfg.json', mock.Mock())
+                await _run_kumo_subprocess(
+                    'kumo-auto', 'job-1', '/tmp/cfg.json', mock.Mock()
+                )
 
     task = asyncio.create_task(_runner())
     await asyncio.sleep(0.05)
@@ -2060,8 +2136,7 @@ async def test_subprocess_cancellation_falls_back_to_sigkill():
         await task
 
     assert fake_proc.terminate_called
-    assert fake_proc.kill_called, (
-        'SIGTERM ignored; SIGKILL must fire as the fallback')
+    assert fake_proc.kill_called, 'SIGTERM ignored; SIGKILL must fire as the fallback'
 
 
 @pytest.mark.asyncio
@@ -2080,11 +2155,11 @@ async def test_repeated_cancellation_still_kills_subprocess():
         return await real_wait_for(coro, timeout)
 
     async def _runner():
-        with mock.patch('asyncio.create_subprocess_exec',
-                        _fake_create_subprocess_exec):
+        with mock.patch('asyncio.create_subprocess_exec', _fake_create_subprocess_exec):
             with mock.patch('asyncio.wait_for', _fake_wait_for):
-                await _run_kumo_subprocess('kumo-auto', 'job-1',
-                                           '/tmp/cfg.json', mock.Mock())
+                await _run_kumo_subprocess(
+                    'kumo-auto', 'job-1', '/tmp/cfg.json', mock.Mock()
+                )
 
     task = asyncio.create_task(_runner())
     await asyncio.sleep(0.05)
@@ -2100,14 +2175,14 @@ async def test_repeated_cancellation_still_kills_subprocess():
 @pytest.mark.parametrize('supervisor_available', [True, False])
 @pytest.mark.asyncio
 async def test_subprocess_cancellation_reaps_native_descendant_session(
-        tmp_path, monkeypatch, repeat_cancel, supervisor_available):
+    tmp_path, monkeypatch, repeat_cancel, supervisor_available
+):
     """Strong and degraded cancellation own the native process tree."""
-    if (supervisor_available
-            and not _subprocess_supervisor_capabilities_available()):
+    if supervisor_available and not _subprocess_supervisor_capabilities_available():
         pytest.skip('strong pidfd/procfs supervisor unavailable')
     child_pid_path = tmp_path / 'native-child.pid'
     parent_script = tmp_path / 'kumo-pred'
-    parent_script.write_text(f'''\
+    parent_script.write_text(f"""\
 #!{sys.executable}
 import signal
 import subprocess
@@ -2126,13 +2201,16 @@ with open({str(child_pid_path)!r} + '.tmp', 'w') as pid_file:
     pid_file.write(str(child.pid))
 _os.replace({str(child_pid_path)!r} + '.tmp', {str(child_pid_path)!r})
 child.wait()
-''')
+""")
     parent_script.chmod(0o755)
     monkeypatch.setenv('PATH', f'{tmp_path}:{os.environ["PATH"]}')
     real_exists = os.path.exists
     monkeypatch.setattr(
-        'pool.activities.osp.exists', lambda path:
-        (False if str(path).endswith('/bin/kumo-pred') else real_exists(path)))
+        'pool.activities.osp.exists',
+        lambda path: (
+            False if str(path).endswith('/bin/kumo-pred') else real_exists(path)
+        ),
+    )
     monkeypatch.setattr('pool.activities._SUBPROCESS_TERM_GRACE_SECS', 0.2)
     monkeypatch.setattr('pool.activities._SUBPROCESS_KILL_GRACE_SECS', 1.0)
     monkeypatch.setattr(
@@ -2141,7 +2219,8 @@ child.wait()
     )
 
     task = asyncio.create_task(
-        _run_kumo_subprocess('kumo-pred', 'job-1', '/tmp/cfg.json', None))
+        _run_kumo_subprocess('kumo-pred', 'job-1', '/tmp/cfg.json', None)
+    )
     for _ in range(500):
         if child_pid_path.exists():
             break
@@ -2163,7 +2242,7 @@ child.wait()
     except FileNotFoundError:
         child_state = None
     else:
-        child_state = process_stat[process_stat.rfind(b')') + 2:].split()[0]
+        child_state = process_stat[process_stat.rfind(b')') + 2 :].split()[0]
     if supervisor_available:
         assert child_state is None
     else:
@@ -2172,26 +2251,31 @@ child.wait()
 
 @pytest.mark.asyncio
 async def test_subprocess_capture_failure_never_starts_real_command(
-        tmp_path, monkeypatch):
+    tmp_path, monkeypatch
+):
     marker = tmp_path / 'command-started'
     command = tmp_path / 'kumo-pred'
-    command.write_text(f'''\
+    command.write_text(f"""\
 #!{sys.executable}
 from pathlib import Path
 Path({str(marker)!r}).write_text('started')
-''')
+""")
     command.chmod(0o755)
     monkeypatch.setenv('PATH', f'{tmp_path}:{os.environ["PATH"]}')
     real_exists = os.path.exists
     monkeypatch.setattr(
-        'pool.activities.osp.exists', lambda path:
-        (False if str(path).endswith('/bin/kumo-pred') else real_exists(path)))
+        'pool.activities.osp.exists',
+        lambda path: (
+            False if str(path).endswith('/bin/kumo-pred') else real_exists(path)
+        ),
+    )
     monkeypatch.setattr(
-        'pool.activities._subprocess_supervisor_capabilities_available',
-        lambda: True)
+        'pool.activities._subprocess_supervisor_capabilities_available', lambda: True
+    )
     monkeypatch.setattr(
         'pool.activities._OwnedSubprocessSession.capture',
-        mock.Mock(side_effect=RuntimeError('synthetic capture failure')))
+        mock.Mock(side_effect=RuntimeError('synthetic capture failure')),
+    )
 
     with pytest.raises(RuntimeError, match='synthetic capture failure'):
         await _run_kumo_subprocess('kumo-pred', 'job-1', '/tmp/cfg.json', None)
@@ -2201,15 +2285,15 @@ Path({str(marker)!r}).write_text('started')
 
 @pytest.mark.parametrize('supervisor_available', [True, False])
 @pytest.mark.asyncio
-async def test_subprocess_success_waits_for_orphan_reap(tmp_path, monkeypatch,
-                                                        supervisor_available):
+async def test_subprocess_success_waits_for_orphan_reap(
+    tmp_path, monkeypatch, supervisor_available
+):
     """A parent rc=0 cleans its native child before reporting success."""
-    if (supervisor_available
-            and not _subprocess_supervisor_capabilities_available()):
+    if supervisor_available and not _subprocess_supervisor_capabilities_available():
         pytest.skip('strong pidfd/procfs supervisor unavailable')
     child_pid_path = tmp_path / 'native-child.pid'
     command = tmp_path / 'kumo-pred'
-    command.write_text(f'''\
+    command.write_text(f"""\
 #!{sys.executable}
 import subprocess
 import sys
@@ -2228,13 +2312,16 @@ with open({str(child_pid_path)!r} + '.tmp', 'w') as pid_file:
     pid_file.write(str(child.pid))
 _os.replace({str(child_pid_path)!r} + '.tmp', {str(child_pid_path)!r})
 # Exit zero without waiting; the supervisor must adopt, terminate, and reap.
-''')
+""")
     command.chmod(0o755)
     monkeypatch.setenv('PATH', f'{tmp_path}:{os.environ["PATH"]}')
     real_exists = os.path.exists
     monkeypatch.setattr(
-        'pool.activities.osp.exists', lambda path:
-        (False if str(path).endswith('/bin/kumo-pred') else real_exists(path)))
+        'pool.activities.osp.exists',
+        lambda path: (
+            False if str(path).endswith('/bin/kumo-pred') else real_exists(path)
+        ),
+    )
     monkeypatch.setattr('pool.activities._SUBPROCESS_TERM_GRACE_SECS', 0.2)
     monkeypatch.setattr('pool.activities._SUBPROCESS_KILL_GRACE_SECS', 1.0)
     monkeypatch.setattr(
@@ -2243,8 +2330,8 @@ _os.replace({str(child_pid_path)!r} + '.tmp', {str(child_pid_path)!r})
     )
 
     result = await asyncio.wait_for(
-        _run_kumo_subprocess('kumo-pred', 'job-1', '/tmp/cfg.json', None),
-        timeout=3)
+        _run_kumo_subprocess('kumo-pred', 'job-1', '/tmp/cfg.json', None), timeout=3
+    )
 
     assert result == 'SUCCEEDED'
     child_pid = int(child_pid_path.read_text())
@@ -2253,7 +2340,7 @@ _os.replace({str(child_pid_path)!r} + '.tmp', {str(child_pid_path)!r})
     except FileNotFoundError:
         child_state = None
     else:
-        child_state = process_stat[process_stat.rfind(b')') + 2:].split()[0]
+        child_state = process_stat[process_stat.rfind(b')') + 2 :].split()[0]
     if supervisor_available:
         assert child_state is None
     else:
@@ -2265,31 +2352,35 @@ _os.replace({str(child_pid_path)!r} + '.tmp', {str(child_pid_path)!r})
 @pytest.mark.asyncio
 async def test_owned_subprocess_preserves_nonzero_exit(tmp_path, monkeypatch):
     command = tmp_path / 'kumo-pred'
-    command.write_text(f'''\
+    command.write_text(f"""\
 #!{sys.executable}
 raise SystemExit(7)
-''')
+""")
     command.chmod(0o755)
     monkeypatch.setenv('PATH', f'{tmp_path}:{os.environ["PATH"]}')
     real_exists = os.path.exists
     monkeypatch.setattr(
-        'pool.activities.osp.exists', lambda path:
-        (False if str(path).endswith('/bin/kumo-pred') else real_exists(path)))
+        'pool.activities.osp.exists',
+        lambda path: (
+            False if str(path).endswith('/bin/kumo-pred') else real_exists(path)
+        ),
+    )
 
-    result = await _run_kumo_subprocess('kumo-pred', 'job-1', '/tmp/cfg.json',
-                                        None)
+    result = await _run_kumo_subprocess('kumo-pred', 'job-1', '/tmp/cfg.json', None)
 
     assert result == 'FAILED'
 
 
-@pytest.mark.skipif(os.getpid() != 1,
-                    reason='requires production-like Python PID 1 adoption')
+@pytest.mark.skipif(
+    os.getpid() != 1, reason='requires production-like Python PID 1 adoption'
+)
 @pytest.mark.asyncio
 async def test_supervisor_early_exit_reclaims_adopted_descendants(
-        tmp_path, monkeypatch):
+    tmp_path, monkeypatch
+):
     process_path = tmp_path / 'owned-processes'
     command = tmp_path / 'kumo-pred'
-    command.write_text(f'''\
+    command.write_text(f"""\
 #!{sys.executable}
 import os
 import subprocess
@@ -2312,18 +2403,22 @@ Path({str(process_path)!r} + '.tmp').write_text(
     f'{{os.getppid()}} {{os.getpid()}} {{child.pid}}')
 _os.replace({str(process_path)!r} + '.tmp', {str(process_path)!r})
 time.sleep(60)
-''')
+""")
     command.chmod(0o755)
     monkeypatch.setenv('PATH', f'{tmp_path}:{os.environ["PATH"]}')
     real_exists = os.path.exists
     monkeypatch.setattr(
-        'pool.activities.osp.exists', lambda path:
-        (False if str(path).endswith('/bin/kumo-pred') else real_exists(path)))
+        'pool.activities.osp.exists',
+        lambda path: (
+            False if str(path).endswith('/bin/kumo-pred') else real_exists(path)
+        ),
+    )
     monkeypatch.setattr('pool.activities._SUBPROCESS_TERM_GRACE_SECS', 0.2)
     monkeypatch.setattr('pool.activities._SUBPROCESS_KILL_GRACE_SECS', 1.0)
 
     task = asyncio.create_task(
-        _run_kumo_subprocess('kumo-pred', 'job-1', '/tmp/cfg.json', None))
+        _run_kumo_subprocess('kumo-pred', 'job-1', '/tmp/cfg.json', None)
+    )
     for _ in range(500):
         if process_path.exists():
             break
@@ -2331,9 +2426,7 @@ time.sleep(60)
             _ = await task
         await asyncio.sleep(0.01)
     assert process_path.exists()
-    supervisor_pid, command_pid, child_pid = map(
-        int,
-        process_path.read_text().split())
+    supervisor_pid, command_pid, child_pid = map(int, process_path.read_text().split())
 
     os.kill(supervisor_pid, signal.SIGKILL)
     with pytest.raises(RuntimeError, match='including zombies'):
@@ -2349,13 +2442,11 @@ def test_process_identity_includes_proc_start_time():
 
     assert identity.start_time_ticks > 0
     assert _OwnedSubprocessSession._same_stable_identity(identity, identity)
-    reused = dataclass_replace(identity,
-                               start_time_ticks=identity.start_time_ticks + 1)
+    reused = dataclass_replace(identity, start_time_ticks=identity.start_time_ticks + 1)
     assert not _OwnedSubprocessSession._same_stable_identity(identity, reused)
 
 
-def test_subprocess_capability_preflight_rejects_blocked_pidfd_signal(
-        monkeypatch):
+def test_subprocess_capability_preflight_rejects_blocked_pidfd_signal(monkeypatch):
     close_spy = mock.Mock(wraps=os.close)
     monkeypatch.setattr('pool.activities.os.close', close_spy)
     monkeypatch.setattr(
@@ -2371,8 +2462,7 @@ def test_subprocess_capability_preflight_rejects_blocked_pidfd_signal(
     close_spy.assert_called_once()
 
 
-@pytest.mark.skipif(not sys.platform.startswith('linux'),
-                    reason='pidfds require Linux')
+@pytest.mark.skipif(not sys.platform.startswith('linux'), reason='pidfds require Linux')
 def test_subprocess_preflight_uses_wrappers_when_native_missing(monkeypatch):
     monkeypatch.delattr(activities.os, 'pidfd_open', raising=False)
     monkeypatch.delattr(activities.signal, 'pidfd_send_signal', raising=False)
@@ -2401,8 +2491,8 @@ async def test_handshake_ack_fd_is_closed_exactly_once(monkeypatch):
     monkeypatch.setattr('pool.activities.os.pipe', tracked_pipe)
     monkeypatch.setattr('pool.activities.os.close', tracked_close)
     monkeypatch.setattr(
-        'pool.activities._subprocess_supervisor_capabilities_available',
-        lambda: True)
+        'pool.activities._subprocess_supervisor_capabilities_available', lambda: True
+    )
     monkeypatch.setattr(
         'pool.activities._OwnedSubprocessSession.capture',
         mock.Mock(side_effect=RuntimeError('synthetic capture failure')),
@@ -2423,13 +2513,13 @@ async def test_handshake_ack_fd_is_closed_exactly_once(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_cancellation_remains_primary_when_session_cleanup_fails(
-        monkeypatch):
+async def test_cancellation_remains_primary_when_session_cleanup_fails(monkeypatch):
     fake_proc = _FakeProc(exit_after_term=False, exit_after_kill=True)
     owned_session = SimpleNamespace(
         terminate=mock.AsyncMock(side_effect=RuntimeError('terminate failed')),
         wait_for_quiescence=mock.AsyncMock(
-            side_effect=RuntimeError('quiescence failed')),
+            side_effect=RuntimeError('quiescence failed')
+        ),
     )
     monkeypatch.setattr(
         'pool.activities._launch_owned_subprocess',
@@ -2437,7 +2527,8 @@ async def test_cancellation_remains_primary_when_session_cleanup_fails(
     )
 
     task = asyncio.create_task(
-        _run_kumo_subprocess('kumo-pred', 'job-1', '/tmp/cfg.json', None))
+        _run_kumo_subprocess('kumo-pred', 'job-1', '/tmp/cfg.json', None)
+    )
     await asyncio.sleep(0)
     task.cancel()
 
@@ -2474,26 +2565,30 @@ async def test_gpu_semaphore_serializes_concurrent_train():
     async def _fake_ensure_snapshot(*_args, **_kwargs):
         return None  # residency check no-op for this unit test
 
-    with mock.patch('pool.activities._run_kumo_subprocess',
-                    _fake_subprocess), \
-            mock.patch.object(instance, '_ensure_snapshot',
-                              _fake_ensure_snapshot), \
-            mock.patch(
-                'pool.activities.restore_job_sidecars_for_use_from_config_path',
-                return_value=SimpleNamespace(cleanup=lambda: None)):
+    with (
+        mock.patch('pool.activities._run_kumo_subprocess', _fake_subprocess),
+        mock.patch.object(instance, '_ensure_snapshot', _fake_ensure_snapshot),
+        mock.patch(
+            'pool.activities.restore_job_sidecars_for_use_from_config_path',
+            return_value=SimpleNamespace(cleanup=lambda: None),
+        ),
+    ):
         results = await asyncio.gather(
-            instance.train('graph-1bf8d6a669f6a6caba68a2393f1044e3@v1', 'job-1',
-                           '/tmp/cfg-a.json'),
-            instance.train('graph-44a6dcdb089c6e81b7171d8a74a7da57@v1', 'job-2',
-                           '/tmp/cfg-b.json'),
+            instance.train(
+                'graph-1bf8d6a669f6a6caba68a2393f1044e3@v1', 'job-1', '/tmp/cfg-a.json'
+            ),
+            instance.train(
+                'graph-44a6dcdb089c6e81b7171d8a74a7da57@v1', 'job-2', '/tmp/cfg-b.json'
+            ),
         )
 
     assert results == ['SUCCEEDED', 'SUCCEEDED']
     # Strict serialization: every 'start' must be followed by an 'end'
     # before the next 'start'. Interleaving (start, start, end, end)
     # would mean the semaphore failed to serialize.
-    assert events == ['start', 'end', 'start',
-                      'end'], (f'GPU semaphore failed to serialize: {events}')
+    assert events == ['start', 'end', 'start', 'end'], (
+        f'GPU semaphore failed to serialize: {events}'
+    )
 
 
 @pytest.mark.asyncio
@@ -2517,26 +2612,33 @@ async def test_gpu_semaphore_serializes_train_and_predict(tmp_path):
     prediction_config_path.write_text('{}')
     prediction_config = _make_prediction_config(str(tmp_path / 'output'))
     prediction_config.home_dir = str(tmp_path)
-    PredStatus(error_msg='bad column',
-               stacktrace='Traceback ...').save(str(tmp_path))
+    PredStatus(error_msg='bad column', stacktrace='Traceback ...').save(str(tmp_path))
 
-    with mock.patch('pool.activities._run_kumo_subprocess',
-                    _fake_subprocess), \
-            mock.patch.object(instance, '_ensure_snapshot',
-                              _fake_ensure_snapshot), \
-            mock.patch('pool.activities._shard_pred_config',
-                       return_value=str(prediction_config_path)), \
-            mock.patch('kumo_core.job_config.PredictionConfig.load',
-                       return_value=prediction_config), \
-            mock.patch(
-                'pool.activities.restore_job_sidecars_for_use_from_config_path',
-                return_value=SimpleNamespace(cleanup=lambda: None)):
+    with (
+        mock.patch('pool.activities._run_kumo_subprocess', _fake_subprocess),
+        mock.patch.object(instance, '_ensure_snapshot', _fake_ensure_snapshot),
+        mock.patch(
+            'pool.activities._shard_pred_config',
+            return_value=str(prediction_config_path),
+        ),
+        mock.patch(
+            'kumo_core.job_config.PredictionConfig.load', return_value=prediction_config
+        ),
+        mock.patch(
+            'pool.activities.restore_job_sidecars_for_use_from_config_path',
+            return_value=SimpleNamespace(cleanup=lambda: None),
+        ),
+    ):
         _, prediction = await asyncio.gather(
-            instance.train('graph-1bf8d6a669f6a6caba68a2393f1044e3@v1', 'job-1',
-                           '/tmp/cfg-a.json'),
-            instance.predict('graph-44a6dcdb089c6e81b7171d8a74a7da57@v1',
-                             'job-2', str(prediction_config_path),
-                             job_input=_make_prediction_job_input()),
+            instance.train(
+                'graph-1bf8d6a669f6a6caba68a2393f1044e3@v1', 'job-1', '/tmp/cfg-a.json'
+            ),
+            instance.predict(
+                'graph-44a6dcdb089c6e81b7171d8a74a7da57@v1',
+                'job-2',
+                str(prediction_config_path),
+                job_input=_make_prediction_job_input(),
+            ),
         )
 
     # Whichever ran first, the other one must not interleave.
@@ -2546,10 +2648,12 @@ async def test_gpu_semaphore_serializes_train_and_predict(tmp_path):
     pred_end_idx = events.index('kumo-pred:end')
     if train_start_idx < pred_start_idx:
         assert train_end_idx < pred_start_idx, (
-            f'train should end before predict starts: {events}')
+            f'train should end before predict starts: {events}'
+        )
     else:
         assert pred_end_idx < train_start_idx, (
-            f'predict should end before train starts: {events}')
+            f'predict should end before train starts: {events}'
+        )
     assert prediction.failure_info.message == 'bad column'
     assert prediction.failure_info.stacktrace == 'Traceback ...'
 
@@ -2559,13 +2663,15 @@ async def test_gpu_slots_pin_concurrent_processes(tmp_path, monkeypatch):
     # Each run records its GPU, then waits for the other to start.
     probe = tmp_path / 'bin' / 'kumo-gpu-probe'
     probe.parent.mkdir()
-    probe.write_text('#!/bin/sh\n'
-                     'echo "$CUDA_VISIBLE_DEVICES" > "$2"\n'
-                     'for _ in $(seq 100); do\n'
-                     '  [ "$(ls "$(dirname "$2")" | wc -l)" -ge 2 ] && exit 0\n'
-                     '  sleep 0.1\n'
-                     'done\n'
-                     'exit 1\n')
+    probe.write_text(
+        '#!/bin/sh\n'
+        'echo "$CUDA_VISIBLE_DEVICES" > "$2"\n'
+        'for _ in $(seq 100); do\n'
+        '  [ "$(ls "$(dirname "$2")" | wc -l)" -ge 2 ] && exit 0\n'
+        '  sleep 0.1\n'
+        'done\n'
+        'exit 1\n'
+    )
     probe.chmod(0o755)
     monkeypatch.setenv('PATH', f'{probe.parent}:{os.environ["PATH"]}')
     seen = tmp_path / 'seen'
@@ -2575,8 +2681,12 @@ async def test_gpu_slots_pin_concurrent_processes(tmp_path, monkeypatch):
     async def run(i: int) -> str:
         async with slots.acquire() as environment:
             return await _run_kumo_subprocess(
-                'kumo-gpu-probe', f'job-{i}', str(seen / str(i)), None,
-                subprocess_environment=environment)
+                'kumo-gpu-probe',
+                f'job-{i}',
+                str(seen / str(i)),
+                None,
+                subprocess_environment=environment,
+            )
 
     assert await asyncio.gather(run(0), run(1)) == ['SUCCEEDED'] * 2
     assert sorted(f.read_text().strip() for f in seen.iterdir()) == ['2', '3']
@@ -2588,16 +2698,25 @@ def test_gpu_slots_need_one_gpu_per_slot():
 
 
 @pytest.mark.skipif(
-    subprocess.run('nvidia-smi -L', shell=True, capture_output=True,
-                   check=False).returncode != 0, reason='needs a GPU')
+    subprocess.run(
+        'nvidia-smi -L', shell=True, capture_output=True, check=False
+    ).returncode
+    != 0,
+    reason='needs a GPU',
+)
 def test_visible_gpus_stop_at_invalid_entry():
-    result = subprocess.run([
-        sys.executable, '-c',
-        'from pool.activities import _visible_gpus; print(_visible_gpus())'
-    ], env={
-        **os.environ, 'CUDA_VISIBLE_DEVICES': '0,-1'
-    }, cwd=Path(__file__).resolve().parents[2], capture_output=True, text=True,
-                            check=True)
+    result = subprocess.run(
+        [
+            sys.executable,
+            '-c',
+            'from pool.activities import _visible_gpus; print(_visible_gpus())',
+        ],
+        env={**os.environ, 'CUDA_VISIBLE_DEVICES': '0,-1'},
+        cwd=Path(__file__).resolve().parents[2],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
     assert result.stdout.strip() == "['0']"
 
 
@@ -2615,16 +2734,16 @@ async def test_train_restores_and_cleans_ttng_sidecars(monkeypatch):
         return func(*args, **kwargs)
 
     sidecars = mock.MagicMock()
-    with mock.patch.object(instance, '_ensure_snapshot',
-                           _fake_ensure_snapshot), \
-            mock.patch('pool.activities._run_kumo_subprocess',
-                       _fake_subprocess), \
-            mock.patch('pool.activities.asyncio.to_thread', _run_inline), \
-            mock.patch('pool.activities.get_persist_dir',
-                       return_value='/persist'), \
-            mock.patch(
-                'pool.activities.restore_job_sidecars_for_use_from_config_path',
-                return_value=sidecars) as restore:
+    with (
+        mock.patch.object(instance, '_ensure_snapshot', _fake_ensure_snapshot),
+        mock.patch('pool.activities._run_kumo_subprocess', _fake_subprocess),
+        mock.patch('pool.activities.asyncio.to_thread', _run_inline),
+        mock.patch('pool.activities.get_persist_dir', return_value='/persist'),
+        mock.patch(
+            'pool.activities.restore_job_sidecars_for_use_from_config_path',
+            return_value=sidecars,
+        ) as restore,
+    ):
         await instance.train(_TEST_SNAPSHOT_ID, 'train-job', '/tmp/train.json')
 
     restore.assert_called_once_with(
@@ -2658,27 +2777,25 @@ async def test_train_sidecar_restore_failure_hard_fails(monkeypatch):
 
     subprocess_mock = mock.MagicMock(side_effect=_fake_subprocess)
 
-    with mock.patch.object(instance, '_ensure_snapshot',
-                           _fake_ensure_snapshot), \
-            mock.patch('pool.activities._run_kumo_subprocess',
-                       subprocess_mock), \
-            mock.patch('pool.activities.asyncio.to_thread', _run_inline), \
-            mock.patch('pool.activities.get_persist_dir',
-                       return_value='/persist'), \
-            mock.patch(
-                'pool.activities.restore_job_sidecars_for_use_from_config_path',
-                side_effect=_raise_restore):
+    with (
+        mock.patch.object(instance, '_ensure_snapshot', _fake_ensure_snapshot),
+        mock.patch('pool.activities._run_kumo_subprocess', subprocess_mock),
+        mock.patch('pool.activities.asyncio.to_thread', _run_inline),
+        mock.patch('pool.activities.get_persist_dir', return_value='/persist'),
+        mock.patch(
+            'pool.activities.restore_job_sidecars_for_use_from_config_path',
+            side_effect=_raise_restore,
+        ),
+    ):
         with pytest.raises(FileNotFoundError):
-            await instance.train(_TEST_SNAPSHOT_ID, 'train-job',
-                                 '/tmp/train.json')
+            await instance.train(_TEST_SNAPSHOT_ID, 'train-job', '/tmp/train.json')
 
     # Fail loud: the subprocess must never run when the sidecar is missing.
     subprocess_mock.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_predict_sidecar_restore_failure_hard_fails(
-        monkeypatch, tmp_path):
+async def test_predict_sidecar_restore_failure_hard_fails(monkeypatch, tmp_path):
     """Option A (predict): a failed predict-stage sidecar restore must propagate
     -- no silent proceed into a subprocess that would crash downstream."""
     instance = _make_instance()
@@ -2700,31 +2817,38 @@ async def test_predict_sidecar_restore_failure_hard_fails(
     prediction_config_path.write_text('{}')
     prediction_config = _make_prediction_config(str(tmp_path / 'output'))
 
-    with mock.patch.object(instance, '_ensure_snapshot',
-                           _fake_ensure_snapshot), \
-            mock.patch('pool.activities._run_kumo_subprocess',
-                       subprocess_mock), \
-            mock.patch('pool.activities._shard_pred_config',
-                       return_value=str(prediction_config_path)), \
-            mock.patch('kumo_core.job_config.PredictionConfig.load',
-                       return_value=prediction_config), \
-            mock.patch('pool.activities.asyncio.to_thread', _run_inline), \
-            mock.patch('pool.activities.get_persist_dir',
-                       return_value='/persist'), \
-            mock.patch(
-                'pool.activities.restore_job_sidecars_for_use_from_config_path',
-                side_effect=_raise_restore):
+    with (
+        mock.patch.object(instance, '_ensure_snapshot', _fake_ensure_snapshot),
+        mock.patch('pool.activities._run_kumo_subprocess', subprocess_mock),
+        mock.patch(
+            'pool.activities._shard_pred_config',
+            return_value=str(prediction_config_path),
+        ),
+        mock.patch(
+            'kumo_core.job_config.PredictionConfig.load', return_value=prediction_config
+        ),
+        mock.patch('pool.activities.asyncio.to_thread', _run_inline),
+        mock.patch('pool.activities.get_persist_dir', return_value='/persist'),
+        mock.patch(
+            'pool.activities.restore_job_sidecars_for_use_from_config_path',
+            side_effect=_raise_restore,
+        ),
+    ):
         with pytest.raises(FileNotFoundError):
-            await instance.predict(_TEST_SNAPSHOT_ID, 'bp-job',
-                                   str(prediction_config_path),
-                                   job_input=_make_prediction_job_input())
+            await instance.predict(
+                _TEST_SNAPSHOT_ID,
+                'bp-job',
+                str(prediction_config_path),
+                job_input=_make_prediction_job_input(),
+            )
 
     subprocess_mock.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_predict_merges_bounded_stats_into_ownership_manifest(
-        monkeypatch, tmp_path):
+    monkeypatch, tmp_path
+):
     import json
 
     from kumo_core.train.artifact_stats import (
@@ -2741,8 +2865,9 @@ async def test_predict_merges_bounded_stats_into_ownership_manifest(
     instance = _make_instance()
     instance._ensure_snapshot = mock.AsyncMock()  # type: ignore[method-assign]
     source_config = _make_prediction_config(str(tmp_path / 'output'))
-    generation = (tmp_path / 'output' / '_attempts' / 'runtime-00000' /
-                  'producer-attempt')
+    generation = (
+        tmp_path / 'output' / '_attempts' / 'runtime-00000' / 'producer-attempt'
+    )
     runtime_config = _make_prediction_config(str(generation))
     config_path = tmp_path / 'prediction.json'
     config_path.write_text('{}')
@@ -2752,10 +2877,12 @@ async def test_predict_merges_bounded_stats_into_ownership_manifest(
         nonlocal captured_environment
         captured_environment = kwargs['subprocess_environment']
         request = PredictionArtifactStatsRequest.from_dict(
-            json.loads(
-                captured_environment[PREDICTION_ARTIFACT_STATS_REQUEST_ENV]))
-        output = (Path(request.output_dir) /
-                  PredictionArtifactType.PREDICTIONS.output_file_name)
+            json.loads(captured_environment[PREDICTION_ARTIFACT_STATS_REQUEST_ENV])
+        )
+        output = (
+            Path(request.output_dir)
+            / PredictionArtifactType.PREDICTIONS.output_file_name
+        )
         output.mkdir(parents=True)
         part = output / 'part-00000-00000.parquet'
         part.write_bytes(b'owned-output')
@@ -2772,22 +2899,30 @@ async def test_predict_merges_bounded_stats_into_ownership_manifest(
             physical_size_bytes=part.stat().st_size,
             file_count=1,
         )
-        payload = PredictionArtifactStatsPayload(request, 1, (artifact, ))
+        payload = PredictionArtifactStatsPayload(request, 1, (artifact,))
         payload.validate(request)
-        Path(captured_environment[PREDICTION_ARTIFACT_STATS_PATH_ENV]
-             ).write_text(payload.to_json())
+        Path(captured_environment[PREDICTION_ARTIFACT_STATS_PATH_ENV]).write_text(
+            payload.to_json()
+        )
         return JobState.SUCCEEDED
 
-    monkeypatch.setattr(activities.uuid, 'uuid4',
-                        lambda: SimpleNamespace(hex='producer-attempt'))
     monkeypatch.setattr(
-        activities, 'deploy_env', lambda: SimpleNamespace(
-            data_compute=SimpleNamespace(data_root=str(tmp_path / 'data'))))
+        activities.uuid, 'uuid4', lambda: SimpleNamespace(hex='producer-attempt')
+    )
+    monkeypatch.setattr(
+        activities,
+        'deploy_env',
+        lambda: SimpleNamespace(
+            data_compute=SimpleNamespace(data_root=str(tmp_path / 'data'))
+        ),
+    )
     monkeypatch.setattr(
         'kumo_core.job_config.PredictionConfig.load',
-        mock.MagicMock(side_effect=[source_config, runtime_config]))
-    monkeypatch.setattr(activities, '_shard_pred_config',
-                        lambda *_args, **_kwargs: str(config_path))
+        mock.MagicMock(side_effect=[source_config, runtime_config]),
+    )
+    monkeypatch.setattr(
+        activities, '_shard_pred_config', lambda *_args, **_kwargs: str(config_path)
+    )
     monkeypatch.setattr(
         'kumo.train.artifact_manifest.hash_prediction_config',
         lambda _path: 'b' * 64,
@@ -2823,12 +2958,14 @@ async def test_predict_merges_bounded_stats_into_ownership_manifest(
 @pytest.mark.asyncio
 @pytest.mark.parametrize('cancel_during_subprocess', [False, True])
 async def test_predict_stats_cleanup_survives_repeated_cancellation(
-        monkeypatch, tmp_path, cancel_during_subprocess):
+    monkeypatch, tmp_path, cancel_during_subprocess
+):
     instance = _make_instance()
     instance._ensure_snapshot = mock.AsyncMock()  # type: ignore[method-assign]
     source_config = _make_prediction_config(str(tmp_path / 'output'))
-    generation = (tmp_path / 'output' / '_attempts' / 'runtime-00000' /
-                  'producer-attempt')
+    generation = (
+        tmp_path / 'output' / '_attempts' / 'runtime-00000' / 'producer-attempt'
+    )
     runtime_config = _make_prediction_config(str(generation))
     config_path = tmp_path / 'prediction.json'
     config_path.write_text('{}')
@@ -2854,16 +2991,23 @@ async def test_predict_stats_cleanup_survives_repeated_cancellation(
                 cleanup_finished.set()
         return real_rmtree(path, *args, **kwargs)
 
-    monkeypatch.setattr(activities.uuid, 'uuid4',
-                        lambda: SimpleNamespace(hex='producer-attempt'))
     monkeypatch.setattr(
-        activities, 'deploy_env', lambda: SimpleNamespace(
-            data_compute=SimpleNamespace(data_root=str(tmp_path / 'data'))))
+        activities.uuid, 'uuid4', lambda: SimpleNamespace(hex='producer-attempt')
+    )
+    monkeypatch.setattr(
+        activities,
+        'deploy_env',
+        lambda: SimpleNamespace(
+            data_compute=SimpleNamespace(data_root=str(tmp_path / 'data'))
+        ),
+    )
     monkeypatch.setattr(
         'kumo_core.job_config.PredictionConfig.load',
-        mock.MagicMock(side_effect=[source_config, runtime_config]))
-    monkeypatch.setattr(activities, '_shard_pred_config',
-                        lambda *_args, **_kwargs: str(config_path))
+        mock.MagicMock(side_effect=[source_config, runtime_config]),
+    )
+    monkeypatch.setattr(
+        activities, '_shard_pred_config', lambda *_args, **_kwargs: str(config_path)
+    )
     monkeypatch.setattr(
         'kumo.train.artifact_manifest.hash_prediction_config',
         lambda _path: 'b' * 64,
@@ -2884,7 +3028,8 @@ async def test_predict_stats_cleanup_survives_repeated_cancellation(
             job_input=_make_prediction_job_input(),
             artifact_ownership_enabled=True,
             producer_stats_enabled=True,
-        ))
+        )
+    )
     await subprocess_started.wait()
     if cancel_during_subprocess:
         task.cancel()
@@ -2947,16 +3092,17 @@ async def test_ensure_snapshot_dispatcher_delegates_when_temporal_client_set():
         inline_called = True
 
     fake_info = mock.MagicMock(workflow_id='wf-1', activity_id='1')
-    with mock.patch.object(instance, '_ensure_snapshot_local',
-                           _should_not_run), \
-            mock.patch('pool.activities.activity.info',
-                       return_value=fake_info):
+    with (
+        mock.patch.object(instance, '_ensure_snapshot_local', _should_not_run),
+        mock.patch('pool.activities.activity.info', return_value=fake_info),
+    ):
         result = await instance._ensure_snapshot(_TEST_SNAPSHOT_ID)
 
     assert result is None
     assert not inline_called
 
     from temporalio_commons.worker_registry import RunSingleActivityWorkflow
+
     fake_inner_client.execute_workflow.assert_awaited_once()
     call = fake_inner_client.execute_workflow.await_args
     assert call.args[0] is RunSingleActivityWorkflow.run
@@ -2970,11 +3116,13 @@ async def test_publish_training_progress_reads_off_event_loop(monkeypatch):
     the event loop via ``asyncio.to_thread``; otherwise a slow S3 read pins
     the loop.
     """
+
     def _fake_read(_job_config_path):
         return None  # no progress yet -> publish returns False
 
-    monkeypatch.setattr('pool.training_progress._read_training_progress_output',
-                        _fake_read)
+    monkeypatch.setattr(
+        'pool.training_progress._read_training_progress_output', _fake_read
+    )
     to_thread_call = {}
 
     async def _fake_to_thread(func, *args, **kwargs):
@@ -2983,17 +3131,15 @@ async def test_publish_training_progress_reads_off_event_loop(monkeypatch):
         to_thread_call['kwargs'] = kwargs
         return func(*args, **kwargs)
 
-    monkeypatch.setattr('pool.training_progress.asyncio.to_thread',
-                        _fake_to_thread)
+    monkeypatch.setattr('pool.training_progress.asyncio.to_thread', _fake_to_thread)
 
     job_store = mock.Mock(spec=MLJobOutputStore)
-    result = await publish_training_progress('job-1', '/tmp/cfg.json',
-                                             job_store)
+    result = await publish_training_progress('job-1', '/tmp/cfg.json', job_store)
 
     assert result is False
     assert to_thread_call == {
         'func': _fake_read,
-        'args': ('/tmp/cfg.json', ),
+        'args': ('/tmp/cfg.json',),
         'kwargs': {},
     }
 
@@ -3031,14 +3177,16 @@ async def test_ensure_snapshot_dispatcher_rejects_ingest_args_when_delegating():
 
 
 def test_diskgraph_ingest_config_strips_hydrated_connectors_before_subprocess(
-        monkeypatch):
+    monkeypatch,
+):
     from types import SimpleNamespace
 
     from pool.activities import _build_diskgraph_ingest_config
 
     graph = mock.MagicMock()
     graph_config = SimpleNamespace(
-        data_source_dict={'connector_id': mock.sentinel.dynamic_config}, )
+        data_source_dict={'connector_id': mock.sentinel.dynamic_config},
+    )
     monkeypatch.setattr(
         'rest.driver.graph_logic._build_graph_from_definition_with_specs',
         lambda *_args, **_kwargs: graph,
@@ -3064,11 +3212,11 @@ def test_diskgraph_ingest_config_strips_hydrated_connectors_before_subprocess(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     'storage_mode,expected_event_count',
-    [(PoolStorageMode.DAEMON_ON_PVC, 1),
-     (PoolStorageMode.ACTIVITY_ON_EMPTYDIR, 0)],
+    [(PoolStorageMode.DAEMON_ON_PVC, 1), (PoolStorageMode.ACTIVITY_ON_EMPTYDIR, 0)],
 )
 async def test_ensure_snapshot_local_ssd_hit_reports_size_for_daemon_only(
-        tmp_path, storage_mode, expected_event_count):
+    tmp_path, storage_mode, expected_event_count
+):
     """Daemon SSD hits backfill size; activity-scoped pods stay transient."""
     from kumo.diskgraph import IngestResult
 
@@ -3089,10 +3237,13 @@ async def test_ensure_snapshot_local_ssd_hit_reports_size_for_daemon_only(
     fake_service.has_resumable_ingest.return_value = False
     fake_service.verify_integrity.return_value = cached
 
-    with mock.patch('pool.activities.get_service',
-                    return_value=fake_service), \
-            mock.patch('pool.activities.get_persist_dir',
-                       return_value=str(tmp_path / 'dataplane-root')):
+    with (
+        mock.patch('pool.activities.get_service', return_value=fake_service),
+        mock.patch(
+            'pool.activities.get_persist_dir',
+            return_value=str(tmp_path / 'dataplane-root'),
+        ),
+    ):
         result = await instance._ensure_snapshot_local(_TEST_SNAPSHOT_ID)
 
     assert result is cached
@@ -3105,8 +3256,7 @@ async def test_ensure_snapshot_local_ssd_hit_reports_size_for_daemon_only(
 
 
 @pytest.mark.asyncio
-async def test_ensure_snapshot_local_invalidates_and_deletes_corrupt_ssd(
-        tmp_path):
+async def test_ensure_snapshot_local_invalidates_and_deletes_corrupt_ssd(tmp_path):
     """A verified corrupt L1 is invalidated upstream and removed locally."""
     from temporalio.exceptions import ApplicationError
 
@@ -3118,8 +3268,9 @@ async def test_ensure_snapshot_local_invalidates_and_deletes_corrupt_ssd(
     (local_dir / 'partial.bin').write_bytes(b'partial')
     fake_service = mock.MagicMock()
     fake_service.local_snapshot_path.return_value = str(local_dir)
-    fake_service.dataplane_snapshot_path.return_value = str(tmp_path /
-                                                            'missing-dataplane')
+    fake_service.dataplane_snapshot_path.return_value = str(
+        tmp_path / 'missing-dataplane'
+    )
     fake_service.has_resumable_ingest.return_value = False
 
     def raise_corruption(_):
@@ -3132,11 +3283,12 @@ async def test_ensure_snapshot_local_invalidates_and_deletes_corrupt_ssd(
     fake_service.restore_snapshot.return_value = None
 
     with (
-            mock.patch.dict(sys.modules, {'diskgraph': _FAKE_DISKGRAPH}),
-            mock.patch('pool.activities.get_service',
-                       return_value=fake_service),
-            mock.patch('pool.activities.get_persist_dir',
-                       return_value=str(tmp_path / 'dataplane-root')),
+        mock.patch.dict(sys.modules, {'diskgraph': _FAKE_DISKGRAPH}),
+        mock.patch('pool.activities.get_service', return_value=fake_service),
+        mock.patch(
+            'pool.activities.get_persist_dir',
+            return_value=str(tmp_path / 'dataplane-root'),
+        ),
     ):
         with pytest.raises(ApplicationError):
             await instance._ensure_snapshot_local(_TEST_SNAPSHOT_ID)
@@ -3144,8 +3296,7 @@ async def test_ensure_snapshot_local_invalidates_and_deletes_corrupt_ssd(
     assert not local_dir.exists()
     assert _TEST_SNAPSHOT_ID not in instance._ready_snapshots
     events = [
-        call.kwargs['event']
-        for call in instance._send_status_report.await_args_list
+        call.kwargs['event'] for call in instance._send_status_report.await_args_list
     ]
     assert [event.type for event in events] == [
         WorkerEventType.SSD_CACHE_CORRUPTED,
@@ -3168,7 +3319,8 @@ async def test_corrupt_ssd_invalidation_survives_cleanup_cancellation(tmp_path):
     fake_service.local_snapshot_path.return_value = str(local_dir)
     fake_service.has_resumable_ingest.return_value = False
     fake_service.verify_integrity.side_effect = _DiskgraphCorruptionError(
-        'bad local manifest')
+        'bad local manifest'
+    )
 
     cleanup_started = asyncio.Event()
     cleanup_finished = asyncio.Event()
@@ -3185,16 +3337,17 @@ async def test_corrupt_ssd_invalidation_survives_cleanup_cancellation(tmp_path):
             loop.call_soon_threadsafe(cleanup_finished.set)
 
     with (
-            mock.patch.dict(sys.modules, {'diskgraph': _FAKE_DISKGRAPH}),
-            mock.patch('pool.activities.get_service',
-                       return_value=fake_service),
-            mock.patch('pool.activities.get_persist_dir',
-                       return_value=str(tmp_path / 'dataplane-root')),
-            mock.patch('pool.activities.shutil.rmtree',
-                       side_effect=blocking_rmtree),
+        mock.patch.dict(sys.modules, {'diskgraph': _FAKE_DISKGRAPH}),
+        mock.patch('pool.activities.get_service', return_value=fake_service),
+        mock.patch(
+            'pool.activities.get_persist_dir',
+            return_value=str(tmp_path / 'dataplane-root'),
+        ),
+        mock.patch('pool.activities.shutil.rmtree', side_effect=blocking_rmtree),
     ):
         ensure_task = asyncio.create_task(
-            instance._ensure_snapshot_local(_TEST_SNAPSHOT_ID))
+            instance._ensure_snapshot_local(_TEST_SNAPSHOT_ID)
+        )
         await asyncio.wait_for(cleanup_started.wait(), timeout=5)
         ensure_task.cancel()
         try:
@@ -3207,8 +3360,7 @@ async def test_corrupt_ssd_invalidation_survives_cleanup_cancellation(tmp_path):
     assert not local_dir.exists()
     assert _TEST_SNAPSHOT_ID not in instance._ready_snapshots
     events = [
-        call.kwargs['event']
-        for call in instance._send_status_report.await_args_list
+        call.kwargs['event'] for call in instance._send_status_report.await_args_list
     ]
     assert [event.type for event in events] == [
         WorkerEventType.SSD_CACHE_CORRUPTED,
@@ -3219,7 +3371,8 @@ async def test_corrupt_ssd_invalidation_survives_cleanup_cancellation(tmp_path):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('cleanup_stage', ['local', 'sidecar'])
 async def test_corrupt_ssd_cleanup_failure_keeps_corruption_primary(
-        tmp_path, cleanup_stage):
+    tmp_path, cleanup_stage
+):
     """Cleanup failure is secondary after authoritative L1 invalidation."""
     instance = _make_instance()
     instance._send_status_report = mock.AsyncMock()
@@ -3245,13 +3398,13 @@ async def test_corrupt_ssd_cleanup_failure_keeps_corruption_primary(
         return real_rmtree(*args, **kwargs)
 
     with (
-            mock.patch.dict(sys.modules, {'diskgraph': _FAKE_DISKGRAPH}),
-            mock.patch('pool.activities.get_service',
-                       return_value=fake_service),
-            mock.patch('pool.activities.get_persist_dir',
-                       return_value=str(tmp_path / 'dataplane-root')),
-            mock.patch('pool.activities.shutil.rmtree',
-                       side_effect=fail_selected_cleanup),
+        mock.patch.dict(sys.modules, {'diskgraph': _FAKE_DISKGRAPH}),
+        mock.patch('pool.activities.get_service', return_value=fake_service),
+        mock.patch(
+            'pool.activities.get_persist_dir',
+            return_value=str(tmp_path / 'dataplane-root'),
+        ),
+        mock.patch('pool.activities.shutil.rmtree', side_effect=fail_selected_cleanup),
     ):
         with pytest.raises(_DiskgraphCorruptionError) as exc_info:
             await instance._ensure_snapshot_local(_TEST_SNAPSHOT_ID)
@@ -3260,8 +3413,7 @@ async def test_corrupt_ssd_cleanup_failure_keeps_corruption_primary(
     assert exc_info.value.__cause__ is cleanup_error
     assert _TEST_SNAPSHOT_ID not in instance._ready_snapshots
     events = [
-        call.kwargs['event']
-        for call in instance._send_status_report.await_args_list
+        call.kwargs['event'] for call in instance._send_status_report.await_args_list
     ]
     assert [event.type for event in events] == [
         WorkerEventType.SSD_CACHE_CORRUPTED,
@@ -3290,11 +3442,13 @@ async def test_corrupt_ssd_cleanup_tolerates_concurrent_local_removal(tmp_path):
 
     fake_service = mock.MagicMock()
     fake_service.local_snapshot_path.return_value = str(local_dir)
-    fake_service.dataplane_snapshot_path.return_value = str(tmp_path /
-                                                            'missing-dataplane')
+    fake_service.dataplane_snapshot_path.return_value = str(
+        tmp_path / 'missing-dataplane'
+    )
     fake_service.has_resumable_ingest.return_value = False
     fake_service.verify_integrity.side_effect = _DiskgraphCorruptionError(
-        'bad local manifest')
+        'bad local manifest'
+    )
     fake_service.restore_snapshot.return_value = None
 
     real_rmtree = shutil.rmtree
@@ -3304,13 +3458,15 @@ async def test_corrupt_ssd_cleanup_tolerates_concurrent_local_removal(tmp_path):
         raise FileNotFoundError(str(local_dir))
 
     with (
-            mock.patch.dict(sys.modules, {'diskgraph': _FAKE_DISKGRAPH}),
-            mock.patch('pool.activities.get_service',
-                       return_value=fake_service),
-            mock.patch('pool.activities.get_persist_dir',
-                       return_value=str(tmp_path / 'dataplane-root')),
-            mock.patch('pool.activities.shutil.rmtree',
-                       side_effect=remove_then_report_absent),
+        mock.patch.dict(sys.modules, {'diskgraph': _FAKE_DISKGRAPH}),
+        mock.patch('pool.activities.get_service', return_value=fake_service),
+        mock.patch(
+            'pool.activities.get_persist_dir',
+            return_value=str(tmp_path / 'dataplane-root'),
+        ),
+        mock.patch(
+            'pool.activities.shutil.rmtree', side_effect=remove_then_report_absent
+        ),
     ):
         with pytest.raises(ApplicationError):
             await instance._ensure_snapshot_local(_TEST_SNAPSHOT_ID)
@@ -3326,20 +3482,28 @@ async def test_corrupt_ssd_cleanup_tolerates_concurrent_local_removal(tmp_path):
 @pytest.mark.parametrize(
     ('storage_mode', 'ingest_args_present', 'restore_error'),
     [
-        (PoolStorageMode.DAEMON_ON_PVC, True,
-         _DiskgraphCorruptionError('copied-local manifest mismatch')),
-        (PoolStorageMode.DAEMON_ON_PVC, False,
-         ConnectionError('copy interrupted')),
-        (PoolStorageMode.ACTIVITY_ON_PVC, False,
-         _DiskgraphCorruptionError('copied-local manifest mismatch')),
-        (PoolStorageMode.ACTIVITY_ON_EMPTYDIR, False,
-         _DiskgraphCorruptionError('copied-local manifest mismatch')),
-        (PoolStorageMode.ACTIVITY_ON_PVC, False,
-         OSError('local disk write failed')),
+        (
+            PoolStorageMode.DAEMON_ON_PVC,
+            True,
+            _DiskgraphCorruptionError('copied-local manifest mismatch'),
+        ),
+        (PoolStorageMode.DAEMON_ON_PVC, False, ConnectionError('copy interrupted')),
+        (
+            PoolStorageMode.ACTIVITY_ON_PVC,
+            False,
+            _DiskgraphCorruptionError('copied-local manifest mismatch'),
+        ),
+        (
+            PoolStorageMode.ACTIVITY_ON_EMPTYDIR,
+            False,
+            _DiskgraphCorruptionError('copied-local manifest mismatch'),
+        ),
+        (PoolStorageMode.ACTIVITY_ON_PVC, False, OSError('local disk write failed')),
     ],
 )
 async def test_ensure_snapshot_local_restore_failure_is_non_destructive(
-        tmp_path, storage_mode, ingest_args_present, restore_error):
+    tmp_path, storage_mode, ingest_args_present, restore_error
+):
     """An ambiguous copied-local failure is retryable and cannot mutate L2."""
     instance = _make_instance(storage_mode=storage_mode)
     instance._send_status_report = mock.AsyncMock()
@@ -3362,24 +3526,30 @@ async def test_ensure_snapshot_local_restore_failure_is_non_destructive(
     ingest_args = mock.MagicMock() if ingest_args_present else None
 
     with (
-            mock.patch.dict(sys.modules, {'diskgraph': _FAKE_DISKGRAPH}),
-            mock.patch('pool.activities.get_service',
-                       return_value=fake_service),
-            mock.patch('pool.activities.get_persist_dir',
-                       return_value=str(tmp_path / 'dataplane-root')),
-            mock.patch('pool.activities.fsutil.rm') as remote_rm,
+        mock.patch.dict(sys.modules, {'diskgraph': _FAKE_DISKGRAPH}),
+        mock.patch('pool.activities.get_service', return_value=fake_service),
+        mock.patch(
+            'pool.activities.get_persist_dir',
+            return_value=str(tmp_path / 'dataplane-root'),
+        ),
+        mock.patch('pool.activities.fsutil.rm') as remote_rm,
     ):
-        with pytest.raises(RuntimeError,
-                           match='failed to restore snapshot') as excinfo:
+        with pytest.raises(RuntimeError, match='failed to restore snapshot') as excinfo:
             await instance._ensure_snapshot_local(
                 _TEST_SNAPSHOT_ID,
                 ingest_args=ingest_args,
             )
 
         error_text = str(excinfo.value)
-        assert all(part in error_text
-                   for part in (_TEST_SNAPSHOT_ID, str(dataplane_dir),
-                                str(local_dir), str(restore_error)))
+        assert all(
+            part in error_text
+            for part in (
+                _TEST_SNAPSHOT_ID,
+                str(dataplane_dir),
+                str(local_dir),
+                str(restore_error),
+            )
+        )
         assert excinfo.value.__cause__ is restore_error
         assert not is_error_non_retryable(excinfo.value)
         assert not local_dir.exists()
@@ -3390,8 +3560,7 @@ async def test_ensure_snapshot_local_restore_failure_is_non_destructive(
     fake_service.restore_snapshot.assert_called_once()
     fake_service.ingest.assert_not_called()
     events = [
-        call.kwargs['event']
-        for call in instance._send_status_report.await_args_list
+        call.kwargs['event'] for call in instance._send_status_report.await_args_list
     ]
     assert [event.type for event in events] == [
         WorkerEventType.SNAPSHOT_RESTORE_STARTED,
@@ -3399,11 +3568,11 @@ async def test_ensure_snapshot_local_restore_failure_is_non_destructive(
 
 
 @pytest.mark.asyncio
-async def test_ensure_snapshot_local_restores_from_dataplane_on_ssd_miss(
-        tmp_path):
+async def test_ensure_snapshot_local_restores_from_dataplane_on_ssd_miss(tmp_path):
     """SSD has no local dir → service.restore_snapshot returns a hit →
     return that result without touching the fresh-ingest path."""
     from kumo.diskgraph import IngestResult
+
     instance = _make_instance()
     instance._send_status_report = mock.AsyncMock()
 
@@ -3422,22 +3591,25 @@ async def test_ensure_snapshot_local_restores_from_dataplane_on_ssd_miss(
 
     fake_service = mock.MagicMock()
     fake_service.local_snapshot_path.return_value = str(local_dir)
-    fake_service.dataplane_snapshot_path.return_value = str(tmp_path /
-                                                            'dataplane-mirror')
+    fake_service.dataplane_snapshot_path.return_value = str(
+        tmp_path / 'dataplane-mirror'
+    )
     fake_service.restore_snapshot.side_effect = _restore_snapshot
 
-    with mock.patch('pool.activities.get_service',
-                    return_value=fake_service), \
-            mock.patch('pool.activities.get_persist_dir',
-                       return_value=str(tmp_path / 'dataplane-root')):
+    with (
+        mock.patch('pool.activities.get_service', return_value=fake_service),
+        mock.patch(
+            'pool.activities.get_persist_dir',
+            return_value=str(tmp_path / 'dataplane-root'),
+        ),
+    ):
         result = await instance._ensure_snapshot_local(_TEST_SNAPSHOT_ID)
 
     assert result is fake_restored
     fake_service.restore_snapshot.assert_called_once()
     fake_service.ingest.assert_not_called()
     events = [
-        call.kwargs['event']
-        for call in instance._send_status_report.await_args_list
+        call.kwargs['event'] for call in instance._send_status_report.await_args_list
     ]
     assert [event.type for event in events] == [
         WorkerEventType.SNAPSHOT_RESTORE_STARTED,
@@ -3449,8 +3621,7 @@ async def test_ensure_snapshot_local_restores_from_dataplane_on_ssd_miss(
 
 
 @pytest.mark.asyncio
-async def test_ensure_snapshot_local_restore_passes_heartbeat(
-        tmp_path, monkeypatch):
+async def test_ensure_snapshot_local_restore_passes_heartbeat(tmp_path, monkeypatch):
     """The restore branch has no wrapping ``@auto_heartbeater`` (unlike a
     normal activity), so ``service.restore_snapshot`` must get its own
     heartbeat callback wired through -- otherwise a cold worker restoring
@@ -3460,8 +3631,7 @@ async def test_ensure_snapshot_local_restore_passes_heartbeat(
     instance = _make_instance()
     instance._send_status_report = mock.AsyncMock()
     schedule_mock = mock.Mock()
-    monkeypatch.setattr('pool.activities._schedule_activity_heartbeat',
-                        schedule_mock)
+    monkeypatch.setattr('pool.activities._schedule_activity_heartbeat', schedule_mock)
 
     fake_restored = IngestResult(
         index_path=str(tmp_path / 'idx'),
@@ -3483,14 +3653,18 @@ async def test_ensure_snapshot_local_restore_passes_heartbeat(
 
     fake_service = mock.MagicMock()
     fake_service.local_snapshot_path.return_value = str(local_dir)
-    fake_service.dataplane_snapshot_path.return_value = str(tmp_path /
-                                                            'dataplane-mirror')
+    fake_service.dataplane_snapshot_path.return_value = str(
+        tmp_path / 'dataplane-mirror'
+    )
     fake_service.restore_snapshot.side_effect = _restore_snapshot
 
-    with mock.patch('pool.activities.get_service',
-                    return_value=fake_service), \
-            mock.patch('pool.activities.get_persist_dir',
-                       return_value=str(tmp_path / 'dataplane-root')):
+    with (
+        mock.patch('pool.activities.get_service', return_value=fake_service),
+        mock.patch(
+            'pool.activities.get_persist_dir',
+            return_value=str(tmp_path / 'dataplane-root'),
+        ),
+    ):
         result = await instance._ensure_snapshot_local(_TEST_SNAPSHOT_ID)
 
     assert result is fake_restored
@@ -3499,8 +3673,7 @@ async def test_ensure_snapshot_local_restore_passes_heartbeat(
 
 
 @pytest.mark.asyncio
-async def test_ensure_snapshot_local_restore_joins_on_cancel(
-        tmp_path, monkeypatch):
+async def test_ensure_snapshot_local_restore_joins_on_cancel(tmp_path, monkeypatch):
     """``to_thread`` cannot stop ``fsutil.copy`` once it is writing into
     ``local_dir``, so the restore dispatch -- like the neighbouring
     ``download_table_files`` and ``ingest`` dispatches -- must join the
@@ -3509,8 +3682,7 @@ async def test_ensure_snapshot_local_restore_joins_on_cancel(
 
     instance = _make_instance()
     instance._send_status_report = mock.AsyncMock()
-    monkeypatch.setattr('pool.activities._schedule_activity_heartbeat',
-                        mock.Mock())
+    monkeypatch.setattr('pool.activities._schedule_activity_heartbeat', mock.Mock())
 
     fake_restored = IngestResult(
         index_path=str(tmp_path / 'idx'),
@@ -3527,27 +3699,30 @@ async def test_ensure_snapshot_local_restore_joins_on_cancel(
 
     fake_service = mock.MagicMock()
     fake_service.local_snapshot_path.return_value = str(local_dir)
-    fake_service.dataplane_snapshot_path.return_value = str(tmp_path /
-                                                            'dataplane-mirror')
+    fake_service.dataplane_snapshot_path.return_value = str(
+        tmp_path / 'dataplane-mirror'
+    )
     fake_service.restore_snapshot.side_effect = _restore_snapshot
 
     restore_cancellation_args = []
 
     async def _capture_restore_kwargs(fn, *args, **kwargs):
         if fn is fake_service.restore_snapshot:
-            restore_cancellation_args.append((
-                kwargs.get('join_on_cancel'),
-                kwargs.get('cancellation_cleanup_dir'),
-            ))
+            restore_cancellation_args.append(
+                (
+                    kwargs.get('join_on_cancel'),
+                    kwargs.get('cancellation_cleanup_dir'),
+                )
+            )
         return await _run_diskgraph_async(fn, *args, **kwargs)
 
     with (
-            mock.patch('pool.activities.get_service',
-                       return_value=fake_service),
-            mock.patch('pool.activities.get_persist_dir',
-                       return_value=str(tmp_path / 'dataplane-root')),
-            mock.patch('pool.activities._run_diskgraph_async',
-                       _capture_restore_kwargs),
+        mock.patch('pool.activities.get_service', return_value=fake_service),
+        mock.patch(
+            'pool.activities.get_persist_dir',
+            return_value=str(tmp_path / 'dataplane-root'),
+        ),
+        mock.patch('pool.activities._run_diskgraph_async', _capture_restore_kwargs),
     ):
         result = await instance._ensure_snapshot_local(_TEST_SNAPSHOT_ID)
 
@@ -3556,8 +3731,7 @@ async def test_ensure_snapshot_local_restore_joins_on_cancel(
 
 
 @pytest.mark.asyncio
-async def test_ensure_snapshot_local_fresh_ingest_reports_snapshot_size(
-        tmp_path):
+async def test_ensure_snapshot_local_fresh_ingest_reports_snapshot_size(tmp_path):
     """Fresh daemon ingest records local snapshot size for overflow sizing."""
     from types import SimpleNamespace
 
@@ -3592,8 +3766,9 @@ async def test_ensure_snapshot_local_fresh_ingest_reports_snapshot_size(
     )
     fake_service = mock.MagicMock()
     fake_service.local_snapshot_path.return_value = str(local_dir)
-    fake_service.dataplane_snapshot_path.return_value = str(tmp_path /
-                                                            'dataplane-mirror')
+    fake_service.dataplane_snapshot_path.return_value = str(
+        tmp_path / 'dataplane-mirror'
+    )
     fake_service.restore_snapshot.return_value = None
     fake_service.prepare_direct_sources.return_value = {}
     fake_service.ingest.side_effect = _ingest
@@ -3603,16 +3778,23 @@ async def test_ensure_snapshot_local_fresh_ingest_reports_snapshot_size(
         kwargs.pop('abandonment_cleanup_dir', None)
         return fn(*args, **kwargs)
 
-    with mock.patch('pool.activities.get_service',
-                    return_value=fake_service), \
-            mock.patch('pool.activities.get_persist_dir',
-                       return_value=str(tmp_path / 'dataplane-root')), \
-            mock.patch('pool.activities.get_diskgraph_snapshot_ingest_path',
-                       return_value=str(tmp_path / 'source')), \
-            mock.patch('pool.activities._build_diskgraph_ingest_config',
-                       return_value=mock.sentinel.graph_config), \
-            mock.patch('pool.activities._run_diskgraph_async', _run_inline), \
-            mock.patch('pool.activities.asyncio.to_thread', _run_inline):
+    with (
+        mock.patch('pool.activities.get_service', return_value=fake_service),
+        mock.patch(
+            'pool.activities.get_persist_dir',
+            return_value=str(tmp_path / 'dataplane-root'),
+        ),
+        mock.patch(
+            'pool.activities.get_diskgraph_snapshot_ingest_path',
+            return_value=str(tmp_path / 'source'),
+        ),
+        mock.patch(
+            'pool.activities._build_diskgraph_ingest_config',
+            return_value=mock.sentinel.graph_config,
+        ),
+        mock.patch('pool.activities._run_diskgraph_async', _run_inline),
+        mock.patch('pool.activities.asyncio.to_thread', _run_inline),
+    ):
         result = await instance._ensure_snapshot_local(
             _TEST_SNAPSHOT_ID,
             ingest_args=ingest_args,
@@ -3622,8 +3804,7 @@ async def test_ensure_snapshot_local_fresh_ingest_reports_snapshot_size(
     fake_service.download_table_files.assert_called_once()
     fake_service.ingest.assert_called_once()
     events = [
-        call.kwargs['event']
-        for call in instance._send_status_report.await_args_list
+        call.kwargs['event'] for call in instance._send_status_report.await_args_list
     ]
     assert [event.type for event in events] == [
         WorkerEventType.SNAPSHOT_RESTORE_STARTED,
@@ -3636,8 +3817,7 @@ async def test_ensure_snapshot_local_fresh_ingest_reports_snapshot_size(
 
 
 @pytest.mark.asyncio
-async def test_ensure_snapshot_local_mixes_direct_object_and_staged_sources(
-        tmp_path):
+async def test_ensure_snapshot_local_mixes_direct_object_and_staged_sources(tmp_path):
     from types import SimpleNamespace
 
     from kumo.diskgraph import IngestResult
@@ -3646,16 +3826,16 @@ async def test_ensure_snapshot_local_mixes_direct_object_and_staged_sources(
     instance._send_status_report = mock.AsyncMock()
     local_dir = tmp_path / 'fresh-object-source'
     source = {
-        'type':
-        'object_store_parquet',
-        'objects': [{
-            'path': 's3://bucket/direct/part.parquet',
-            'size': 123,
-            'e_tag': 'etag',
-            'version': None,
-        }],
-        'auth_profile':
-        'ambient',
+        'type': 'object_store_parquet',
+        'objects': [
+            {
+                'path': 's3://bucket/direct/part.parquet',
+                'size': 123,
+                'e_tag': 'etag',
+                'version': None,
+            }
+        ],
+        'auth_profile': 'ambient',
     }
     source_spec = {'source': source, 'source_size': 123}
     fake_result = IngestResult(
@@ -3681,24 +3861,19 @@ async def test_ensure_snapshot_local_mixes_direct_object_and_staged_sources(
     ingest_args = SimpleNamespace(
         timestamp_precision='seconds',
         data_persist_dir=str(tmp_path / 'persist'),
-        table_data_versions={
-            'direct': 'v1',
-            'staged': 'v2'
-        },
+        table_data_versions={'direct': 'v1', 'staged': 'v2'},
         connector_specs={'s3': mock.sentinel.connector_ref},
         all_graph_tables={
             'direct': direct_table,
             'staged': staged_table,
         },
-        source_size_bytes_by_table={
-            'direct': 123,
-            'staged': 456
-        },
+        source_size_bytes_by_table={'direct': 123, 'staged': 456},
     )
     fake_service = mock.MagicMock()
     fake_service.local_snapshot_path.return_value = str(local_dir)
-    fake_service.dataplane_snapshot_path.return_value = str(tmp_path /
-                                                            'dataplane-mirror')
+    fake_service.dataplane_snapshot_path.return_value = str(
+        tmp_path / 'dataplane-mirror'
+    )
     fake_service.restore_snapshot.return_value = None
     fake_service.prepare_direct_sources.return_value = {'direct': source_spec}
     fake_service.prepare_subprocess_environment.return_value = {}
@@ -3709,27 +3884,35 @@ async def test_ensure_snapshot_local_mixes_direct_object_and_staged_sources(
 
     async def _run_with_cleanup_capture(fn, *args, **kwargs):
         if fn is fake_service.download_table_files:
-            download_cancellation_args.append((
-                kwargs.get('join_on_cancel'),
-                kwargs.get('cancellation_cleanup_dir'),
-            ))
+            download_cancellation_args.append(
+                (
+                    kwargs.get('join_on_cancel'),
+                    kwargs.get('cancellation_cleanup_dir'),
+                )
+            )
         if fn is fake_service.ingest:
             ingest_cancellation_args.append(kwargs.get('join_on_cancel'))
         return await _run_diskgraph_async(fn, *args, **kwargs)
 
     with (
-            mock.patch('pool.activities.get_service',
-                       return_value=fake_service),
-            mock.patch('pool.activities.get_persist_dir',
-                       return_value=str(tmp_path / 'dataplane-root')),
-            mock.patch('pool.activities.get_diskgraph_snapshot_ingest_path',
-                       return_value=staged_source) as ingest_path,
-            mock.patch('pool.activities.get_diskgraph_snapshot_ingest_dir',
-                       return_value=snapshot_ingest_dir) as ingest_dir,
-            mock.patch('pool.activities._build_diskgraph_ingest_config',
-                       return_value=mock.sentinel.graph_config),
-            mock.patch('pool.activities._run_diskgraph_async',
-                       _run_with_cleanup_capture),
+        mock.patch('pool.activities.get_service', return_value=fake_service),
+        mock.patch(
+            'pool.activities.get_persist_dir',
+            return_value=str(tmp_path / 'dataplane-root'),
+        ),
+        mock.patch(
+            'pool.activities.get_diskgraph_snapshot_ingest_path',
+            return_value=staged_source,
+        ) as ingest_path,
+        mock.patch(
+            'pool.activities.get_diskgraph_snapshot_ingest_dir',
+            return_value=snapshot_ingest_dir,
+        ) as ingest_dir,
+        mock.patch(
+            'pool.activities._build_diskgraph_ingest_config',
+            return_value=mock.sentinel.graph_config,
+        ),
+        mock.patch('pool.activities._run_diskgraph_async', _run_with_cleanup_capture),
     ):
         result = await instance._ensure_snapshot_local(
             _TEST_SNAPSHOT_ID,
@@ -3739,8 +3922,7 @@ async def test_ensure_snapshot_local_mixes_direct_object_and_staged_sources(
     assert result is fake_result
     prepare_call = fake_service.prepare_direct_sources.call_args.kwargs
     assert prepare_call['data_persist_dir'] == ingest_args.data_persist_dir
-    assert prepare_call['table_data_versions'] == (
-        ingest_args.table_data_versions)
+    assert prepare_call['table_data_versions'] == (ingest_args.table_data_versions)
     ingest_path.assert_called_once_with(
         _TEST_SNAPSHOT_ID,
         mock.sentinel.staged_fingerprint,
@@ -3766,8 +3948,7 @@ async def test_ensure_snapshot_local_mixes_direct_object_and_staged_sources(
 
 
 @pytest.mark.asyncio
-async def test_cancelled_ingest_holds_snapshot_lock_until_native_terminal(
-        tmp_path):
+async def test_cancelled_ingest_holds_snapshot_lock_until_native_terminal(tmp_path):
     from types import SimpleNamespace
 
     from kumo.diskgraph import IngestResult
@@ -3816,8 +3997,9 @@ async def test_cancelled_ingest_holds_snapshot_lock_until_native_terminal(
     )
     fake_service = mock.MagicMock()
     fake_service.local_snapshot_path.return_value = str(local_dir)
-    fake_service.dataplane_snapshot_path.return_value = str(tmp_path /
-                                                            'dataplane-mirror')
+    fake_service.dataplane_snapshot_path.return_value = str(
+        tmp_path / 'dataplane-mirror'
+    )
     fake_service.restore_snapshot.return_value = None
     fake_service.has_resumable_ingest.return_value = False
     fake_service.has_persisted_ingest_config.return_value = False
@@ -3827,28 +4009,36 @@ async def test_cancelled_ingest_holds_snapshot_lock_until_native_terminal(
     fake_service.ingest.side_effect = ingest
 
     with (
-            mock.patch('pool.activities.get_service',
-                       return_value=fake_service),
-            mock.patch('pool.activities.get_persist_dir',
-                       return_value=str(tmp_path / 'dataplane-root')),
-            mock.patch('pool.activities._build_diskgraph_ingest_config',
-                       return_value=mock.sentinel.graph_config),
+        mock.patch('pool.activities.get_service', return_value=fake_service),
+        mock.patch(
+            'pool.activities.get_persist_dir',
+            return_value=str(tmp_path / 'dataplane-root'),
+        ),
+        mock.patch(
+            'pool.activities._build_diskgraph_ingest_config',
+            return_value=mock.sentinel.graph_config,
+        ),
     ):
         old_attempt = asyncio.create_task(
             instance._ensure_snapshot_local(
                 _TEST_SNAPSHOT_ID,
                 ingest_args=ingest_args,
-            ))
+            )
+        )
         assert await asyncio.to_thread(started.wait, 1)
         old_attempt.cancel()
         retry = asyncio.create_task(
             instance._ensure_snapshot_local(
                 _TEST_SNAPSHOT_ID,
                 ingest_args=ingest_args,
-            ))
+            )
+        )
         await asyncio.sleep(0.05)
-        raced = (retry_ingest_started.is_set()
-                 or retry_integrity_check.is_set() or retry.done())
+        raced = (
+            retry_ingest_started.is_set()
+            or retry_integrity_check.is_set()
+            or retry.done()
+        )
 
         release.set()
         with pytest.raises(asyncio.CancelledError):
@@ -3895,12 +4085,15 @@ async def test_ensure_snapshot_local_no_space_removes_partial_attempt(tmp_path):
     fake_service.ingest.side_effect = _ingest
 
     with (
-            mock.patch('pool.activities.get_service',
-                       return_value=fake_service),
-            mock.patch('pool.activities.get_persist_dir',
-                       return_value=str(tmp_path / 'dataplane-root')),
-            mock.patch('pool.activities._build_diskgraph_ingest_config',
-                       return_value=mock.sentinel.graph_config),
+        mock.patch('pool.activities.get_service', return_value=fake_service),
+        mock.patch(
+            'pool.activities.get_persist_dir',
+            return_value=str(tmp_path / 'dataplane-root'),
+        ),
+        mock.patch(
+            'pool.activities._build_diskgraph_ingest_config',
+            return_value=mock.sentinel.graph_config,
+        ),
     ):
         with pytest.raises(DiskgraphNoSpaceError):
             await instance._ensure_snapshot_local(
@@ -3915,8 +4108,7 @@ async def test_ensure_snapshot_local_no_space_removes_partial_attempt(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_ensure_snapshot_local_resumes_after_encode_without_credentials(
-        tmp_path):
+async def test_ensure_snapshot_local_resumes_after_encode_without_credentials(tmp_path):
     from types import SimpleNamespace
 
     from kumo.diskgraph import IngestResult
@@ -3941,17 +4133,19 @@ async def test_ensure_snapshot_local_resumes_after_encode_without_credentials(
     )
     fake_service = mock.MagicMock()
     fake_service.local_snapshot_path.return_value = str(local_dir)
-    fake_service.dataplane_snapshot_path.return_value = str(tmp_path /
-                                                            'dataplane-mirror')
+    fake_service.dataplane_snapshot_path.return_value = str(
+        tmp_path / 'dataplane-mirror'
+    )
     fake_service.has_resumable_ingest.return_value = True
     fake_service.prepare_subprocess_environment.return_value = {}
     fake_service.ingest.return_value = fake_result
 
     with (
-            mock.patch('pool.activities.get_service',
-                       return_value=fake_service),
-            mock.patch('pool.activities.get_persist_dir',
-                       return_value=str(tmp_path / 'dataplane-root')),
+        mock.patch('pool.activities.get_service', return_value=fake_service),
+        mock.patch(
+            'pool.activities.get_persist_dir',
+            return_value=str(tmp_path / 'dataplane-root'),
+        ),
     ):
         result = await instance._ensure_snapshot_local(
             _TEST_SNAPSHOT_ID,
@@ -3977,7 +4171,8 @@ async def test_ensure_snapshot_local_resumes_after_encode_without_credentials(
 @pytest.mark.asyncio
 @pytest.mark.parametrize('existing_partial_output', [True, False])
 async def test_ensure_snapshot_local_early_retry_reuses_persisted_sources(
-        tmp_path, existing_partial_output):
+    tmp_path, existing_partial_output
+):
     from types import SimpleNamespace
 
     from kumo.diskgraph import IngestResult
@@ -4003,12 +4198,14 @@ async def test_ensure_snapshot_local_early_retry_reuses_persisted_sources(
     )
     fake_service = mock.MagicMock()
     fake_service.local_snapshot_path.return_value = str(local_dir)
-    fake_service.dataplane_snapshot_path.return_value = str(tmp_path /
-                                                            'missing-dataplane')
+    fake_service.dataplane_snapshot_path.return_value = str(
+        tmp_path / 'missing-dataplane'
+    )
     fake_service.has_resumable_ingest.return_value = False
     fake_service.has_persisted_ingest_config.return_value = True
     fake_service.verify_integrity.side_effect = _DiskgraphCorruptionError(
-        'interrupted before Encode completed')
+        'interrupted before Encode completed'
+    )
     fake_service.restore_snapshot.return_value = None
     fake_service.prepare_subprocess_environment.return_value = {}
 
@@ -4020,13 +4217,13 @@ async def test_ensure_snapshot_local_early_retry_reuses_persisted_sources(
     fake_service.ingest.side_effect = ingest
 
     with (
-            mock.patch.dict(sys.modules, {'diskgraph': _FAKE_DISKGRAPH}),
-            mock.patch('pool.activities.get_service',
-                       return_value=fake_service),
-            mock.patch('pool.activities.get_persist_dir',
-                       return_value=str(tmp_path / 'dataplane-root')),
-            mock.patch('pool.activities._build_diskgraph_ingest_config') as
-            build_config,
+        mock.patch.dict(sys.modules, {'diskgraph': _FAKE_DISKGRAPH}),
+        mock.patch('pool.activities.get_service', return_value=fake_service),
+        mock.patch(
+            'pool.activities.get_persist_dir',
+            return_value=str(tmp_path / 'dataplane-root'),
+        ),
+        mock.patch('pool.activities._build_diskgraph_ingest_config') as build_config,
     ):
         result = await instance._ensure_snapshot_local(
             _TEST_SNAPSHOT_ID,
@@ -4050,12 +4247,12 @@ async def test_ensure_snapshot_local_early_retry_reuses_persisted_sources(
     )
     assert any(
         call.kwargs.get('preserve_config') is True
-        for call in fake_service.cleanup_ingest_sidecars.call_args_list)
+        for call in fake_service.cleanup_ingest_sidecars.call_args_list
+    )
 
 
 @pytest.mark.asyncio
-async def test_ensure_snapshot_local_consumer_mode_raises_on_full_miss(
-        tmp_path):
+async def test_ensure_snapshot_local_consumer_mode_raises_on_full_miss(tmp_path):
     """SSD miss + dataplane miss + ingest_args=None (consumer mode) →
     PERMANENT_SNAPSHOT_MISS_ERROR_TYPE non-retryable. The controller is
     expected to re-place via a fresh daemon dispatch; the consumer
@@ -4063,22 +4260,25 @@ async def test_ensure_snapshot_local_consumer_mode_raises_on_full_miss(
     from temporalio.exceptions import ApplicationError
 
     from pool.activities import PERMANENT_SNAPSHOT_MISS_ERROR_TYPE
+
     instance = _make_instance()
 
     fake_service = mock.MagicMock()
-    fake_service.local_snapshot_path.return_value = str(tmp_path /
-                                                        'nonexistent-local')
-    fake_service.dataplane_snapshot_path.return_value = str(tmp_path /
-                                                            'dataplane-mirror')
+    fake_service.local_snapshot_path.return_value = str(tmp_path / 'nonexistent-local')
+    fake_service.dataplane_snapshot_path.return_value = str(
+        tmp_path / 'dataplane-mirror'
+    )
     fake_service.restore_snapshot.return_value = None  # dataplane miss
 
-    with mock.patch('pool.activities.get_service',
-                    return_value=fake_service), \
-            mock.patch('pool.activities.get_persist_dir',
-                       return_value=str(tmp_path / 'dataplane-root')):
+    with (
+        mock.patch('pool.activities.get_service', return_value=fake_service),
+        mock.patch(
+            'pool.activities.get_persist_dir',
+            return_value=str(tmp_path / 'dataplane-root'),
+        ),
+    ):
         with pytest.raises(ApplicationError) as excinfo:
-            await instance._ensure_snapshot_local(_TEST_SNAPSHOT_ID,
-                                                  ingest_args=None)
+            await instance._ensure_snapshot_local(_TEST_SNAPSHOT_ID, ingest_args=None)
 
     assert excinfo.value.non_retryable is True
     assert excinfo.value.type == PERMANENT_SNAPSHOT_MISS_ERROR_TYPE
@@ -4108,8 +4308,7 @@ async def test_delete_snapshot_removes_local_snapshot_and_ready_state(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_delete_snapshot_is_idempotent_when_local_snapshot_missing(
-        tmp_path):
+async def test_delete_snapshot_is_idempotent_when_local_snapshot_missing(tmp_path):
     instance = _make_instance()
     local_dir = tmp_path / 'missing'
     fake_service = mock.MagicMock()
@@ -4130,6 +4329,7 @@ async def test_delete_snapshot_is_idempotent_when_local_snapshot_missing(
 
 def _make_pred_config(num_partitions: int, bundle_dir: str | None = None):
     from kumo_core.job_config import PredictionConfig
+
     return PredictionConfig(
         home_dir='/tmp/h',
         train_dir='/tmp/t',
@@ -4224,10 +4424,13 @@ def test_shard_pred_config_attempts_cannot_share_config_or_output(tmp_path):
     assert load_json(second, PredictionConfig).output_dir == second_output
 
 
-@pytest.mark.parametrize('num_shards,stage_suffix,producer_abi', [
-    (1, '', 'kumo-pred-output-v2'),
-    (2, ':kumo-pred-output-v3', 'kumo-pred-output-v3'),
-])
+@pytest.mark.parametrize(
+    'num_shards,stage_suffix,producer_abi',
+    [
+        (1, '', 'kumo-pred-output-v2'),
+        (2, ':kumo-pred-output-v3', 'kumo-pred-output-v3'),
+    ],
+)
 def test_databricks_upload_uses_immutable_attempt_prefix(
     tmp_path,
     monkeypatch,
@@ -4273,8 +4476,9 @@ def test_databricks_upload_uses_immutable_attempt_prefix(
 
     connector = Connector()
     monkeypatch.setattr(kumo.connector, 'DatabricksConnector', Connector)
-    monkeypatch.setattr(rest.utils.driver_common, 'get_connector_from_spec',
-                        lambda _spec: connector)
+    monkeypatch.setattr(
+        rest.utils.driver_common, 'get_connector_from_spec', lambda _spec: connector
+    )
     monkeypatch.setattr(
         activities.parquet_util,
         'get_parquet_metadata',
@@ -4294,14 +4498,16 @@ def test_databricks_upload_uses_immutable_attempt_prefix(
     )
 
     # Older finalizers see mixed producers as mixed stage paths.
-    assert calls[0] == ('stage', 'batch-prediction:bp-job-1:0:'
-                        f'{PredictionArtifactType.PREDICTIONS.value}'
-                        f'{stage_suffix}')
+    assert calls[0] == (
+        'stage',
+        'batch-prediction:bp-job-1:0:'
+        f'{PredictionArtifactType.PREDICTIONS.value}'
+        f'{stage_suffix}',
+    )
     assert result.producer_abi == producer_abi
     assert calls[1][3] == 'shard-00003-attempt-attempt-a'
     assert result.staged_files == [
-        '/Volumes/catalog/schema/volume/job/'
-        'shard-00003-attempt-attempt-a-00000.parquet'
+        '/Volumes/catalog/schema/volume/job/shard-00003-attempt-attempt-a-00000.parquet'
     ]
 
 
@@ -4321,8 +4527,7 @@ def test_shard_pred_config_assigns_ttng_worker_shards(tmp_path):
     from io_utils.json import load_json, save_json
 
     orig_path = str(tmp_path / 'pred_config.json')
-    save_json(_make_pred_config(num_partitions=4, bundle_dir='/tmp/bundle'),
-              orig_path)
+    save_json(_make_pred_config(num_partitions=4, bundle_dir='/tmp/bundle'), orig_path)
 
     p0 = _shard_pred_config(orig_path, 0, num_shards=4)
     p3 = _shard_pred_config(orig_path, 3, num_shards=4)
@@ -4369,8 +4574,7 @@ def _write_runtime_manifest(bundle_dir, stage_index_path, stage_name='predict'):
     from io_utils.json import save_json
 
     bundle_dir.mkdir(parents=True, exist_ok=True)
-    save_json({'metadata_path': 'metadata.json'},
-              str(bundle_dir / 'manifest.json'))
+    save_json({'metadata_path': 'metadata.json'}, str(bundle_dir / 'manifest.json'))
     save_json(
         {
             'stages': {
@@ -4410,13 +4614,14 @@ def test_ttng_job_sidecars_upload_restore_and_cleanup_prediction(tmp_path):
     )
 
     assert remote_root is not None
-    manifest = load_json(str(Path(remote_root) / 'manifests' / 'bp-job.json'),
-                         dict)
+    manifest = load_json(str(Path(remote_root) / 'manifests' / 'bp-job.json'), dict)
     generation_root = Path(remote_root) / manifest['generation_relpath']
-    assert (generation_root / 'task_datasets' / 'bp-job' /
-            'marker').read_text() == 'bundle'
-    assert (generation_root / 'pred_tables' / 'bp-job' /
-            'marker').read_text() == 'extension'
+    assert (
+        generation_root / 'task_datasets' / 'bp-job' / 'marker'
+    ).read_text() == 'bundle'
+    assert (
+        generation_root / 'pred_tables' / 'bp-job' / 'marker'
+    ).read_text() == 'extension'
     assert manifest['schema_version'] == 2
     assert manifest['relpaths'] == [
         'pred_tables/bp-job',
@@ -4444,8 +4649,7 @@ def test_ttng_job_sidecars_upload_restore_and_cleanup_prediction(tmp_path):
     assert not extension.exists()
 
 
-def test_ttng_sidecar_retry_restores_exact_winning_generation(
-        tmp_path, monkeypatch):
+def test_ttng_sidecar_retry_restores_exact_winning_generation(tmp_path, monkeypatch):
     import shutil
 
     from io_utils.json import load_json, save_json
@@ -4489,8 +4693,7 @@ def test_ttng_sidecar_retry_restores_exact_winning_generation(
         if copied == 1:
             raise RuntimeError('injected partial generation upload')
 
-    monkeypatch.setattr(job_sidecars_mod, '_copy_relpath',
-                        fail_after_first_copy)
+    monkeypatch.setattr(job_sidecars_mod, '_copy_relpath', fail_after_first_copy)
     with pytest.raises(RuntimeError, match='injected partial'):
         upload_job_sidecars_from_config_path(
             _TEST_SNAPSHOT_ID,
@@ -4508,8 +4711,7 @@ def test_ttng_sidecar_retry_restores_exact_winning_generation(
         data_persist_dir=str(persist),
     )
     winning_manifest = load_json(str(manifest_path), dict)
-    assert (winning_manifest['generation_relpath']
-            != old_manifest['generation_relpath'])
+    assert winning_manifest['generation_relpath'] != old_manifest['generation_relpath']
 
     shutil.rmtree(index / 'task_datasets')
     shutil.rmtree(index / 'train_tables')
@@ -4520,13 +4722,15 @@ def test_ttng_sidecar_retry_restores_exact_winning_generation(
         data_persist_dir=str(persist),
     )
     assert sorted(
-        path.relative_to(bundle).as_posix() for path in bundle.rglob('*')
-        if path.is_file()) == [
-            'keep', 'manifest.json', 'runtime_manifest.json'
-        ]
+        path.relative_to(bundle).as_posix()
+        for path in bundle.rglob('*')
+        if path.is_file()
+    ) == ['keep', 'manifest.json', 'runtime_manifest.json']
     assert sorted(
-        path.relative_to(extension).as_posix() for path in extension.rglob('*')
-        if path.is_file()) == ['diskgraph_manifest.json', 'keep']
+        path.relative_to(extension).as_posix()
+        for path in extension.rglob('*')
+        if path.is_file()
+    ) == ['diskgraph_manifest.json', 'keep']
     assert (bundle / 'keep').read_text() == 'winning'
     assert (extension / 'keep').read_text() == 'winning'
 
@@ -4559,8 +4763,7 @@ def test_ttng_manifest_pointer_accepts_lost_success_ack(tmp_path, monkeypatch):
     assert not list(tmp_path.glob('.manifest.json.attempt-*'))
 
 
-def test_ttng_manifest_pointer_does_not_swallow_base_exception(
-        tmp_path, monkeypatch):
+def test_ttng_manifest_pointer_does_not_swallow_base_exception(tmp_path, monkeypatch):
     from io_utils import fsutil
     from io_utils.json import load_json
     from kumo.diskgraph import job_sidecars as job_sidecars_mod
@@ -4592,7 +4795,8 @@ def test_ttng_manifest_pointer_does_not_swallow_base_exception(
 
 
 def test_ttng_manifest_pointer_pre_put_failure_preserves_old_pointer(
-        tmp_path, monkeypatch):
+    tmp_path, monkeypatch
+):
     from io_utils import fsutil
     from io_utils.json import load_json, save_json
     from kumo.diskgraph import job_sidecars as job_sidecars_mod
@@ -4625,7 +4829,8 @@ def test_ttng_manifest_pointer_pre_put_failure_preserves_old_pointer(
 
 @pytest.mark.parametrize('final_pointer', ['malformed', 'different'])
 def test_ttng_manifest_pointer_rejects_nonmatching_post_error_readback(
-        tmp_path, monkeypatch, final_pointer):
+    tmp_path, monkeypatch, final_pointer
+):
     from io_utils import fsutil
     from io_utils.json import load_json, save_json
     from kumo.diskgraph import job_sidecars as job_sidecars_mod
@@ -4660,8 +4865,7 @@ def test_ttng_manifest_pointer_rejects_nonmatching_post_error_readback(
     assert not list(tmp_path.glob('.manifest.json.attempt-*'))
 
 
-def test_ttng_upload_lost_pointer_ack_keeps_selected_generation(
-        tmp_path, monkeypatch):
+def test_ttng_upload_lost_pointer_ack_keeps_selected_generation(tmp_path, monkeypatch):
     import shutil
 
     from io_utils import fsutil
@@ -4680,9 +4884,14 @@ def test_ttng_upload_lost_pointer_ack_keeps_selected_generation(
     config_path = tmp_path / 'pred_config.json'
     save_json(config, str(config_path))
     persist = tmp_path / 'persist'
-    manifest_path = (persist / 'diskgraph_job_sidecars' /
-                     'NA-1bf8d6a669f6a6caba68a2393f1044e3' / 'v1' /
-                     'manifests' / 'bp-job.json')
+    manifest_path = (
+        persist
+        / 'diskgraph_job_sidecars'
+        / 'NA-1bf8d6a669f6a6caba68a2393f1044e3'
+        / 'v1'
+        / 'manifests'
+        / 'bp-job.json'
+    )
     original_copy = fsutil.copy
 
     def copy_then_lose_pointer_ack(src, dst, **kwargs):
@@ -4716,7 +4925,8 @@ def test_ttng_upload_lost_pointer_ack_keeps_selected_generation(
 
 
 def test_ttng_upload_pre_put_failure_cleans_generation_and_retries(
-        tmp_path, monkeypatch):
+    tmp_path, monkeypatch
+):
     from io_utils import fsutil
     from io_utils.json import load_json, save_json
 
@@ -4762,8 +4972,7 @@ def test_ttng_upload_pre_put_failure_cleans_generation_and_retries(
             data_persist_dir=str(persist),
         )
     assert load_json(str(manifest_path), dict) == old_manifest
-    assert sorted(path.name
-                  for path in generations_dir.iterdir()) == old_generations
+    assert sorted(path.name for path in generations_dir.iterdir()) == old_generations
 
     monkeypatch.setattr(fsutil, 'copy', original_copy)
     upload_job_sidecars_from_config_path(
@@ -4774,8 +4983,13 @@ def test_ttng_upload_pre_put_failure_cleans_generation_and_retries(
     )
     winning_manifest = load_json(str(manifest_path), dict)
     assert winning_manifest != old_manifest
-    assert (Path(remote_root) / winning_manifest['generation_relpath'] /
-            'task_datasets' / 'bp-job' / 'marker').read_text() == 'new'
+    assert (
+        Path(remote_root)
+        / winning_manifest['generation_relpath']
+        / 'task_datasets'
+        / 'bp-job'
+        / 'marker'
+    ).read_text() == 'new'
 
 
 def test_ttng_prediction_shared_sidecars_survive_active_shard(tmp_path):
@@ -4796,12 +5010,15 @@ def test_ttng_prediction_shared_sidecars_survive_active_shard(tmp_path):
     save_json(config, str(config_path))
     persist = tmp_path / 'persist'
 
-    assert upload_job_sidecars_from_config_path(
-        _TEST_SNAPSHOT_ID,
-        str(config_path),
-        prediction=True,
-        data_persist_dir=str(persist),
-    ) is not None
+    assert (
+        upload_job_sidecars_from_config_path(
+            _TEST_SNAPSHOT_ID,
+            str(config_path),
+            prediction=True,
+            data_persist_dir=str(persist),
+        )
+        is not None
+    )
 
     shard_0 = restore_job_sidecars_for_use_from_config_path(
         _TEST_SNAPSHOT_ID,
@@ -4884,17 +5101,17 @@ def test_ttng_job_sidecars_include_training_extension(tmp_path):
     )
 
     assert remote_root is not None
-    manifest = load_json(
-        str(Path(remote_root) / 'manifests' / 'train-job.json'), dict)
+    manifest = load_json(str(Path(remote_root) / 'manifests' / 'train-job.json'), dict)
     generation_root = Path(remote_root) / manifest['generation_relpath']
-    assert (generation_root / 'task_datasets' / 'train-job' /
-            'marker').read_text() == 'bundle'
-    assert (generation_root / 'train_tables' / 'tt-job' /
-            'marker').read_text() == 'extension'
+    assert (
+        generation_root / 'task_datasets' / 'train-job' / 'marker'
+    ).read_text() == 'bundle'
+    assert (
+        generation_root / 'train_tables' / 'tt-job' / 'marker'
+    ).read_text() == 'extension'
 
 
-def test_ttng_shared_train_table_restore_skips_complete_local_extension(
-        tmp_path):
+def test_ttng_shared_train_table_restore_skips_complete_local_extension(tmp_path):
     from kumo_core.job_config import JobConfig
 
     from io_utils.json import save_json
@@ -4926,13 +5143,14 @@ def test_ttng_shared_train_table_restore_skips_complete_local_extension(
         data_persist_dir=str(persist),
     )
     assert remote_root is not None
-    manifest = load_json(
-        str(Path(remote_root) / 'manifests' / 'train-job.json'), dict)
+    manifest = load_json(str(Path(remote_root) / 'manifests' / 'train-job.json'), dict)
     generation_root = Path(remote_root) / manifest['generation_relpath']
-    (generation_root / 'task_datasets' / 'train-job' /
-     'marker').write_text('remote-bundle')
-    (generation_root / 'train_tables' / 'tt-job' /
-     'marker').write_text('remote-extension')
+    (generation_root / 'task_datasets' / 'train-job' / 'marker').write_text(
+        'remote-bundle'
+    )
+    (generation_root / 'train_tables' / 'tt-job' / 'marker').write_text(
+        'remote-extension'
+    )
 
     restore_job_sidecars_from_config_path(
         _TEST_SNAPSHOT_ID,
@@ -4946,7 +5164,8 @@ def test_ttng_shared_train_table_restore_skips_complete_local_extension(
 
 
 def test_ttng_shared_train_table_use_restore_skips_exclusive_when_complete(
-        tmp_path, monkeypatch):
+    tmp_path, monkeypatch
+):
     from kumo_core.job_config import JobConfig
 
     from io_utils.json import save_json
@@ -4972,12 +5191,15 @@ def test_ttng_shared_train_table_use_restore_skips_exclusive_when_complete(
     save_json(config, str(config_path))
     persist = tmp_path / 'persist'
 
-    assert upload_job_sidecars_from_config_path(
-        _TEST_SNAPSHOT_ID,
-        str(config_path),
-        prediction=False,
-        data_persist_dir=str(persist),
-    ) is not None
+    assert (
+        upload_job_sidecars_from_config_path(
+            _TEST_SNAPSHOT_ID,
+            str(config_path),
+            prediction=False,
+            data_persist_dir=str(persist),
+        )
+        is not None
+    )
 
     class SharedOnlyLock:
         def __init__(self, index_path, relpath):
@@ -5010,8 +5232,7 @@ def test_ttng_shared_train_table_use_restore_skips_exclusive_when_complete(
         sidecars.release()
 
 
-def test_ttng_shared_train_table_use_restore_accepts_train_table_sentinel(
-        tmp_path):
+def test_ttng_shared_train_table_use_restore_accepts_train_table_sentinel(tmp_path):
     from kumo_core.job_config import JobConfig
 
     from io_utils.json import save_json
@@ -5036,12 +5257,15 @@ def test_ttng_shared_train_table_use_restore_accepts_train_table_sentinel(
     save_json(config, str(config_path))
     persist = tmp_path / 'persist'
 
-    assert upload_job_sidecars_from_config_path(
-        _TEST_SNAPSHOT_ID,
-        str(config_path),
-        prediction=False,
-        data_persist_dir=str(persist),
-    ) is not None
+    assert (
+        upload_job_sidecars_from_config_path(
+            _TEST_SNAPSHOT_ID,
+            str(config_path),
+            prediction=False,
+            data_persist_dir=str(persist),
+        )
+        is not None
+    )
 
     shutil.rmtree(bundle)
     shutil.rmtree(extension)
@@ -5086,12 +5310,15 @@ def test_ttng_shared_train_table_cleanup_skips_active_extension(tmp_path):
     save_json(config, str(config_path))
     persist = tmp_path / 'persist'
 
-    assert upload_job_sidecars_from_config_path(
-        _TEST_SNAPSHOT_ID,
-        str(config_path),
-        prediction=False,
-        data_persist_dir=str(persist),
-    ) is not None
+    assert (
+        upload_job_sidecars_from_config_path(
+            _TEST_SNAPSHOT_ID,
+            str(config_path),
+            prediction=False,
+            data_persist_dir=str(persist),
+        )
+        is not None
+    )
 
     sidecars = restore_job_sidecars_for_use_from_config_path(
         _TEST_SNAPSHOT_ID,
@@ -5122,7 +5349,8 @@ def test_ttng_shared_train_table_cleanup_skips_active_extension(tmp_path):
 
 
 def test_ttng_shared_train_table_runtime_cleanup_releases_before_delete(
-        tmp_path, monkeypatch):
+    tmp_path, monkeypatch
+):
     from kumo_core.job_config import JobConfig
 
     from io_utils.json import save_json
@@ -5147,12 +5375,15 @@ def test_ttng_shared_train_table_runtime_cleanup_releases_before_delete(
     save_json(config, str(config_path))
     persist = tmp_path / 'persist'
 
-    assert upload_job_sidecars_from_config_path(
-        _TEST_SNAPSHOT_ID,
-        str(config_path),
-        prediction=False,
-        data_persist_dir=str(persist),
-    ) is not None
+    assert (
+        upload_job_sidecars_from_config_path(
+            _TEST_SNAPSHOT_ID,
+            str(config_path),
+            prediction=False,
+            data_persist_dir=str(persist),
+        )
+        is not None
+    )
 
     sidecars = restore_job_sidecars_for_use_from_config_path(
         _TEST_SNAPSHOT_ID,
@@ -5166,8 +5397,7 @@ def test_ttng_shared_train_table_runtime_cleanup_releases_before_delete(
     def fail_if_shared_lock_is_upgraded(*_args, **_kwargs):
         raise AssertionError('cleanup upgraded a held shared lock')
 
-    monkeypatch.setattr(held_lock, 'acquire_exclusive',
-                        fail_if_shared_lock_is_upgraded)
+    monkeypatch.setattr(held_lock, 'acquire_exclusive', fail_if_shared_lock_is_upgraded)
 
     sidecars.cleanup()
 
@@ -5199,12 +5429,15 @@ def test_ttng_runtime_sidecar_cleanup_is_best_effort(tmp_path, monkeypatch):
     save_json(config, str(config_path))
     persist = tmp_path / 'persist'
 
-    assert upload_job_sidecars_from_config_path(
-        _TEST_SNAPSHOT_ID,
-        str(config_path),
-        prediction=False,
-        data_persist_dir=str(persist),
-    ) is not None
+    assert (
+        upload_job_sidecars_from_config_path(
+            _TEST_SNAPSHOT_ID,
+            str(config_path),
+            prediction=False,
+            data_persist_dir=str(persist),
+        )
+        is not None
+    )
 
     sidecars = restore_job_sidecars_for_use_from_config_path(
         _TEST_SNAPSHOT_ID,
@@ -5217,12 +5450,13 @@ def test_ttng_runtime_sidecar_cleanup_is_best_effort(tmp_path, monkeypatch):
     release = mock.Mock(side_effect=RuntimeError('release failed'))
     monkeypatch.setattr(held_lock, 'release', release)
 
-    cleanup = mock.Mock(side_effect=[
-        RuntimeError('owned cleanup failed'),
-        RuntimeError('shared cleanup failed'),
-    ])
-    monkeypatch.setattr(job_sidecars_mod, '_cleanup_local_job_sidecars',
-                        cleanup)
+    cleanup = mock.Mock(
+        side_effect=[
+            RuntimeError('owned cleanup failed'),
+            RuntimeError('shared cleanup failed'),
+        ]
+    )
+    monkeypatch.setattr(job_sidecars_mod, '_cleanup_local_job_sidecars', cleanup)
 
     sidecars.cleanup()
 

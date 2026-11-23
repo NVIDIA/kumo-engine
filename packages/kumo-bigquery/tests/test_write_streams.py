@@ -20,10 +20,10 @@ SCHEMA = pa.schema([('id', pa.int64()), ('name', pa.string())])
 
 
 def batch(count, start=0):
-    return pa.RecordBatch.from_pylist([{
-        'id': start + i,
-        'name': f'row-{start + i}'
-    } for i in range(count)], schema=SCHEMA)
+    return pa.RecordBatch.from_pylist(
+        [{'id': start + i, 'name': f'row-{start + i}'} for i in range(count)],
+        schema=SCHEMA,
+    )
 
 
 def decode(payload):
@@ -40,8 +40,7 @@ def test_append_payloads_fit_the_limit_and_preserve_rows(limit):
     assert all(len(data) <= limit for data, _ in payloads)
     decoded = [decode(data) for data, _ in payloads]
     assert [b.num_rows for b in decoded] == [count for _, count in payloads]
-    assert pa.Table.from_batches(decoded).equals(
-        pa.Table.from_batches([original]))
+    assert pa.Table.from_batches(decoded).equals(pa.Table.from_batches([original]))
 
 
 def test_append_payloads_rejects_a_row_over_the_limit():
@@ -55,6 +54,7 @@ def test_append_payloads_yields_nothing_for_an_empty_batch():
 
 class Wire:
     """In-memory stand-in for the service behind ``AppendRowsStream``."""
+
     def __init__(self, fail_acks=()):
         self.accepted = {}
         self.rows = {}
@@ -71,8 +71,7 @@ class Wire:
         offsets.append(request.offset)
         payload = request.arrow_rows.rows.serialized_record_batch
         if len(payload) > 1:
-            count = pa.ipc.read_record_batch(pa.py_buffer(payload),
-                                             SCHEMA).num_rows
+            count = pa.ipc.read_record_batch(pa.py_buffer(payload), SCHEMA).num_rows
             self.rows[stream] = self.rows.get(stream, 0) + count
         if self.sends in self.fail_acks:
             return Ack(exceptions.ServiceUnavailable('ack lost'))
@@ -103,8 +102,8 @@ def wire(monkeypatch):
             pass
 
     monkeypatch.setattr(
-        'google.cloud.bigquery_storage_v1.writer.'
-        'AppendRowsStream', FakeAppendRowsStream)
+        'google.cloud.bigquery_storage_v1.writer.AppendRowsStream', FakeAppendRowsStream
+    )
     monkeypatch.setattr(streaming.time, 'sleep', lambda _: None)
     return state
 
@@ -133,8 +132,10 @@ def test_appender_raises_non_transient_errors(wire):
 def test_appender_does_not_retry_failed_precondition(wire):
     appender = _Appender(None, types.AppendRowsRequest(write_stream='s'))
     sends = []
-    wire.append = lambda stream, request: (sends.append(
-        request.offset), Ack(exceptions.FailedPrecondition('offset')))[1]
+    wire.append = lambda stream, request: (
+        sends.append(request.offset),
+        Ack(exceptions.FailedPrecondition('offset')),
+    )[1]
     appender.send(0, b'x')
 
     with pytest.raises(exceptions.FailedPrecondition):
@@ -142,8 +143,12 @@ def test_appender_does_not_retry_failed_precondition(wire):
     assert sends == [0]
 
 
-FAULTS = (exceptions.ServiceUnavailable, exceptions.Aborted,
-          exceptions.Cancelled, StreamClosedError)
+FAULTS = (
+    exceptions.ServiceUnavailable,
+    exceptions.Aborted,
+    exceptions.Cancelled,
+    StreamClosedError,
+)
 REQUESTS = 200
 SEEDS = 50
 
@@ -192,8 +197,8 @@ def run_faulty_stream(monkeypatch, seed):
             pass
 
     monkeypatch.setattr(
-        'google.cloud.bigquery_storage_v1.writer.AppendRowsStream',
-        FaultyStream)
+        'google.cloud.bigquery_storage_v1.writer.AppendRowsStream', FaultyStream
+    )
     monkeypatch.setattr(streaming.time, 'sleep', lambda _: None)
     appender = _Appender(None, types.AppendRowsRequest(write_stream='s'))
     for offset in range(REQUESTS):
@@ -233,12 +238,12 @@ class FakeWriteClient:
 
 @pytest.fixture
 def clients(monkeypatch, wire):
-    monkeypatch.setattr(streaming, 'encode_workers',
-                        lambda ceiling: ceiling or 1)
+    monkeypatch.setattr(streaming, 'encode_workers', lambda ceiling: ceiling or 1)
     shared = FakeWriteClient()
     shared.wire = wire
-    monkeypatch.setattr(streaming, 'write_clients', lambda count, credentials:
-                        (shared, ) * count)
+    monkeypatch.setattr(
+        streaming, 'write_clients', lambda count, credentials: (shared,) * count
+    )
     return shared
 
 
@@ -249,8 +254,9 @@ def source(start, count=2):
 def test_write_streams_spreads_sources_over_worker_streams(clients, wire):
     sources = [source(0), source(10), source(20)]
 
-    names = write_streams(clients, 'p', SCHEMA, sources,
-                          credentials=CREDENTIALS, worker_ceiling=2)
+    names = write_streams(
+        clients, 'p', SCHEMA, sources, credentials=CREDENTIALS, worker_ceiling=2
+    )
 
     assert len(names) == 2 == len(set(names))
     assert sorted(clients.finalized) == sorted(names)
@@ -258,8 +264,9 @@ def test_write_streams_spreads_sources_over_worker_streams(clients, wire):
 
 
 def test_write_streams_uses_no_more_streams_than_sources(clients, wire):
-    names = write_streams(clients, 'p', SCHEMA, [source(0)],
-                          credentials=CREDENTIALS, worker_ceiling=2)
+    names = write_streams(
+        clients, 'p', SCHEMA, [source(0)], credentials=CREDENTIALS, worker_ceiling=2
+    )
 
     assert len(names) == 1
 
@@ -272,5 +279,11 @@ def test_write_streams_raises_the_failing_source_error(clients, wire):
         return [batch(2)] * 50
 
     with pytest.raises(exceptions.BadRequest, match='bad source'):
-        write_streams(clients, 'p', SCHEMA, [slow, broken],
-                      credentials=CREDENTIALS, worker_ceiling=2)
+        write_streams(
+            clients,
+            'p',
+            SCHEMA,
+            [slow, broken],
+            credentials=CREDENTIALS,
+            worker_ceiling=2,
+        )

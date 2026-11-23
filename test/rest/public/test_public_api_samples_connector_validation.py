@@ -27,7 +27,7 @@ def _cursor(*, rows=None, execute_error=None):
     else:
         result = cursor.execute.return_value
         result.fetchall.return_value = rows or []
-        result.fetchone.return_value = (1, )
+        result.fetchone.return_value = (1,)
     return cursor
 
 
@@ -42,9 +42,11 @@ async def _create_bound_identity(state_services, monkeypatch) -> str:
     monkeypatch.setenv('DISABLE_AUTH', 'true')
     admin = UserAuthorization.disabled()
     project = await state_services.projects.get_project(
-        ProjectID(DEFAULT_PROJECT_ID), admin)
-    monkeypatch.setattr(state_services.identities, '_identity_validator',
-                        lambda *_args: None)
+        ProjectID(DEFAULT_PROJECT_ID), admin
+    )
+    monkeypatch.setattr(
+        state_services.identities, '_identity_validator', lambda *_args: None
+    )
     identity = await state_services.identities.create(
         api.CreateIdentityArgs(
             display_name='Samples OAuth identity',
@@ -53,7 +55,8 @@ async def _create_bound_identity(state_services, monkeypatch) -> str:
                 client_id='samples-client-id',
             ),
             credentials=api.DatabricksOAuthCredentials(
-                client_secret=SecretStr('samples-client-secret')),
+                client_secret=SecretStr('samples-client-secret')
+            ),
         ),
         admin,
     )
@@ -83,11 +86,9 @@ def test_samples_catalog_create_uses_exact_read_fallback(
     state_services,
     monkeypatch,
 ) -> None:
-    identity_id = asyncio.run(
-        _create_bound_identity(state_services, monkeypatch))
-    grant_cursor = _cursor(
-        execute_error=_server_error('SAMPLE_TABLE_PERMISSIONS'))
-    schema_cursor = _cursor(rows=[('information_schema', ), ('tpch', )])
+    identity_id = asyncio.run(_create_bound_identity(state_services, monkeypatch))
+    grant_cursor = _cursor(execute_error=_server_error('SAMPLE_TABLE_PERMISSIONS'))
+    schema_cursor = _cursor(rows=[('information_schema',), ('tpch',)])
     table_cursor = _cursor(rows=[('tpch', 'region', False)])
     read_cursor = _cursor()
     context = MagicMock()
@@ -109,12 +110,13 @@ def test_samples_catalog_create_uses_exact_read_fallback(
 
     assert response.status_code == HTTPStatus.OK, response.text
     grant_cursor.execute.assert_called_once_with(
-        'show grants `samples-client-id` on SCHEMA `samples`.`tpch`')
+        'show grants `samples-client-id` on SCHEMA `samples`.`tpch`'
+    )
     schema_cursor.execute.assert_called_once_with('SHOW SCHEMAS IN `samples`')
-    table_cursor.execute.assert_called_once_with(
-        'SHOW TABLES IN `samples`.`tpch`')
+    table_cursor.execute.assert_called_once_with('SHOW TABLES IN `samples`.`tpch`')
     read_cursor.execute.assert_called_once_with(
-        'SELECT 1 FROM `samples`.`tpch`.`region` LIMIT 1')
+        'SELECT 1 FROM `samples`.`tpch`.`region` LIMIT 1'
+    )
     open_provider.assert_called_once()
     close_provider.assert_called_once_with(context)
 
@@ -127,13 +129,13 @@ def test_samples_catalog_create_uses_exact_read_fallback(
         (
             'samples',
             DatabricksErrors.ServerOperationError(
-                'arbitrary SAMPLE_TABLE_PERMISSIONS provider secret'),
+                'arbitrary SAMPLE_TABLE_PERMISSIONS provider secret'
+            ),
             None,
         ),
-        ('samples', _server_error('SAMPLE_TABLE_PERMISSIONS'), [('private', )]),
+        ('samples', _server_error('SAMPLE_TABLE_PERMISSIONS'), [('private',)]),
     ],
-    ids=['customer-catalog', 'other-code', 'unstructured-code',
-         'schema-not-visible'],
+    ids=['customer-catalog', 'other-code', 'unstructured-code', 'schema-not-visible'],
 )
 def test_samples_catalog_create_fails_closed_for_every_other_case(
     public_api_client: TestClient,
@@ -143,8 +145,7 @@ def test_samples_catalog_create_fails_closed_for_every_other_case(
     grant_error,
     schema_rows,
 ) -> None:
-    identity_id = asyncio.run(
-        _create_bound_identity(state_services, monkeypatch))
+    identity_id = asyncio.run(_create_bound_identity(state_services, monkeypatch))
     grant_cursor = _cursor(execute_error=grant_error)
     cursors = [grant_cursor]
     if schema_rows is not None:

@@ -27,14 +27,15 @@ from typing import Optional, Sequence
 import pandas as pd
 from databricks.sql.client import Connection
 from kumo_core.object_store_sink import FileStoreRouting
-from kumo_databricks.registry import DatabricksModelRegistryMixin
-from kumo_databricks.session import _target_config
-from kumo_databricks.volume import is_volume_path, volume_filesystem
-from kumo_databricks.write import RunVolume
 from kumoapi.data_source import DataSourceType
 from kumoapi.jobs import WriteMode
 from kumoapi.plugin import SourceConnector
 from pyarrow.fs import FileSystem
+
+from kumo_databricks.registry import DatabricksModelRegistryMixin
+from kumo_databricks.session import _target_config
+from kumo_databricks.volume import is_volume_path, volume_filesystem
+from kumo_databricks.write import RunVolume
 
 
 class _DatabricksTables(DatabricksModelRegistryMixin):
@@ -104,15 +105,24 @@ class _DatabricksTables(DatabricksModelRegistryMixin):
                 )
         return sql.qualified_name(config.catalog, schema, table)
 
-    def write_files(self, connector, table_name, files,
-                    write_mode=WriteMode.OVERWRITE, project_id=None, *,
-                    export_id=None, extra_columns=None):
+    def write_files(
+        self,
+        connector,
+        table_name,
+        files,
+        write_mode=WriteMode.OVERWRITE,
+        project_id=None,
+        *,
+        export_id=None,
+        extra_columns=None,
+    ):
         """COPY selected Parquet into a table."""
         del project_id, export_id
         from functools import partial
 
         from kumo_core.artifact_export import prepared_artifact_file
         from kumo_core.artifact_staging import selected_local_parquet_files
+
         from kumo_databricks import output, sql, write
 
         selected = selected_local_parquet_files(files)
@@ -122,8 +132,7 @@ class _DatabricksTables(DatabricksModelRegistryMixin):
         # so the connection must permit only files this export prepared. Retain
         # the existing COPY-compatible timestamp precision while rewriting at
         # most one selected file at a time beneath one private export root.
-        with tempfile.TemporaryDirectory(
-                prefix='kumo-databricks-export-') as scratch:
+        with tempfile.TemporaryDirectory(prefix='kumo-databricks-export-') as scratch:
             prepare = partial(
                 prepared_artifact_file,
                 extra_columns=extra_columns,
@@ -134,11 +143,15 @@ class _DatabricksTables(DatabricksModelRegistryMixin):
                 write.load(
                     execute=lambda statement: _run(connection, statement),
                     run=_volume_runner(connection),
-                    workers=lambda files, commands: 1, catalog=config.catalog,
-                    schema=schema, table=table, artifact_path=str(selected[0]),
+                    workers=lambda files, commands: 1,
+                    catalog=config.catalog,
+                    schema=schema,
+                    table=table,
+                    artifact_path=str(selected[0]),
                     resolve_local=lambda path: selected,
                     replace=write_mode == WriteMode.OVERWRITE,
-                    prepare_file=prepare)
+                    prepare_file=prepare,
+                )
         return sql.qualified_name(config.catalog, schema, table)
 
 
@@ -151,18 +164,22 @@ class DatabricksSinkBackend(FileStoreRouting, _DatabricksTables):
 
     source_type = DataSourceType.DATABRICKS
 
-    _default_hint = ('LocalBackend(sinks={DataSourceType.DATABRICKS: '
-                     'DatabricksSinkBackend(identity=identity)})')
+    _default_hint = (
+        'LocalBackend(sinks={DataSourceType.DATABRICKS: '
+        'DatabricksSinkBackend(identity=identity)})'
+    )
 
     def holds_files(self, connector: SourceConnector, path: str) -> bool:
         return is_volume_path(path)
 
-    def filesystem(self, connector: SourceConnector,
-                   path: str) -> tuple[FileSystem, str]:
+    def filesystem(
+        self, connector: SourceConnector, path: str
+    ) -> tuple[FileSystem, str]:
         if not self.holds_files(connector, path):
             raise ValueError(
-                f"{path!r} is not a Unity Catalog volume path; Databricks "
-                f"artifacts go under /Volumes/<catalog>/<schema>/<volume>/.")
+                f'{path!r} is not a Unity Catalog volume path; Databricks '
+                f'artifacts go under /Volumes/<catalog>/<schema>/<volume>/.'
+            )
         return volume_filesystem(self._client(connector)), path.rstrip('/')
 
     def __repr__(self) -> str:
@@ -177,9 +194,14 @@ def _volume_runner(connection: Connection) -> RunVolume:
     there is nothing to fan out and the arguments that describe the fan-out
     are accepted and ignored.
     """
-    def run(commands: Sequence[str], *, worker_count: int = 1,
-            staging_allowed_local_path: Optional[str] = None,
-            ignore_missing: bool = False) -> None:
+
+    def run(
+        commands: Sequence[str],
+        *,
+        worker_count: int = 1,
+        staging_allowed_local_path: Optional[str] = None,
+        ignore_missing: bool = False,
+    ) -> None:
         del worker_count, staging_allowed_local_path
         for command in commands:
             try:

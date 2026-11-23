@@ -14,6 +14,7 @@ examples, agent/IDE hooks, migration roots, etc.) are listed in
 ``ALLOWED_MISSING_INIT`` below. Add to that set only with intent; each entry
 should be a directory that will never be imported as a package.
 """
+
 from __future__ import annotations
 
 import os
@@ -43,18 +44,20 @@ _SKIP_DIR_NAMES = {
 #
 # Keep this list intentional and tight. If a new directory shows up in test
 # failures, the default should be to add an `__init__.py`, not to add it here.
-ALLOWED_MISSING_INIT: frozenset[str] = frozenset({
-    '.agents/hooks',
-    '.agents/scripts',
-    '.claude/hooks',
-    'benchmark',
-    'benchmark/explain',
-    'docker',
-    'examples',
-    'examples/sdk-local',
-    'scripts/docs',
-    'test/scripts/docs',
-})
+ALLOWED_MISSING_INIT: frozenset[str] = frozenset(
+    {
+        '.agents/hooks',
+        '.agents/scripts',
+        '.claude/hooks',
+        'benchmark',
+        'benchmark/explain',
+        'docker',
+        'examples',
+        'examples/sdk-local',
+        'scripts/docs',
+        'test/scripts/docs',
+    }
+)
 
 
 def _iter_python_dirs():
@@ -83,8 +86,8 @@ def test_every_python_dir_has_init() -> None:
         'This breaks `setuptools.find_packages()` and Docker image builds. '
         'Add an __init__.py (preferred) or, if the directory is intentionally '
         'not a Python package, add it to ALLOWED_MISSING_INIT in '
-        'test/test_package_init.py.\nMissing:\n  - ' +
-        '\n  - '.join(sorted(missing)))
+        'test/test_package_init.py.\nMissing:\n  - ' + '\n  - '.join(sorted(missing))
+    )
 
 
 def test_allowed_missing_init_is_still_valid() -> None:
@@ -101,14 +104,14 @@ def test_allowed_missing_init_is_still_valid() -> None:
 
     assert not stale, (
         'ALLOWED_MISSING_INIT contains entries that are no longer valid. '
-        'Remove them from test/test_package_init.py:\n  - ' +
-        '\n  - '.join(sorted(stale)))
+        'Remove them from test/test_package_init.py:\n  - '
+        + '\n  - '.join(sorted(stale))
+    )
 
 
 def test_shipped_memory_tools_declare_psutil(monkeypatch) -> None:
     captured = {}
-    monkeypatch.setattr(setuptools, 'setup',
-                        lambda **kwargs: captured.update(kwargs))
+    monkeypatch.setattr(setuptools, 'setup', lambda **kwargs: captured.update(kwargs))
 
     runpy.run_path(str(REPO_ROOT / 'setup.py'), run_name='kumo_setup_metadata')
 

@@ -32,14 +32,12 @@ from kumo.engine.connector.base import Connector
 from kumo.engine.connector.identity import S3Identity
 
 
-def _parse_s3_root_dir(root_dir: str,
-                       region: Optional[str]) -> S3ConnectorTarget:
+def _parse_s3_root_dir(root_dir: str, region: Optional[str]) -> S3ConnectorTarget:
     parsed = urlsplit(root_dir)
     if parsed.scheme != 's3':
-        raise ValueError(f"root_dir must be an s3:// URI, got {root_dir!r}.")
+        raise ValueError(f'root_dir must be an s3:// URI, got {root_dir!r}.')
     prefix = parsed.path.strip('/')
-    return S3RootedConnectorTarget(bucket=parsed.netloc, prefix=prefix,
-                                   region=region)
+    return S3RootedConnectorTarget(bucket=parsed.netloc, prefix=prefix, region=region)
 
 
 class S3Connector(Connector):
@@ -65,6 +63,7 @@ class S3Connector(Connector):
         region: Optional bucket region for rooted mode. Invalid in any-URI
             mode, matching the cloud SDK's validation.
     """
+
     def __init__(
         self,
         *,
@@ -75,20 +74,22 @@ class S3Connector(Connector):
         super().__init__(identity=identity)
         if root_dir is None:
             if region is not None:
-                raise ValueError(
-                    'region is only supported when root_dir is set')
+                raise ValueError('region is only supported when root_dir is set')
             target: S3ConnectorTarget = S3AnyURIConnectorTarget()
         else:
             target = _parse_s3_root_dir(root_dir, region)
         self._config = S3ConnectorResourceConfig(target=target)
         self.target = target
         self.any_uri = isinstance(target, S3AnyURIConnectorTarget)
-        self.bucket = (target.bucket
-                       if isinstance(target, S3RootedConnectorTarget) else None)
-        self.prefix = (target.prefix
-                       if isinstance(target, S3RootedConnectorTarget) else None)
-        self.region = (target.region
-                       if isinstance(target, S3RootedConnectorTarget) else None)
+        self.bucket = (
+            target.bucket if isinstance(target, S3RootedConnectorTarget) else None
+        )
+        self.prefix = (
+            target.prefix if isinstance(target, S3RootedConnectorTarget) else None
+        )
+        self.region = (
+            target.region if isinstance(target, S3RootedConnectorTarget) else None
+        )
 
     @property
     def source_type(self) -> DataSourceType:
@@ -100,20 +101,19 @@ class S3Connector(Connector):
 
     @cached_property
     def source_backend(self):
-        S3SourceBackend = import_provider("kumo_s3.backend",
-                                          "s3").S3SourceBackend
+        S3SourceBackend = import_provider('kumo_s3.backend', 's3').S3SourceBackend
         return S3SourceBackend(identity=self.identity)
 
     @cached_property
     def sink_backend(self):
-        S3SinkBackend = import_provider("kumo_s3.sink", "s3").S3SinkBackend
+        S3SinkBackend = import_provider('kumo_s3.sink', 's3').S3SinkBackend
         return S3SinkBackend(identity=self.identity)
 
     def source_table_for(self, table_name: str) -> S3SourceTable:
         """Resolve source format and addressing through the provider reader."""
-        return self.source_backend.get_table_config(self,
-                                                    table_name).source_table
+        return self.source_backend.get_table_config(self, table_name).source_table
 
     def __repr__(self) -> str:
-        return (f"{self.__class__.__name__}(bucket={self.bucket!r}, "
-                f"prefix={self.prefix!r})")
+        return (
+            f'{self.__class__.__name__}(bucket={self.bucket!r}, prefix={self.prefix!r})'
+        )

@@ -84,12 +84,12 @@ async def test_native_request_authority_uses_current_membership(
     proxy,
     expected_admin,
 ) -> None:
-    groups = SimpleNamespace(resolve_native_memberships=AsyncMock(
-        return_value=['current-group']))
+    groups = SimpleNamespace(
+        resolve_native_memberships=AsyncMock(return_value=['current-group'])
+    )
     resolver = WorkerPrincipalAuthorityResolver(SimpleNamespace(groups=groups))
     monkeypatch.setattr(
-        'rest.backends.data_backend.principal_authority.'
-        'resolve_auth_settings_config',
+        'rest.backends.data_backend.principal_authority.resolve_auth_settings_config',
         lambda _config: _auth_settings(enabled, proxy),
     )
     monkeypatch.setattr(
@@ -97,10 +97,9 @@ async def test_native_request_authority_uses_current_membership(
         lambda: SimpleNamespace(deploy_mode=SimpleNamespace(is_preprod=False)),
     )
 
-    principal = await resolver.resolve(
-        _authorization(owner=owner, backend=backend))
+    principal = await resolver.resolve(_authorization(owner=owner, backend=backend))
 
-    assert principal.kumo_group_ids == ('current-group', )
+    assert principal.kumo_group_ids == ('current-group',)
     assert principal.is_admin is expected_admin
     groups.resolve_native_memberships.assert_awaited_once()
     assert groups.resolve_native_memberships.await_args.args[0] == owner
@@ -108,13 +107,14 @@ async def test_native_request_authority_uses_current_membership(
 
 @pytest.mark.asyncio
 async def test_synthetic_request_owner_never_reaches_external_resolver(
-        monkeypatch) -> None:
+    monkeypatch,
+) -> None:
     resolver = WorkerPrincipalAuthorityResolver(
-        SimpleNamespace(groups=SimpleNamespace()))
+        SimpleNamespace(groups=SimpleNamespace())
+    )
     resolver._resolve_direct_connect = AsyncMock()
     monkeypatch.setattr(
-        'rest.backends.data_backend.principal_authority.'
-        'resolve_auth_settings_config',
+        'rest.backends.data_backend.principal_authority.resolve_auth_settings_config',
         lambda _config: _auth_settings(True, False),
     )
     monkeypatch.setattr(
@@ -122,29 +122,32 @@ async def test_synthetic_request_owner_never_reaches_external_resolver(
         lambda: SimpleNamespace(deploy_mode=SimpleNamespace(is_preprod=False)),
     )
 
-    with pytest.raises(PermissionError,
-                       match='Synthetic request authority is invalid'):
+    with pytest.raises(PermissionError, match='Synthetic request authority is invalid'):
         await resolver.resolve(
             _authorization(
                 owner=AUTHORIZATION_DISABLED,
                 backend='direct_connect',
-            ))
+            )
+        )
 
     resolver._resolve_direct_connect.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_external_membership_outage_remains_retryable_unavailable(
-        monkeypatch) -> None:
+    monkeypatch,
+) -> None:
     resolver = WorkerPrincipalAuthorityResolver(
-        SimpleNamespace(groups=SimpleNamespace()))
-    resolver._resolve_native_request = AsyncMock(return_value=SimpleNamespace(
-        group_ids=(),
-        external_membership_unavailable=True,
-    ))
+        SimpleNamespace(groups=SimpleNamespace())
+    )
+    resolver._resolve_native_request = AsyncMock(
+        return_value=SimpleNamespace(
+            group_ids=(),
+            external_membership_unavailable=True,
+        )
+    )
     monkeypatch.setattr(
-        'rest.backends.data_backend.principal_authority.'
-        'resolve_auth_settings_config',
+        'rest.backends.data_backend.principal_authority.resolve_auth_settings_config',
         lambda _config: _auth_settings(False, False),
     )
     monkeypatch.setattr(
@@ -154,12 +157,11 @@ async def test_external_membership_outage_remains_retryable_unavailable(
 
     with pytest.raises(PrincipalAuthorityUnavailableError):
         await resolver.resolve(
-            _authorization(owner=AUTHORIZATION_DISABLED,
-                           backend='native_disabled'))
+            _authorization(owner=AUTHORIZATION_DISABLED, backend='native_disabled')
+        )
 
 
-def test_principal_authority_error_categories_preserve_retry_semantics(
-) -> None:
+def test_principal_authority_error_categories_preserve_retry_semantics() -> None:
     assert issubclass(PrincipalAuthorityDeniedError, PermissionError)
     assert not issubclass(PrincipalAuthorityUnavailableError, PermissionError)
 
@@ -179,12 +181,12 @@ async def test_native_request_authority_rejects_owner_or_mode_mismatch(
     enabled,
     proxy,
 ) -> None:
-    groups = SimpleNamespace(resolve_native_memberships=AsyncMock(
-        return_value=['current-group']))
+    groups = SimpleNamespace(
+        resolve_native_memberships=AsyncMock(return_value=['current-group'])
+    )
     resolver = WorkerPrincipalAuthorityResolver(SimpleNamespace(groups=groups))
     monkeypatch.setattr(
-        'rest.backends.data_backend.principal_authority.'
-        'resolve_auth_settings_config',
+        'rest.backends.data_backend.principal_authority.resolve_auth_settings_config',
         lambda _config: _auth_settings(enabled, proxy),
     )
     monkeypatch.setattr(
@@ -197,13 +199,12 @@ async def test_native_request_authority_rejects_owner_or_mode_mismatch(
 
 
 @pytest.mark.asyncio
-async def test_external_user_cannot_impersonate_internal_service(
-        monkeypatch) -> None:
+async def test_external_user_cannot_impersonate_internal_service(monkeypatch) -> None:
     resolver = WorkerPrincipalAuthorityResolver(
-        SimpleNamespace(groups=SimpleNamespace()))
+        SimpleNamespace(groups=SimpleNamespace())
+    )
     monkeypatch.setattr(
-        'rest.backends.data_backend.principal_authority.'
-        'resolve_auth_settings_config',
+        'rest.backends.data_backend.principal_authority.resolve_auth_settings_config',
         lambda _config: _auth_settings(True, False),
     )
     monkeypatch.setattr(

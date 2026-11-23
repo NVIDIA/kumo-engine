@@ -33,8 +33,11 @@ def ingests(tmp_path, monkeypatch):
     monkeypatch.setattr(Graph, '_graph_config', {'tables': []})
     monkeypatch.setattr(Graph, 'validate', lambda self: None)
     monkeypatch.setattr(snapshots, 'check_diskgraph_output', lambda path: None)
-    monkeypatch.setattr(snapshots.DiskgraphIngestResult, 'for_index',
-                        lambda path: SimpleNamespace(to_json=lambda: '{}'))
+    monkeypatch.setattr(
+        snapshots.DiskgraphIngestResult,
+        'for_index',
+        lambda path: SimpleNamespace(to_json=lambda: '{}'),
+    )
     specs = []
 
     def execute(graph_config, spec):
@@ -48,14 +51,17 @@ def ingests(tmp_path, monkeypatch):
 def _graph():
     class Source:
         def prepare_ingest(self, connector, table_name, destination, **_):
-            return SimpleNamespace(credentials=None, version='v1',
-                                   source={'path': destination})
+            return SimpleNamespace(
+                credentials=None, version='v1', source={'path': destination}
+            )
 
     table: Any = SimpleNamespace(
         table_name='events',
         definition=SimpleNamespace(cols=[], source_table=None),
-        connector=SimpleNamespace(source_backend=Source(),
-                                  validate_scratch_dir=lambda path: None))
+        connector=SimpleNamespace(
+            source_backend=Source(), validate_scratch_dir=lambda path: None
+        ),
+    )
     return Graph(tables=[table])
 
 
@@ -67,8 +73,7 @@ def test_snapshot_ingests_in_the_requested_clock(ingests, clock):
 
 def test_seconds_snapshot_keeps_the_existing_cache_key(ingests):
     snapshot = _graph().snapshot()
-    data_version = fingerprint(
-        json.dumps({'events': 'v1'}, sort_keys=True).encode())
+    data_version = fingerprint(json.dumps({'events': 'v1'}, sort_keys=True).encode())
     assert snapshot.id == f'graph-key@{data_version[:16]}'
 
 
@@ -82,21 +87,34 @@ def test_unknown_clock_is_rejected():
         _graph().snapshot(timestamp_precision='months')
 
 
-@pytest.mark.parametrize('recorded, read', [({}, 'seconds'), (
-    {'timestamp_precision': 'milliseconds'}, 'milliseconds')])
+@pytest.mark.parametrize(
+    'recorded, read',
+    [({}, 'seconds'), ({'timestamp_precision': 'milliseconds'}, 'milliseconds')],
+)
 def test_a_bundle_records_its_clock(tmp_path, recorded, read):
-    (tmp_path / SPEC_FILE).write_text(json.dumps({
-        'spec_version': SPEC_VERSION, 'predictive_query': 'q', 'model_plan': {},
-        'snapshot_id': 'graph@v1', 'training_table_generation': {}, **recorded}))
+    (tmp_path / SPEC_FILE).write_text(
+        json.dumps(
+            {
+                'spec_version': SPEC_VERSION,
+                'predictive_query': 'q',
+                'model_plan': {},
+                'snapshot_id': 'graph@v1',
+                'training_table_generation': {},
+                **recorded,
+            }
+        )
+    )
     assert read_training_spec(tmp_path).timestamp_precision == read
 
 
 def test_predict_refuses_a_snapshot_in_another_clock(tmp_path):
     (tmp_path / 'index_metadata.json').write_text(
-        json.dumps({'timestamp_unit': 'seconds'}))
+        json.dumps({'timestamp_unit': 'seconds'})
+    )
     trainer = Trainer(cast(Any, SimpleNamespace()))
     trainer._training_result = cast(Any, SimpleNamespace())
     trainer._timestamp_precision = 'milliseconds'
     with pytest.raises(ValueError, match='trained on a milliseconds snapshot'):
-        trainer.predict(cast(Any, None),
-                        snapshot=GraphSnapshot('graph@v1', tmp_path, {}))
+        trainer.predict(
+            cast(Any, None), snapshot=GraphSnapshot('graph@v1', tmp_path, {})
+        )

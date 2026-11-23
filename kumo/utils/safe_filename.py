@@ -6,8 +6,7 @@ from urllib.parse import quote
 
 
 def safe_filename(name: str, max_length: int = 255) -> str:
-    r"""Make a string suitable for the use of a filename.
-    """
+    r"""Make a string suitable for the use of a filename."""
     safe_name = quote(name, safe='')
     # Replace leading/trailing spaces and truncate to max_length:
     return safe_name.strip()[:max_length]

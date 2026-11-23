@@ -32,8 +32,7 @@ class _FailingTrainTable:
 
 
 def _module(*, arl_length=2, forecast_length=3):
-    module = object.__new__(
-        forecasting_gnn_module.ForecastingGNNLightningModule)
+    module = object.__new__(forecasting_gnn_module.ForecastingGNNLightningModule)
     module.train_table_name = 'TRAIN_TABLE'
     module.entity_table_name = 'User'
     module.arl_length = arl_length
@@ -51,8 +50,7 @@ def _batch(column_name: str, values: torch.Tensor) -> HeteroData:
     batch['User'].seed_time = torch.zeros(values.size(0), dtype=torch.long)
     batch['TRAIN_TABLE'].tf = TensorFrame(
         feat_dict={
-            torch_stype.sequence_numerical:
-            MultiEmbeddingTensor(
+            torch_stype.sequence_numerical: MultiEmbeddingTensor(
                 num_rows=values.size(0),
                 num_cols=1,
                 values=values,
@@ -105,9 +103,7 @@ def test_predict_forward_reads_ttng_ar_sequence_numerical():
     module.year_over_year_encoder = None
     module.past_encoder = None
     module.encoder = lambda *_args, **_kwargs: {}
-    module.model = lambda *_args, **_kwargs: {
-        'User': torch.ones(values.size(0), 4)
-    }
+    module.model = lambda *_args, **_kwargs: {'User': torch.ones(values.size(0), 4)}
 
     def _head(_x, *, length, past, **_kwargs):
         captured['length'] = length
@@ -147,7 +143,7 @@ def test_predict_step_returns_requested_embedding_per_batch():
 
     def common_step(_batch, *, predict):
         assert predict is True
-        state['hook'](None, (embedding, ))
+        state['hook'](None, (embedding,))
         return torch.zeros(2, 3, 1)
 
     module._get_register_embedding_hook_fn = lambda: register_hook

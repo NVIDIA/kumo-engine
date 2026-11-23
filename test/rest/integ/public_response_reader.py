@@ -25,7 +25,8 @@ def public_parquet_refs(reference: str) -> list[str]:
 def flatten_public_parquet_refs(references: Iterable[str]) -> list[str]:
     """Expand every public parquet reference without dropping partitions."""
     return [
-        parquet_ref for reference in references
+        parquet_ref
+        for reference in references
         for parquet_ref in public_parquet_refs(reference)
     ]
 

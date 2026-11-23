@@ -8,10 +8,8 @@ from kumoapi.typing import Dtype, Stype
 from kumo.connector.csv_connector import CSVConnector
 
 
-def test_csv_connector_load_full_s3_dataset(tempdir,
-                                            require_kumo_public_datasets_s3):
-    connector = CSVConnector(
-        'csv', root_dir="s3://kumo-public-datasets/financial/csv/")
+def test_csv_connector_load_full_s3_dataset(tempdir, require_kumo_public_datasets_s3):
+    connector = CSVConnector('csv', root_dir='s3://kumo-public-datasets/financial/csv/')
 
     pkey = 'TRANS_ID'
     cols = [
@@ -23,16 +21,12 @@ def test_csv_connector_load_full_s3_dataset(tempdir,
     df = connector.read_table('TRANS', pkey, cols)
     assert len(df.columns) == len(cols)
     assert df.columns.values.tolist() == [col[0] for col in cols]
-    assert df.dtypes.values.tolist() == [
-        dtype_to_pandas(col[2]) for col in cols
-    ]
+    assert df.dtypes.values.tolist() == [dtype_to_pandas(col[2]) for col in cols]
     assert df.shape[0] == 1056320
 
 
-def test_csv_connector_load_string_ids(tempdir,
-                                       require_kumo_public_datasets_s3):
-    connector = CSVConnector('csv',
-                             root_dir="s3://kumo-public-datasets/test_csv/")
+def test_csv_connector_load_string_ids(tempdir, require_kumo_public_datasets_s3):
+    connector = CSVConnector('csv', root_dir='s3://kumo-public-datasets/test_csv/')
 
     df = connector.read_table('test_csv')
     # Note that if it becomes 3, the test should fail since id `01` and `1`

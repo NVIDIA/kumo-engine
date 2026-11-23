@@ -31,7 +31,7 @@ def run(path: str) -> None:
     fixture = json.load_json(path, FixtureDefinition)
 
     if not fixture.graphs:
-        raise ValueError(f"Fixture at {path} has no graphs")
+        raise ValueError(f'Fixture at {path} has no graphs')
     graph0 = fixture.graphs[0]
 
     def _v2_source_identity_str(table_def: TableDefinition) -> str:
@@ -44,7 +44,7 @@ def run(path: str) -> None:
             return str(st.table)
         if isinstance(st, BigQuerySourceTable):
             return str(st.table_name)
-        raise TypeError(f"Unsupported source_table type: {type(st)}")
+        raise TypeError(f'Unsupported source_table type: {type(st)}')
 
     def _v2_logical_table_name(table_def: TableDefinition) -> str:
         for key, td in graph0.tables.items():
@@ -52,11 +52,11 @@ def run(path: str) -> None:
                 return key
         return _v2_source_identity_str(table_def)
 
-    print("_TABLE_SCHEMAS = [")
+    print('_TABLE_SCHEMAS = [')
     for table_def in fixture.tables:
         name = _v2_logical_table_name(table_def)
         source_identity = _v2_source_identity_str(table_def)
-        print("    fixture_utils.Table(")
+        print('    fixture_utils.Table(')
         print(f"        name='{name}',")
         if name != source_identity:
             print(f"        source_table_name='{source_identity}',")
@@ -64,18 +64,18 @@ def run(path: str) -> None:
             print(f"        pkey='{table_def.pkey}',")
         if table_def.time_col is not None:
             print(f"        time_col='{table_def.time_col}',")
-        print("    ),")
-    print("]")
-    print("")
+        print('    ),')
+    print(']')
+    print('')
 
-    print("_COL_GROUPS: List[List[fixture_utils.TableDotCol]] = [")
+    print('_COL_GROUPS: List[List[fixture_utils.TableDotCol]] = [')
     for grp in graph0.col_groups:
-        print("    [")
+        print('    [')
         for col in grp.columns:
-            table_dot_col = f"{col.table_name}.{col.col_name}"
+            table_dot_col = f'{col.table_name}.{col.col_name}'
             print(f"        '{table_dot_col}',")
-        print("    ],")
-    print("]")
+        print('    ],')
+    print(']')
 
 
 if __name__ == '__main__':

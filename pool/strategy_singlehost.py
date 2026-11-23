@@ -6,6 +6,7 @@
 worker, all placements route to the single :data:`SINGLEHOST_WORKER_UID`
 queue.  ``provision()`` / ``release()`` are no-ops.
 """
+
 from collections.abc import Iterable
 from typing import Optional
 
@@ -45,8 +46,14 @@ class SinglehostPlacementStrategy:
     ) -> RouteDecision:
         # Singlehost has one static worker and no overflow pool, so the
         # sibling-fanout inputs don't apply.
-        del (request, warm_location_uid, snapshot_size_estimate_bytes,
-             home_worker_uid, home_gpu_in_use, overflow_viable)
+        del (
+            request,
+            warm_location_uid,
+            snapshot_size_estimate_bytes,
+            home_worker_uid,
+            home_gpu_in_use,
+            overflow_viable,
+        )
         return RouteDecision(
             path='durable',
             pool_worker_uid=SINGLEHOST_WORKER_UID,
@@ -88,8 +95,7 @@ class SinglehostPlacementStrategy:
             live_pool_worker_uids={SINGLEHOST_WORKER_UID},
         )
 
-    async def revalidate_retired_workers(
-            self, uids: Iterable[str]) -> set[str]:
+    async def revalidate_retired_workers(self, uids: Iterable[str]) -> set[str]:
         return set(uids)
 
     async def delete_workers(self, uids: Iterable[str]) -> set[str]:

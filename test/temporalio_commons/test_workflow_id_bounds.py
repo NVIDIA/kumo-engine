@@ -18,24 +18,32 @@ from temporalio_commons.worker_interceptors import (
 )
 
 LIMIT_MEMO = {
-    ID_MAX_LENGTH_MEMO_FIELD:
-    SimpleNamespace(data=str(MAX_WORKFLOW_ID_LENGTH).encode())
+    ID_MAX_LENGTH_MEMO_FIELD: SimpleNamespace(data=str(MAX_WORKFLOW_ID_LENGTH).encode())
 }
 
 
-async def _start_child(child_id: str, id_suffix: str | None,
-                       raw_memo=LIMIT_MEMO) -> str:
+async def _start_child(
+    child_id: str, id_suffix: str | None, raw_memo=LIMIT_MEMO
+) -> str:
     next_interceptor = SimpleNamespace(start_child_workflow=AsyncMock())
     interceptor = KumoWorkflowOutboundInterceptor(next_interceptor)
-    interceptor.info = MagicMock(return_value=SimpleNamespace(
-        search_attributes=None, task_timeout=timedelta(seconds=10),
-        raw_memo=raw_memo))
+    interceptor.info = MagicMock(
+        return_value=SimpleNamespace(
+            search_attributes=None,
+            task_timeout=timedelta(seconds=10),
+            raw_memo=raw_memo,
+        )
+    )
     interceptor._get_id_suffix = MagicMock(return_value=id_suffix)
-    child_input = SimpleNamespace(args=[], id=child_id,
-                                  workflow='TableRefreshWorkflow',
-                                  task_queue='task-queue',
-                                  search_attributes=None, memo=None,
-                                  task_timeout=None)
+    child_input = SimpleNamespace(
+        args=[],
+        id=child_id,
+        workflow='TableRefreshWorkflow',
+        task_queue='task-queue',
+        search_attributes=None,
+        memo=None,
+        task_timeout=None,
+    )
     await interceptor.start_child_workflow(child_input)
     return child_input.id
 
@@ -61,5 +69,4 @@ async def test_short_child_workflow_id_only_gains_suffix() -> None:
 @pytest.mark.asyncio
 async def test_child_without_a_limit_keeps_long_workflow_id() -> None:
     long_id = 'table-ingest-' + 'x' * 300
-    assert await _start_child(long_id, '-acme', raw_memo={}) == (
-        long_id + '-acme')
+    assert await _start_child(long_id, '-acme', raw_memo={}) == (long_id + '-acme')

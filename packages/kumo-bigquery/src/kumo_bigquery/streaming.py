@@ -18,16 +18,17 @@ from typing import Any
 
 import pyarrow as pa
 from google.auth.credentials import Credentials
-from kumo_bigquery.errors import rules, summary
 from kumo_core.sources.cpu import encode_workers
 from kumo_core.sources.diagnostics import transient
 from kumo_core.sources.errors import PermanentSourceError
 
-TEMP_TABLE = "kumo_read_target"
-CREATE_TEMP = f"CREATE TEMP TABLE _SESSION.{TEMP_TABLE} AS {{sql}}"
-DROP_TEMP = f"DROP TABLE _SESSION.{TEMP_TABLE}"
+from kumo_bigquery.errors import rules, summary
+
+TEMP_TABLE = 'kumo_read_target'
+CREATE_TEMP = f'CREATE TEMP TABLE _SESSION.{TEMP_TABLE} AS {{sql}}'
+DROP_TEMP = f'DROP TABLE _SESSION.{TEMP_TABLE}'
 SERVER_CHOSEN_STREAMS = 0
-OWN_CONNECTION = ("grpc.use_local_subchannel_pool", 1)
+OWN_CONNECTION = ('grpc.use_local_subchannel_pool', 1)
 TEMP_TABLE_CLEANUP_TIMEOUT_SECONDS = 60
 # AppendRows requests are capped at 10 MB.
 MAX_APPEND_BYTES = 8 << 20
@@ -42,8 +43,7 @@ class ReadTarget:
     path: str
     fields: tuple[str, ...]
     bytes_scanned: int | None = None
-    release: Callable[[], None] | None = field(default=None, repr=False,
-                                               compare=False)
+    release: Callable[[], None] | None = field(default=None, repr=False, compare=False)
 
 
 def query_target(
@@ -57,32 +57,38 @@ def query_target(
     after reading."""
     from google.cloud import bigquery
 
-    create_config = (copy.deepcopy(job_config)
-                     if job_config is not None else bigquery.QueryJobConfig())
+    create_config = (
+        copy.deepcopy(job_config)
+        if job_config is not None
+        else bigquery.QueryJobConfig()
+    )
     create_config.create_session = True
     job = client.query(CREATE_TEMP.format(sql=sql), job_config=create_config)
     job.result()
     session = job.session_info
     session_id = session.session_id if session is not None else None
     if not session_id:
-        raise PermanentSourceError("query created no BigQuery session")
+        raise PermanentSourceError('query created no BigQuery session')
 
     def drop_table() -> None:
         drop_config = copy.deepcopy(create_config)
         drop_config.create_session = False
         drop_config.connection_properties = [
-            bigquery.ConnectionProperty(key="session_id", value=session_id)
+            bigquery.ConnectionProperty(key='session_id', value=session_id)
         ]
         client.query(DROP_TEMP, job_config=drop_config).result(
-            timeout=TEMP_TABLE_CLEANUP_TIMEOUT_SECONDS)
+            timeout=TEMP_TABLE_CLEANUP_TIMEOUT_SECONDS
+        )
 
     destination = job.ddl_target_table
     if destination is None:
-        _release(drop_table, "query produced no destination")
-        raise PermanentSourceError("query created no session temporary table")
+        _release(drop_table, 'query produced no destination')
+        raise PermanentSourceError('query created no session temporary table')
     return ReadTarget(
-        path=(f"projects/{destination.project}/datasets/"
-              f"{destination.dataset_id}/tables/{destination.table_id}"),
+        path=(
+            f'projects/{destination.project}/datasets/'
+            f'{destination.dataset_id}/tables/{destination.table_id}'
+        ),
         fields=fields,
         bytes_scanned=int(job.total_bytes_processed or 0),
         release=drop_table,
@@ -93,8 +99,9 @@ def _release(release: Callable[[], None], reason: str) -> None:
     try:
         release()
     except Exception as error:  # noqa: BLE001
-        logger.error("Could not drop BigQuery temporary result (%s): %s",
-                     reason, summary(error))
+        logger.error(
+            'Could not drop BigQuery temporary result (%s): %s', reason, summary(error)
+        )
 
 
 @contextmanager
@@ -107,16 +114,13 @@ def target_streams(
     worker_ceiling: int | None = None,
 ) -> Iterator[tuple[tuple[Iterator[Any], ...], int]]:
     try:
-        session = open_session(read_client, target,
-                               billing_project=billing_project)
-        workers = min(encode_workers(worker_ceiling),
-                      max(len(session.streams), 1))
-        with client_pool(read_client, workers,
-                         credentials=credentials) as clients:
+        session = open_session(read_client, target, billing_project=billing_project)
+        workers = min(encode_workers(worker_ceiling), max(len(session.streams), 1))
+        with client_pool(read_client, workers, credentials=credentials) as clients:
             yield stream_batches(session, clients), workers
     finally:
         if target.release is not None:
-            _release(target.release, "read completed or failed")
+            _release(target.release, 'read completed or failed')
 
 
 def open_session(
@@ -131,15 +135,19 @@ def open_session(
     from google.cloud.bigquery_storage import types
 
     return read_client.create_read_session(
-        parent=f"projects/{billing_project}",
+        parent=f'projects/{billing_project}',
         read_session=types.ReadSession(
-            table=target.path, data_format=types.DataFormat.ARROW,
+            table=target.path,
+            data_format=types.DataFormat.ARROW,
             read_options=types.ReadSession.TableReadOptions(
                 selected_fields=list(target.fields),
                 arrow_serialization_options=types.ArrowSerializationOptions(
                     buffer_compression=(
-                        types.ArrowSerializationOptions.CompressionCodec.ZSTD)),
-            )),
+                        types.ArrowSerializationOptions.CompressionCodec.ZSTD
+                    )
+                ),
+            ),
+        ),
         max_stream_count=SERVER_CHOSEN_STREAMS,
     )
 
@@ -151,59 +159,65 @@ def stream_batches(
     """One iterator per stream, each holding a client for the whole of its
     read so that no two share a connection. A session with no streams still
     carries the schema an empty source writes Parquet from."""
-    schema = pa.ipc.read_schema(
-        pa.py_buffer(session.arrow_schema.serialized_schema))
+    schema = pa.ipc.read_schema(pa.py_buffer(session.arrow_schema.serialized_schema))
     if not session.streams:
-        return (iter((schema.empty_table(), )), )
+        return (iter((schema.empty_table(),)),)
     idle: queue.SimpleQueue = queue.SimpleQueue()
     for client in clients:
         idle.put(client)
-    return tuple(
-        _batches(idle, stream.name, schema) for stream in session.streams)
+    return tuple(_batches(idle, stream.name, schema) for stream in session.streams)
 
 
 def read_clients(count: int, *, credentials: Credentials) -> tuple[Any, ...]:
     from google.cloud.bigquery_storage import BigQueryReadClient
     from google.cloud.bigquery_storage_v1.services import big_query_read
 
-    return _own_clients(BigQueryReadClient,
-                        big_query_read.transports.BigQueryReadGrpcTransport,
-                        count, credentials)
+    return _own_clients(
+        BigQueryReadClient,
+        big_query_read.transports.BigQueryReadGrpcTransport,
+        count,
+        credentials,
+    )
 
 
 def write_clients(count: int, *, credentials: Credentials) -> tuple[Any, ...]:
     from google.cloud.bigquery_storage import BigQueryWriteClient
     from google.cloud.bigquery_storage_v1.services import big_query_write
 
-    return _own_clients(BigQueryWriteClient,
-                        big_query_write.transports.BigQueryWriteGrpcTransport,
-                        count, credentials)
+    return _own_clients(
+        BigQueryWriteClient,
+        big_query_write.transports.BigQueryWriteGrpcTransport,
+        count,
+        credentials,
+    )
 
 
-def _own_clients(client_type: Any, transport: Any, count: int,
-                 credentials: Credentials) -> tuple[Any, ...]:
+def _own_clients(
+    client_type: Any, transport: Any, count: int, credentials: Credentials
+) -> tuple[Any, ...]:
     """gRPC pools subchannels globally, so channels built from identical
     arguments collapse onto one connection however many there are."""
+
     def channel(host: str, **kwargs: Any) -> Any:
-        options = [*(kwargs.pop("options", None) or ()), OWN_CONNECTION]
+        options = [*(kwargs.pop('options', None) or ()), OWN_CONNECTION]
         return transport.create_channel(host, options=options, **kwargs)
 
     return tuple(
-        client_type(
-            transport=transport(credentials=credentials, channel=channel))
-        for _ in range(count))
+        client_type(transport=transport(credentials=credentials, channel=channel))
+        for _ in range(count)
+    )
 
 
 def credentials_of(client: Any) -> Any:
     """Read off a private attribute whose absence is raised rather than
     tolerated: workers without it would silently share one channel."""
-    credentials = getattr(getattr(client, "transport", None), "_credentials",
-                          None)
+    credentials = getattr(getattr(client, 'transport', None), '_credentials', None)
     if credentials is None:
         raise PermanentSourceError(
-            f"{type(client).__name__}.transport._credentials is absent "
-            "or None, so no per-worker bigquery client can be built; "
-            "pass credentials explicitly")
+            f'{type(client).__name__}.transport._credentials is absent '
+            'or None, so no per-worker bigquery client can be built; '
+            'pass credentials explicitly'
+        )
     return credentials
 
 
@@ -220,8 +234,11 @@ def client_pool(
     extra: tuple[Any, ...] = ()
     if count > 1:
         extra = (build or read_clients)(
-            count - 1, credentials=(credentials if credentials is not None else
-                                    credentials_of(client)))
+            count - 1,
+            credentials=(
+                credentials if credentials is not None else credentials_of(client)
+            ),
+        )
     try:
         yield (client, *extra)
     finally:
@@ -280,8 +297,9 @@ def write_streams(
             stop.set()
             raise
 
-    with client_pool(write_client, workers, credentials=credentials,
-                     build=write_clients) as clients:
+    with client_pool(
+        write_client, workers, credentials=credentials, build=write_clients
+    ) as clients:
         # Waits for all, so no stream is still appending when this returns.
         with ThreadPoolExecutor(workers) as pool:
             futures = [
@@ -289,8 +307,9 @@ def write_streams(
                 for client, group in zip(clients, groups)
             ]
     failures = [
-        error for future in futures if (error := future.exception()) is not None
-        and not isinstance(error, _Stopped)
+        error
+        for future in futures
+        if (error := future.exception()) is not None and not isinstance(error, _Stopped)
     ]
     if failures:
         raise min(failures, key=lambda error: transient(error, rules()))
@@ -302,17 +321,16 @@ def commit_streams(write_client: Any, parent: str, names: list[str]) -> None:
     from google.cloud.bigquery_storage_v1 import types
 
     response = write_client.batch_commit_write_streams(
-        types.BatchCommitWriteStreamsRequest(parent=parent,
-                                             write_streams=names))
+        types.BatchCommitWriteStreamsRequest(parent=parent, write_streams=names)
+    )
     # A retried commit that already landed reports its streams as committed.
     already = types.StorageError.StorageErrorCode.STREAM_ALREADY_COMMITTED
-    errors = [
-        error for error in response.stream_errors if error.code != already
-    ]
+    errors = [error for error in response.stream_errors if error.code != already]
     if errors:
-        raise PermanentSourceError("storage write api commit failed: " +
-                                   "; ".join(error.error_message
-                                             for error in errors))
+        raise PermanentSourceError(
+            'storage write api commit failed: '
+            + '; '.join(error.error_message for error in errors)
+        )
 
 
 def probe_write_stream(write_client: Any, parent: str) -> None:
@@ -323,7 +341,8 @@ def probe_write_stream(write_client: Any, parent: str) -> None:
 
     stream = write_client.create_write_stream(
         parent=parent,
-        write_stream=types.WriteStream(type_=types.WriteStream.Type.PENDING))
+        write_stream=types.WriteStream(type_=types.WriteStream.Type.PENDING),
+    )
     write_client.finalize_write_stream(name=stream.name)
 
 
@@ -331,18 +350,27 @@ class _Stopped(Exception):
     """Another stream of the same write failed."""
 
 
-def _write_stream(client: Any, parent: str, schema: pa.Schema,
-                  sources: Sequence[Callable[[], Iterable[pa.RecordBatch]]],
-                  stop: threading.Event) -> str:
+def _write_stream(
+    client: Any,
+    parent: str,
+    schema: pa.Schema,
+    sources: Sequence[Callable[[], Iterable[pa.RecordBatch]]],
+    stop: threading.Event,
+) -> str:
     from google.cloud.bigquery_storage_v1 import types
 
     stream = client.create_write_stream(
         parent=parent,
-        write_stream=types.WriteStream(type_=types.WriteStream.Type.PENDING))
+        write_stream=types.WriteStream(type_=types.WriteStream.Type.PENDING),
+    )
     template = types.AppendRowsRequest(
-        write_stream=stream.name, arrow_rows=types.AppendRowsRequest.ArrowData(
+        write_stream=stream.name,
+        arrow_rows=types.AppendRowsRequest.ArrowData(
             writer_schema=types.ArrowSchema(
-                serialized_schema=schema.serialize().to_pybytes())))
+                serialized_schema=schema.serialize().to_pybytes()
+            )
+        ),
+    )
     appender = _Appender(client, template)
     offset = 0
     try:
@@ -359,14 +387,14 @@ def _write_stream(client: Any, parent: str, schema: pa.Schema,
     written = client.finalize_write_stream(name=stream.name).row_count
     if written != offset:
         raise PermanentSourceError(
-            f"storage write stream holds {written} rows, not the {offset} "
-            f"appended")
+            f'storage write stream holds {written} rows, not the {offset} appended'
+        )
     return stream.name
 
 
 def append_payloads(
-        batch: pa.RecordBatch,
-        limit: int = MAX_APPEND_BYTES) -> Iterator[tuple[bytes, int]]:
+    batch: pa.RecordBatch, limit: int = MAX_APPEND_BYTES
+) -> Iterator[tuple[bytes, int]]:
     """Serialized slices of ``batch`` that each fit one request, with their
     row counts."""
     data = batch.serialize().to_pybytes()
@@ -376,8 +404,9 @@ def append_payloads(
         return
     if batch.num_rows == 1:
         raise PermanentSourceError(
-            f"one row serializes to {len(data)} bytes, over the storage write "
-            f"api request limit")
+            f'one row serializes to {len(data)} bytes, over the storage write '
+            f'api request limit'
+        )
     half = batch.num_rows // 2
     yield from append_payloads(batch.slice(0, half), limit)
     yield from append_payloads(batch.slice(half), limit)
@@ -388,6 +417,7 @@ class _Appender:
     A transient failure reconnects and resends every unconfirmed request; one
     whose offset already landed is refused with ``AlreadyExists``, so a
     retry never duplicates rows."""
+
     def __init__(self, client: Any, template: Any) -> None:
         self._client = client
         self._template = template
@@ -421,6 +451,7 @@ class _Appender:
 
     def _open(self) -> Any:
         from google.cloud.bigquery_storage_v1 import writer
+
         if self._stream is None:
             self._stream = writer.AppendRowsStream(self._client, self._template)
         return self._stream
@@ -438,8 +469,8 @@ class _Appender:
                 if attempt == MAX_APPEND_RETRIES or not _retryable(error):
                     raise _row_errors(error) from None
                 logger.warning(
-                    "storage write api append failed (%s); "
-                    "resending", summary(error))
+                    'storage write api append failed (%s); resending', summary(error)
+                )
                 time.sleep(min(2**attempt, 30))
                 self.close()
                 for entry in self._pending:
@@ -459,18 +490,23 @@ class _Failed:
 
 def _row_errors(error: BaseException) -> BaseException:
     """The reason a row was refused is on the response, not the message."""
-    rows = getattr(getattr(error, "response", None), "row_errors", None)
+    rows = getattr(getattr(error, 'response', None), 'row_errors', None)
     if not rows:
         return error
-    return PermanentSourceError("storage write api refused rows: " +
-                                "; ".join(row.message for row in rows[:5]))
+    return PermanentSourceError(
+        'storage write api refused rows: ' + '; '.join(row.message for row in rows[:5])
+    )
 
 
 def _append_request(offset: int, rows: bytes) -> Any:
     from google.cloud.bigquery_storage_v1 import types
+
     return types.AppendRowsRequest(
-        offset=offset, arrow_rows=types.AppendRowsRequest.ArrowData(
-            rows=types.ArrowRecordBatch(serialized_record_batch=rows)))
+        offset=offset,
+        arrow_rows=types.AppendRowsRequest.ArrowData(
+            rows=types.ArrowRecordBatch(serialized_record_batch=rows)
+        ),
+    )
 
 
 def _retryable(error: BaseException) -> bool:
@@ -478,5 +514,7 @@ def _retryable(error: BaseException) -> bool:
     while ``FAILED_PRECONDITION`` (e.g. a wrong offset) stays fatal."""
     from google.api_core.exceptions import Aborted, Cancelled
     from google.cloud.bigquery_storage_v1.exceptions import StreamClosedError
-    return (isinstance(error, (StreamClosedError, Aborted, Cancelled))
-            or transient(error, rules()))
+
+    return isinstance(error, (StreamClosedError, Aborted, Cancelled)) or transient(
+        error, rules()
+    )

@@ -31,16 +31,14 @@ def hm_graph_id(
 ) -> Generator[GraphID, None, None]:
     response = post_and_expect_success(
         client,
-        f"/v1/graphs/?project_id={default_project_id}",
+        f'/v1/graphs/?project_id={default_project_id}',
         graph_definition_v2,
         IDResponse,
     )
     graph_id = get_and_expect_success(
         client,
-        f"/v1/graphs/{response.id}",
-        {
-            'project_id': default_project_id
-        },
+        f'/v1/graphs/{response.id}',
+        {'project_id': default_project_id},
         GraphResourceResponse,
     ).id
     yield graph_id
@@ -48,14 +46,15 @@ def hm_graph_id(
     asyncio.run(storage_dao.reset_storage())
 
 
-@pytest.fixture(scope="function")
+@pytest.fixture(scope='function')
 def test_cleanup_options() -> TestFunctionCleanupOptions:
     return TestFunctionCleanupOptions(should_reset_rest_db=False)
 
 
 @pytest.fixture
-def apply_predictive_query_setting(deploy_env_config: DeployEnvConfig,
-                                   client: TestClient, monkeypatch):
+def apply_predictive_query_setting(
+    deploy_env_config: DeployEnvConfig, client: TestClient, monkeypatch
+):
     app_builder: AppBuilder = getattr(client, 'app_builder')
     pquery_driver = app_builder._driver.pquery_driver
     # Snapshot so settings mutated by one test don't leak into the next
@@ -66,7 +65,8 @@ def apply_predictive_query_setting(deploy_env_config: DeployEnvConfig,
         monkeypatch.setenv(key, str(value))
 
         predictive_query_settings = PredictiveQuerySettings.parse_from_env(
-            deploy_env_config)
+            deploy_env_config
+        )
         predictive_query_settings.__dict__.update({key: value})
         pquery_driver._pquery_settings = predictive_query_settings
 
@@ -81,8 +81,9 @@ class ProjectGraphDefinition:
 
 
 @pytest.fixture
-def hm_graph_definition(client: TestClient, hm_graph_id: GraphID,
-                        default_project_id: str) -> ProjectGraphDefinition:
+def hm_graph_definition(
+    client: TestClient, hm_graph_id: GraphID, default_project_id: str
+) -> ProjectGraphDefinition:
     """The full graph definition for the hm fixture graph.
 
     The v1 ``/validate`` route validates against a graph *definition* (the
@@ -90,15 +91,16 @@ def hm_graph_definition(client: TestClient, hm_graph_id: GraphID,
     """
     response = get_and_expect_success(
         client,
-        f"/v1/graphs/{hm_graph_id}",
+        f'/v1/graphs/{hm_graph_id}',
         {'project_id': default_project_id},
         GraphResourceResponse,
     )
     return ProjectGraphDefinition(response.graph, default_project_id)
 
 
-def _query_errors(client: TestClient, graph_definition: ProjectGraphDefinition,
-                  query_yaml: str) -> list:
+def _query_errors(
+    client: TestClient, graph_definition: ProjectGraphDefinition, query_yaml: str
+) -> list:
     """Validate a query against the v1 stack, returning its error messages.
 
     Replaces the legacy ``POST /v0/predictive_queries/`` create-and-assert
@@ -123,12 +125,13 @@ def _query_errors(client: TestClient, graph_definition: ProjectGraphDefinition,
         jobs_api.ErrorDetails,
     )
     return [
-        item.description for item in response.items
+        item.description
+        for item in response.items
         if item.type == jobs_api.ErrorType.ERROR
     ]
 
 
-@pytest.mark.parametrize("disable_temporal_link_prediction", [True, False])
+@pytest.mark.parametrize('disable_temporal_link_prediction', [True, False])
 def test_temporal_link_pred(
     client: TestClient,
     hm_graph_definition,
@@ -140,17 +143,18 @@ PREDICT LIST_DISTINCT(transactions.article_id, 0, 180, days) RANK TOP 1
 FOR EACH customers.customer_id WHERE SUM(transactions.price, -90, 0, days) > 1
     """
 
-    apply_predictive_query_setting('DISABLE_TEMPORAL_LINK_PREDICTION',
-                                   disable_temporal_link_prediction)
+    apply_predictive_query_setting(
+        'DISABLE_TEMPORAL_LINK_PREDICTION', disable_temporal_link_prediction
+    )
 
     errors = _query_errors(client, hm_graph_definition, query_yaml)
     if disable_temporal_link_prediction:
-        assert any("not supported" in e for e in errors), errors
+        assert any('not supported' in e for e in errors), errors
     else:
         assert errors == [], errors
 
 
-@pytest.mark.parametrize("disable_static_node_prediction", [True, False])
+@pytest.mark.parametrize('disable_static_node_prediction', [True, False])
 def test_static_node_pred(
     client: TestClient,
     hm_graph_definition,
@@ -162,17 +166,18 @@ def test_static_node_pred(
     FOR EACH customers.customer_id
     """
 
-    apply_predictive_query_setting('DISABLE_STATIC_NODE_PREDICTION',
-                                   disable_static_node_prediction)
+    apply_predictive_query_setting(
+        'DISABLE_STATIC_NODE_PREDICTION', disable_static_node_prediction
+    )
 
     errors = _query_errors(client, hm_graph_definition, query_yaml)
     if disable_static_node_prediction:
-        assert any("not supported" in e for e in errors), errors
+        assert any('not supported' in e for e in errors), errors
     else:
         assert errors == [], errors
 
 
-@pytest.mark.parametrize("disable_first_last", [True, False])
+@pytest.mark.parametrize('disable_first_last', [True, False])
 def test_first_last(
     client: TestClient,
     hm_graph_definition,
@@ -190,13 +195,11 @@ def test_first_last(
 
     apply_predictive_query_setting('DISABLE_FIRST_LAST', disable_first_last)
 
-    first_errors = _query_errors(client, hm_graph_definition,
-                                 first_on_non_fkey_yaml)
-    last_errors = _query_errors(client, hm_graph_definition,
-                                last_on_non_fkey_yaml)
+    first_errors = _query_errors(client, hm_graph_definition, first_on_non_fkey_yaml)
+    last_errors = _query_errors(client, hm_graph_definition, last_on_non_fkey_yaml)
     if disable_first_last:
-        assert any("not supported" in e for e in first_errors), first_errors
-        assert any("not supported" in e for e in last_errors), last_errors
+        assert any('not supported' in e for e in first_errors), first_errors
+        assert any('not supported' in e for e in last_errors), last_errors
     else:
         assert first_errors == [], first_errors
         assert last_errors == [], last_errors
@@ -214,7 +217,7 @@ def test_pqlv2(
     assert _query_errors(client, hm_graph_definition, query_yaml) == []
 
 
-@pytest.mark.parametrize("disable_first_last_on_fkey", [True, False])
+@pytest.mark.parametrize('disable_first_last_on_fkey', [True, False])
 def test_first_last_on_fkey(
     client: TestClient,
     hm_graph_definition,
@@ -238,18 +241,21 @@ def test_first_last_on_fkey(
     FOR EACH customers.customer_id
     """
 
-    apply_predictive_query_setting('DISABLE_FIRST_LAST_ON_FKEY',
-                                   disable_first_last_on_fkey)
+    apply_predictive_query_setting(
+        'DISABLE_FIRST_LAST_ON_FKEY', disable_first_last_on_fkey
+    )
 
     if disable_first_last_on_fkey:
-        assert any("not supported" in e for e in _query_errors(
-            client, hm_graph_definition, first_on_fkey_yaml))
-        assert _query_errors(client, hm_graph_definition,
-                             first_on_non_fkey_yaml) == []
-        assert any("not supported" in e for e in _query_errors(
-            client, hm_graph_definition, last_on_fkey_yaml))
-        assert _query_errors(client, hm_graph_definition,
-                             last_on_non_fkey_yaml) == []
+        assert any(
+            'not supported' in e
+            for e in _query_errors(client, hm_graph_definition, first_on_fkey_yaml)
+        )
+        assert _query_errors(client, hm_graph_definition, first_on_non_fkey_yaml) == []
+        assert any(
+            'not supported' in e
+            for e in _query_errors(client, hm_graph_definition, last_on_fkey_yaml)
+        )
+        assert _query_errors(client, hm_graph_definition, last_on_non_fkey_yaml) == []
     # TODO(jinu): Uncomment this once we support first/last on fkey
     # correctly.
     """
@@ -265,7 +271,7 @@ def test_first_last_on_fkey(
     """
 
 
-@pytest.mark.parametrize("disable_temporal_node_regression", [True, False])
+@pytest.mark.parametrize('disable_temporal_node_regression', [True, False])
 def test_temporal_node_regression(
     client: TestClient,
     hm_graph_definition,
@@ -277,17 +283,18 @@ def test_temporal_node_regression(
     FOR EACH customers.customer_id
     """
 
-    apply_predictive_query_setting('DISABLE_TEMPORAL_NODE_REGRESSION',
-                                   disable_temporal_node_regression)
+    apply_predictive_query_setting(
+        'DISABLE_TEMPORAL_NODE_REGRESSION', disable_temporal_node_regression
+    )
 
     errors = _query_errors(client, hm_graph_definition, query_yaml)
     if disable_temporal_node_regression:
-        assert any("not supported" in e for e in errors), errors
+        assert any('not supported' in e for e in errors), errors
     else:
         assert errors == [], errors
 
 
-@pytest.mark.parametrize("disable", [True, False])
+@pytest.mark.parametrize('disable', [True, False])
 def test_multilabel_classification(
     client: TestClient,
     hm_graph_definition,
@@ -303,6 +310,6 @@ def test_multilabel_classification(
 
     errors = _query_errors(client, hm_graph_definition, query_yaml)
     if disable:
-        assert any("not supported" in e for e in errors), errors
+        assert any('not supported' in e for e in errors), errors
     else:
         assert errors == [], errors

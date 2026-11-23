@@ -25,8 +25,7 @@ def auto_setup_kumo_backend() -> bool:
 
 
 @pytest.fixture
-def _rest_install_dg_col_stats_fallback(
-):  # pyright: ignore[reportUnusedFunction]
+def _rest_install_dg_col_stats_fallback():  # pyright: ignore[reportUnusedFunction]
     yield
 
 
@@ -65,14 +64,14 @@ def _graph_id() -> GraphIDv2:
     ('request_kwargs', 'driver_kwargs'),
     (
         (
-            dict(name_alias='sdk_smoke_graph', force_rename=True,
-                 skip_validation=True),
-            dict(alias='sdk_smoke_graph', force_rename=True,
-                 skip_validation=True),
+            dict(name_alias='sdk_smoke_graph', force_rename=True, skip_validation=True),
+            dict(alias='sdk_smoke_graph', force_rename=True, skip_validation=True),
         ),
         ({}, dict(alias=None, force_rename=False, skip_validation=False)),
-        (dict(name_alias=''),
-         dict(alias=None, force_rename=False, skip_validation=False)),
+        (
+            dict(name_alias=''),
+            dict(alias=None, force_rename=False, skip_validation=False),
+        ),
     ),
     ids=('named', 'unnamed', 'empty-alias'),
 )

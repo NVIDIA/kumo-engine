@@ -12,8 +12,8 @@ from io_utils.json import save_json
 
 @kumo_dataclass
 class PartitionedPredictionProgress:
-    """Provide partition level prediction progress.
-    """
+    """Provide partition level prediction progress."""
+
     start_time: datetime = now_utc()
     total_partitions: int = 0
     completed_partitions: int = 0
@@ -24,7 +24,7 @@ class PartitionedPredictionProgress:
     estimated_prediction_time: timedelta | None = None
 
 
-class PartitionedPredictionProgressHelper():
+class PartitionedPredictionProgressHelper:
     def __init__(self, path: str, total_partitions: int):
         self._path = path
         self._progress = PartitionedPredictionProgress(
@@ -42,14 +42,16 @@ class PartitionedPredictionProgressHelper():
         self._progress.completed_partitions = completed_partitions
 
         now = now_utc()
-        self._progress.elapsed_prediction_time = (now -
-                                                  self._progress.start_time)
-        average_time_per_partition = (self._progress.elapsed_prediction_time /
-                                      self._progress.completed_partitions)
-        remaining_partitions = (self._progress.total_partitions -
-                                self._progress.completed_partitions)
-        self._progress.estimated_prediction_time = (average_time_per_partition *
-                                                    remaining_partitions)
+        self._progress.elapsed_prediction_time = now - self._progress.start_time
+        average_time_per_partition = (
+            self._progress.elapsed_prediction_time / self._progress.completed_partitions
+        )
+        remaining_partitions = (
+            self._progress.total_partitions - self._progress.completed_partitions
+        )
+        self._progress.estimated_prediction_time = (
+            average_time_per_partition * remaining_partitions
+        )
         self._last_update_time = now
 
         self._save_progress()

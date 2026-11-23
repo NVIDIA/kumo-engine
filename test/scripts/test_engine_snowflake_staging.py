@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Fresh dispatch wheels and immutable dependency-cache admission."""
+
 import importlib
 import zipfile
 from pathlib import Path
@@ -20,11 +21,11 @@ def staging(monkeypatch):
 
 def wheel(tmp_path, source='a' * 40, version=None):
     version = version or '1.0.0.dev0+' + source[:7]
-    path = tmp_path / (
-        f'kumo_engine-{version}-cp311-abi3-manylinux_2_34_x86_64.whl')
+    path = tmp_path / (f'kumo_engine-{version}-cp311-abi3-manylinux_2_34_x86_64.whl')
     with zipfile.ZipFile(path, 'w') as archive:
-        archive.writestr('kumo_engine.dist-info/METADATA',
-                         f'Name: kumo-engine\nVersion: {version}\n')
+        archive.writestr(
+            'kumo_engine.dist-info/METADATA', f'Name: kumo-engine\nVersion: {version}\n'
+        )
     return path
 
 
@@ -41,8 +42,10 @@ def test_wheel_metadata_and_source_must_agree(staging, tmp_path):
 
 
 def test_candidate_admission_requires_explicit_manifest_before_cloud(
-        staging, monkeypatch):
+    staging, monkeypatch
+):
     import resources
+
     monkeypatch.delenv('SNOWFLAKE_TEST_CANDIDATE', raising=False)
     with pytest.raises(ValueError, match='must name the staged candidate'):
         resources.admit_candidate()

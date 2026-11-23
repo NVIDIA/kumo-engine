@@ -27,15 +27,15 @@ from kumo.testing.pquery import get_validated_query
 STATIC_JOIN_FILTER = Condition(
     target=Join(
         rhs_target=Column(
-            fqn="LOCATIONS.NAME",
+            fqn='LOCATIONS.NAME',
             dtype_maybe=Dtype.string,
             stype_maybe=Stype.categorical,
         ),
-        rhs_key="LOCATIONS.LOCATION_ID",
-        lhs_key="USERS.LOCATION_ID",
+        rhs_key='LOCATIONS.LOCATION_ID',
+        lhs_key='USERS.LOCATION_ID',
     ),
     op=RelOp.EQ,
-    value="Pallet Town",
+    value='Pallet Town',
     dtype_maybe=Dtype.bool,
     stype_maybe=Stype.categorical,
 )
@@ -45,7 +45,7 @@ TEMPORAL_COUNT_FILTER = Condition(
         rhs_target=Aggregation(
             aggr=AggregationType.COUNT,
             target=Column(
-                fqn="TRANSACTIONS.*",
+                fqn='TRANSACTIONS.*',
                 dtype_maybe=Dtype.int,
                 stype_maybe=Stype.categorical,
             ),
@@ -55,11 +55,11 @@ TEMPORAL_COUNT_FILTER = Condition(
             ),
             dtype_maybe=Dtype.int,
             stype_maybe=Stype.numerical,
-            group_by="TRANSACTIONS.USER_ID",
-            time_col="TRANSACTIONS.DATE",
+            group_by='TRANSACTIONS.USER_ID',
+            time_col='TRANSACTIONS.DATE',
         ),
-        rhs_key="TRANSACTIONS.USER_ID",
-        lhs_key="USERS.USER_ID",
+        rhs_key='TRANSACTIONS.USER_ID',
+        lhs_key='USERS.USER_ID',
     ),
     op=RelOp.GT,
     value=0,
@@ -74,10 +74,11 @@ def test_e2e_or(
 ) -> None:
     graph = create_node_pred_graph('test_graph', tempdir.name)
     training_query = (
-        "PREDICT LIST_DISTINCT(TRANSACTIONS.BANK_ID, 0, 1) RANK TOP 10 "
-        "FOR EACH USERS.USER_ID "
-        "WHERE COUNT(TRANSACTIONS.*, -inf, 0) > 0  "
-        "OR LOCATIONS.NAME = \"Pallet Town\"")
+        'PREDICT LIST_DISTINCT(TRANSACTIONS.BANK_ID, 0, 1) RANK TOP 10 '
+        'FOR EACH USERS.USER_ID '
+        'WHERE COUNT(TRANSACTIONS.*, -inf, 0) > 0  '
+        'OR LOCATIONS.NAME = "Pallet Town"'
+    )
     validated_training_query = get_validated_query(graph, training_query)
 
     splitter = StaticFilterSplitter()
@@ -112,10 +113,12 @@ def test_e2e_temporal(
 ) -> None:
     graph: Graph = create_node_pred_graph('test_graph', tempdir.name)
     training_query = (
-        "PREDICT LIST_DISTINCT(TRANSACTIONS.BANK_ID, 0, 1) RANK TOP 10 "
-        "FOR EACH USERS.USER_ID WHERE COUNT(TRANSACTIONS.*, -inf, 0) > 0")
-    validated_training_query: ValidatedPredictiveQuery = (get_validated_query(
-        graph, training_query))
+        'PREDICT LIST_DISTINCT(TRANSACTIONS.BANK_ID, 0, 1) RANK TOP 10 '
+        'FOR EACH USERS.USER_ID WHERE COUNT(TRANSACTIONS.*, -inf, 0) > 0'
+    )
+    validated_training_query: ValidatedPredictiveQuery = get_validated_query(
+        graph, training_query
+    )
 
     splitter = StaticFilterSplitter()
     result: SplitFilter = splitter.split(validated_training_query.entity_ast)
@@ -143,11 +146,13 @@ def test_e2e_mixed(
 ) -> None:
     graph: Graph = create_node_pred_graph('test_graph', tempdir.name)
     training_query = (
-        "PREDICT LIST_DISTINCT(TRANSACTIONS.BANK_ID, 0, 1) RANK TOP 10 "
-        "FOR EACH USERS.USER_ID WHERE COUNT(TRANSACTIONS.*, -inf, 0) > 0 "
-        "AND LOCATIONS.NAME = \"Pallet Town\"")
-    validated_training_query: ValidatedPredictiveQuery = (get_validated_query(
-        graph, training_query))
+        'PREDICT LIST_DISTINCT(TRANSACTIONS.BANK_ID, 0, 1) RANK TOP 10 '
+        'FOR EACH USERS.USER_ID WHERE COUNT(TRANSACTIONS.*, -inf, 0) > 0 '
+        'AND LOCATIONS.NAME = "Pallet Town"'
+    )
+    validated_training_query: ValidatedPredictiveQuery = get_validated_query(
+        graph, training_query
+    )
 
     splitter = StaticFilterSplitter()
     result: SplitFilter = splitter.split(validated_training_query.entity_ast)
@@ -175,10 +180,12 @@ def test_e2e_static(
 ) -> None:
     graph: Graph = create_node_pred_graph('test_graph', tempdir.name)
     training_query = (
-        "PREDICT LIST_DISTINCT(TRANSACTIONS.BANK_ID, 0, 1) RANK TOP 10 "
-        "FOR EACH USERS.USER_ID WHERE LOCATIONS.NAME = \"Pallet Town\"")
-    validated_training_query: ValidatedPredictiveQuery = (get_validated_query(
-        graph, training_query))
+        'PREDICT LIST_DISTINCT(TRANSACTIONS.BANK_ID, 0, 1) RANK TOP 10 '
+        'FOR EACH USERS.USER_ID WHERE LOCATIONS.NAME = "Pallet Town"'
+    )
+    validated_training_query: ValidatedPredictiveQuery = get_validated_query(
+        graph, training_query
+    )
 
     splitter = StaticFilterSplitter()
     result: SplitFilter = splitter.split(validated_training_query.entity_ast)

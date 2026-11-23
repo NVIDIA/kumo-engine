@@ -9,6 +9,7 @@ it with no exemption predicate, so it is reliably flagged when invoked on a
 running event loop. The guard is catch-all (no scoping), so a blocking call on
 the loop is flagged regardless of which library sits between it and kumo code.
 """
+
 import logging
 import threading
 import time
@@ -27,8 +28,11 @@ _LOGGER = 'async_utils.blockbuster_guard'
 
 
 def _sleep_warnings(caplog):
-    return [r for r in caplog.records
-            if 'blocking call on event loop: time.sleep' in r.message]
+    return [
+        r
+        for r in caplog.records
+        if 'blocking call on event loop: time.sleep' in r.message
+    ]
 
 
 @pytest.fixture(autouse=True)
@@ -99,8 +103,11 @@ async def test_thread_start_offload_not_flagged_in_warn(caplog):
         t = threading.Thread(target=lambda: None)
         t.start()
         t.join()
-    lock_warnings = [r for r in caplog.records
-                     if 'blocking call on event loop: lock.acquire' in r.message]
+    lock_warnings = [
+        r
+        for r in caplog.records
+        if 'blocking call on event loop: lock.acquire' in r.message
+    ]
     assert lock_warnings == []
 
 

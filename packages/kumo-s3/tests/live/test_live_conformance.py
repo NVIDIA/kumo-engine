@@ -18,16 +18,16 @@ import pytest
 from kumo_core.sources.object_store import ObjectStoreSourceReader
 from kumoapi.typing import Dtype
 
-PUBLIC_BUCKET = "kumo-public-datasets"
-PUBLIC_ROOT = f"{PUBLIC_BUCKET}/customerltv_mini"
-REGION = "us-west-2"
+PUBLIC_BUCKET = 'kumo-public-datasets'
+PUBLIC_ROOT = f'{PUBLIC_BUCKET}/customerltv_mini'
+REGION = 'us-west-2'
 
-if not os.environ.get("KUMO_S3_LIVE"):
+if not os.environ.get('KUMO_S3_LIVE'):
     pytest.skip(
-        "LIVE TIER NOT RUN: nothing in this file was covered. Set "
-        f"KUMO_S3_LIVE=1 with AWS credentials that can read s3://{PUBLIC_ROOT}"
-        "/; AWS_PROFILE must be unset for the ambient instance role to be "
-        "used.",
+        'LIVE TIER NOT RUN: nothing in this file was covered. Set '
+        f'KUMO_S3_LIVE=1 with AWS credentials that can read s3://{PUBLIC_ROOT}'
+        '/; AWS_PROFILE must be unset for the ambient instance role to be '
+        'used.',
         allow_module_level=True,
     )
 
@@ -50,4 +50,4 @@ def test_the_ambient_chain_resolves_a_credential_to_sign_with():
 
 def test_the_bound_filesystem_reads_the_table_the_example_pins():
     reader = ObjectStoreSourceReader(live_filesystem(), root=PUBLIC_ROOT)
-    assert reader.dtypes("customer") == {"CustomerID": Dtype.float64}
+    assert reader.dtypes('customer') == {'CustomerID': Dtype.float64}

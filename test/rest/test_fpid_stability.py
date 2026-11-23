@@ -72,7 +72,8 @@ def test_table_definition_schema():
 
     # Drop doc-strings from the schema:
     schema = delete_key_from_dict(
-        TypeAdapter(TableDefinition).json_schema(), key='description')
+        TypeAdapter(TableDefinition).json_schema(), key='description'
+    )
 
     # Uncomment if you need to make changes:
     # with open(os.path.join(dir, 'table_definition_schema.json'), 'w') as f:
@@ -89,7 +90,8 @@ def test_graph_definition_schema():
 
     # Drop doc-strings from the schema:
     schema = delete_key_from_dict(
-        TypeAdapter(GraphDefinition).json_schema(), key='description')
+        TypeAdapter(GraphDefinition).json_schema(), key='description'
+    )
 
     # Uncomment if you need to make changes:
     # with open(os.path.join(dir, 'graph_definition_schema.json'), 'w') as f:
@@ -140,25 +142,35 @@ def test_table_fpid_stability():
     assert table_4.fpid == 'edd4465760197d9b7e231ba8e8d7e4ec'
 
     table_5 = TableDefinition(
-        cols=cols, source_table=api.SnowflakeSourceTable(
+        cols=cols,
+        source_table=api.SnowflakeSourceTable(
             snowflake_connector_id=ConnectorID(f'connector_{"2" * 32}'),
-            database='db', schema_name='kumo', table=TableName('my_table')))
+            database='db',
+            schema_name='kumo',
+            table=TableName('my_table'),
+        ),
+    )
     assert table_5.fpid == '4303c5db452fde3f2ae6d71983f672b8'
 
     table_6 = TableDefinition(
-        cols=cols, source_table=api.DatabricksSourceTable(
+        cols=cols,
+        source_table=api.DatabricksSourceTable(
             databricks_connector_id=ConnectorID(f'connector_{"3" * 32}'),
-            table=TableName('schema____my_table')))
+            table=TableName('schema____my_table'),
+        ),
+    )
     assert table_6.fpid == '64d1109235e801d8b69cc7c414b1762b'
 
     # BigQuery table:
     table_7 = TableDefinition(
-        cols=cols, source_table=api.BigQuerySourceTable(
+        cols=cols,
+        source_table=api.BigQuerySourceTable(
             bigquery_connector_id=ConnectorID(f'connector_{"4" * 32}'),
             table_name=TableName('my_table'),
             project_id='my-project',
             dataset_id='my_dataset',
-        ))
+        ),
+    )
     assert table_7.fpid == '66ba3083342a942c11f02fe5cfcb2710'
 
 
@@ -195,8 +207,7 @@ def test_fpid_stability_in_pquery_fixture():
     pquery_res = load_json(pquery_res_path, PQueryResource)
 
     table_fpids = {
-        t_name: t_def.fpid
-        for t_name, t_def in pquery_res.graph.tables.items()
+        t_name: t_def.fpid for t_name, t_def in pquery_res.graph.tables.items()
     }
     assert table_fpids == {
         'ACCOUNT': '6054c01e614f9de3b2da6514d0f97e8d',
@@ -212,8 +223,10 @@ def test_fpid_stability_in_pquery_fixture():
     # Testing Graph FPID.
     assert pquery_res.graph.fpid == '747db4cc38ed7327d887ea68c2a48eda'
     graph = pquery_res.graph
-    graph2 = GraphDefinition(tables=dict(reversed(graph.tables.items())),
-                             col_groups=list(reversed(graph.col_groups)))
+    graph2 = GraphDefinition(
+        tables=dict(reversed(graph.tables.items())),
+        col_groups=list(reversed(graph.col_groups)),
+    )
     assert graph2.fpid == graph.fpid
 
     graph3 = GraphDefinition(
@@ -221,7 +234,9 @@ def test_fpid_stability_in_pquery_fixture():
         col_groups=[
             ColumnKeyGroup(
                 # Randomize columns in each column group
-                tuple(random.sample(col_group.columns, len(col_group.columns))))
+                tuple(random.sample(col_group.columns, len(col_group.columns)))
+            )
             for col_group in graph.col_groups
-        ])
+        ],
+    )
     assert graph3.fpid == graph.fpid

@@ -3,12 +3,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Shared error handling utilities for workflows."""
+
 from typing import Optional
 
 from temporalio.client import WorkflowFailureError
-from temporalio.exceptions import ActivityError, FailureError
+from temporalio.exceptions import ActivityError, FailureError, TimeoutType
 from temporalio.exceptions import TimeoutError as TemporalTimeoutError
-from temporalio.exceptions import TimeoutType
 
 from io_utils import logging
 from kumo.utils.formatting import format_exception
@@ -62,8 +62,9 @@ def root_cause_message(ex: BaseException) -> str:
     if activity_type is None:
         return message
     if isinstance(deepest, TemporalTimeoutError):
-        timeout_name = (_TIMEOUT_TYPE_NAMES.get(deepest.type)
-                        if deepest.type is not None else None)
+        timeout_name = (
+            _TIMEOUT_TYPE_NAMES.get(deepest.type) if deepest.type is not None else None
+        )
         suffix = f' ({timeout_name})' if timeout_name else ''
         return f'activity {activity_type} timed out{suffix}'
     if activity_type in message:
@@ -72,9 +73,11 @@ def root_cause_message(ex: BaseException) -> str:
 
 
 def extract_failure_info(
-        err_msg: Optional[str] = None, stacktrace: Optional[str] = None,
-        exception: Optional[BaseException] = None,
-        validation: Optional[ValidationResponse] = None) -> JobFailureInfo:
+    err_msg: Optional[str] = None,
+    stacktrace: Optional[str] = None,
+    exception: Optional[BaseException] = None,
+    validation: Optional[ValidationResponse] = None,
+) -> JobFailureInfo:
     """
     Extract failure information.
 
@@ -105,8 +108,8 @@ def extract_failure_info(
     Returns:
         JobFailureInfo with user-friendly message and debug stacktrace
     """
-    user_message = ""
-    debug_stacktrace = ""
+    user_message = ''
+    debug_stacktrace = ''
 
     # Extract user message
     if validation and not validation.ok:
@@ -114,7 +117,7 @@ def extract_failure_info(
             exc = validation.to_exception()
             user_message = exc.get_user_message()
         except Exception:
-            log.warning("Failed to convert ValidationResponse to PublicException")
+            log.warning('Failed to convert ValidationResponse to PublicException')
             user_message = validation.error_message()
     elif err_msg:
         user_message = err_msg
@@ -136,5 +139,5 @@ def extract_failure_info(
     # failed job retry until its timeout and then lose this failure.
     return JobFailureInfo(
         message=user_message.replace('\x00', ''),
-        stacktrace=debug_stacktrace.replace('\x00', '')
+        stacktrace=debug_stacktrace.replace('\x00', ''),
     )

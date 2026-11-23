@@ -81,7 +81,8 @@ def before_validator_dict(data: typing.Any) -> dict:
         # it here and keep the return type provably a dict.
         raise TypeError(
             f'before_validator_dict cannot normalize input of type '
-            f'{type(data).__name__!r} to a dict')
+            f'{type(data).__name__!r} to a dict'
+        )
     # These config dataclasses are always constructed by keyword / from a
     # mapping. Positional args cannot be mapped back to field names here, so
     # silently dropping them (the previous behaviour) would turn ``K(512)``
@@ -91,7 +92,8 @@ def before_validator_dict(data: typing.Any) -> dict:
         raise TypeError(
             'positional arguments are not supported when constructing '
             'this config; pass fields by keyword (got '
-            f'{len(args)} positional argument(s))')
+            f'{len(args)} positional argument(s))'
+        )
     return dict(kwargs or {})
 
 
@@ -109,7 +111,7 @@ def _hide_marked_fields(schema: dict, *_: typing.Any) -> None:
         if isinstance(v, dict) and v.get('hidden', False):
             continue
         props[k] = v
-    schema["properties"] = props
+    schema['properties'] = props
 
 
 # Config applied by ``kumo_dataclass``. In pydantic v2 this is a ``ConfigDict``
@@ -118,16 +120,26 @@ def _hide_marked_fields(schema: dict, *_: typing.Any) -> None:
 # the v1 behavior where ``kumo_dataclass`` fields could be typed with classes
 # pydantic cannot build a validator for (e.g. PyG ``NumNeighbors``); v2 raises
 # ``PydanticSchemaGenerationError`` for those unless this is set.
-AllowHiddenFieldConfig = ConfigDict(json_schema_extra=_hide_marked_fields,
-                                    arbitrary_types_allowed=True)
+AllowHiddenFieldConfig = ConfigDict(
+    json_schema_extra=_hide_marked_fields, arbitrary_types_allowed=True
+)
 
 
 if typing.TYPE_CHECKING:
     from dataclasses import dataclass as kumo_dataclass  # noqa # type: ignore
 else:
 
-    def kumo_dataclass(cls=None, /, *, init=True, repr=True, eq=True,
-                       order=False, unsafe_hash=False, frozen=False):
+    def kumo_dataclass(
+        cls=None,
+        /,
+        *,
+        init=True,
+        repr=True,
+        eq=True,
+        order=False,
+        unsafe_hash=False,
+        frozen=False,
+    ):
         """This is the recommended dataclass to use at Kumo, for any data that
         is serialized or shared across services. It uses pydantic dataclasses,
         to support json serialization and deserialization.
@@ -171,17 +183,23 @@ else:
         # generates the init regardless). Those sites must be migrated to
         # ``@model_validator(mode='before')`` / default-factory patterns.
         del init
-        return pydantic_dataclass(cls, repr=repr, eq=eq,
-                                  order=order, unsafe_hash=unsafe_hash,
-                                  frozen=frozen, config=AllowHiddenFieldConfig)
+        return pydantic_dataclass(
+            cls,
+            repr=repr,
+            eq=eq,
+            order=order,
+            unsafe_hash=unsafe_hash,
+            frozen=frozen,
+            config=AllowHiddenFieldConfig,
+        )
 
 
 class ValidatedStr(str):
     @classmethod
-    def __get_pydantic_core_schema__(cls, source_type: typing.Any,
-                                     handler: typing.Any):
+    def __get_pydantic_core_schema__(cls, source_type: typing.Any, handler: typing.Any):
         return core_schema.no_info_after_validator_function(
-            cls._validate, core_schema.str_schema())
+            cls._validate, core_schema.str_schema()
+        )
 
     @classmethod
     def _validate(cls, value: str):

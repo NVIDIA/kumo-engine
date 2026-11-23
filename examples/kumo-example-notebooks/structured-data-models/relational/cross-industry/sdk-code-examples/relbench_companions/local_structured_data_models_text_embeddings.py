@@ -28,7 +28,7 @@ def embed_text(
     if len(table.columns[sdm.Stype.text]) == 0:
         return table
 
-    text = table.select_stypes("text")
+    text = table.select_stypes('text')
     if mask is not None:
         text = text[mask]
     text = cast(sdm.TableTensor, text.to(device))
@@ -41,10 +41,10 @@ def embed_text(
         sp.PCA(text_dim),
     )
 
-    print(f"Embedding {text.size(-1):,} text columns... ", end="", flush=True)
+    print(f'Embedding {text.size(-1):,} text columns... ', end='', flush=True)
     t = time.perf_counter()
     out = processor.fit_transform(text).to(table.device)
-    print(f"Done! [{time.perf_counter() - t:.2f}s]")
+    print(f'Done! [{time.perf_counter() - t:.2f}s]')
 
     if mask is not None:
         emb = out.numerical.new_full(
@@ -56,5 +56,5 @@ def embed_text(
 
     return cast(
         sdm.TableTensor,
-        torch.cat([table.drop_stypes("text"), out], dim=-1),
+        torch.cat([table.drop_stypes('text'), out], dim=-1),
     )

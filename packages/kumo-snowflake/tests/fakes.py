@@ -15,19 +15,21 @@ FakeConnection = RecordingConnection
 
 class FakeColumn:
     """One column of a compiled statement, as ``describe`` reports it."""
+
     def __init__(self, name: str, type_name: str) -> None:
         from snowflake.connector.constants import FIELD_NAME_TO_ID
+
         self.name = name
         self.type_code = FIELD_NAME_TO_ID[type_name]
 
 
 class FakeCursor(RecordingCursor):
-    def __init__(self, responses=None, raises=None,
-                 declared: Mapping[str, str] | None = None) -> None:
+    def __init__(
+        self, responses=None, raises=None, declared: Mapping[str, str] | None = None
+    ) -> None:
         super().__init__(responses, raises)
         self.description = [
-            FakeColumn(name, type_name)
-            for name, type_name in (declared or {}).items()
+            FakeColumn(name, type_name) for name, type_name in (declared or {}).items()
         ]
 
     def describe(self, sql: str) -> None:
@@ -35,12 +37,11 @@ class FakeCursor(RecordingCursor):
 
 
 class FakeResponse:
-    def __init__(self, body: bytes,
-                 raises: BaseException | None = None) -> None:
+    def __init__(self, body: bytes, raises: BaseException | None = None) -> None:
         self.body = body
         self.raises = raises
 
-    def __enter__(self) -> "FakeResponse":
+    def __enter__(self) -> 'FakeResponse':
         return self
 
     def __exit__(self, *exception: Any) -> bool:
@@ -52,15 +53,19 @@ class FakeResponse:
 
     def iter_content(self, chunk_size: int = 1) -> Any:
         for start in range(0, len(self.body), max(chunk_size, 1)):
-            yield self.body[start:start + chunk_size]
+            yield self.body[start : start + chunk_size]
 
 
 class FakeSession:
     """Serves a canned body per url, failing or refusing on demand."""
-    def __init__(self, bodies: Mapping[str, bytes],
-                 raises: BaseException | None = None,
-                 refuses: BaseException | None = None,
-                 arrivals: Barrier | None = None) -> None:
+
+    def __init__(
+        self,
+        bodies: Mapping[str, bytes],
+        raises: BaseException | None = None,
+        refuses: BaseException | None = None,
+        arrivals: Barrier | None = None,
+    ) -> None:
         self.bodies = dict(bodies)
         self.raises = raises
         self.refuses = refuses
@@ -76,7 +81,7 @@ class FakeSession:
             self.arrivals.wait()
         if self.raises is not None:
             raise self.raises
-        return FakeResponse(self.bodies.get(url, b""), self.refuses)
+        return FakeResponse(self.bodies.get(url, b''), self.refuses)
 
     def close(self) -> None:
         self.closed = True
@@ -85,8 +90,10 @@ class FakeSession:
 class FakeSessions:
     """Stands in for ``requests.Session`` itself, so a test sees every session
     a read opened and whether that read gave it back."""
-    def __init__(self, bodies: Mapping[str, bytes],
-                 arrivals: Barrier | None = None) -> None:
+
+    def __init__(
+        self, bodies: Mapping[str, bytes], arrivals: Barrier | None = None
+    ) -> None:
         self.bodies = dict(bodies)
         self.arrivals = arrivals
         self.raises: BaseException | None = None
@@ -94,8 +101,7 @@ class FakeSessions:
         self.opened: list[FakeSession] = []
 
     def __call__(self) -> FakeSession:
-        session = FakeSession(self.bodies, self.raises, self.refuses,
-                              self.arrivals)
+        session = FakeSession(self.bodies, self.raises, self.refuses, self.arrivals)
         self.opened.append(session)
         return session
 
@@ -106,6 +112,7 @@ class FakeSessions:
 
 class FakeStage:
     """An in-memory named internal stage behind a Snowpark-shaped session."""
+
     def __init__(self, stage: str = '@DB.SCHEMA.KUMO_ARTIFACTS') -> None:
         self.stage = stage
         self.objects: dict[str, bytes] = {}
@@ -121,10 +128,10 @@ class FakeStage:
     def _relative(self, location: str) -> str:
         location = location.strip("'")
         assert location.startswith(self.stage), location
-        return location[len(self.stage):].lstrip('/')
+        return location[len(self.stage) :].lstrip('/')
 
     def _listed(self, relative: str) -> str:
-        return f"{self.stage.rsplit('.', 1)[1].lower()}/{relative}"
+        return f'{self.stage.rsplit(".", 1)[1].lower()}/{relative}'
 
     def _matched(self, relative: str) -> str:
         return f'internal/{self._listed(relative)}'
@@ -134,48 +141,61 @@ class FakeStage:
 
     def sql(self, sql: str) -> list[tuple]:
         import re
+
         self.statements.append(sql)
         verb, _, rest = sql.partition(' ')
         if verb == 'LIST':
             prefix = self._relative(rest)
-            return [(self._listed(name), (len(data) // 16 + 1) *
-                     16 if self.ciphertext else len(data), 'md5', 'date')
-                    for name, data in sorted(self.objects.items())
-                    if name.startswith(prefix)]
+            return [
+                (
+                    self._listed(name),
+                    (len(data) // 16 + 1) * 16 if self.ciphertext else len(data),
+                    'md5',
+                    'date',
+                )
+                for name, data in sorted(self.objects.items())
+                if name.startswith(prefix)
+            ]
         if verb == 'REMOVE':
             location, _, pattern = rest.partition(' PATTERN = ')
             prefix = self._relative(location)
             for name in [n for n in self.objects if n.startswith(prefix)]:
-                target = (name[len(prefix):].lstrip('/')
-                          if self.relative_patterns else self._matched(name))
-                if not pattern or (not self.remove_pattern_ignored
-                                   and re.fullmatch(pattern.strip("'"),
-                                                    target)):
+                target = (
+                    name[len(prefix) :].lstrip('/')
+                    if self.relative_patterns
+                    else self._matched(name)
+                )
+                if not pattern or (
+                    not self.remove_pattern_ignored
+                    and re.fullmatch(pattern.strip("'"), target)
+                ):
                     del self.objects[name]
             return []
         raise AssertionError(f'unexpected statement {sql!r}')
 
     def put(self, local: str, target: str, **options: Any) -> list[str]:
         import os
+
         self.puts.append(options)
         name = self._relative(target).rstrip('/')
-        key = f'{name}/{os.path.basename(local)}' if name else \
-            os.path.basename(local)
+        key = f'{name}/{os.path.basename(local)}' if name else os.path.basename(local)
         with open(local, 'rb') as reader:
             self.objects[key] = reader.read()
         return ['UPLOADED']
 
-    def get(self, source: str, directory: str, *, pattern: str,
-            **options: Any) -> list[str]:
+    def get(
+        self, source: str, directory: str, *, pattern: str, **options: Any
+    ) -> list[str]:
         import os
         import re
+
         prefix = self._relative(source)
         got = []
         for name, data in self.objects.items():
-            if name.startswith(prefix) and re.fullmatch(pattern,
-                                                        self._matched(name)):
-                with open(os.path.join(directory, os.path.basename(name)),
-                          'wb') as writer:
+            if name.startswith(prefix) and re.fullmatch(pattern, self._matched(name)):
+                with open(
+                    os.path.join(directory, os.path.basename(name)), 'wb'
+                ) as writer:
                     writer.write(data)
                 got.append(name)
         self.gets += got
@@ -183,17 +203,20 @@ class FakeStage:
 
     def presign(self, sql: str) -> list[tuple]:
         import re
+
         assert sql.startswith('SELECT'), sql
         paths = re.findall(r"\('((?:[^']|'')*)'\)", sql) or re.findall(
-            r", '((?:[^']|'')*)', \d+\)", sql)
-        return [(path, f'https://stage.invalid/{path}?signature=secret')
-                for path in paths]
+            r", '((?:[^']|'')*)', \d+\)", sql
+        )
+        return [
+            (path, f'https://stage.invalid/{path}?signature=secret') for path in paths
+        ]
 
-    def http_get(self, url: str, headers: Mapping[str, str],
-                 **kwargs: Any) -> Any:
+    def http_get(self, url: str, headers: Mapping[str, str], **kwargs: Any) -> Any:
         import re
 
         import requests
+
         name = url.split('https://stage.invalid/', 1)[1].split('?')[0]
         response = requests.Response()
         response.url = url
@@ -205,16 +228,16 @@ class FakeStage:
             data = bytes(b ^ 0xFF for b in data)
         self.ranges.append(headers['Range'])
         start, end = map(
-            int,
-            re.fullmatch(r'bytes=(\d+)-(\d+)', headers['Range']).groups())
+            int, re.fullmatch(r'bytes=(\d+)-(\d+)', headers['Range']).groups()
+        )
         if self.ignores_range:
             response.status_code, response._content = 200, data
         else:
             response.status_code = 206
-            response._content = data[start:end + 1]
+            response._content = data[start : end + 1]
             response.headers['Content-Range'] = (
-                f'bytes {start}-{start + len(response._content) - 1}/'
-                f'{len(data)}')
+                f'bytes {start}-{start + len(response._content) - 1}/{len(data)}'
+            )
         return response
 
 
@@ -237,8 +260,10 @@ def _stage_session(stage: FakeStage) -> Any:
         def __init__(self) -> None:
             pass
 
-        file = SimpleNamespace(put=lambda *a, **k: stage.put(*a, **k),
-                               get=lambda *a, **k: stage.get(*a, **k))
+        file = SimpleNamespace(
+            put=lambda *a, **k: stage.put(*a, **k),
+            get=lambda *a, **k: stage.get(*a, **k),
+        )
         connection = SimpleNamespace(cursor=_Cursor)
 
         def sql(self, sql: str, params: Any = None) -> Any:

@@ -25,9 +25,11 @@ from statedb.db import (
     StateDBBootstrapBusyError,
     StateDBSchemaMismatchError,
     TableSpec,
+    bootstrap_postgres,
+    bootstrap_sqlite,
+    schema_identity,
 )
 from statedb.db import bootstrap as bootstrap_mod
-from statedb.db import bootstrap_postgres, bootstrap_sqlite, schema_identity
 from statedb.db.bootstrap import (
     _ExistingIndex,
     _index_matches,
@@ -71,8 +73,8 @@ def _fetch_sqlite(sqlite_path, sql: str, *args):
 
 
 async def _reset_postgres_schema(connection) -> None:
-    await connection.execute("DROP SCHEMA public CASCADE")
-    await connection.execute("CREATE SCHEMA public")
+    await connection.execute('DROP SCHEMA public CASCADE')
+    await connection.execute('CREATE SCHEMA public')
 
 
 async def _fetch_postgres_table_names(connection) -> set[str]:
@@ -81,29 +83,26 @@ async def _fetch_postgres_table_names(connection) -> set[str]:
         FROM pg_catalog.pg_tables
         WHERE schemaname = current_schema()
         """)
-    return {row["tablename"] for row in rows}
+    return {row['tablename'] for row in rows}
 
 
 async def _fetch_postgres_schema_metadata(connection) -> dict:
     row = await connection.fetchrow(
-        "SELECT payload FROM statedb_schema WHERE id = $1",
+        'SELECT payload FROM statedb_schema WHERE id = $1',
         SCHEMA_ROW_ID,
     )
     assert row is not None
-    return json.loads(row["payload"])
+    return json.loads(row['payload'])
 
 
 def _schema_metadata_payload(schema_hash: str) -> str:
     return json.dumps(
         {
-            "schema_hash":
-            schema_hash,
-            "schema_version":
-            SCHEMA_VERSION,
-            "table_names": [table.name for table in STATE_DB_TABLES],
-            "index_names": [
-                index.name for table in STATE_DB_TABLES
-                for index in table.indexes
+            'schema_hash': schema_hash,
+            'schema_version': SCHEMA_VERSION,
+            'table_names': [table.name for table in STATE_DB_TABLES],
+            'index_names': [
+                index.name for table in STATE_DB_TABLES for index in table.indexes
             ],
         },
         sort_keys=True,
@@ -154,26 +153,27 @@ class _MigratingFakePostgresConnection(_FakePostgresConnection):
 
     async def execute(self, sql: str, *args):
         await super().execute(sql, *args)
-        if "UPDATE statedb_schema" in sql:
+        if 'UPDATE statedb_schema' in sql:
             payload = json.loads(args[0])
-            self.schema_hash = payload["schema_hash"]
-            self.schema_version = payload["schema_version"]
+            self.schema_hash = payload['schema_hash']
+            self.schema_version = payload['schema_version']
 
     async def fetch(self, sql: str, *args):
-        if "FROM pg_catalog.pg_tables" in sql:
-            return [{"tablename": name} for name in sorted(self.table_names)]
-        if "FROM pg_catalog.pg_index" in sql:
+        if 'FROM pg_catalog.pg_tables' in sql:
+            return [{'tablename': name} for name in sorted(self.table_names)]
+        if 'FROM pg_catalog.pg_index' in sql:
             return []
         return []
 
     async def fetchrow(self, sql: str, *args):
-        if "FROM statedb_schema" in sql and "statedb_schema" in self.table_names:
+        if 'FROM statedb_schema' in sql and 'statedb_schema' in self.table_names:
             return {
-                "payload":
-                json.dumps({
-                    "schema_hash": self.schema_hash,
-                    "schema_version": self.schema_version,
-                })
+                'payload': json.dumps(
+                    {
+                        'schema_hash': self.schema_hash,
+                        'schema_version': self.schema_version,
+                    }
+                )
             }
         return None
 
@@ -181,40 +181,39 @@ class _MigratingFakePostgresConnection(_FakePostgresConnection):
 def test_state_db_schema_inventory_includes_rest_and_ml_tables() -> None:
     table_names = set(STATE_DB_TABLE_NAMES)
 
-    assert "connectors" in table_names
-    assert "tables" in table_names
-    assert "graphs" in table_names
-    assert "predictive_queries" in table_names
-    assert "api_keys" in table_names
-    assert "api_key_secrets" in table_names
-    assert "training_jobs" in table_names
-    assert "batch_prediction_jobs" in table_names
-    assert "baseline_jobs" not in table_names
-    assert "online_serving_jobs" not in table_names
-    assert "job_tags" in table_names
-    assert "job_resources" not in table_names
-    assert "direct_connect_users" in table_names
-    assert "direct_connect_password_login_attempts" in table_names
+    assert 'connectors' in table_names
+    assert 'tables' in table_names
+    assert 'graphs' in table_names
+    assert 'predictive_queries' in table_names
+    assert 'api_keys' in table_names
+    assert 'api_key_secrets' in table_names
+    assert 'training_jobs' in table_names
+    assert 'batch_prediction_jobs' in table_names
+    assert 'baseline_jobs' not in table_names
+    assert 'online_serving_jobs' not in table_names
+    assert 'job_tags' in table_names
+    assert 'job_resources' not in table_names
+    assert 'direct_connect_users' in table_names
+    assert 'direct_connect_password_login_attempts' in table_names
 
 
 def test_state_db_schema_identity_is_stable() -> None:
-    assert schema_identity("sqlite") == schema_identity("sqlite")
-    assert schema_identity("postgres") == schema_identity("postgres")
-    assert len(schema_identity("sqlite")) == 64
+    assert schema_identity('sqlite') == schema_identity('sqlite')
+    assert schema_identity('postgres') == schema_identity('postgres')
+    assert len(schema_identity('sqlite')) == 64
 
 
 def test_state_db_schema_identity_ignores_table_purpose() -> None:
-    first = (TableSpec("records", "first description"), )
-    second = (TableSpec("records", "updated description"), )
+    first = (TableSpec('records', 'first description'),)
+    second = (TableSpec('records', 'updated description'),)
 
-    assert schema_identity("sqlite", first) == schema_identity("sqlite", second)
-    assert schema_identity("postgres",
-                           first) == schema_identity("postgres", second)
+    assert schema_identity('sqlite', first) == schema_identity('sqlite', second)
+    assert schema_identity('postgres', first) == schema_identity('postgres', second)
 
 
 def test_state_db_schema_identity_only_uses_active_backend_ddl() -> None:
     original = IndexSpec(
-        name="records_value_idx",
+        name='records_value_idx',
         postgres_expression="(payload->>'value')",
         sqlite_expression="json_extract(payload, '$.value')",
     )
@@ -223,132 +222,161 @@ def test_state_db_schema_identity_only_uses_active_backend_ddl() -> None:
         postgres_expression=original.postgres_expression,
         sqlite_expression="json_extract(payload, '$.other_value')",
     )
-    original_tables = (TableSpec("records", "records", (original, )), )
-    changed_tables = (TableSpec("records", "records", (changed_sqlite, )), )
+    original_tables = (TableSpec('records', 'records', (original,)),)
+    changed_tables = (TableSpec('records', 'records', (changed_sqlite,)),)
 
-    assert schema_identity("postgres", original_tables) == schema_identity(
-        "postgres", changed_tables)
-    assert schema_identity("sqlite", original_tables) != schema_identity(
-        "sqlite", changed_tables)
+    assert schema_identity('postgres', original_tables) == schema_identity(
+        'postgres', changed_tables
+    )
+    assert schema_identity('sqlite', original_tables) != schema_identity(
+        'sqlite', changed_tables
+    )
 
 
-def test_project_group_and_identity_names_and_slugs_have_global_unique_indexes(
-) -> None:
-    projects = next(table for table in STATE_DB_TABLES
-                    if table.name == "projects")
+def test_project_group_and_identity_names_and_slugs_have_global_unique_indexes() -> (
+    None
+):
+    projects = next(table for table in STATE_DB_TABLES if table.name == 'projects')
     project_name_index = next(
-        index for index in projects.indexes
-        if index.name == "projects_display_name_unique_idx")
-    groups = next(table for table in STATE_DB_TABLES if table.name == "groups")
-    group_name_index = next(index for index in groups.indexes
-                            if index.name == "groups_display_name_unique_idx")
-    identities = next(table for table in STATE_DB_TABLES
-                      if table.name == "identities")
+        index
+        for index in projects.indexes
+        if index.name == 'projects_display_name_unique_idx'
+    )
+    groups = next(table for table in STATE_DB_TABLES if table.name == 'groups')
+    group_name_index = next(
+        index
+        for index in groups.indexes
+        if index.name == 'groups_display_name_unique_idx'
+    )
+    identities = next(table for table in STATE_DB_TABLES if table.name == 'identities')
 
     slug_indexes = {
-        table.name:
-        next(index for index in table.indexes
-             if index.name == f"{table.name}_slug_unique_idx")
+        table.name: next(
+            index
+            for index in table.indexes
+            if index.name == f'{table.name}_slug_unique_idx'
+        )
         for table in (projects, groups, identities)
     }
 
     assert SCHEMA_VERSION == 17
     assert project_name_index.unique is True
     assert project_name_index.postgres_expression == (
-        "(payload->>'normalized_display_name')")
+        "(payload->>'normalized_display_name')"
+    )
     assert project_name_index.sqlite_expression == (
-        "json_extract(payload, '$.normalized_display_name')")
-    assert "group_id" not in project_name_index.postgres_expression
-    assert "group_id" not in project_name_index.sqlite_expression
+        "json_extract(payload, '$.normalized_display_name')"
+    )
+    assert 'group_id' not in project_name_index.postgres_expression
+    assert 'group_id' not in project_name_index.sqlite_expression
     assert group_name_index.unique is True
     for slug_index in slug_indexes.values():
         assert slug_index.unique is True
         assert slug_index.postgres_expression == "(payload->>'slug')"
-        assert slug_index.sqlite_expression == (
-            "json_extract(payload, '$.slug')")
+        assert slug_index.sqlite_expression == ("json_extract(payload, '$.slug')")
 
 
 def test_identity_unique_indexes_only_cover_live_identities() -> None:
-    identities = next(table for table in STATE_DB_TABLES
-                      if table.name == "identities")
+    identities = next(table for table in STATE_DB_TABLES if table.name == 'identities')
     unique_indexes = [index for index in identities.indexes if index.unique]
     assert len(unique_indexes) == 3
     for index in unique_indexes:
         assert index.postgres_where == "payload->>'tombstoned_at' IS NULL"
         assert index.sqlite_where == (
-            "json_extract(payload, '$.tombstoned_at') IS NULL")
+            "json_extract(payload, '$.tombstoned_at') IS NULL"
+        )
 
 
 def test_connector_indexes_only_cover_live_name_and_identity_lookups() -> None:
-    connectors = next(table for table in STATE_DB_TABLES
-                      if table.name == "connectors")
-    name_index = next(index for index in connectors.indexes
-                      if index.name == "connectors_project_name_unique_idx")
-    identity_index = next(index for index in connectors.indexes
-                          if index.name == "connectors_live_identity_idx")
+    connectors = next(table for table in STATE_DB_TABLES if table.name == 'connectors')
+    name_index = next(
+        index
+        for index in connectors.indexes
+        if index.name == 'connectors_project_name_unique_idx'
+    )
+    identity_index = next(
+        index
+        for index in connectors.indexes
+        if index.name == 'connectors_live_identity_idx'
+    )
 
     assert name_index.unique is True
     assert name_index.postgres_where == ("payload->>'tombstoned_at' IS NULL")
     assert name_index.sqlite_where == (
-        "json_extract(payload, '$.tombstoned_at') IS NULL")
-    assert "identity_id" in identity_index.postgres_expression
-    assert "tombstoned_at" in identity_index.postgres_where
-    assert "identity_id" in identity_index.sqlite_expression
-    assert "tombstoned_at" in identity_index.sqlite_where
+        "json_extract(payload, '$.tombstoned_at') IS NULL"
+    )
+    assert 'identity_id' in identity_index.postgres_expression
+    assert 'tombstoned_at' in identity_index.postgres_where
+    assert 'identity_id' in identity_index.sqlite_expression
+    assert 'tombstoned_at' in identity_index.sqlite_where
 
 
 def test_state_db_schema_ddl_is_not_masked() -> None:
     table = next(table for table in STATE_DB_TABLES if table.indexes)
     index = table.indexes[0]
 
-    assert "IF NOT EXISTS" not in _sqlite_table_ddl(table.name).upper()
-    assert "IF NOT EXISTS" not in _postgres_table_ddl(table.name).upper()
-    assert "IF NOT EXISTS" not in index.ddl(table.name, "sqlite").upper()
-    assert "IF NOT EXISTS" not in index.ddl(table.name, "postgres").upper()
+    assert 'IF NOT EXISTS' not in _sqlite_table_ddl(table.name).upper()
+    assert 'IF NOT EXISTS' not in _postgres_table_ddl(table.name).upper()
+    assert 'IF NOT EXISTS' not in index.ddl(table.name, 'sqlite').upper()
+    assert 'IF NOT EXISTS' not in index.ddl(table.name, 'postgres').upper()
 
 
 def test_postgres_index_match_accepts_pg_catalog_where_parentheses() -> None:
-    table = next(table for table in STATE_DB_TABLES
-                 if table.name == "batch_prediction_jobs")
-    index = next(index for index in table.indexes
-                 if index.name == "batch_prediction_jobs_workflow_id_idx")
+    table = next(
+        table for table in STATE_DB_TABLES if table.name == 'batch_prediction_jobs'
+    )
+    index = next(
+        index
+        for index in table.indexes
+        if index.name == 'batch_prediction_jobs_workflow_id_idx'
+    )
     existing = _ExistingIndex(
         name=index.name,
         table_name=table.name,
-        definition=("CREATE INDEX batch_prediction_jobs_workflow_id_idx "
-                    "ON public.batch_prediction_jobs USING btree "
-                    "(((payload ->> 'batch_prediction_workflow_id'::text))) "
-                    "WHERE ((payload ->> 'batch_prediction_workflow_id'::text) "
-                    "IS NOT NULL)"),
+        definition=(
+            'CREATE INDEX batch_prediction_jobs_workflow_id_idx '
+            'ON public.batch_prediction_jobs USING btree '
+            "(((payload ->> 'batch_prediction_workflow_id'::text))) "
+            "WHERE ((payload ->> 'batch_prediction_workflow_id'::text) "
+            'IS NOT NULL)'
+        ),
     )
 
-    assert _index_matches(existing, table.name, index, "postgres")
+    assert _index_matches(existing, table.name, index, 'postgres')
 
 
-def test_postgres_index_match_accepts_nested_partial_predicate_parentheses(
-) -> None:
-    table = next(table for table in STATE_DB_TABLES if table.name == "tables")
-    index = next(index for index in table.indexes
-                 if index.name == "tables_project_alias_unique_idx")
+def test_postgres_index_match_accepts_nested_partial_predicate_parentheses() -> None:
+    table = next(table for table in STATE_DB_TABLES if table.name == 'tables')
+    index = next(
+        index
+        for index in table.indexes
+        if index.name == 'tables_project_alias_unique_idx'
+    )
     existing = _ExistingIndex(
         name=index.name,
         table_name=table.name,
-        definition=("CREATE UNIQUE INDEX tables_project_alias_unique_idx "
-                    "ON public.tables USING btree "
-                    "(((payload ->> 'project_id'::text)), "
-                    "((payload ->> 'normalized_alias'::text))) "
-                    "WHERE (COALESCE((payload ->> 'normalized_alias'::text), "
-                    "''::text) <> ''::text)"),
+        definition=(
+            'CREATE UNIQUE INDEX tables_project_alias_unique_idx '
+            'ON public.tables USING btree '
+            "(((payload ->> 'project_id'::text)), "
+            "((payload ->> 'normalized_alias'::text))) "
+            "WHERE (COALESCE((payload ->> 'normalized_alias'::text), "
+            "''::text) <> ''::text)"
+        ),
     )
 
-    assert _index_matches(existing, table.name, index, "postgres")
+    assert _index_matches(existing, table.name, index, 'postgres')
 
 
 def test_sqlite_index_match_accepts_equivalent_workflow_index_ddl() -> None:
-    table = next(table for table in STATE_DB_TABLES
-                 if table.name == "batch_prediction_jobs")
-    index = next(index for index in table.indexes
-                 if index.name == "batch_prediction_jobs_workflow_id_idx")
+    table = next(
+        table for table in STATE_DB_TABLES if table.name == 'batch_prediction_jobs'
+    )
+    index = next(
+        index
+        for index in table.indexes
+        if index.name == 'batch_prediction_jobs_workflow_id_idx'
+    )
     existing = _ExistingIndex(
         name=index.name,
         table_name=table.name,
@@ -357,32 +385,35 @@ def test_sqlite_index_match_accepts_equivalent_workflow_index_ddl() -> None:
             'ON "batch_prediction_jobs" '
             "((json_extract(payload, '$.batch_prediction_workflow_id'))) "
             "WHERE (json_extract(payload, '$.batch_prediction_workflow_id') "
-            "is not null)"),
+            'is not null)'
+        ),
     )
 
-    assert _index_matches(existing, table.name, index, "sqlite")
+    assert _index_matches(existing, table.name, index, 'sqlite')
 
 
 @pytest.mark.asyncio
 async def test_bootstrap_sqlite_creates_schema_for_empty_target(
-    tmp_path, ) -> None:
-    sqlite_path = tmp_path / "state.db"
+    tmp_path,
+) -> None:
+    sqlite_path = tmp_path / 'state.db'
 
     result = await bootstrap_sqlite(str(sqlite_path))
 
-    assert result.backend == "sqlite"
-    assert result.schema_hash == schema_identity("sqlite")
+    assert result.backend == 'sqlite'
+    assert result.schema_hash == schema_identity('sqlite')
     assert result.table_count == len(STATE_DB_TABLE_NAMES)
     assert result.created_schema_row is True
 
     table_names = {
         row[0]
         for row in _fetch_sqlite(
-            sqlite_path, "SELECT name FROM sqlite_master WHERE type = 'table'")
+            sqlite_path, "SELECT name FROM sqlite_master WHERE type = 'table'"
+        )
     }
     rows = _fetch_sqlite(
         sqlite_path,
-        "SELECT payload FROM statedb_schema WHERE id = ?",
+        'SELECT payload FROM statedb_schema WHERE id = ?',
         SCHEMA_ROW_ID,
     )
     row = rows[0] if rows else None
@@ -390,8 +421,8 @@ async def test_bootstrap_sqlite_creates_schema_for_empty_target(
     assert table_names == set(STATE_DB_TABLE_NAMES)
     assert row is not None
     payload = json.loads(row[0])
-    assert payload["schema_hash"] == schema_identity("sqlite")
-    assert payload["schema_version"] == SCHEMA_VERSION
+    assert payload['schema_hash'] == schema_identity('sqlite')
+    assert payload['schema_version'] == SCHEMA_VERSION
 
     second_result = await bootstrap_sqlite(str(sqlite_path))
     assert second_result.created_schema_row is False
@@ -399,17 +430,20 @@ async def test_bootstrap_sqlite_creates_schema_for_empty_target(
 
 @pytest.mark.asyncio
 async def test_bootstrap_sqlite_upgrades_legacy_schema_identity(
-    tmp_path, ) -> None:
-    sqlite_path = tmp_path / "state.db"
+    tmp_path,
+) -> None:
+    sqlite_path = tmp_path / 'state.db'
     await bootstrap_sqlite(str(sqlite_path))
     legacy_hash = legacy_schema_identity()
     _execute_sqlite(
         sqlite_path,
-        "UPDATE statedb_schema SET payload = ? WHERE id = ?",
-        json.dumps({
-            "schema_hash": legacy_hash,
-            "schema_version": SCHEMA_VERSION,
-        }),
+        'UPDATE statedb_schema SET payload = ? WHERE id = ?',
+        json.dumps(
+            {
+                'schema_hash': legacy_hash,
+                'schema_version': SCHEMA_VERSION,
+            }
+        ),
         SCHEMA_ROW_ID,
     )
 
@@ -418,20 +452,22 @@ async def test_bootstrap_sqlite_upgrades_legacy_schema_identity(
     payload = json.loads(
         _fetch_sqlite(
             sqlite_path,
-            "SELECT payload FROM statedb_schema WHERE id = ?",
+            'SELECT payload FROM statedb_schema WHERE id = ?',
             SCHEMA_ROW_ID,
-        )[0][0])
+        )[0][0]
+    )
     assert result.created_schema_row is False
-    assert result.schema_hash == schema_identity("sqlite")
+    assert result.schema_hash == schema_identity('sqlite')
     assert payload == {
-        "schema_hash": schema_identity("sqlite"),
-        "schema_version": SCHEMA_VERSION,
+        'schema_hash': schema_identity('sqlite'),
+        'schema_version': SCHEMA_VERSION,
     }
 
 
 @pytest.mark.asyncio
 async def test_bootstrap_sqlite_current_schema_uses_read_only_fast_path(
-    tmp_path, ) -> None:
+    tmp_path,
+) -> None:
     sqlite_path = tmp_path / 'state.db'
     await bootstrap_sqlite(str(sqlite_path))
     writer = sqlite3.connect(sqlite_path, isolation_level=None)
@@ -450,7 +486,8 @@ async def test_bootstrap_sqlite_current_schema_uses_read_only_fast_path(
 
 @pytest.mark.asyncio
 async def test_bootstrap_sqlite_retries_busy_writer_until_release(
-        tmp_path, monkeypatch) -> None:
+    tmp_path, monkeypatch
+) -> None:
     sqlite_path = tmp_path / 'state.db'
     writer = sqlite3.connect(
         sqlite_path,
@@ -467,14 +504,13 @@ async def test_bootstrap_sqlite_retries_busy_writer_until_release(
         attempts += 1
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(bootstrap_mod, '_bootstrap_sqlite_write_once',
-                        counted_write)
+    monkeypatch.setattr(bootstrap_mod, '_bootstrap_sqlite_write_once', counted_write)
     monkeypatch.setattr(bootstrap_mod, '_SQLITE_BOOTSTRAP_BUSY_TIMEOUT_MS', 5)
     monkeypatch.setattr(bootstrap_mod, '_SQLITE_BOOTSTRAP_MAX_ATTEMPTS', 20)
-    monkeypatch.setattr(bootstrap_mod,
-                        '_SQLITE_BOOTSTRAP_INITIAL_BACKOFF_SECONDS', 0.005)
-    monkeypatch.setattr(bootstrap_mod, '_SQLITE_BOOTSTRAP_MAX_BACKOFF_SECONDS',
-                        0.02)
+    monkeypatch.setattr(
+        bootstrap_mod, '_SQLITE_BOOTSTRAP_INITIAL_BACKOFF_SECONDS', 0.005
+    )
+    monkeypatch.setattr(bootstrap_mod, '_SQLITE_BOOTSTRAP_MAX_BACKOFF_SECONDS', 0.02)
 
     def release_writer() -> None:
         time.sleep(0.04)
@@ -494,15 +530,15 @@ async def test_bootstrap_sqlite_retries_busy_writer_until_release(
 
 @pytest.mark.asyncio
 async def test_bootstrap_sqlite_busy_exhaustion_is_bounded_and_sanitized(
-        tmp_path, monkeypatch) -> None:
+    tmp_path, monkeypatch
+) -> None:
     sqlite_path = tmp_path / 'state.db'
     writer = sqlite3.connect(sqlite_path, isolation_level=None)
     writer.execute('PRAGMA journal_mode=WAL')
     writer.execute('BEGIN IMMEDIATE')
     monkeypatch.setattr(bootstrap_mod, '_SQLITE_BOOTSTRAP_BUSY_TIMEOUT_MS', 1)
     monkeypatch.setattr(bootstrap_mod, '_SQLITE_BOOTSTRAP_MAX_ATTEMPTS', 2)
-    monkeypatch.setattr(bootstrap_mod,
-                        '_SQLITE_BOOTSTRAP_INITIAL_BACKOFF_SECONDS', 0)
+    monkeypatch.setattr(bootstrap_mod, '_SQLITE_BOOTSTRAP_INITIAL_BACKOFF_SECONDS', 0)
     try:
         started = time.monotonic()
         with pytest.raises(StateDBBootstrapBusyError) as caught:
@@ -605,8 +641,13 @@ def test_sqlite_bootstrap_fork_replaces_locked_parent_guards(tmp_path) -> None:
     def bootstrap_in_child() -> None:
         try:
             result = asyncio.run(bootstrap_sqlite(sqlite_path))
-            send.send(('ok', result.created_schema_row,
-                       bootstrap_mod._SQLITE_BOOTSTRAP_LOCKS_PID))
+            send.send(
+                (
+                    'ok',
+                    result.created_schema_row,
+                    bootstrap_mod._SQLITE_BOOTSTRAP_LOCKS_PID,
+                )
+            )
         except BaseException as error:
             send.send(('error', type(error).__name__, str(error)))
         finally:
@@ -636,92 +677,92 @@ def test_sqlite_bootstrap_fork_replaces_locked_parent_guards(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_bootstrap_sqlite_rejects_unexpected_existing_table_before_repair(
-    tmp_path, ) -> None:
-    sqlite_path = tmp_path / "state.db"
-    _execute_sqlite(sqlite_path,
-                    "CREATE TABLE old_rest_metadata (id TEXT PRIMARY KEY)")
+    tmp_path,
+) -> None:
+    sqlite_path = tmp_path / 'state.db'
+    _execute_sqlite(sqlite_path, 'CREATE TABLE old_rest_metadata (id TEXT PRIMARY KEY)')
 
-    with pytest.raises(StateDBSchemaMismatchError, match="unexpected tables"):
+    with pytest.raises(StateDBSchemaMismatchError, match='unexpected tables'):
         await bootstrap_sqlite(str(sqlite_path))
 
     table_names = {
         row[0]
         for row in _fetch_sqlite(
-            sqlite_path, "SELECT name FROM sqlite_master WHERE type = 'table'")
+            sqlite_path, "SELECT name FROM sqlite_master WHERE type = 'table'"
+        )
     }
-    assert table_names == {"old_rest_metadata"}
+    assert table_names == {'old_rest_metadata'}
 
 
 @pytest.mark.asyncio
 async def test_bootstrap_sqlite_rejects_partial_state_db_footprint_before_repair(
-    tmp_path, ) -> None:
-    sqlite_path = tmp_path / "state.db"
-    _execute_sqlite(sqlite_path, "CREATE TABLE projects (id TEXT PRIMARY KEY)")
+    tmp_path,
+) -> None:
+    sqlite_path = tmp_path / 'state.db'
+    _execute_sqlite(sqlite_path, 'CREATE TABLE projects (id TEXT PRIMARY KEY)')
 
-    with pytest.raises(StateDBSchemaMismatchError,
-                       match="missing State DB tables"):
+    with pytest.raises(StateDBSchemaMismatchError, match='missing State DB tables'):
         await bootstrap_sqlite(str(sqlite_path))
 
     table_names = {
         row[0]
         for row in _fetch_sqlite(
-            sqlite_path, "SELECT name FROM sqlite_master WHERE type = 'table'")
+            sqlite_path, "SELECT name FROM sqlite_master WHERE type = 'table'"
+        )
     }
-    assert table_names == {"projects"}
+    assert table_names == {'projects'}
 
 
 @pytest.mark.asyncio
 async def test_bootstrap_sqlite_rejects_missing_index_before_repair(
-    tmp_path, ) -> None:
-    sqlite_path = tmp_path / "state.db"
+    tmp_path,
+) -> None:
+    sqlite_path = tmp_path / 'state.db'
     await bootstrap_sqlite(str(sqlite_path))
-    _execute_sqlite(sqlite_path, "DROP INDEX projects_status_group_private_idx")
+    _execute_sqlite(sqlite_path, 'DROP INDEX projects_status_group_private_idx')
 
-    with pytest.raises(StateDBSchemaMismatchError,
-                       match="missing State DB indexes"):
+    with pytest.raises(StateDBSchemaMismatchError, match='missing State DB indexes'):
         await bootstrap_sqlite(str(sqlite_path))
 
     index_names = {
         row[0]
         for row in _fetch_sqlite(
-            sqlite_path, "SELECT name FROM sqlite_master WHERE type = 'index'")
+            sqlite_path, "SELECT name FROM sqlite_master WHERE type = 'index'"
+        )
     }
-    assert "projects_status_group_private_idx" not in index_names
+    assert 'projects_status_group_private_idx' not in index_names
 
 
 @pytest.mark.asyncio
 async def test_bootstrap_sqlite_rejects_wrong_index(tmp_path) -> None:
-    sqlite_path = tmp_path / "state.db"
+    sqlite_path = tmp_path / 'state.db'
     await bootstrap_sqlite(str(sqlite_path))
-    _execute_sqlite(sqlite_path, "DROP INDEX projects_status_group_private_idx")
+    _execute_sqlite(sqlite_path, 'DROP INDEX projects_status_group_private_idx')
     _execute_sqlite(
-        sqlite_path,
-        "CREATE INDEX projects_status_group_private_idx ON projects (id)")
+        sqlite_path, 'CREATE INDEX projects_status_group_private_idx ON projects (id)'
+    )
 
-    with pytest.raises(StateDBSchemaMismatchError,
-                       match="wrong State DB indexes"):
+    with pytest.raises(StateDBSchemaMismatchError, match='wrong State DB indexes'):
         await bootstrap_sqlite(str(sqlite_path))
 
 
 @pytest.mark.asyncio
 async def test_bootstrap_sqlite_rejects_extra_index(tmp_path) -> None:
-    sqlite_path = tmp_path / "state.db"
+    sqlite_path = tmp_path / 'state.db'
     await bootstrap_sqlite(str(sqlite_path))
-    _execute_sqlite(sqlite_path,
-                    "CREATE INDEX projects_extra_idx ON projects (id)")
+    _execute_sqlite(sqlite_path, 'CREATE INDEX projects_extra_idx ON projects (id)')
 
-    with pytest.raises(StateDBSchemaMismatchError,
-                       match="unexpected State DB indexes"):
+    with pytest.raises(StateDBSchemaMismatchError, match='unexpected State DB indexes'):
         await bootstrap_sqlite(str(sqlite_path))
 
 
 @pytest.mark.asyncio
 async def test_bootstrap_sqlite_accepts_equivalent_workflow_index_ddl(
-    tmp_path, ) -> None:
-    sqlite_path = tmp_path / "state.db"
+    tmp_path,
+) -> None:
+    sqlite_path = tmp_path / 'state.db'
     await bootstrap_sqlite(str(sqlite_path))
-    _execute_sqlite(sqlite_path,
-                    "DROP INDEX batch_prediction_jobs_workflow_id_idx")
+    _execute_sqlite(sqlite_path, 'DROP INDEX batch_prediction_jobs_workflow_id_idx')
     _execute_sqlite(
         sqlite_path,
         """
@@ -741,92 +782,93 @@ async def test_bootstrap_sqlite_accepts_equivalent_workflow_index_ddl(
 
 @pytest.mark.asyncio
 async def test_bootstrap_sqlite_rejects_extra_state_db_table(tmp_path) -> None:
-    sqlite_path = tmp_path / "state.db"
-    extra_tables = STATE_DB_TABLES + (TableSpec("statedb_extra",
-                                                "old StateDB table"), )
+    sqlite_path = tmp_path / 'state.db'
+    extra_tables = STATE_DB_TABLES + (TableSpec('statedb_extra', 'old StateDB table'),)
     await bootstrap_sqlite(str(sqlite_path), tables=extra_tables)
 
-    with pytest.raises(StateDBSchemaMismatchError, match="unexpected tables"):
+    with pytest.raises(StateDBSchemaMismatchError, match='unexpected tables'):
         await bootstrap_sqlite(str(sqlite_path))
 
 
 @pytest.mark.asyncio
 async def test_bootstrap_sqlite_rejects_schema_hash_mismatch(tmp_path) -> None:
-    sqlite_path = tmp_path / "state.db"
+    sqlite_path = tmp_path / 'state.db'
     await bootstrap_sqlite(str(sqlite_path))
     _execute_sqlite(
         sqlite_path,
-        "UPDATE statedb_schema SET payload = ? WHERE id = ?",
-        _schema_metadata_payload("wrong"),
+        'UPDATE statedb_schema SET payload = ? WHERE id = ?',
+        _schema_metadata_payload('wrong'),
         SCHEMA_ROW_ID,
     )
 
-    with pytest.raises(StateDBSchemaMismatchError, match="schema hash"):
+    with pytest.raises(StateDBSchemaMismatchError, match='schema hash'):
         await bootstrap_sqlite(str(sqlite_path))
 
 
 @pytest.mark.asyncio
 async def test_bootstrap_postgres_takes_advisory_lock_before_ddl(
-    monkeypatch, ) -> None:
+    monkeypatch,
+) -> None:
     connection = _FakePostgresConnection()
 
     async def password() -> str:
-        return "token"
+        return 'token'
 
     async def fake_connect(
         dsn: str,
         **kwargs: Any,
     ) -> _FakePostgresConnection:
-        assert dsn == "postgresql://state"
-        assert kwargs == {"password": password}
+        assert dsn == 'postgresql://state'
+        assert kwargs == {'password': password}
         return connection
 
-    monkeypatch.setattr("statedb.db.bootstrap.asyncpg.connect", fake_connect)
+    monkeypatch.setattr('statedb.db.bootstrap.asyncpg.connect', fake_connect)
 
-    result = await bootstrap_postgres("postgresql://state", password=password)
+    result = await bootstrap_postgres('postgresql://state', password=password)
 
-    assert result.backend == "postgres"
+    assert result.backend == 'postgres'
     assert connection.closed is True
     first_sql, first_args = connection.execute_calls[0]
-    assert "pg_advisory_xact_lock" in first_sql
+    assert 'pg_advisory_xact_lock' in first_sql
     assert first_args
-    assert "CREATE TABLE" not in first_sql
+    assert 'CREATE TABLE' not in first_sql
 
 
 @pytest.mark.asyncio
 async def test_bootstrap_postgres_applies_registered_schema_migration(
-    monkeypatch, ) -> None:
+    monkeypatch,
+) -> None:
     tables = (
-        TableSpec("statedb_schema", "schema metadata"),
-        TableSpec("projects", "project records"),
+        TableSpec('statedb_schema', 'schema metadata'),
+        TableSpec('projects', 'project records'),
     )
     old_version = 1
     new_version = 2
     connection = _MigratingFakePostgresConnection(
-        table_names={"statedb_schema"},
-        schema_hash=schema_identity("postgres", (tables[0], )),
+        table_names={'statedb_schema'},
+        schema_hash=schema_identity('postgres', (tables[0],)),
         schema_version=old_version,
     )
 
     async def fake_connect(dsn: str):
-        assert dsn == "postgresql://state"
+        assert dsn == 'postgresql://state'
         return connection
 
     async def add_projects(conn):
-        conn.table_names.add("projects")
+        conn.table_names.add('projects')
 
-    monkeypatch.setattr("statedb.db.bootstrap.asyncpg.connect", fake_connect)
+    monkeypatch.setattr('statedb.db.bootstrap.asyncpg.connect', fake_connect)
 
     result = await bootstrap_postgres(
-        "postgresql://state",
+        'postgresql://state',
         tables=tables,
         schema_version=new_version,
         migrations={old_version: add_projects},
     )
 
     assert result.created_schema_row is False
-    assert result.applied_migrations == (old_version, )
-    assert connection.schema_hash == schema_identity("postgres", tables)
+    assert result.applied_migrations == (old_version,)
+    assert connection.schema_hash == schema_identity('postgres', tables)
     assert connection.schema_version == new_version
 
 
@@ -836,14 +878,12 @@ async def test_postgres_12_to_13_migration_replaces_api_key_indexes() -> None:
 
     await POSTGRES_SCHEMA_MIGRATIONS[12](connection)
 
-    api_keys = next(table for table in STATE_DB_TABLES
-                    if table.name == "api_keys")
+    api_keys = next(table for table in STATE_DB_TABLES if table.name == 'api_keys')
     assert connection.execute_calls == [
-        ("DROP INDEX IF EXISTS api_keys_customer_type_owner_idx", ()),
-        ("DROP INDEX IF EXISTS api_keys_verification_lookup_idx", ()),
-        ("DROP INDEX IF EXISTS api_keys_owner_name_unique_idx", ()),
-        *((index.ddl("api_keys", "postgres"), ())
-          for index in api_keys.indexes),
+        ('DROP INDEX IF EXISTS api_keys_customer_type_owner_idx', ()),
+        ('DROP INDEX IF EXISTS api_keys_verification_lookup_idx', ()),
+        ('DROP INDEX IF EXISTS api_keys_owner_name_unique_idx', ()),
+        *((index.ddl('api_keys', 'postgres'), ()) for index in api_keys.indexes),
     ]
 
 
@@ -854,7 +894,7 @@ async def test_postgres_13_to_14_migration_drops_job_resources() -> None:
     await POSTGRES_SCHEMA_MIGRATIONS[13](connection)
 
     assert connection.execute_calls == [
-        ("DROP TABLE IF EXISTS job_resources", ()),
+        ('DROP TABLE IF EXISTS job_resources', ()),
     ]
 
 
@@ -865,7 +905,7 @@ async def test_postgres_14_to_15_migration_drops_baseline_jobs() -> None:
     await POSTGRES_SCHEMA_MIGRATIONS[14](connection)
 
     assert connection.execute_calls == [
-        ("DROP TABLE IF EXISTS baseline_jobs", ()),
+        ('DROP TABLE IF EXISTS baseline_jobs', ()),
     ]
 
 
@@ -876,69 +916,70 @@ async def test_postgres_15_to_16_migration_drops_online_serving_jobs() -> None:
     await POSTGRES_SCHEMA_MIGRATIONS[15](connection)
 
     assert connection.execute_calls == [
-        ("DROP TABLE IF EXISTS online_serving_jobs", ()),
+        ('DROP TABLE IF EXISTS online_serving_jobs', ()),
     ]
 
 
 @pytest.mark.asyncio
 async def test_bootstrap_postgres_upgrades_legacy_schema_identity(
-    monkeypatch, ) -> None:
+    monkeypatch,
+) -> None:
     tables = (
-        TableSpec("statedb_schema", "schema metadata"),
-        TableSpec("projects", "project records"),
+        TableSpec('statedb_schema', 'schema metadata'),
+        TableSpec('projects', 'project records'),
     )
     connection = _MigratingFakePostgresConnection(
-        table_names={table.name
-                     for table in tables},
+        table_names={table.name for table in tables},
         schema_hash=legacy_schema_identity(tables),
         schema_version=SCHEMA_VERSION,
     )
 
     async def fake_connect(dsn: str):
-        assert dsn == "postgresql://state"
+        assert dsn == 'postgresql://state'
         return connection
 
-    monkeypatch.setattr("statedb.db.bootstrap.asyncpg.connect", fake_connect)
+    monkeypatch.setattr('statedb.db.bootstrap.asyncpg.connect', fake_connect)
 
-    result = await bootstrap_postgres("postgresql://state", tables=tables)
+    result = await bootstrap_postgres('postgresql://state', tables=tables)
 
     assert result.created_schema_row is False
     assert result.applied_migrations == ()
-    assert connection.schema_hash == schema_identity("postgres", tables)
+    assert connection.schema_hash == schema_identity('postgres', tables)
     assert connection.schema_version == SCHEMA_VERSION
 
 
 @pytest.mark.asyncio
 async def test_bootstrap_postgres_applies_schema_migrations_in_order(
-    monkeypatch, ) -> None:
+    monkeypatch,
+) -> None:
     tables = (
-        TableSpec("statedb_schema", "schema metadata"),
-        TableSpec("projects", "project records"),
-        TableSpec("jobs", "job records"),
+        TableSpec('statedb_schema', 'schema metadata'),
+        TableSpec('projects', 'project records'),
+        TableSpec('jobs', 'job records'),
     )
     connection = _MigratingFakePostgresConnection(
-        table_names={"statedb_schema"},
-        schema_hash=schema_identity("postgres", (tables[0], )),
+        table_names={'statedb_schema'},
+        schema_hash=schema_identity('postgres', (tables[0],)),
         schema_version=1,
     )
     applied = []
 
     async def fake_connect(dsn: str):
-        assert dsn == "postgresql://state"
+        assert dsn == 'postgresql://state'
         return connection
 
     async def add_projects(conn):
         applied.append(1)
-        conn.table_names.add("projects")
+        conn.table_names.add('projects')
 
     async def add_jobs(conn):
         applied.append(2)
-        conn.table_names.add("jobs")
+        conn.table_names.add('jobs')
 
-    monkeypatch.setattr("statedb.db.bootstrap.asyncpg.connect", fake_connect)
+    monkeypatch.setattr('statedb.db.bootstrap.asyncpg.connect', fake_connect)
 
     result = await bootstrap_postgres(
-        "postgresql://state",
+        'postgresql://state',
         tables=tables,
         schema_version=3,
         migrations={
@@ -949,47 +990,49 @@ async def test_bootstrap_postgres_applies_schema_migrations_in_order(
 
     assert applied == [1, 2]
     assert result.applied_migrations == (1, 2)
-    assert connection.schema_hash == schema_identity("postgres", tables)
+    assert connection.schema_hash == schema_identity('postgres', tables)
     assert connection.schema_version == 3
 
 
 @pytest.mark.asyncio
 async def test_bootstrap_postgres_rejects_missing_intermediate_migration(
-    monkeypatch, ) -> None:
+    monkeypatch,
+) -> None:
     tables = (
-        TableSpec("statedb_schema", "schema metadata"),
-        TableSpec("projects", "project records"),
-        TableSpec("jobs", "job records"),
+        TableSpec('statedb_schema', 'schema metadata'),
+        TableSpec('projects', 'project records'),
+        TableSpec('jobs', 'job records'),
     )
-    old_hash = schema_identity("postgres", (tables[0], ))
+    old_hash = schema_identity('postgres', (tables[0],))
     connection = _MigratingFakePostgresConnection(
-        table_names={"statedb_schema"},
+        table_names={'statedb_schema'},
         schema_hash=old_hash,
         schema_version=1,
     )
     applied = []
 
     async def fake_connect(dsn: str):
-        assert dsn == "postgresql://state"
+        assert dsn == 'postgresql://state'
         return connection
 
     async def add_projects(conn):
         applied.append(1)
-        conn.table_names.add("projects")
+        conn.table_names.add('projects')
 
-    monkeypatch.setattr("statedb.db.bootstrap.asyncpg.connect", fake_connect)
+    monkeypatch.setattr('statedb.db.bootstrap.asyncpg.connect', fake_connect)
 
-    with pytest.raises(StateDBSchemaMismatchError,
-                       match="missing migration from 2 to 3"):
+    with pytest.raises(
+        StateDBSchemaMismatchError, match='missing migration from 2 to 3'
+    ):
         await bootstrap_postgres(
-            "postgresql://state",
+            'postgresql://state',
             tables=tables,
             schema_version=3,
             migrations={1: add_projects},
         )
 
     assert applied == []
-    assert connection.table_names == {"statedb_schema"}
+    assert connection.table_names == {'statedb_schema'}
     assert connection.schema_hash == old_hash
     assert connection.schema_version == 1
 
@@ -999,12 +1042,12 @@ async def test_bootstrap_postgres_migrations_use_real_postgres_transaction(
     postgres_dsn: str,
     postgres_connection,
 ) -> None:
-    old_tables = (TableSpec("statedb_schema", "schema metadata"), )
+    old_tables = (TableSpec('statedb_schema', 'schema metadata'),)
     target_tables = old_tables + (
-        TableSpec("projects", "project records"),
-        TableSpec("jobs", "job records"),
+        TableSpec('projects', 'project records'),
+        TableSpec('jobs', 'job records'),
     )
-    old_hash = schema_identity("postgres", old_tables)
+    old_hash = schema_identity('postgres', old_tables)
 
     await _reset_postgres_schema(postgres_connection)
     try:
@@ -1015,13 +1058,13 @@ async def test_bootstrap_postgres_migrations_use_real_postgres_transaction(
         )
 
         async def add_projects(conn):
-            await conn.execute(_postgres_table_ddl("projects"))
+            await conn.execute(_postgres_table_ddl('projects'))
 
         async def add_jobs_then_fail(conn):
-            await conn.execute(_postgres_table_ddl("jobs"))
-            raise RuntimeError("boom")
+            await conn.execute(_postgres_table_ddl('jobs'))
+            raise RuntimeError('boom')
 
-        with pytest.raises(RuntimeError, match="boom"):
+        with pytest.raises(RuntimeError, match='boom'):
             await bootstrap_postgres(
                 postgres_dsn,
                 tables=target_tables,
@@ -1033,16 +1076,16 @@ async def test_bootstrap_postgres_migrations_use_real_postgres_transaction(
             )
 
         assert await _fetch_postgres_table_names(postgres_connection) == {
-            "statedb_schema"
+            'statedb_schema'
         }
         payload = await _fetch_postgres_schema_metadata(postgres_connection)
         assert payload == {
-            "schema_hash": old_hash,
-            "schema_version": 1,
+            'schema_hash': old_hash,
+            'schema_version': 1,
         }
 
         async def add_jobs(conn):
-            await conn.execute(_postgres_table_ddl("jobs"))
+            await conn.execute(_postgres_table_ddl('jobs'))
 
         result = await bootstrap_postgres(
             postgres_dsn,
@@ -1056,14 +1099,14 @@ async def test_bootstrap_postgres_migrations_use_real_postgres_transaction(
 
         assert result.applied_migrations == (1, 2)
         assert await _fetch_postgres_table_names(postgres_connection) == {
-            "jobs",
-            "projects",
-            "statedb_schema",
+            'jobs',
+            'projects',
+            'statedb_schema',
         }
         payload = await _fetch_postgres_schema_metadata(postgres_connection)
         assert payload == {
-            "schema_hash": schema_identity("postgres", target_tables),
-            "schema_version": 3,
+            'schema_hash': schema_identity('postgres', target_tables),
+            'schema_version': 3,
         }
     finally:
         await _reset_postgres_schema(postgres_connection)
@@ -1072,49 +1115,65 @@ async def test_bootstrap_postgres_migrations_use_real_postgres_transaction(
 def _oldest_supported_postgres_tables() -> tuple[TableSpec, ...]:
     legacy_api_key_indexes = (
         IndexSpec(
-            name="api_keys_customer_type_owner_idx",
-            postgres_expression=("(payload->>'customer_id'), "
-                                 "(payload->>'type'), "
-                                 "(payload->>'owner_user_id')"),
-            sqlite_expression=("json_extract(payload, '$.customer_id'), "
-                               "json_extract(payload, '$.type'), "
-                               "json_extract(payload, '$.owner_user_id')"),
+            name='api_keys_customer_type_owner_idx',
+            postgres_expression=(
+                "(payload->>'customer_id'), "
+                "(payload->>'type'), "
+                "(payload->>'owner_user_id')"
+            ),
+            sqlite_expression=(
+                "json_extract(payload, '$.customer_id'), "
+                "json_extract(payload, '$.type'), "
+                "json_extract(payload, '$.owner_user_id')"
+            ),
         ),
         IndexSpec(
-            name="api_keys_verification_lookup_idx",
-            postgres_expression=("(payload->>'customer_id'), "
-                                 "(payload->>'name'), "
-                                 "(payload->>'owner_user_hash')"),
-            sqlite_expression=("json_extract(payload, '$.customer_id'), "
-                               "json_extract(payload, '$.name'), "
-                               "json_extract(payload, '$.owner_user_hash')"),
+            name='api_keys_verification_lookup_idx',
+            postgres_expression=(
+                "(payload->>'customer_id'), "
+                "(payload->>'name'), "
+                "(payload->>'owner_user_hash')"
+            ),
+            sqlite_expression=(
+                "json_extract(payload, '$.customer_id'), "
+                "json_extract(payload, '$.name'), "
+                "json_extract(payload, '$.owner_user_hash')"
+            ),
         ),
         IndexSpec(
-            name="api_keys_owner_name_unique_idx",
-            postgres_expression=("(payload->>'customer_id'), "
-                                 "(payload->>'owner_user_id'), "
-                                 "(payload->>'name')"),
-            sqlite_expression=("json_extract(payload, '$.customer_id'), "
-                               "json_extract(payload, '$.owner_user_id'), "
-                               "json_extract(payload, '$.name')"),
+            name='api_keys_owner_name_unique_idx',
+            postgres_expression=(
+                "(payload->>'customer_id'), "
+                "(payload->>'owner_user_id'), "
+                "(payload->>'name')"
+            ),
+            sqlite_expression=(
+                "json_extract(payload, '$.customer_id'), "
+                "json_extract(payload, '$.owner_user_id'), "
+                "json_extract(payload, '$.name')"
+            ),
             unique=True,
         ),
     )
 
     def at_oldest_version(table: TableSpec) -> TableSpec:
-        if table.name == "identities":
-            return replace(table, indexes=tuple(
-                replace(index, postgres_where=None, sqlite_where=None)
-                for index in table.indexes))
-        if table.name == "api_keys":
+        if table.name == 'identities':
+            return replace(
+                table,
+                indexes=tuple(
+                    replace(index, postgres_where=None, sqlite_where=None)
+                    for index in table.indexes
+                ),
+            )
+        if table.name == 'api_keys':
             return TableSpec(table.name, table.purpose, legacy_api_key_indexes)
         return table
 
     tables = tuple(at_oldest_version(table) for table in STATE_DB_TABLES)
     return tables + (
-        TableSpec("job_resources", "retired ML job resource analytics"),
-        TableSpec("baseline_jobs", "retired baseline job metadata"),
-        TableSpec("online_serving_jobs", "retired online-serving job metadata"),
+        TableSpec('job_resources', 'retired ML job resource analytics'),
+        TableSpec('baseline_jobs', 'retired baseline job metadata'),
+        TableSpec('online_serving_jobs', 'retired online-serving job metadata'),
     )
 
 
@@ -1124,34 +1183,42 @@ async def test_postgres_identity_recreation_after_schema_migration(
     postgres_connection,
 ) -> None:
     old_tables = tuple(
-        replace(table, indexes=tuple(
-            replace(index, postgres_where=None, sqlite_where=None)
-            for index in table.indexes))
-        if table.name == "identities" else table
-        for table in STATE_DB_TABLES)
+        replace(
+            table,
+            indexes=tuple(
+                replace(index, postgres_where=None, sqlite_where=None)
+                for index in table.indexes
+            ),
+        )
+        if table.name == 'identities'
+        else table
+        for table in STATE_DB_TABLES
+    )
     payload = {
-        "identity_key": "databricks:workspace:client",
-        "slug": "identity",
-        "normalized_display_name": "identity",
-        "tombstoned_at": "2026-01-01T00:00:00Z",
+        'identity_key': 'databricks:workspace:client',
+        'slug': 'identity',
+        'normalized_display_name': 'identity',
+        'tombstoned_at': '2026-01-01T00:00:00Z',
     }
-    insert = ("INSERT INTO identities (id, payload, created_at, updated_at) "
-              "VALUES ($1, $2::jsonb, now(), now())")
+    insert = (
+        'INSERT INTO identities (id, payload, created_at, updated_at) '
+        'VALUES ($1, $2::jsonb, now(), now())'
+    )
     await _reset_postgres_schema(postgres_connection)
     try:
-        await bootstrap_postgres(
-            postgres_dsn, tables=old_tables, schema_version=16)
-        await postgres_connection.execute(insert, "deleted", json.dumps(payload))
+        await bootstrap_postgres(postgres_dsn, tables=old_tables, schema_version=16)
+        await postgres_connection.execute(insert, 'deleted', json.dumps(payload))
         result = await bootstrap_postgres(
-            postgres_dsn, migrations=POSTGRES_SCHEMA_MIGRATIONS)
-        assert result.applied_migrations == (16, )
-        payload["tombstoned_at"] = None
-        await postgres_connection.execute(insert, "new", json.dumps(payload))
+            postgres_dsn, migrations=POSTGRES_SCHEMA_MIGRATIONS
+        )
+        assert result.applied_migrations == (16,)
+        payload['tombstoned_at'] = None
+        await postgres_connection.execute(insert, 'new', json.dumps(payload))
         with pytest.raises(asyncpg.UniqueViolationError):
-            await postgres_connection.execute(
-                insert, "duplicate", json.dumps(payload))
-        assert await postgres_connection.fetchval(
-            "SELECT count(*) FROM identities") == 2
+            await postgres_connection.execute(insert, 'duplicate', json.dumps(payload))
+        assert (
+            await postgres_connection.fetchval('SELECT count(*) FROM identities') == 2
+        )
     finally:
         await _reset_postgres_schema(postgres_connection)
 
@@ -1175,9 +1242,9 @@ async def test_all_registered_postgres_migrations_run_in_order(
         )
         old_table_names = await _fetch_postgres_table_names(postgres_connection)
         assert {
-            "job_resources",
-            "baseline_jobs",
-            "online_serving_jobs",
+            'job_resources',
+            'baseline_jobs',
+            'online_serving_jobs',
         } <= old_table_names
 
         result = await bootstrap_postgres(
@@ -1187,10 +1254,11 @@ async def test_all_registered_postgres_migrations_run_in_order(
 
         assert result.applied_migrations == expected_migrations
         assert await _fetch_postgres_table_names(postgres_connection) == set(
-            STATE_DB_TABLE_NAMES)
+            STATE_DB_TABLE_NAMES
+        )
         assert await _fetch_postgres_schema_metadata(postgres_connection) == {
-            "schema_hash": schema_identity("postgres"),
-            "schema_version": SCHEMA_VERSION,
+            'schema_hash': schema_identity('postgres'),
+            'schema_version': SCHEMA_VERSION,
         }
     finally:
         await _reset_postgres_schema(postgres_connection)
@@ -1207,40 +1275,44 @@ async def test_real_postgres_enforces_global_project_and_group_names(
         now = datetime(2026, 7, 5, tzinfo=timezone.utc)
 
         await postgres_connection.execute(
-            "INSERT INTO groups (id, payload, created_at, updated_at) "
-            "VALUES ($1, $2::jsonb, $3, $3)",
-            "group_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            json.dumps({"normalized_display_name": "engineering"}),
+            'INSERT INTO groups (id, payload, created_at, updated_at) '
+            'VALUES ($1, $2::jsonb, $3, $3)',
+            'group_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            json.dumps({'normalized_display_name': 'engineering'}),
             now,
         )
         with pytest.raises(asyncpg.UniqueViolationError):
             await postgres_connection.execute(
-                "INSERT INTO groups (id, payload, created_at, updated_at) "
-                "VALUES ($1, $2::jsonb, $3, $3)",
-                "group_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-                json.dumps({"normalized_display_name": "engineering"}),
+                'INSERT INTO groups (id, payload, created_at, updated_at) '
+                'VALUES ($1, $2::jsonb, $3, $3)',
+                'group_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+                json.dumps({'normalized_display_name': 'engineering'}),
                 now,
             )
 
         await postgres_connection.execute(
-            "INSERT INTO projects (id, payload, created_at, updated_at) "
-            "VALUES ($1, $2::jsonb, $3, $3)",
-            "project_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            json.dumps({
-                "group_id": "group_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                "normalized_display_name": "analytics",
-            }),
+            'INSERT INTO projects (id, payload, created_at, updated_at) '
+            'VALUES ($1, $2::jsonb, $3, $3)',
+            'project_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            json.dumps(
+                {
+                    'group_id': 'group_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                    'normalized_display_name': 'analytics',
+                }
+            ),
             now,
         )
         with pytest.raises(asyncpg.UniqueViolationError):
             await postgres_connection.execute(
-                "INSERT INTO projects (id, payload, created_at, updated_at) "
-                "VALUES ($1, $2::jsonb, $3, $3)",
-                "project_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-                json.dumps({
-                    "group_id": "group_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-                    "normalized_display_name": "analytics",
-                }),
+                'INSERT INTO projects (id, payload, created_at, updated_at) '
+                'VALUES ($1, $2::jsonb, $3, $3)',
+                'project_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+                json.dumps(
+                    {
+                        'group_id': 'group_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+                        'normalized_display_name': 'analytics',
+                    }
+                ),
                 now,
             )
     finally:

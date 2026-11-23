@@ -37,15 +37,19 @@ def force_local_cache_dir_for_public_tests():
 
 
 def _auth() -> SimpleNamespace:
-    return SimpleNamespace(authenticate_request_header=lambda: None, )
+    return SimpleNamespace(
+        authenticate_request_header=lambda: None,
+    )
 
 
 def _admin_ctx() -> SimpleNamespace:
-    return SimpleNamespace(user_authorization=SimpleNamespace(
-        is_admin=True,
-        project_ids=(),
-        external_membership_unavailable=False,
-    ))
+    return SimpleNamespace(
+        user_authorization=SimpleNamespace(
+            is_admin=True,
+            project_ids=(),
+            external_membership_unavailable=False,
+        )
+    )
 
 
 @pytest.mark.asyncio
@@ -64,24 +68,31 @@ async def test_get_generate_pred_table_job_allows_missing_tags():
     job_id = GeneratePredictionTableJobID.make_random_id()
     resource = SimpleNamespace(tags=None, project_id='project_' + '1' * 32)
     driver = SimpleNamespace(
-        get_job_tags=AsyncMock(side_effect=KeyError(
-            f"{JobType.GENERATE_PREDICTION_TABLE_JOB} id={job_id} "
-            "is not found in DB")), )
+        get_job_tags=AsyncMock(
+            side_effect=KeyError(
+                f'{JobType.GENERATE_PREDICTION_TABLE_JOB} id={job_id} '
+                'is not found in DB'
+            )
+        ),
+    )
     ml_job_backend = SimpleNamespace(
         get_generate_pred_table_jobs=AsyncMock(return_value=[resource]),
         get_job_tags_if_exists=AsyncMock(return_value=None),
     )
-    router = GeneratePredictionTableRouter(lambda: None, driver, _auth(),
-                                           ml_job_backend)
+    router = GeneratePredictionTableRouter(
+        lambda: None, driver, _auth(), ml_job_backend
+    )
 
     actual = await router.get(job_id, _admin_ctx())
 
     assert actual is resource
     assert actual.tags == {}
     ml_job_backend.get_generate_pred_table_jobs.assert_awaited_once_with(
-        {job_id}, project_ids=None)
+        {job_id}, project_ids=None
+    )
     ml_job_backend.get_job_tags_if_exists.assert_awaited_once_with(
-        JobType.GENERATE_PREDICTION_TABLE_JOB, job_id)
+        JobType.GENERATE_PREDICTION_TABLE_JOB, job_id
+    )
     driver.get_job_tags.assert_not_called()
 
 
@@ -90,14 +101,18 @@ async def test_get_generate_pred_table_job_returns_existing_tags():
     """When the tags row exists, its tags land on the returned resource."""
     job_id = GeneratePredictionTableJobID.make_random_id()
     resource = SimpleNamespace(tags=None, project_id='project_' + '1' * 32)
-    driver = SimpleNamespace(get_job_tags=AsyncMock(), )
+    driver = SimpleNamespace(
+        get_job_tags=AsyncMock(),
+    )
     ml_job_backend = SimpleNamespace(
         get_generate_pred_table_jobs=AsyncMock(return_value=[resource]),
-        get_job_tags_if_exists=AsyncMock(return_value=SimpleNamespace(
-            tags={'team': 'growth'})),
+        get_job_tags_if_exists=AsyncMock(
+            return_value=SimpleNamespace(tags={'team': 'growth'})
+        ),
     )
-    router = GeneratePredictionTableRouter(lambda: None, driver, _auth(),
-                                           ml_job_backend)
+    router = GeneratePredictionTableRouter(
+        lambda: None, driver, _auth(), ml_job_backend
+    )
 
     actual = await router.get(job_id, _admin_ctx())
 

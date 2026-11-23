@@ -22,7 +22,8 @@ def setup_rest_test_session() -> None:
 
 
 def test_dev_local_db_storage_uses_configured_control_plane_root(
-        monkeypatch: MonkeyPatch, tmp_path) -> None:
+    monkeypatch: MonkeyPatch, tmp_path
+) -> None:
     control_root = tmp_path / 'configured-kumo-home'
     monkeypatch.setattr(
         settings,
@@ -38,8 +39,7 @@ def test_dev_local_db_storage_uses_configured_control_plane_root(
 
 
 @pytest.fixture(autouse=True)
-def _reset_singleton(
-        monkeypatch: MonkeyPatch):  # pyright: ignore[reportUnusedFunction]
+def _reset_singleton(monkeypatch: MonkeyPatch):  # pyright: ignore[reportUnusedFunction]
     """Reset the v2 deploy_env singleton before and after each test so it
     picks up the env vars set by monkeypatch."""
     # REST activity workers pin their shared test metadata root process-wide.
@@ -76,6 +76,7 @@ def _record_or_verify(rest_settings: settings.KumoRestSettings, file_name: str):
             # Strip deploy_config from snapshot — it was a v1 field,
             # now a @property on KumoRestSettings (not deserializable).
             import json as _json
+
             snapshot = _json.loads(data)
             snapshot.pop('deploy_config', None)
             data = _json.dumps(snapshot)
@@ -88,8 +89,7 @@ def test_prod_settings_prpr(monkeypatch: MonkeyPatch):
     monkeypatch.setenv('DEPLOY_STAGE', DeployStage.PROD.value)
     monkeypatch.setenv('REST_API_PORT', '10001')
     monkeypatch.delenv('TEMPORAL_SERVER', raising=False)
-    monkeypatch.setenv('REST_CORS_ALLOWED_ORIGINS',
-                       'https://prod-customer-1.kumo.ai')
+    monkeypatch.setenv('REST_CORS_ALLOWED_ORIGINS', 'https://prod-customer-1.kumo.ai')
 
     rest_settings = settings.parse_from_env_vars()
     _record_or_verify(rest_settings, 'test_prod_settings_prpr.json')
@@ -135,8 +135,7 @@ def test_cors_validation_rejects_wildcard_with_credentials():
         settings.validate_cors_allowed_origins(['*'], allow_credentials=True)
 
 
-def test_direct_connect_rejects_default_wildcard_cors_origin(
-        monkeypatch: MonkeyPatch):
+def test_direct_connect_rejects_default_wildcard_cors_origin(monkeypatch: MonkeyPatch):
     _set_direct_connect_parse_env(monkeypatch)
 
     with pytest.raises(ValueError, match='REST_CORS_ALLOWED_ORIGINS'):
@@ -144,13 +143,15 @@ def test_direct_connect_rejects_default_wildcard_cors_origin(
 
 
 def test_parse_cors_allowed_origins_normalizes_url_origins():
-    assert settings.parse_cors_allowed_origins('https://kumo.example.com/, '
-                                               'https://kumo.example.com/app, '
-                                               'http://localhost:5173/') == [
-                                                   'https://kumo.example.com',
-                                                   'https://kumo.example.com',
-                                                   'http://localhost:5173',
-                                               ]
+    assert settings.parse_cors_allowed_origins(
+        'https://kumo.example.com/, '
+        'https://kumo.example.com/app, '
+        'http://localhost:5173/'
+    ) == [
+        'https://kumo.example.com',
+        'https://kumo.example.com',
+        'http://localhost:5173',
+    ]
 
 
 def test_direct_connect_accepts_explicit_cors_origins(monkeypatch: MonkeyPatch):
@@ -168,26 +169,30 @@ def test_direct_connect_accepts_explicit_cors_origins(monkeypatch: MonkeyPatch):
 
 
 def test_direct_connect_uses_deploy_config_return_origins_when_cors_env_unset(
-        monkeypatch: MonkeyPatch):
+    monkeypatch: MonkeyPatch,
+):
     monkeypatch.setenv('DEPLOY_STAGE', DeployStage.DEV.value)
     monkeypatch.delenv('KUMO_AUTH_BACKEND', raising=False)
     monkeypatch.delenv('REST_CORS_ALLOWED_ORIGINS', raising=False)
     monkeypatch.setenv(
         'DEPLOY_ENV_CONFIG_JSON',
-        json.dumps({
-            'auth': {
-                'enabled': True,
-                'backend': 'direct_connect',
-                'direct_connect': {
-                    'allowed_return_origins': [
-                        'https://kumo.example.com',
-                    ],
+        json.dumps(
+            {
+                'auth': {
+                    'enabled': True,
+                    'backend': 'direct_connect',
+                    'direct_connect': {
+                        'allowed_return_origins': [
+                            'https://kumo.example.com',
+                        ],
+                    },
                 },
-            },
-            'logging': {
-                'backend': 'stdout',
-            },
-        }))
+                'logging': {
+                    'backend': 'stdout',
+                },
+            }
+        ),
+    )
 
     rest_settings = settings.parse_from_env_vars()
 
@@ -196,39 +201,41 @@ def test_direct_connect_uses_deploy_config_return_origins_when_cors_env_unset(
     assert rest_settings.app.middleware_origin == 'https://kumo.example.com'
 
 
-def test_direct_connect_reads_auth_from_deploy_env_config(
-        monkeypatch: MonkeyPatch):
+def test_direct_connect_reads_auth_from_deploy_env_config(monkeypatch: MonkeyPatch):
     monkeypatch.setenv('DEPLOY_STAGE', DeployStage.DEV.value)
     monkeypatch.delenv('KUMO_AUTH_BACKEND', raising=False)
     monkeypatch.delenv('REST_CORS_ALLOWED_ORIGINS', raising=False)
-    monkeypatch.setenv('DIRECT_CONNECT_PASSWORD_LOGIN_IP_RATE_LIMIT_ENABLED',
-                       'false')
+    monkeypatch.setenv('DIRECT_CONNECT_PASSWORD_LOGIN_IP_RATE_LIMIT_ENABLED', 'false')
     monkeypatch.setenv(
         'DEPLOY_ENV_CONFIG_JSON',
-        json.dumps({
-            'auth': {
-                'enabled': True,
-                'backend': 'direct_connect',
-                'direct_connect': {
-                    'login_method': 'password',
-                    'allowed_return_origins': [
-                        'https://kumo.example.com',
-                    ],
+        json.dumps(
+            {
+                'auth': {
+                    'enabled': True,
+                    'backend': 'direct_connect',
+                    'direct_connect': {
+                        'login_method': 'password',
+                        'allowed_return_origins': [
+                            'https://kumo.example.com',
+                        ],
+                    },
                 },
-            },
-            'logging': {
-                'backend': 'stdout',
-            },
-        }))
+                'logging': {
+                    'backend': 'stdout',
+                },
+            }
+        ),
+    )
 
     rest_settings = settings.parse_from_env_vars()
 
     assert rest_settings.authentication.disable is False
     assert not hasattr(rest_settings.authentication, 'auth_backend')
+    assert rest_settings.authentication.direct_connect_login_method == 'password'
     assert (
-        rest_settings.authentication.direct_connect_login_method == 'password')
-    assert (rest_settings.authentication.
-            direct_connect_password_login_ip_rate_limit_enabled is False)
+        rest_settings.authentication.direct_connect_password_login_ip_rate_limit_enabled
+        is False
+    )
     assert rest_settings.app.middleware_origin == 'https://kumo.example.com'
 
 

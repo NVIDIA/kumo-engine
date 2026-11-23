@@ -43,7 +43,7 @@ def test_hnm_tiny_seeded_warm_start_split_has_both_classes() -> None:
     validation_size = round(0.2 * len(ages))
     validation_labels = {
         ages[index] > 30
-        for index in permutation[train_size:train_size + validation_size]
+        for index in permutation[train_size : train_size + validation_size]
     }
 
     assert validation_labels == {False, True}
@@ -53,8 +53,7 @@ def test_hnm_tiny_transactions_preserve_foreign_keys() -> None:
     customer_ids = {row['customer_id'] for row in _read_rows('customers.csv')}
     article_ids = {row['article_id'] for row in _read_rows('articles.csv')}
     transactions = _read_rows('transactions.csv')
-    transactions_by_customer = Counter(row['customer_id']
-                                       for row in transactions)
+    transactions_by_customer = Counter(row['customer_id'] for row in transactions)
 
     assert {row['customer_id'] for row in transactions} <= customer_ids
     assert {row['article_id'] for row in transactions} <= article_ids

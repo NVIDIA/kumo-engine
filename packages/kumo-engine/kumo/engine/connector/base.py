@@ -52,6 +52,7 @@ class Connector(ABC):
             package treats as its ambient default (e.g. the local AWS/GCP
             credential chain for S3/GCS).
     """
+
     def __init__(self, identity: Optional[Identity] = None):
         self.identity = identity
         self.identity_id = identity.slug if identity is not None else None
@@ -119,8 +120,9 @@ class Connector(ABC):
     def validate_scratch_dir(self, scratch_dir: Path) -> None:
         """Hook for connectors with local sources to reject scratch overlap."""
 
-    def _monitored_files(self, destination: str, files: List[str],
-                         directory: Path) -> List[str]:
+    def _monitored_files(
+        self, destination: str, files: List[str], directory: Path
+    ) -> List[str]:
         return files
 
     def table(self, table_name: str):

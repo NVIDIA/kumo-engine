@@ -14,6 +14,7 @@ column to ``resolve_temporal`` and stores whichever hint comes back. The format
 string is an opaque token here -- stored, hashed and displayed, never parsed --
 so the hint kumo persists is by construction the hint ingest will apply.
 """
+
 import dataclasses
 import enum
 from typing import Optional
@@ -30,12 +31,26 @@ _VALID_UNITS = ('s', 'ms', 'us', 'ns')
 # normalized to the four canonical tokens. A spelled-out unit like "seconds" /
 # "sec" / "milliseconds" maps to s/ms/us/ns rather than being misread.
 _TIMESTAMP_UNIT_ALIASES = {
-    's': 's', 'sec': 's', 'secs': 's', 'second': 's', 'seconds': 's',
-    'ms': 'ms', 'milli': 'ms', 'millis': 'ms', 'millisecond': 'ms',
+    's': 's',
+    'sec': 's',
+    'secs': 's',
+    'second': 's',
+    'seconds': 's',
+    'ms': 'ms',
+    'milli': 'ms',
+    'millis': 'ms',
+    'millisecond': 'ms',
     'milliseconds': 'ms',
-    'us': 'us', 'µs': 'us', 'micro': 'us', 'micros': 'us', 'microsecond': 'us',
+    'us': 'us',
+    'µs': 'us',
+    'micro': 'us',
+    'micros': 'us',
+    'microsecond': 'us',
     'microseconds': 'us',
-    'ns': 'ns', 'nano': 'ns', 'nanos': 'ns', 'nanosecond': 'ns',
+    'ns': 'ns',
+    'nano': 'ns',
+    'nanos': 'ns',
+    'nanosecond': 'ns',
     'nanoseconds': 'ns',
 }
 
@@ -65,9 +80,10 @@ class HintKind(enum.Enum):
     A column carries exactly one of: an epoch unit, a strftime format, native, or
     unresolved.
     """
-    UNIT = 'unit'              # epoch integer/float column: carries s/ms/us/ns
-    FORMAT = 'format'          # string or encoded-date integer: carries strftime
-    NATIVE = 'native'          # already-typed temporal: unit lives on the dtype
+
+    UNIT = 'unit'  # epoch integer/float column: carries s/ms/us/ns
+    FORMAT = 'format'  # string or encoded-date integer: carries strftime
+    NATIVE = 'native'  # already-typed temporal: unit lives on the dtype
     UNRESOLVED = 'unresolved'  # no hint learned: apply layer defaults to seconds
 
 
@@ -81,26 +97,29 @@ class TemporalHint:
     ``Column.timestamp_format: Union[TimestampUnit, str]``. Frozen so it is
     hashable.
     """
+
     kind: HintKind
-    unit: Optional[str] = None      # "s"|"ms"|"us"|"ns"; set iff kind is UNIT
+    unit: Optional[str] = None  # "s"|"ms"|"us"|"ns"; set iff kind is UNIT
     strftime: Optional[str] = None  # strftime format string; set iff FORMAT
 
     def __post_init__(self) -> None:
         if self.kind is HintKind.UNIT:
             if self.unit not in _VALID_UNITS:
                 raise ValueError(
-                    f"UNIT hint requires unit in {_VALID_UNITS}, got {self.unit!r}")
+                    f'UNIT hint requires unit in {_VALID_UNITS}, got {self.unit!r}'
+                )
             if self.strftime is not None:
-                raise ValueError("UNIT hint must not carry a strftime format")
+                raise ValueError('UNIT hint must not carry a strftime format')
         elif self.kind is HintKind.FORMAT:
             if self.strftime is None:
-                raise ValueError("FORMAT hint requires a strftime format")
+                raise ValueError('FORMAT hint requires a strftime format')
             if self.unit is not None:
-                raise ValueError("FORMAT hint must not carry a unit")
+                raise ValueError('FORMAT hint must not carry a unit')
         else:  # NATIVE / UNRESOLVED
             if self.unit is not None or self.strftime is not None:
                 raise ValueError(
-                    f"{self.kind.name} hint must not carry a unit or format")
+                    f'{self.kind.name} hint must not carry a unit or format'
+                )
 
     @classmethod
     def of_unit(cls, unit: str) -> 'TemporalHint':
@@ -138,6 +157,7 @@ class HintStorage:
     neither (both stay ``None``); the unit for a native column rides its dtype, and
     an unresolved column defaults to seconds at apply time.
     """
+
     timestamp_unit: Optional[str] = None
     ts_format: Optional[str] = None
 
@@ -174,7 +194,10 @@ def _is_native_temporal_series(series: pd.Series) -> bool:
     if is_object_dtype(series):
         try:
             return pd.api.types.infer_dtype(series, skipna=True) in {
-                'datetime', 'date', 'datetime64'}
+                'datetime',
+                'date',
+                'datetime64',
+            }
         except (TypeError, ValueError):
             return False
     return False
@@ -244,7 +267,8 @@ def infer_temporal_hint(
 
     if is_create_time:
         raise ValueError(
-            "create_time column is entirely null or unresolved across the "
-            "sample; a create_time column must contain parseable timestamp "
-            "values.")
+            'create_time column is entirely null or unresolved across the '
+            'sample; a create_time column must contain parseable timestamp '
+            'values.'
+        )
     return TemporalHint.unresolved()

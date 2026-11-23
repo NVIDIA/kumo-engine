@@ -40,8 +40,7 @@ def _isolated_capture(logger: logging.Logger):
 
 
 def test_logging_policy_honors_logger_level():
-    logger = logging.getLogger(
-        'test_logging_policy_honors_logger_level.fsutil_module')
+    logger = logging.getLogger('test_logging_policy_honors_logger_level.fsutil_module')
     policy = logging_policy(logger)
 
     @policy()
@@ -52,14 +51,16 @@ def test_logging_policy_honors_logger_level():
         logger.setLevel(logging.INFO)
         op()
         assert not [r for r in captured if r.levelno == logging.DEBUG], (
-            'DEBUG logging_policy records leaked through despite '
-            'logger.setLevel(INFO)')
+            'DEBUG logging_policy records leaked through despite logger.setLevel(INFO)'
+        )
 
         captured.clear()
         logger.setLevel(logging.DEBUG)
         op()
-        assert any(r.levelno == logging.DEBUG
-                   and 'success: op' in r.getMessage() for r in captured)
+        assert any(
+            r.levelno == logging.DEBUG and 'success: op' in r.getMessage()
+            for r in captured
+        )
 
 
 def test_logging_policy_failure_records_emit_at_error_level():
@@ -79,11 +80,12 @@ def test_logging_policy_failure_records_emit_at_error_level():
         logger.setLevel(logging.INFO)
         with pytest.raises(RuntimeError, match='boom'):
             op_fail()
-        assert any(r.levelno == logging.ERROR
-                   and 'failure[RuntimeError]: op_fail' in r.getMessage()
-                   for r in captured)
-        assert all('provider-secret-sentinel' not in r.getMessage()
-                   for r in captured)
+        assert any(
+            r.levelno == logging.ERROR
+            and 'failure[RuntimeError]: op_fail' in r.getMessage()
+            for r in captured
+        )
+        assert all('provider-secret-sentinel' not in r.getMessage() for r in captured)
         assert all(r.exc_info is None for r in captured)
 
 
@@ -102,7 +104,8 @@ def test_remote_logging_policy_marks_unexpected_failure_without_changing_type():
     assert raised.value is error
     assert not exception_message_should_be_logged_at_error(error)
     assert safe_exception_message_for_log(error) == (
-        'Remote filesystem operation download failed')
+        'Remote filesystem operation download failed'
+    )
 
 
 def test_local_logging_policy_leaves_unexpected_failure_visible():
@@ -136,12 +139,14 @@ def test_remote_logging_policy_marks_allowed_path_failure() -> None:
     assert raised.value is error
     assert not exception_message_should_be_logged_at_error(error)
     assert safe_exception_message_for_log(error) == (
-        'Remote filesystem operation read_remote failed')
+        'Remote filesystem operation read_remote failed'
+    )
 
 
 @pytest.mark.parametrize('phase', ('enter', 'read', 'exit'))
 def test_remote_stream_marks_provider_failure_across_handle_lifecycle(
-        phase: str) -> None:
+    phase: str,
+) -> None:
     error = ClientError(
         {
             'Error': {
@@ -168,9 +173,8 @@ def test_remote_stream_marks_provider_failure_across_handle_lifecycle(
                 raise error
 
     with (
-            patch('io_utils.fsutil.impl_s3.threadsafe_boto.s3_client'),
-            patch('io_utils.fsutil.impl_s3.smart_open',
-                  return_value=FailingHandle()),
+        patch('io_utils.fsutil.impl_s3.threadsafe_boto.s3_client'),
+        patch('io_utils.fsutil.impl_s3.smart_open', return_value=FailingHandle()),
     ):
         with pytest.raises(ClientError) as raised:
             with fsutil.get_binary_handle('s3://bucket/object', 'rb') as handle:
@@ -178,8 +182,7 @@ def test_remote_stream_marks_provider_failure_across_handle_lifecycle(
 
     assert raised.value is error
     assert not exception_message_should_be_logged_at_error(error)
-    assert safe_exception_message_for_log(error) == (
-        'S3 stream operation failed')
+    assert safe_exception_message_for_log(error) == ('S3 stream operation failed')
 
 
 def test_remote_stream_does_not_mark_caller_failure() -> None:
@@ -193,8 +196,8 @@ def test_remote_stream_does_not_mark_caller_failure() -> None:
             return False
 
     with (
-            patch('io_utils.fsutil.impl_s3.threadsafe_boto.s3_client'),
-            patch('io_utils.fsutil.impl_s3.smart_open', return_value=Handle()),
+        patch('io_utils.fsutil.impl_s3.threadsafe_boto.s3_client'),
+        patch('io_utils.fsutil.impl_s3.smart_open', return_value=Handle()),
     ):
         with pytest.raises(ValueError) as raised:
             with fsutil.get_binary_handle('s3://bucket/object', 'rb'):

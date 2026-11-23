@@ -19,6 +19,7 @@ from torch_geometric.sampler import (
 
 class _RootOnlySampler(BaseSampler):
     """Return seed nodes without native sampling to exercise loader behavior."""
+
     def sample_from_nodes(self, inputs: NodeSamplerInput, **kwargs):
         return HeteroSamplerOutput(
             node={inputs.input_type: inputs.node},
@@ -32,12 +33,15 @@ class _RootOnlySampler(BaseSampler):
         raise NotImplementedError('This fixture only samples seed nodes')
 
 
-@pytest.mark.parametrize('kwargs', [
-    dict(),
-    dict(num_workers=4, filter_per_worker=True),
-    dict(sampler=RandomSampler(range(20), num_samples=15)),
-    dict(eval_loader_kwargs=dict(batch_size=20))
-])
+@pytest.mark.parametrize(
+    'kwargs',
+    [
+        dict(),
+        dict(num_workers=4, filter_per_worker=True),
+        dict(sampler=RandomSampler(range(20), num_samples=15)),
+        dict(eval_loader_kwargs=dict(batch_size=20)),
+    ],
+)
 def test_datamodule(kwargs):
     data = HeteroData()
     data['paper'].x = torch.arange(60)
@@ -146,7 +150,7 @@ def test_predict_step_returns_requested_embedding_per_batch():
         return _Handle()
 
     def common_step(_batches):
-        state['hook'](None, (embedding, ))
+        state['hook'](None, (embedding,))
         return torch.zeros(2, 1)
 
     module._get_register_embedding_hook_fn = lambda: register_hook

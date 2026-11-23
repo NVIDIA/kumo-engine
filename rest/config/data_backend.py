@@ -35,6 +35,7 @@ class ConnectorExecutionRef:
     persists only its hash; the raw value exists solely in trusted Temporal
     payloads and activity memory.
     """
+
     connector_id: ConnectorID
     project_id: ProjectID
     authorization_token: str = field(default='', repr=False)
@@ -79,31 +80,29 @@ def bind_graph_config_to_execution_refs(
     for connector_id, reference in by_id.items():
         if not isinstance(reference, ConnectorExecutionRef):
             raise TypeError(
-                'Workflow graph connectors must be ConnectorExecutionRef '
-                'values')
+                'Workflow graph connectors must be ConnectorExecutionRef values'
+            )
         if reference.connector_id != connector_id:
             raise ValueError(
-                'Workflow graph connector key must match reference '
-                'connector_id')
+                'Workflow graph connector key must match reference connector_id'
+            )
 
     configured_ids = {
-        ConnectorID(connector_id)
-        for connector_id in graph_config.data_source_dict
+        ConnectorID(connector_id) for connector_id in graph_config.data_source_dict
     }
     table_connector_ids = {
-        ConnectorID(table.data_source)
-        for table in graph_config.tables
+        ConnectorID(table.data_source) for table in graph_config.tables
     }
     if configured_ids and table_connector_ids != configured_ids:
         raise ValueError(
-            'Workflow graph tables and data sources must reference the same '
-            'connectors')
+            'Workflow graph tables and data sources must reference the same connectors'
+        )
     if not configured_ids:
         configured_ids = table_connector_ids
     if configured_ids != set(by_id):
         raise ValueError(
-            'Workflow graph connector references must exactly match its '
-            'data sources')
+            'Workflow graph connector references must exactly match its data sources'
+        )
 
     result = copy.deepcopy(graph_config)
     # References live in the explicitly typed GraphDataComputeInput rather
@@ -133,14 +132,14 @@ class ResolvedConnectorSpec:
     This type deliberately is not a Kumo/Pydantic dataclass so it cannot be
     accepted by the normal Temporal data converter as a workflow payload.
     """
+
     __temporal_serializable__: ClassVar[bool] = False
     connector_id: ConnectorID
     connector_config: Any
     credentials: Optional[Credentials]
 
 
-ConnectorOpenSpec = Union[ConnectorExecutionRef, ConnectorSpec,
-                          ResolvedConnectorSpec]
+ConnectorOpenSpec = Union[ConnectorExecutionRef, ConnectorSpec, ResolvedConnectorSpec]
 
 
 @kumo_dataclass

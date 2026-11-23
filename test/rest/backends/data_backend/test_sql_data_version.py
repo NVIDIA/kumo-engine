@@ -6,6 +6,7 @@
 These exercise ``get_table_data_version``'s SQL branch with a mocked
 referenced-table version resolver, so they never touch a warehouse.
 """
+
 import asyncio
 
 import pytest
@@ -33,9 +34,10 @@ _CID = 'connector_00000000000000000000000000000000'
 # connector.
 SPEC = ConnectorSpec(
     connector_id=_CID,
-    connector_config=SnowflakeConnector(name='wh', account='acc',
-                                        warehouse='COMPUTE', database='DB',
-                                        schema_name='S').config())
+    connector_config=SnowflakeConnector(
+        name='wh', account='acc', warehouse='COMPUTE', database='DB', schema_name='S'
+    ).config(),
+)
 
 # BigQuery and Databricks specs exercise the referenced-table normalization for
 # the other two SQL dialects. The version path derives the dialect from the
@@ -45,28 +47,42 @@ _BQ_PROJECT = 'future-pager-502102-v6'
 _BQ_DATASET = 'kumo_smoke'
 BQ_SPEC = ConnectorSpec(
     connector_id=_CID,
-    connector_config=BigQueryConnector(name='wh', project_id=_BQ_PROJECT,
-                                       dataset_id=_BQ_DATASET).config())
+    connector_config=BigQueryConnector(
+        name='wh', project_id=_BQ_PROJECT, dataset_id=_BQ_DATASET
+    ).config(),
+)
 DBX_SPEC = ConnectorSpec(
-    connector_id=_CID, connector_config=DatabricksConnector(
-        name='wh', host='https://x.cloud.databricks.com', cluster_id='c',
-        warehouse_id='w', catalog='main', schema_name='kumo_smoke').config())
+    connector_id=_CID,
+    connector_config=DatabricksConnector(
+        name='wh',
+        host='https://x.cloud.databricks.com',
+        cluster_id='c',
+        warehouse_id='w',
+        catalog='main',
+        schema_name='kumo_smoke',
+    ).config(),
+)
 
 
 def _sql_table(
-    sql='SELECT item_key, total FROM sales', cols=None,
+    sql='SELECT item_key, total FROM sales',
+    cols=None,
     connector_type='snowflake',
-    referenced_tables=('sales', )) -> TableDefinition:
+    referenced_tables=('sales',),
+) -> TableDefinition:
     cols = cols or [
         Column(name='item_key', stype=Stype.ID, dtype=Dtype.string),
-        Column(name='total', stype=Stype.numerical,
-               dtype=Dtype.float),
+        Column(name='total', stype=Stype.numerical, dtype=Dtype.float),
     ]
     return TableDefinition(
         cols=cols,
         source_table=CustomSQLSourceTable(
-            connector_id=_CID, connector_type=connector_type, sql=sql,
-            table='custom_sql_abc', referenced_tables=list(referenced_tables)),
+            connector_id=_CID,
+            connector_type=connector_type,
+            sql=sql,
+            table='custom_sql_abc',
+            referenced_tables=list(referenced_tables),
+        ),
         pkey='item_key',
         time_col=None,
     )
@@ -81,12 +97,12 @@ _BUCKET_SECS = utils.CUSTOM_SQL_MAX_STALENESS_HOURS * 3600
 _FIXED_NOW = float(_BUCKET_SECS * 100)
 
 
-def _data_version(table_def, versions, monkeypatch, *, raise_for=(),
-                  now=_FIXED_NOW):
-    async def fake_gtdv(connector_spec, name, refresh_table_version=False,
-                        table_def=None):
+def _data_version(table_def, versions, monkeypatch, *, raise_for=(), now=_FIXED_NOW):
+    async def fake_gtdv(
+        connector_spec, name, refresh_table_version=False, table_def=None
+    ):
         if name in raise_for:
-            raise RuntimeError(f"cannot resolve version for {name}")
+            raise RuntimeError(f'cannot resolve version for {name}')
         return TableDataVersion(versions[name])
 
     monkeypatch.setattr(utils, 'get_table_data_version', fake_gtdv)
@@ -109,13 +125,15 @@ def test_data_version_deterministic_and_sensitive(monkeypatch):
 
     # Formatting-only edit is stable.
     assert base == _data_version(
-        _sql_table('select  item_key,\n total\nFROM sales'), versions,
-        monkeypatch)
+        _sql_table('select  item_key,\n total\nFROM sales'), versions, monkeypatch
+    )
 
     # Semantic SQL edit changes it.
     assert base != _data_version(
         _sql_table('SELECT item_key, total FROM sales WHERE total > 0'),
-        versions, monkeypatch)
+        versions,
+        monkeypatch,
+    )
 
     # Referenced-table version change changes it.
     assert base != _data_version(_sql_table(), {'SALES': 'v2'}, monkeypatch)
@@ -126,8 +144,7 @@ def test_data_version_deterministic_and_sensitive(monkeypatch):
         Column(name='item_key', stype=Stype.ID, dtype=Dtype.string),
         Column(name='total', stype=Stype.numerical, dtype=Dtype.int),
     ]
-    assert base != _data_version(_sql_table(cols=override), versions,
-                                 monkeypatch)
+    assert base != _data_version(_sql_table(cols=override), versions, monkeypatch)
 
 
 def test_indeterminate_referenced_version_forces_reingest(monkeypatch):
@@ -149,14 +166,14 @@ def test_unparseable_sql_forces_reingest(monkeypatch):
     assert v1 != v2
 
 
-def test_referenced_tables_resolved_via_physical_path_not_synthetic(
-        monkeypatch):
+def test_referenced_tables_resolved_via_physical_path_not_synthetic(monkeypatch):
     # The referenced external tables (not the SQL table's synthetic name) are
     # what get resolved through the physical version path.
     resolved = []
 
-    async def fake_gtdv(connector_spec, name, refresh_table_version=False,
-                        table_def=None):
+    async def fake_gtdv(
+        connector_spec, name, refresh_table_version=False, table_def=None
+    ):
         resolved.append(name)
         return TableDataVersion('phys')
 
@@ -175,8 +192,10 @@ def test_get_table_data_version_dispatches_to_sql_branch(monkeypatch):
     monkeypatch.setattr(utils.time, 'time', lambda: _FIXED_NOW)
     table = _sql_table(sql='SELECT 1 AS a')
     dv = asyncio.run(
-        utils.get_table_data_version(SPEC, table.get_source_table_name(),
-                                     table_def=table))
+        utils.get_table_data_version(
+            SPEC, table.get_source_table_name(), table_def=table
+        )
+    )
     # Deterministic and equal to computing the content hash directly. The caller
     # passes the aligned staleness bucket via the dedicated ``max_staleness_bucket``
     # field (never the referenced-table map), so the expected hash must supply it
@@ -185,12 +204,15 @@ def test_get_table_data_version_dispatches_to_sql_branch(monkeypatch):
     from kumo_core.types import ConnectorType
 
     from kumo.data.custom_sql import custom_sql_data_version
+
     bucket = int(_FIXED_NOW) // _BUCKET_SECS
-    expected = custom_sql_data_version('SELECT 1 AS a', ConnectorType.SNOWFLAKE,
-                                       {},
-                                       {c.name: c.dtype
-                                        for c in table.cols},
-                                       max_staleness_bucket=bucket)
+    expected = custom_sql_data_version(
+        'SELECT 1 AS a',
+        ConnectorType.SNOWFLAKE,
+        {},
+        {c.name: c.dtype for c in table.cols},
+        max_staleness_bucket=bucket,
+    )
     assert str(dv) == expected
 
 
@@ -207,12 +229,14 @@ def test_stable_within_bucket_but_rolls_over_at_boundary(monkeypatch):
     versions = {'SALES': 'v1'}
     # ``_FIXED_NOW`` is aligned to a bucket boundary, so bucket math is exact.
     v_start = _data_version(_sql_table(), versions, monkeypatch, now=_FIXED_NOW)
-    v_same_window = _data_version(_sql_table(), versions, monkeypatch,
-                                  now=_FIXED_NOW + _BUCKET_SECS - 1)
+    v_same_window = _data_version(
+        _sql_table(), versions, monkeypatch, now=_FIXED_NOW + _BUCKET_SECS - 1
+    )
     assert v_start == v_same_window
 
-    v_next_window = _data_version(_sql_table(), versions, monkeypatch,
-                                  now=_FIXED_NOW + _BUCKET_SECS)
+    v_next_window = _data_version(
+        _sql_table(), versions, monkeypatch, now=_FIXED_NOW + _BUCKET_SECS
+    )
     assert v_start != v_next_window
 
 
@@ -224,16 +248,14 @@ def test_empty_ref_set_bounded_by_staleness_floor(monkeypatch):
     # window, but rolls over across a boundary.
     table = _sql_table(sql='SELECT 1 AS a')
     v0 = _data_version(table, {}, monkeypatch, now=_FIXED_NOW)
-    v0_same = _data_version(table, {}, monkeypatch,
-                            now=_FIXED_NOW + _BUCKET_SECS - 1)
+    v0_same = _data_version(table, {}, monkeypatch, now=_FIXED_NOW + _BUCKET_SECS - 1)
     assert v0 == v0_same
 
     v1 = _data_version(table, {}, monkeypatch, now=_FIXED_NOW + _BUCKET_SECS)
     assert v0 != v1
 
 
-def _resolve_and_capture(spec, table_def, versions, monkeypatch, *,
-                         now=_FIXED_NOW):
+def _resolve_and_capture(spec, table_def, versions, monkeypatch, *, now=_FIXED_NOW):
     """Run the version path, returning ``(data_version, [probed names])``.
 
     Records the exact table name handed to ``get_table_data_version`` so a test
@@ -242,8 +264,9 @@ def _resolve_and_capture(spec, table_def, versions, monkeypatch, *,
     """
     probed = []
 
-    async def fake_gtdv(connector_spec, name, refresh_table_version=False,
-                        table_def=None):
+    async def fake_gtdv(
+        connector_spec, name, refresh_table_version=False, table_def=None
+    ):
         probed.append(name)
         return TableDataVersion(versions[name])
 
@@ -261,18 +284,19 @@ def test_bigquery_referenced_table_resolves_deterministically(monkeypatch):
     # ``indeterminate`` sentinel -> a different data_version every call, so batch
     # prediction asked for a snapshot training never materialized. The
     # resolution path now reduces the ref to its case-preserving bare leaf.
-    bq_sql = ('SELECT item_key FROM '
-              '`future-pager-502102-v6`.`kumo_smoke`.`ACCOUNT`')
+    bq_sql = 'SELECT item_key FROM `future-pager-502102-v6`.`kumo_smoke`.`ACCOUNT`'
     table = _sql_table(
-        sql=bq_sql, connector_type='bigquery', cols=[
-            Column(name='item_key', stype=Stype.ID,
-                   dtype=Dtype.string)
-        ])
+        sql=bq_sql,
+        connector_type='bigquery',
+        cols=[Column(name='item_key', stype=Stype.ID, dtype=Dtype.string)],
+    )
 
-    v1, probed1 = _resolve_and_capture(BQ_SPEC, table, {'ACCOUNT': 'phys-1'},
-                                       monkeypatch)
-    v2, probed2 = _resolve_and_capture(BQ_SPEC, table, {'ACCOUNT': 'phys-1'},
-                                       monkeypatch)
+    v1, probed1 = _resolve_and_capture(
+        BQ_SPEC, table, {'ACCOUNT': 'phys-1'}, monkeypatch
+    )
+    v2, probed2 = _resolve_and_capture(
+        BQ_SPEC, table, {'ACCOUNT': 'phys-1'}, monkeypatch
+    )
 
     # The connector probe receives the backtick-stripped, case-preserved bare
     # leaf (BigQuery table names are case-sensitive), NOT the quoted 3-part name.
@@ -290,15 +314,15 @@ def test_databricks_referenced_table_normalized_no_regression(monkeypatch):
     # gets the lower-folded bare leaf that ``_fully_qualify_table_name`` expects.
     dbx_sql = 'SELECT item_key FROM `main`.`kumo_smoke`.`ACCOUNT`'
     table = _sql_table(
-        sql=dbx_sql, connector_type='databricks', cols=[
-            Column(name='item_key', stype=Stype.ID,
-                   dtype=Dtype.string)
-        ])
+        sql=dbx_sql,
+        connector_type='databricks',
+        cols=[Column(name='item_key', stype=Stype.ID, dtype=Dtype.string)],
+    )
 
-    v1, probed1 = _resolve_and_capture(DBX_SPEC, table, {'account': 'phys-1'},
-                                       monkeypatch)
-    v2, _ = _resolve_and_capture(DBX_SPEC, table, {'account': 'phys-1'},
-                                 monkeypatch)
+    v1, probed1 = _resolve_and_capture(
+        DBX_SPEC, table, {'account': 'phys-1'}, monkeypatch
+    )
+    v2, _ = _resolve_and_capture(DBX_SPEC, table, {'account': 'phys-1'}, monkeypatch)
 
     # Databricks folds identifiers to lower case; the leaf is unquoted.
     assert probed1 == ['account']

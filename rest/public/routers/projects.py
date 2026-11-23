@@ -35,39 +35,39 @@ class ProjectsRouter:
         self._auth = auth
 
         self.router = APIRouter(
-            prefix="/projects",
-            tags=["API v1 (Under Development): Projects"],
+            prefix='/projects',
+            tags=['API v1 (Under Development): Projects'],
             dependencies=[Depends(api_key_auth)],
         )
 
         self.router.add_api_route(
-            "",
+            '',
             self.list_projects,
             response_model=List[ProjectResponse],
             methods=['GET'],
-            summary="List projects in a group.",
+            summary='List projects in a group.',
         )
         self.router.add_api_route(
-            "/by-slug/{slug}",
+            '/by-slug/{slug}',
             self.get_project_by_slug,
             response_model=ProjectResponse,
             methods=['GET'],
-            summary="Get one visible project by immutable slug.",
+            summary='Get one visible project by immutable slug.',
         )
         self.router.add_api_route(
-            "/{project_id}",
+            '/{project_id}',
             self.get_project,
             response_model=ProjectResponse,
             methods=['GET'],
-            summary="Get one visible project by immutable ID.",
+            summary='Get one visible project by immutable ID.',
         )
 
         self.router.add_api_route(
-            "",
+            '',
             self.create_project,
             response_model=ProjectResponse,
             methods=['POST'],
-            summary="Create a new project.",
+            summary='Create a new project.',
         )
 
     async def list_projects(
@@ -79,7 +79,8 @@ class ProjectsRouter:
                 projects = await self._driver._list_visible_projects()
             else:
                 projects = await self._driver.list_projects_in_group(
-                    group_id=GroupID(group_id))
+                    group_id=GroupID(group_id)
+                )
             return [_public_project(project) for project in projects]
 
     async def get_project(self, project_id: str) -> ProjectResponse:

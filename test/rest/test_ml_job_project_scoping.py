@@ -54,14 +54,14 @@ from statedb.config.job_tag import (
 from statedb.config.timestamp import get_current_timestamps
 from statedb.db import MLJobService, StateDB
 
-TEST_GRAPH_ID = GraphIDv1("graph_id_test")
-TEST_PQUERY_ID = PredictiveQueryID("pquery_id_test")
+TEST_GRAPH_ID = GraphIDv1('graph_id_test')
+TEST_PQUERY_ID = PredictiveQueryID('pquery_id_test')
 
 PROJECT_A = ProjectID.generate()
 PROJECT_B = ProjectID.generate()
 
 
-@pytest.fixture(scope="session", autouse=True)
+@pytest.fixture(scope='session', autouse=True)
 def setup_rest_test_session() -> None:
     pass
 
@@ -73,7 +73,7 @@ def auto_cleanup_per_func() -> None:
 
 @pytest_asyncio.fixture
 async def ml_jobs(tmp_path) -> MLJobService:
-    state_db = await StateDB.open_sqlite(str(tmp_path / "state.sqlite"))
+    state_db = await StateDB.open_sqlite(str(tmp_path / 'state.sqlite'))
     return MLJobService(state_db)
 
 
@@ -92,7 +92,7 @@ async def _create_training_job(
         graph_id=TEST_GRAPH_ID,
         now=now or _now(),
         advanced_options=ModelPlan(),
-        graph_data_version="1.0",
+        graph_data_version='1.0',
         project_id=project_id,
     )
 
@@ -112,7 +112,8 @@ async def _create_batch_prediction_job(
             graph_id=TEST_GRAPH_ID,
             predictive_query_id=TEST_PQUERY_ID,
             generate_pred_table_job_id=(
-                GeneratePredictionTableJobID.as_child_of(batch_id)),
+                GeneratePredictionTableJobID.as_child_of(batch_id)
+            ),
             task_type=TaskType.BINARY_CLASSIFICATION,
         ),
         source=JobSource.SDK,
@@ -163,18 +164,21 @@ def _visible_ids(entries) -> set:
 
 
 def _request_ctx(*project_ids: ProjectID) -> SimpleNamespace:
-    return SimpleNamespace(user_authorization=SimpleNamespace(
-        is_admin=False,
-        project_ids=tuple(str(project_id) for project_id in project_ids),
-        external_membership_unavailable=False,
-    ))
+    return SimpleNamespace(
+        user_authorization=SimpleNamespace(
+            is_admin=False,
+            project_ids=tuple(str(project_id) for project_id in project_ids),
+            external_membership_unavailable=False,
+        )
+    )
 
 
 def _backend_for_service(service: MLJobService) -> MLJobBackend:
     backend = object.__new__(MLJobBackend)
     backend._ml_job_service = service
-    backend._settings = SimpleNamespace(ml_job_settings=SimpleNamespace(
-        use_fake_job_backend=False))
+    backend._settings = SimpleNamespace(
+        ml_job_settings=SimpleNamespace(use_fake_job_backend=False)
+    )
     backend._now_fn = _now
     return backend
 
@@ -184,8 +188,9 @@ def _backend_for_service(service: MLJobService) -> MLJobBackend:
     'listing',
     ['visible-projects', 'exact-project', 'both'],
 )
-async def test_aggregate_listing_applies_project_scope(ml_jobs: MLJobService,
-                                                       listing: str) -> None:
+async def test_aggregate_listing_applies_project_scope(
+    ml_jobs: MLJobService, listing: str
+) -> None:
     own_id, _ = await _create_training_job(ml_jobs, project_id=PROJECT_A)
     other_id, _ = await _create_training_job(ml_jobs, project_id=PROJECT_B)
 
@@ -205,7 +210,8 @@ async def test_aggregate_listing_applies_project_scope(ml_jobs: MLJobService,
 
 @pytest.mark.asyncio
 async def test_project_visibility_applies_to_all_aggregate_job_types(
-        ml_jobs: MLJobService) -> None:
+    ml_jobs: MLJobService,
+) -> None:
     own_training_id, own_gen_train_id = await _create_training_job(
         ml_jobs,
         project_id=PROJECT_A,
@@ -233,141 +239,172 @@ async def test_project_visibility_applies_to_all_aggregate_job_types(
         project_id=PROJECT_B,
     )
 
-    visible = _visible_ids(await
-                           ml_jobs.list_jobs_by_project_visibility([PROJECT_A]))
+    visible = _visible_ids(await ml_jobs.list_jobs_by_project_visibility([PROJECT_A]))
 
-    assert {own_training_id, own_gen_train_id, own_batch_id,
-            own_gen_pred_id} <= visible
+    assert {own_training_id, own_gen_train_id, own_batch_id, own_gen_pred_id} <= visible
     assert {
-        other_training_id, other_gen_train_id, other_batch_id, other_gen_pred_id
+        other_training_id,
+        other_gen_train_id,
+        other_batch_id,
+        other_gen_pred_id,
     }.isdisjoint(visible)
 
 
 @pytest.mark.asyncio
 async def test_batch_prediction_workflow_lookup_filters_by_workflow_id(
-        ml_jobs: MLJobService) -> None:
+    ml_jobs: MLJobService,
+) -> None:
     training_id, _ = await _create_training_job(ml_jobs)
-    workflow_id = BatchPredictionWorkflowID("workflow_a")
-    matching_id = await _create_batch_prediction_job(ml_jobs, training_id,
-                                                     workflow_id=workflow_id)
+    workflow_id = BatchPredictionWorkflowID('workflow_a')
+    matching_id = await _create_batch_prediction_job(
+        ml_jobs, training_id, workflow_id=workflow_id
+    )
     null_workflow_id = await _create_batch_prediction_job(ml_jobs, training_id)
 
     assert [
         row.id
         for row in await ml_jobs.list_batch_prediction_rows_by_workflow_id(
-            workflow_id, project_ids={PROJECT_A})
+            workflow_id, project_ids={PROJECT_A}
+        )
     ] == [matching_id]
     assert [
         row.id
         for row in await ml_jobs.list_batch_prediction_rows_by_workflow_id(
-            None, project_ids={PROJECT_A})
+            None, project_ids={PROJECT_A}
+        )
     ] == [null_workflow_id]
 
 
 @pytest.mark.asyncio
 async def test_batch_prediction_queries_apply_explicit_project_scope_before_sql_operations(
-        ml_jobs: MLJobService) -> None:
+    ml_jobs: MLJobService,
+) -> None:
     """Every BP query treats None/global, visible, exact, and empty distinctly."""
     training_a, _ = await _create_training_job(ml_jobs, project_id=PROJECT_A)
     training_b, _ = await _create_training_job(ml_jobs, project_id=PROJECT_B)
-    workflow_id = BatchPredictionWorkflowID("shared_workflow")
-    job_a = await _create_batch_prediction_job(ml_jobs, training_a,
-                                               project_id=PROJECT_A,
-                                               workflow_id=workflow_id)
-    job_b = await _create_batch_prediction_job(ml_jobs, training_b,
-                                               project_id=PROJECT_B,
-                                               workflow_id=workflow_id)
+    workflow_id = BatchPredictionWorkflowID('shared_workflow')
+    job_a = await _create_batch_prediction_job(
+        ml_jobs, training_a, project_id=PROJECT_A, workflow_id=workflow_id
+    )
+    job_b = await _create_batch_prediction_job(
+        ml_jobs, training_b, project_id=PROJECT_B, workflow_id=workflow_id
+    )
 
-    assert _visible_ids(await ml_jobs.get_batch_prediction_rows(
-        [job_a, job_b], project_ids={PROJECT_A})) == {job_a}
-    assert _visible_ids(await ml_jobs.get_batch_prediction_rows(
-        [job_a, job_b], project_ids=set())) == set()
-    assert _visible_ids(await ml_jobs.get_batch_prediction_rows(
-        [job_a, job_b], project_ids=None)) == {job_a, job_b}
+    assert _visible_ids(
+        await ml_jobs.get_batch_prediction_rows([job_a, job_b], project_ids={PROJECT_A})
+    ) == {job_a}
+    assert (
+        _visible_ids(
+            await ml_jobs.get_batch_prediction_rows([job_a, job_b], project_ids=set())
+        )
+        == set()
+    )
+    assert _visible_ids(
+        await ml_jobs.get_batch_prediction_rows([job_a, job_b], project_ids=None)
+    ) == {job_a, job_b}
 
     # The scope is part of SQL, so a newer inaccessible row cannot consume
     # the limit before the visible row is selected.
     assert [
-        row.id for row in await ml_jobs.list_batch_prediction_rows(
-            project_ids={PROJECT_A}, sort_created_at="desc", limit=1)
+        row.id
+        for row in await ml_jobs.list_batch_prediction_rows(
+            project_ids={PROJECT_A}, sort_created_at='desc', limit=1
+        )
     ] == [job_a]
-    assert await ml_jobs.count_batch_prediction_rows(project_ids={PROJECT_A}
-                                                     ) == 1
+    assert await ml_jobs.count_batch_prediction_rows(project_ids={PROJECT_A}) == 1
     assert await ml_jobs.count_batch_prediction_rows(project_ids=None) == 2
     assert await ml_jobs.count_batch_prediction_rows(project_ids=set()) == 0
-    assert await ml_jobs.has_batch_prediction_rows(project_ids={PROJECT_A},
-                                                   job_ids={job_a})
-    assert not await ml_jobs.has_batch_prediction_rows(project_ids={PROJECT_A},
-                                                       job_ids={job_b})
+    assert await ml_jobs.has_batch_prediction_rows(
+        project_ids={PROJECT_A}, job_ids={job_a}
+    )
+    assert not await ml_jobs.has_batch_prediction_rows(
+        project_ids={PROJECT_A}, job_ids={job_b}
+    )
 
     assert await ml_jobs.get_current_batch_prediction_job_ids(
-        [TEST_PQUERY_ID], project_ids={PROJECT_A}) == {
-            TEST_PQUERY_ID: job_a
-        }
+        [TEST_PQUERY_ID], project_ids={PROJECT_A}
+    ) == {TEST_PQUERY_ID: job_a}
     assert await ml_jobs.get_current_batch_prediction_job_ids(
-        [TEST_PQUERY_ID], project_ids={PROJECT_B}) == {
-            TEST_PQUERY_ID: job_b
-        }
-    assert await ml_jobs.get_current_batch_prediction_job_ids(
-        [TEST_PQUERY_ID], project_ids=set()) == {}
+        [TEST_PQUERY_ID], project_ids={PROJECT_B}
+    ) == {TEST_PQUERY_ID: job_b}
+    assert (
+        await ml_jobs.get_current_batch_prediction_job_ids(
+            [TEST_PQUERY_ID], project_ids=set()
+        )
+        == {}
+    )
     assert [
         row.id
         for row in await ml_jobs.list_batch_prediction_rows_by_workflow_id(
-            workflow_id, project_ids={PROJECT_A})
+            workflow_id, project_ids={PROJECT_A}
+        )
     ] == [job_a]
     assert await ml_jobs.list_batch_prediction_prune_candidate_ids(
-        workflow_id, project_ids={PROJECT_A}, keep_most_recent=0) == [job_a]
+        workflow_id, project_ids={PROJECT_A}, keep_most_recent=0
+    ) == [job_a]
     assert await ml_jobs.get_running_batch_prediction_job_ids(
-        project_ids={PROJECT_A}) == [job_a]
+        project_ids={PROJECT_A}
+    ) == [job_a]
 
 
 @pytest.mark.asyncio
 async def test_generate_prediction_table_bulk_lookup_scopes_before_limit_input(
-        ml_jobs: MLJobService) -> None:
+    ml_jobs: MLJobService,
+) -> None:
     job_a = await _create_gen_pred_table_job(ml_jobs, project_id=PROJECT_A)
     job_b = await _create_gen_pred_table_job(ml_jobs, project_id=PROJECT_B)
 
-    assert _visible_ids(await ml_jobs.get_generate_pred_table_jobs(
-        [job_a, job_b], project_ids={PROJECT_A})) == {job_a}
-    assert await ml_jobs.get_generate_pred_table_jobs([job_a, job_b],
-                                                      project_ids=set()) == []
-    assert _visible_ids(await ml_jobs.get_generate_pred_table_jobs(
-        [job_a, job_b], project_ids=None)) == {job_a, job_b}
+    assert _visible_ids(
+        await ml_jobs.get_generate_pred_table_jobs(
+            [job_a, job_b], project_ids={PROJECT_A}
+        )
+    ) == {job_a}
+    assert (
+        await ml_jobs.get_generate_pred_table_jobs([job_a, job_b], project_ids=set())
+        == []
+    )
+    assert _visible_ids(
+        await ml_jobs.get_generate_pred_table_jobs([job_a, job_b], project_ids=None)
+    ) == {job_a, job_b}
 
 
 @pytest.mark.asyncio
 async def test_training_candidate_ordering_is_scoped_before_limit(
-        ml_jobs: MLJobService) -> None:
+    ml_jobs: MLJobService,
+) -> None:
     older = _now()
     newer = older + timedelta(seconds=1)
-    job_a, _ = await _create_training_job(ml_jobs, project_id=PROJECT_A,
-                                          now=older)
-    job_b, _ = await _create_training_job(ml_jobs, project_id=PROJECT_B,
-                                          now=newer)
+    job_a, _ = await _create_training_job(ml_jobs, project_id=PROJECT_A, now=older)
+    job_b, _ = await _create_training_job(ml_jobs, project_id=PROJECT_B, now=newer)
 
     assert [
-        row.id for row in await ml_jobs.list_training_job_rows(
+        row.id
+        for row in await ml_jobs.list_training_job_rows(
             job_ids={job_a, job_b},
             project_ids={PROJECT_A},
-            sort_created_at="desc",
+            sort_created_at='desc',
             limit=1,
         )
     ] == [job_a]
     assert [
-        row.id for row in await ml_jobs.list_training_job_rows(
+        row.id
+        for row in await ml_jobs.list_training_job_rows(
             job_ids={job_a, job_b},
             project_ids=None,
-            sort_created_at="desc",
+            sort_created_at='desc',
             limit=1,
         )
     ] == [job_b]
-    assert await ml_jobs.list_training_job_rows(job_ids={job_a, job_b},
-                                                project_ids=set()) == []
+    assert (
+        await ml_jobs.list_training_job_rows(job_ids={job_a, job_b}, project_ids=set())
+        == []
+    )
 
 
 @pytest.mark.asyncio
 async def test_training_backend_single_and_bulk_share_project_scope(
-        ml_jobs: MLJobService) -> None:
+    ml_jobs: MLJobService,
+) -> None:
     job_a, _ = await _create_training_job(ml_jobs, project_id=PROJECT_A)
     job_b, _ = await _create_training_job(ml_jobs, project_id=PROJECT_B)
     missing = TrainingJobID.make_random_id()
@@ -377,16 +414,15 @@ async def test_training_backend_single_and_bulk_share_project_scope(
     assert (await backend.get_training_job(ctx, job_a)).id == job_a
     assert await backend.get_training_job(ctx, job_b) is None
     assert await backend.get_training_job(ctx, missing) is None
-    assert set(await
-               backend.get_training_jobs(ctx,
-                                         {job_a, job_b, missing})) == {job_a}
+    assert set(await backend.get_training_jobs(ctx, {job_a, job_b, missing})) == {job_a}
     assert not await backend.delete_training_job(ctx, job_b, force=True)
     assert await ml_jobs.get_training_job(job_b) is not None
 
 
 @pytest.mark.asyncio
 async def test_training_backend_replaces_request_context_for_each_bulk_read(
-        ml_jobs: MLJobService) -> None:
+    ml_jobs: MLJobService,
+) -> None:
     job_a, _ = await _create_training_job(ml_jobs, project_id=PROJECT_A)
     job_b, _ = await _create_training_job(ml_jobs, project_id=PROJECT_B)
     backend = _backend_for_service(ml_jobs)
@@ -407,13 +443,12 @@ async def test_training_backend_replaces_request_context_for_each_bulk_read(
 
 @pytest.mark.asyncio
 async def test_public_training_list_scopes_before_conversion_and_limit(
-        ml_jobs: MLJobService) -> None:
+    ml_jobs: MLJobService,
+) -> None:
     older = _now()
     newer = older + timedelta(seconds=1)
-    job_a, _ = await _create_training_job(ml_jobs, project_id=PROJECT_A,
-                                          now=older)
-    job_b, _ = await _create_training_job(ml_jobs, project_id=PROJECT_B,
-                                          now=newer)
+    job_a, _ = await _create_training_job(ml_jobs, project_id=PROJECT_A, now=older)
+    job_b, _ = await _create_training_job(ml_jobs, project_id=PROJECT_B, now=newer)
 
     # Simulate a malformed inaccessible payload. SQL project scoping must
     # exclude it before deserialization/public conversion and before limit.
@@ -424,8 +459,7 @@ async def test_public_training_list_scopes_before_conversion_and_limit(
         await ml_jobs._training_jobs.upsert(tx, str(job_b), foreign)
 
     tags = {
-        job_id:
-        JobTags(
+        job_id: JobTags(
             timestamps=get_current_timestamps(),
             tags={TAG_KEY_PQUERY_NAME: JobTagValue(TEST_PQUERY_ID)},
         )
@@ -434,16 +468,19 @@ async def test_public_training_list_scopes_before_conversion_and_limit(
     router = object.__new__(TrainingRouterV1)
     router._driver = SimpleNamespace(list_job_tags=AsyncMock(return_value=tags))
     router._ml_job_backend = _backend_for_service(ml_jobs)
-    request = Request({
-        "type": "http",
-        "method": "GET",
-        "path": "/v1/training_jobs",
-        "query_string": b"",
-        "headers": [],
-    })
+    request = Request(
+        {
+            'type': 'http',
+            'method': 'GET',
+            'path': '/v1/training_jobs',
+            'query_string': b'',
+            'headers': [],
+        }
+    )
 
-    resources = await router.list(request, Response(), limit=1,
-                                  ctx=_request_ctx(PROJECT_A))
+    resources = await router.list(
+        request, Response(), limit=1, ctx=_request_ctx(PROJECT_A)
+    )
 
     assert [resource.job_id for resource in resources] == [job_a]
     assert resources[0].created_at == older
@@ -451,33 +488,40 @@ async def test_public_training_list_scopes_before_conversion_and_limit(
 
 @pytest.mark.asyncio
 async def test_generate_train_table_scope_precedes_conversion_and_limit(
-        ml_jobs: MLJobService) -> None:
+    ml_jobs: MLJobService,
+) -> None:
     older = _now()
     newer = older + timedelta(seconds=1)
-    job_a = await _create_gen_train_table_job(ml_jobs, project_id=PROJECT_A,
-                                              now=older)
-    job_b = await _create_gen_train_table_job(ml_jobs, project_id=PROJECT_B,
-                                              now=newer)
+    job_a = await _create_gen_train_table_job(ml_jobs, project_id=PROJECT_A, now=older)
+    job_b = await _create_gen_train_table_job(ml_jobs, project_id=PROJECT_B, now=newer)
 
-    assert _visible_ids(await ml_jobs.get_generate_train_table_jobs(
-        {job_a, job_b}, project_ids={PROJECT_A})) == {job_a}
-    assert await ml_jobs.get_generate_train_table_jobs({job_a, job_b},
-                                                       project_ids=set()) == []
-    assert _visible_ids(await ml_jobs.get_generate_train_table_jobs(
-        {job_a, job_b}, project_ids=None)) == {job_a, job_b}
+    assert _visible_ids(
+        await ml_jobs.get_generate_train_table_jobs(
+            {job_a, job_b}, project_ids={PROJECT_A}
+        )
+    ) == {job_a}
+    assert (
+        await ml_jobs.get_generate_train_table_jobs({job_a, job_b}, project_ids=set())
+        == []
+    )
+    assert _visible_ids(
+        await ml_jobs.get_generate_train_table_jobs({job_a, job_b}, project_ids=None)
+    ) == {job_a, job_b}
 
     # The backend must scope StateDB rows before public-resource conversion
     # and before applying its limit. A newer foreign row cannot shadow A.
     backend = object.__new__(MLJobBackend)
     backend._ml_job_service = ml_jobs
     resources = await backend.get_generate_train_table_jobs(
-        {job_a, job_b}, project_ids={PROJECT_A}, limit=1)
+        {job_a, job_b}, project_ids={PROJECT_A}, limit=1
+    )
     assert [resource.job_id for resource in resources] == [job_a]
 
 
 @pytest.mark.asyncio
 async def test_running_batch_prediction_ids_exclude_finished_jobs(
-        ml_jobs: MLJobService) -> None:
+    ml_jobs: MLJobService,
+) -> None:
     training_id, _ = await _create_training_job(ml_jobs)
     queued_id = await _create_batch_prediction_job(ml_jobs, training_id)
     cancelled_id = await _create_batch_prediction_job(ml_jobs, training_id)
@@ -490,42 +534,40 @@ async def test_running_batch_prediction_ids_exclude_finished_jobs(
     )
 
     assert await ml_jobs.get_running_batch_prediction_job_ids(
-        project_ids={PROJECT_A}) == [queued_id]
+        project_ids={PROJECT_A}
+    ) == [queued_id]
 
 
 @pytest.mark.asyncio
-async def test_list_job_ids_by_type_filters_job_type(
-        ml_jobs: MLJobService) -> None:
+async def test_list_job_ids_by_type_filters_job_type(ml_jobs: MLJobService) -> None:
     training_id, _ = await _create_training_job(ml_jobs)
-    assert await ml_jobs.list_job_ids_by_type(JobType.TRAINING_JOB
-                                              ) == [training_id]
+    assert await ml_jobs.list_job_ids_by_type(JobType.TRAINING_JOB) == [training_id]
 
 
 @pytest.mark.asyncio
-async def test_list_job_tags_filters_by_tag_values(
-        ml_jobs: MLJobService) -> None:
+async def test_list_job_tags_filters_by_tag_values(ml_jobs: MLJobService) -> None:
     first_id, _ = await _create_training_job(ml_jobs)
     second_id, _ = await _create_training_job(ml_jobs)
     batch_id = await _create_batch_prediction_job(ml_jobs, first_id)
     await ml_jobs.apply_job_tags(
         JobType.TRAINING_JOB,
         first_id,
-        {JobTagKey("phase"): JobTagValue("one")},
+        {JobTagKey('phase'): JobTagValue('one')},
     )
     await ml_jobs.apply_job_tags(
         JobType.TRAINING_JOB,
         second_id,
-        {JobTagKey("phase"): JobTagValue("two")},
+        {JobTagKey('phase'): JobTagValue('two')},
     )
     await ml_jobs.apply_job_tags(
         JobType.BATCH_PREDICTION_JOB,
         batch_id,
-        {JobTagKey("phase"): JobTagValue("one")},
+        {JobTagKey('phase'): JobTagValue('one')},
     )
-    listed = await ml_jobs.list_job_tags(JobType.TRAINING_JOB, {"phase": "one"})
+    listed = await ml_jobs.list_job_tags(JobType.TRAINING_JOB, {'phase': 'one'})
 
     assert set(listed) == {first_id}
-    assert listed[first_id].tags[JobTagKey("phase")] == JobTagValue("one")
+    assert listed[first_id].tags[JobTagKey('phase')] == JobTagValue('one')
 
 
 @pytest.mark.asyncio
@@ -545,36 +587,48 @@ async def test_created_jobs_persist_project_id(ml_jobs: MLJobService) -> None:
     )
 
     assert (await ml_jobs.get_training_job(training_id)).project_id == PROJECT_A
-    assert (await ml_jobs.get_generate_train_table_job(
-        gen_train_id, project_ids=None)).project_id == PROJECT_A
+    assert (
+        await ml_jobs.get_generate_train_table_job(gen_train_id, project_ids=None)
+    ).project_id == PROJECT_A
     batch_jobs = await ml_jobs.get_batch_prediction_jobs(
-        [batch_id], project_ids={PROJECT_A})
+        [batch_id], project_ids={PROJECT_A}
+    )
     assert batch_jobs[0].project_id == PROJECT_A
-    assert (await ml_jobs.get_generate_pred_table_job(gen_pred_id)
-            ).project_id == PROJECT_B
+    assert (
+        await ml_jobs.get_generate_pred_table_job(gen_pred_id)
+    ).project_id == PROJECT_B
 
 
 @pytest.mark.asyncio
 async def test_default_project_id_persists_as_job_foreign_reference(
-        ml_jobs: MLJobService) -> None:
+    ml_jobs: MLJobService,
+) -> None:
     default_project_id = ProjectID(DEFAULT_PROJECT_ID)
 
     training_id, generated_id = await _create_training_job(
-        ml_jobs, project_id=default_project_id)
-    batch_id = await _create_batch_prediction_job(ml_jobs, training_id,
-                                                  project_id=default_project_id)
+        ml_jobs, project_id=default_project_id
+    )
+    batch_id = await _create_batch_prediction_job(
+        ml_jobs, training_id, project_id=default_project_id
+    )
 
     assert (await ml_jobs.get_training_job(training_id)).project_id == 'default'
-    assert (await ml_jobs.get_generate_train_table_job(
-        generated_id, project_ids={default_project_id})).project_id == 'default'
-    assert (await ml_jobs.get_batch_prediction_jobs([batch_id], project_ids={
-        default_project_id
-    }))[0].project_id == 'default'
+    assert (
+        await ml_jobs.get_generate_train_table_job(
+            generated_id, project_ids={default_project_id}
+        )
+    ).project_id == 'default'
+    assert (
+        await ml_jobs.get_batch_prediction_jobs(
+            [batch_id], project_ids={default_project_id}
+        )
+    )[0].project_id == 'default'
 
 
 @pytest.mark.asyncio
 async def test_job_creation_rejects_cross_project_parent_reference(
-        ml_jobs: MLJobService) -> None:
+    ml_jobs: MLJobService,
+) -> None:
     training_id, _ = await _create_training_job(ml_jobs, project_id=PROJECT_A)
 
     with pytest.raises(ValueError, match='Training job belongs to project'):
@@ -586,8 +640,7 @@ async def test_job_creation_rejects_cross_project_parent_reference(
 
 
 @pytest.mark.asyncio
-async def test_child_gen_pred_table_inherits_project_id(
-        ml_jobs: MLJobService) -> None:
+async def test_child_gen_pred_table_inherits_project_id(ml_jobs: MLJobService) -> None:
     training_id, _ = await _create_training_job(
         ml_jobs,
         project_id=PROJECT_A,
@@ -615,7 +668,8 @@ async def test_child_gen_pred_table_inherits_project_id(
 
 @pytest.mark.asyncio
 async def test_delete_job_generic_removes_only_requested_job(
-        ml_jobs: MLJobService) -> None:
+    ml_jobs: MLJobService,
+) -> None:
     own_id, _ = await _create_training_job(ml_jobs, project_id=PROJECT_A)
     other_id, _ = await _create_training_job(ml_jobs, project_id=PROJECT_B)
 

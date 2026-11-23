@@ -17,6 +17,7 @@ for module-scope backup/restore isolation) or ``CUSTOM_ARTIFACT_ROOT``
 ``test/conftest.py:88-93``). Session-scoped + autouse so it runs before
 the module-scope fixture during pytest setup ordering.
 """
+
 from typing import Generator
 
 import pytest

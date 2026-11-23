@@ -38,6 +38,7 @@ class PredTablePartitionPathInfo:
             path_prefix =  "dbfs:/Volumes/catalog/schema/volume/part-"
 
     """
+
     uri_type: type[Union[S3URI, UCURI]]
     path_prefix: str
     num_partitions: int
@@ -47,12 +48,13 @@ class PredTablePartitionPathInfo:
         the wildcard character.
         """
         if partition_num >= self.num_partitions or partition_num < 0:
-            raise ValueError(f"Partition number out of range: {partition_num}")
-        return f"{self.path_prefix}{str(partition_num).zfill(5)}*"
+            raise ValueError(f'Partition number out of range: {partition_num}')
+        return f'{self.path_prefix}{str(partition_num).zfill(5)}*'
 
 
-def _process_s3_files(parquet_files: list[str],
-                      num_parts: int) -> PredTablePartitionPathInfo:
+def _process_s3_files(
+    parquet_files: list[str], num_parts: int
+) -> PredTablePartitionPathInfo:
     """Process S3 parquet files and extract partition information.
 
     Example filename:
@@ -70,8 +72,9 @@ def _process_s3_files(parquet_files: list[str],
             parquet file pattern or if the file list is empty
     """
     if not parquet_files:
-        return PredTablePartitionPathInfo(uri_type=S3URI, path_prefix="",
-                                          num_partitions=0)
+        return PredTablePartitionPathInfo(
+            uri_type=S3URI, path_prefix='', num_partitions=0
+        )
 
     first_file = parquet_files[0]
     filename = os.path.basename(first_file)
@@ -79,18 +82,21 @@ def _process_s3_files(parquet_files: list[str],
 
     if file_components[0] != 'part' or not file_components:
         raise ValueError(
-            f"Unexpected file pattern: {filename}\n"
-            "Expected EMR Spark parquet file pattern similar to: "
-            "part-<padded_partition_number>-<uuid>-c000.snappy.parquet")
+            f'Unexpected file pattern: {filename}\n'
+            'Expected EMR Spark parquet file pattern similar to: '
+            'part-<padded_partition_number>-<uuid>-c000.snappy.parquet'
+        )
 
-    path_prefix = f"{first_file.rsplit('/', 1)[0]}/part-"
+    path_prefix = f'{first_file.rsplit("/", 1)[0]}/part-'
 
-    return PredTablePartitionPathInfo(uri_type=S3URI, path_prefix=path_prefix,
-                                      num_partitions=num_parts)
+    return PredTablePartitionPathInfo(
+        uri_type=S3URI, path_prefix=path_prefix, num_partitions=num_parts
+    )
 
 
-def _process_ucv_files(parquet_files: list[str],
-                       num_parts: int) -> PredTablePartitionPathInfo:
+def _process_ucv_files(
+    parquet_files: list[str], num_parts: int
+) -> PredTablePartitionPathInfo:
     """Process UC Volume parquet files and extract partition information.
 
     Note: Unlike S3, Spark parquet files outputted into the UC Volume
@@ -111,24 +117,27 @@ def _process_ucv_files(parquet_files: list[str],
             parquet file pattern or if the file list is empty
     """
     if not parquet_files:
-        return PredTablePartitionPathInfo(uri_type=UCURI, path_prefix="",
-                                          num_partitions=0)
+        return PredTablePartitionPathInfo(
+            uri_type=UCURI, path_prefix='', num_partitions=0
+        )
 
     first_file = parquet_files[0]
     filename = os.path.basename(first_file)
     parts = filename.split('-')
 
     if parts[0] != 'part':
-        raise ValueError(f"Unexpected file pattern: {filename}\n"
-                         "Expected Databricks parquet file similar to: "
-                         "part-<padded_partition>-tid-<uuid>-<task_id>-"
-                         "1-c000.snappy.parquet")
+        raise ValueError(
+            f'Unexpected file pattern: {filename}\n'
+            'Expected Databricks parquet file similar to: '
+            'part-<padded_partition>-tid-<uuid>-<task_id>-'
+            '1-c000.snappy.parquet'
+        )
 
     # Extract components dynamically
     partition_id = parts[1]
     filename.find(partition_id) + len(partition_id)
 
-    path_prefix = f"{first_file.rsplit('/', 1)[0]}/part-"
+    path_prefix = f'{first_file.rsplit("/", 1)[0]}/part-'
 
     for file_path in parquet_files:
         filename = os.path.basename(file_path)
@@ -136,8 +145,9 @@ def _process_ucv_files(parquet_files: list[str],
         if parts[0] == 'part':
             partition_id = int(parts[1])
 
-    return PredTablePartitionPathInfo(uri_type=UCURI, path_prefix=path_prefix,
-                                      num_partitions=num_parts)
+    return PredTablePartitionPathInfo(
+        uri_type=UCURI, path_prefix=path_prefix, num_partitions=num_parts
+    )
 
 
 def _count_and_check_partitions(parquet_files: list[str], path: str) -> int:
@@ -153,8 +163,7 @@ def _count_and_check_partitions(parquet_files: list[str], path: str) -> int:
         if partition_num > max_partition:
             max_partition = partition_num
     if len(partition_indices) != max_partition + 1:
-        raise ValueError(
-            f"Partitions are not consecutively numbered at {path}")
+        raise ValueError(f'Partitions are not consecutively numbered at {path}')
     return max_partition + 1
 
 
@@ -188,9 +197,9 @@ def get_pred_table_partition_info(path: str) -> PredTablePartitionPathInfo:
             supported
     """
     if not fsutil.isdir(path):
-        raise ValueError(f"Expected a directory, got {path}")
+        raise ValueError(f'Expected a directory, got {path}')
 
-    parquet_files = fsutil.listdir(path, suffix=".parquet")
+    parquet_files = fsutil.listdir(path, suffix='.parquet')
     num_parts = _count_and_check_partitions(parquet_files, path)
     uri = ParseURI(path)
 
@@ -200,4 +209,4 @@ def get_pred_table_partition_info(path: str) -> PredTablePartitionPathInfo:
     elif isinstance(uri, UCURI):
         return _process_ucv_files(parquet_files, num_parts)
     else:
-        raise ValueError(f"Unsupported URI type: {type(uri)}")
+        raise ValueError(f'Unsupported URI type: {type(uri)}')

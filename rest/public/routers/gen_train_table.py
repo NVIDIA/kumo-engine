@@ -72,7 +72,7 @@ class GenerateTrainTableRouter:
 
         self.router_v1 = APIRouter(
             prefix='/gentraintable_jobs',
-            tags=["API v1 (Under Development): Generate-Train-Table Jobs"],
+            tags=['API v1 (Under Development): Generate-Train-Table Jobs'],
             dependencies=[Depends(api_key_auth)],
         )
 
@@ -106,10 +106,13 @@ class GenerateTrainTableRouter:
             '/{id}/table_data',
             self.get_table_data,
             methods=['GET'],
-            summary=('Get table data URL for a successfully completed '
-                     'Generate-Train-Table job.'),
+            summary=(
+                'Get table data URL for a successfully completed '
+                'Generate-Train-Table job.'
+            ),
             response_description=(
-                'The data URL for a successfully genereated training table.'),
+                'The data URL for a successfully genereated training table.'
+            ),
         )
 
         self.router_v1.add_api_route(
@@ -119,14 +122,16 @@ class GenerateTrainTableRouter:
             methods=['GET'],
             summary=(
                 'Get URLs for train table split mask for train/val/test '
-                'stages, produced by a successful Generate-Train-Table job.'),
+                'stages, produced by a successful Generate-Train-Table job.'
+            ),
             response_description=(
                 'Dictionary of training table split mask file URLs, '
-                'keyed by training stage (train, val, test)'),
+                'keyed by training stage (train, val, test)'
+            ),
         )
 
         self.router_v1.add_api_route(
-            "/{id}/cancel",
+            '/{id}/cancel',
             self.cancel,
             response_model=EmptyResponse,
             methods=['POST'],
@@ -164,27 +169,27 @@ class GenerateTrainTableRouter:
         )
 
     async def get_errors(
-            self,
-            id: GenerateTrainTableJobID,
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        id: GenerateTrainTableJobID,
+        ctx: RequestContext = Depends(get_ctx),
     ) -> api.ErrorDetails:
         await self.get(id, ctx)  # verifies existence and project access
         return await self._driver.get_errors_for_job(id)
 
     async def create(
-            self,
-            request: api.GenerateTrainTableRequest,
-            project_id: Annotated[str, Query()],
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        request: api.GenerateTrainTableRequest,
+        project_id: Annotated[str, Query()],
+        ctx: RequestContext = Depends(get_ctx),
     ) -> IDResponse:
         validate_custom_job_tags(request.job_tags)
         require_project_id_valid(ctx, project_id)
-        with wrap_driver_errors({
-                PredictiveQueryDoesNotExistError:
-                HTTPStatus.UNPROCESSABLE_ENTITY,
-                ModelPlanValueError:
-                HTTPStatus.UNPROCESSABLE_ENTITY,
-        }):
+        with wrap_driver_errors(
+            {
+                PredictiveQueryDoesNotExistError: HTTPStatus.UNPROCESSABLE_ENTITY,
+                ModelPlanValueError: HTTPStatus.UNPROCESSABLE_ENTITY,
+            }
+        ):
             job_id = await self._driver.start_generate_train_table(
                 request,
                 job_source=JobSource.SDK,
@@ -199,18 +204,19 @@ class GenerateTrainTableRouter:
         ctx: RequestContext = Depends(get_ctx),
     ) -> api.GenerateTrainTableJobResource:
         with wrap_rpc_error(
-            {PredictiveQueryDoesNotExistError:
-             HTTPStatus.UNPROCESSABLE_ENTITY}):
+            {PredictiveQueryDoesNotExistError: HTTPStatus.UNPROCESSABLE_ENTITY}
+        ):
             jobs = await self._ml_job_backend.get_generate_train_table_jobs(
                 {id},
                 project_ids=visible_project_ids_or_none(ctx.user_authorization),
             )
             if not jobs:
                 raise HTTPException(
-                    HTTPStatus.NOT_FOUND,
-                    f'Generate train table job {id} is not found.')
+                    HTTPStatus.NOT_FOUND, f'Generate train table job {id} is not found.'
+                )
             tags = await self._ml_job_backend.get_job_tags_if_exists(
-                JobType.GENERATE_TRAIN_TABLE_JOB, id)
+                JobType.GENERATE_TRAIN_TABLE_JOB, id
+            )
             job = jobs[0]
             if not user_can_access_project(ctx, job.project_id):
                 raise HTTPException(
@@ -221,45 +227,48 @@ class GenerateTrainTableRouter:
             return job
 
     async def get_progress(
-            self,
-            id: GenerateTrainTableJobID,
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        id: GenerateTrainTableJobID,
+        ctx: RequestContext = Depends(get_ctx),
     ) -> Dict[str, int]:
         _ = await self.get(id, ctx)
         out = await self._driver.get_train_table_generation_stats(id)
         if out is None:
             return dict()
-        return dict(num_expected_iterations=out.num_expected_iterations,
-                    num_finished_iterations=out.num_finished_iterations)
+        return dict(
+            num_expected_iterations=out.num_expected_iterations,
+            num_finished_iterations=out.num_finished_iterations,
+        )
 
     async def get_table_data(
-            self,
-            id: GenerateTrainTableJobID,
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        id: GenerateTrainTableJobID,
+        ctx: RequestContext = Depends(get_ctx),
     ) -> List[str]:
         job = await self.get(id, ctx)
         if job.job_status_report.status != api.JobStatus.DONE:
             raise HTTPException(
                 HTTPStatus.UNPROCESSABLE_ENTITY,
                 f'Unable to get training table data URL for job {id} '
-                f'in status: {job.job_status_report.status}')
+                f'in status: {job.job_status_report.status}',
+            )
         with wrap_rpc_error():
             result = await self._ml_job_backend.get_train_table_result(id)
 
-        return await presign_parquet_table_data.coroutine(
-            result.train_table_path)
+        return await presign_parquet_table_data.coroutine(result.train_table_path)
 
     async def get_split_masks(
-            self,
-            id: GenerateTrainTableJobID,
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        id: GenerateTrainTableJobID,
+        ctx: RequestContext = Depends(get_ctx),
     ) -> Dict[TrainingStage, str]:
         job = await self.get(id, ctx)
         if job.job_status_report.status != api.JobStatus.DONE:
             raise HTTPException(
                 HTTPStatus.UNPROCESSABLE_ENTITY,
                 f'Unable to get training table split masks for job {id} '
-                f'in status: {job.job_status_report.status}')
+                f'in status: {job.job_status_report.status}',
+            )
         with wrap_rpc_error():
             result = await self._ml_job_backend.get_train_table_result(id)
 
@@ -270,8 +279,9 @@ class GenerateTrainTableRouter:
             mask_path = os.path.join(mask_dir, f'{stage}_mask.pt')
             if fsutil.exists(mask_path):
                 if helper is not None:
-                    mask_urls[stage] = (
-                        await helper.generate_download_url.coroutine(mask_path))
+                    mask_urls[stage] = await helper.generate_download_url.coroutine(
+                        mask_path
+                    )
                 else:
                     mask_urls[stage] = fsutil.customer_facing_path(mask_path)
 
@@ -289,14 +299,19 @@ class GenerateTrainTableRouter:
         ctx: RequestContext = Depends(get_ctx),
     ) -> List[api.GenerateTrainTableJobResource]:
         requested_project, project_scope_matches = await resolve_requested_project(
-            ctx, self._driver, project_id)
-        job_tags = await list_job_tags(JobType.GENERATE_TRAIN_TABLE_JOB,
-                                       request, self._driver, response)
+            ctx, self._driver, project_id
+        )
+        job_tags = await list_job_tags(
+            JobType.GENERATE_TRAIN_TABLE_JOB, request, self._driver, response
+        )
         if not project_scope_matches:
             return []
         job_ids = set(GenerateTrainTableJobID(id) for id in job_tags)
-        project_ids = ({requested_project} if requested_project is not None else
-                       visible_project_ids_or_none(ctx.user_authorization))
+        project_ids = (
+            {requested_project}
+            if requested_project is not None
+            else visible_project_ids_or_none(ctx.user_authorization)
+        )
         with wrap_rpc_error():
             jobs = await self._ml_job_backend.get_generate_train_table_jobs(
                 job_ids,
@@ -312,9 +327,9 @@ class GenerateTrainTableRouter:
         return jobs
 
     async def cancel(
-            self,
-            id: GenerateTrainTableJobID,
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        id: GenerateTrainTableJobID,
+        ctx: RequestContext = Depends(get_ctx),
     ) -> EmptyResponse:
         await self.get(id, ctx)  # verifies existence and project access
         log.info('Send cancellation request for job: %s', id)
@@ -323,22 +338,23 @@ class GenerateTrainTableRouter:
         return EmptyResponse()
 
     async def update_tags(
-            self,
-            id: GenerateTrainTableJobID,
-            request: Request,
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        id: GenerateTrainTableJobID,
+        request: Request,
+        ctx: RequestContext = Depends(get_ctx),
     ) -> PatchResponse:
         job = await self.get(id, ctx)  # verifies existence and project access
-        return await update_job_tags(JobType.GENERATE_TRAIN_TABLE_JOB, id,
-                                     job.project_id, request, self._driver)
+        return await update_job_tags(
+            JobType.GENERATE_TRAIN_TABLE_JOB, id, job.project_id, request, self._driver
+        )
 
     async def validate_custom_train_table(
-            self,
-            id: GenerateTrainTableJobID,
-            custom_table: SourceTableType,
-            train_table_mod: TrainingTableSpec,
-            extensive_validation: bool = Body(False),
-            ctx: RequestContext = Depends(get_ctx),
+        self,
+        id: GenerateTrainTableJobID,
+        custom_table: SourceTableType,
+        train_table_mod: TrainingTableSpec,
+        extensive_validation: bool = Body(False),
+        ctx: RequestContext = Depends(get_ctx),
     ) -> api.ValidationResponse:
         """
         Validate a custom training table against the original training table
@@ -359,7 +375,8 @@ class GenerateTrainTableRouter:
             raise HTTPException(
                 HTTPStatus.UNPROCESSABLE_ENTITY,
                 'Unable to validate custom training table as training '
-                f'table gen job is in status: {job.job_status_report.status}')
+                f'table gen job is in status: {job.job_status_report.status}',
+            )
         with wrap_driver_errors():
             result = await self._ml_job_backend.get_train_table_result(id)
             return await self._driver.validate_custom_train_table(

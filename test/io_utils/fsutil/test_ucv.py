@@ -29,8 +29,8 @@ TEST_CATALOG: str = 'ucv_test'
 
 def test_temp_ucv(temp_ucv):
     temp_file = deepcopy(temp_ucv)
-    temp_file.path = f"file-{random_name()}"
-    content = b"some text data"
+    temp_file.path = f'file-{random_name()}'
+    content = b'some text data'
     with fsutil.get_binary_handle(temp_file.as_url(), 'w') as f:
         f.write(content)
     with fsutil.get_binary_handle(temp_file.as_url(), 'r') as f:
@@ -40,9 +40,9 @@ def test_temp_ucv(temp_ucv):
 
 def test_filesize(temp_ucv):
     temp_file = deepcopy(temp_ucv)
-    temp_file.path = f"file-{random_name()}"
+    temp_file.path = f'file-{random_name()}'
     assert fsutil.filesize(temp_file) is None
-    data = b"some text data"
+    data = b'some text data'
     with fsutil.get_binary_handle(temp_file.as_url(), 'w') as f:
         f.write(data)
     assert fsutil.filesize(temp_file) == len(data)
@@ -53,13 +53,13 @@ def test_filesize(temp_ucv):
 def test_dirsize(temp_ucv):
     assert fsutil.dirsize(temp_ucv) == 0
     temp_file1 = deepcopy(temp_ucv)
-    temp_file1.path = f"file-{random_name()}"
-    data = b"some text data"
+    temp_file1.path = f'file-{random_name()}'
+    data = b'some text data'
     with fsutil.get_binary_handle(temp_file1.as_url(), 'w') as f:
         f.write(data)
     assert fsutil.dirsize(temp_ucv) == len(data)
     temp_file2 = deepcopy(temp_ucv)
-    temp_file2.path = f"subdir/file-{random_name()}"
+    temp_file2.path = f'subdir/file-{random_name()}'
     assert fsutil.dirsize(temp_ucv) == len(data)
     with fsutil.get_binary_handle(temp_file2.as_url(), 'w') as f:
         f.write(data)
@@ -72,7 +72,7 @@ def test_dirsize(temp_ucv):
 
 def test_get_handle(ucws, temp_ucv):
     temp_file = deepcopy(temp_ucv)
-    temp_file.path = f"file-{random_name()}"
+    temp_file.path = f'file-{random_name()}'
 
     with pytest.raises(NotFound):
         ucws.files.download(temp_file.as_path()).contents
@@ -83,43 +83,43 @@ def test_get_handle(ucws, temp_ucv):
 
     # uncompressed text
     with fsutil.get_handle(temp_file, mode='w') as f:
-        f.write("some text data1")
+        f.write('some text data1')
     with ucws.files.download(temp_file.as_path()).contents as f:
-        assert f.read() == b"some text data1"
+        assert f.read() == b'some text data1'
     with fsutil.get_handle(temp_file, mode='r') as f:
-        assert f.read() == "some text data1"
+        assert f.read() == 'some text data1'
     with fsutil.get_binary_handle(temp_file, mode='r') as f:
-        assert f.read() == b"some text data1"
+        assert f.read() == b'some text data1'
 
     # uncompressed binary
     with fsutil.get_binary_handle(temp_file, mode='w') as f:
-        f.write(b"some text data2")
+        f.write(b'some text data2')
     with ucws.files.download(temp_file.as_path()).contents as f:
-        assert f.read() == b"some text data2"
+        assert f.read() == b'some text data2'
     with fsutil.get_handle(temp_file, mode='r') as f:
-        assert f.read() == "some text data2"
+        assert f.read() == 'some text data2'
     with fsutil.get_binary_handle(temp_file, mode='r') as f:
-        assert f.read() == b"some text data2"
+        assert f.read() == b'some text data2'
 
     # compressed text
     with fsutil.get_handle(temp_file, mode='w', compression=True) as f:
-        f.write("some text data3")
+        f.write('some text data3')
     with ucws.files.download(temp_file.as_path()).contents as f:
-        assert gzip.decompress(f.read()) == b"some text data3"
+        assert gzip.decompress(f.read()) == b'some text data3'
     with fsutil.get_handle(temp_file, mode='r', compression=True) as f:
-        assert f.read() == "some text data3"
+        assert f.read() == 'some text data3'
     with fsutil.get_binary_handle(temp_file, mode='r', compression=True) as f:
-        assert f.read() == b"some text data3"
+        assert f.read() == b'some text data3'
 
     # compressed binary
     with fsutil.get_binary_handle(temp_file, mode='w', compression=True) as f:
-        f.write(b"some text data4")
+        f.write(b'some text data4')
     with ucws.files.download(temp_file.as_path()).contents as f:
-        assert gzip.decompress(f.read()) == b"some text data4"
+        assert gzip.decompress(f.read()) == b'some text data4'
     with fsutil.get_handle(temp_file, mode='r', compression=True) as f:
-        assert f.read() == "some text data4"
+        assert f.read() == 'some text data4'
     with fsutil.get_binary_handle(temp_file, mode='r', compression=True) as f:
-        assert f.read() == b"some text data4"
+        assert f.read() == b'some text data4'
 
     ucws.files.delete(temp_file.as_path())
     with pytest.raises(NotFound):
@@ -132,11 +132,11 @@ def test_get_handle(ucws, temp_ucv):
 
 def test_large_text_handle(ucws, temp_ucv):
     temp_file = deepcopy(temp_ucv)
-    temp_file.path = f"file-{random_name()}"
+    temp_file.path = f'file-{random_name()}'
 
     def _make_data(n_bytes: int) -> tuple[str, bytes]:
-        s = (str(n_bytes) + "data" * (n_bytes // 4))[:n_bytes]
-        b = s.encode("utf-8")
+        s = (str(n_bytes) + 'data' * (n_bytes // 4))[:n_bytes]
+        b = s.encode('utf-8')
         assert len(b) == n_bytes
         return (s, b)
 
@@ -164,9 +164,9 @@ def test_exists(ucws, temp_ucv):
 
     # file
     temp_file = deepcopy(temp_ucv)
-    temp_file.path = f"file-{random_name()}"
+    temp_file.path = f'file-{random_name()}'
     assert not fsutil.exists(temp_file)
-    content = b"some text data"
+    content = b'some text data'
     with fsutil.get_binary_handle(temp_file.as_url(), 'w') as f:
         f.write(content)
     assert fsutil.exists(temp_file)
@@ -175,7 +175,7 @@ def test_exists(ucws, temp_ucv):
 
     # dir
     temp_dir = deepcopy(temp_ucv)
-    temp_dir.path = f"dir-{random_name()}"
+    temp_dir.path = f'dir-{random_name()}'
     assert not fsutil.exists(temp_dir)
     ucws.dbfs.mkdirs(temp_dir.as_path())
     assert fsutil.exists(temp_dir)
@@ -186,15 +186,15 @@ def test_exists(ucws, temp_ucv):
 def test_isdir(ucws, temp_ucv):
     assert fsutil.isdir(temp_ucv)
     temp_dir = deepcopy(temp_ucv)
-    temp_dir.path = f"dir-{random_name()}"
+    temp_dir.path = f'dir-{random_name()}'
     assert not fsutil.isdir(temp_dir)
     ucws.dbfs.mkdirs(temp_dir.as_path())
     assert fsutil.isdir(temp_dir)
 
     temp_file1 = deepcopy(temp_ucv)
-    temp_file1.path = f"file-{random_name()}"
+    temp_file1.path = f'file-{random_name()}'
     assert not fsutil.isdir(temp_file1)
-    data = b"some text data"
+    data = b'some text data'
     with fsutil.get_binary_handle(temp_file1.as_url(), 'w') as f:
         f.write(data)
     assert not fsutil.isdir(temp_file1)
@@ -202,7 +202,7 @@ def test_isdir(ucws, temp_ucv):
     assert not fsutil.isdir(temp_file1)
 
     temp_file2 = deepcopy(temp_dir)
-    temp_file2.path += f"/file-{random_name()}"
+    temp_file2.path += f'/file-{random_name()}'
     assert not fsutil.isdir(temp_file2)
     with fsutil.get_binary_handle(temp_file2.as_url(), 'w') as f:
         f.write(data)
@@ -219,7 +219,7 @@ def test_get_many_if_present(temp_ucv):
     for i in range(10):
         f = random_file(temp_ucv)
         if i % 3 != 0:
-            c = f"some text data {i}".encode()
+            c = f'some text data {i}'.encode()
             with fsutil.get_binary_handle(f.as_url(), 'w') as f_handle:
                 f_handle.write(c)
             files.append((f, c))
@@ -247,7 +247,7 @@ def random_file(prefix: UCURI, k=16) -> UCURI:
 
 def test_touch(temp_ucv):
     temp_file1 = deepcopy(temp_ucv)
-    temp_file1.path = f"file-{random_name()}"
+    temp_file1.path = f'file-{random_name()}'
     assert not fsutil.exists(temp_file1)
     fsutil.touch(temp_file1)
     assert fsutil.exists(temp_file1)
@@ -256,8 +256,8 @@ def test_touch(temp_ucv):
     assert fsutil.exists(temp_file1)
 
     temp_file2 = deepcopy(temp_ucv)
-    temp_file2.path = f"file-{random_name()}"
-    data = b"some text data"
+    temp_file2.path = f'file-{random_name()}'
+    data = b'some text data'
     with fsutil.get_binary_handle(temp_file2, 'w') as f:
         f.write(data)
     # touch does not change existing contents
@@ -269,49 +269,68 @@ def test_touch(temp_ucv):
 def test_has_write_permission(temp_ucv):
     assert fsutil.has_write_permission(temp_ucv)
     temp_file1 = deepcopy(temp_ucv)
-    temp_file1.path = f"file-{random_name()}"
+    temp_file1.path = f'file-{random_name()}'
     assert fsutil.has_write_permission(temp_file1)
 
     # if the volume doesn't exist, can't write files to it
-    bad_volume = UCURI(catalog=TEST_CATALOG, uc_schema=temp_ucv.uc_schema,
-                       volume="does_not_exist", path="")
+    bad_volume = UCURI(
+        catalog=TEST_CATALOG,
+        uc_schema=temp_ucv.uc_schema,
+        volume='does_not_exist',
+        path='',
+    )
     assert not fsutil.exists(bad_volume)
     assert not fsutil.has_write_permission(bad_volume)
 
     # a volume that exists, but account has no permissions
-    denied_volume = UCURI(catalog=TEST_CATALOG,
-                          uc_schema="access_denied_schema",
-                          volume="access_denied_volume", path="")
+    denied_volume = UCURI(
+        catalog=TEST_CATALOG,
+        uc_schema='access_denied_schema',
+        volume='access_denied_volume',
+        path='',
+    )
     # N.B. `exists` cannot succeed without read permissions, so returns False
     # ucv_test/access_denied_schema/access_denied_volume exists in UI
     assert not fsutil.exists(denied_volume)
     assert not fsutil.has_write_permission(denied_volume)
 
     # a volume that exists, but account has read-only permissions
-    read_only_volume = UCURI(catalog=TEST_CATALOG,
-                             uc_schema="access_denied_schema",
-                             volume="read_only_volume", path="")
+    read_only_volume = UCURI(
+        catalog=TEST_CATALOG,
+        uc_schema='access_denied_schema',
+        volume='read_only_volume',
+        path='',
+    )
     assert fsutil.exists(read_only_volume)
     assert not fsutil.has_write_permission(read_only_volume)
 
     # an unowned volume where account has all privileges
-    all_privileges_volume = UCURI(catalog=TEST_CATALOG,
-                                  uc_schema="access_denied_schema",
-                                  volume="all_privileges_volume", path="")
+    all_privileges_volume = UCURI(
+        catalog=TEST_CATALOG,
+        uc_schema='access_denied_schema',
+        volume='all_privileges_volume',
+        path='',
+    )
     assert fsutil.exists(all_privileges_volume)
     assert fsutil.has_write_permission(all_privileges_volume)
 
     # an unowned volume where account has read-write permissions
-    read_write_volume = UCURI(catalog=TEST_CATALOG,
-                              uc_schema="access_denied_schema",
-                              volume="read_write_volume", path="")
+    read_write_volume = UCURI(
+        catalog=TEST_CATALOG,
+        uc_schema='access_denied_schema',
+        volume='read_write_volume',
+        path='',
+    )
     assert fsutil.exists(read_write_volume)
     assert fsutil.has_write_permission(read_write_volume)
 
     # edgecase, an unowned volume where account has write-only permissions
-    writable_volume = UCURI(catalog=TEST_CATALOG,
-                            uc_schema="access_denied_schema",
-                            volume="writable_volume", path="")
+    writable_volume = UCURI(
+        catalog=TEST_CATALOG,
+        uc_schema='access_denied_schema',
+        volume='writable_volume',
+        path='',
+    )
     # N.B. `exists` cannot succeed without read permissions, so returns False
     # ucv_test/access_denied_schema/writable_volume exists in UI
     assert not fsutil.exists(writable_volume)
@@ -319,8 +338,8 @@ def test_has_write_permission(temp_ucv):
 
 
 def test_copy_file(ucws, temp_ucv):
-    data = b"some text data"
-    data2 = b"some other text data"
+    data = b'some text data'
+    data2 = b'some other text data'
     # local to remote
     with tempfile.NamedTemporaryFile() as temp_file1:
         temp_file1.write(data)
@@ -338,8 +357,7 @@ def test_copy_file(ucws, temp_ucv):
         with no_retry():
             with pytest.raises(FileExistsError):
                 fsutil.copy_file(temp_file1.name, temp_file2.as_url())
-        fsutil.copy_file(temp_file1.name, temp_file2.as_url(),
-                         raise_on_exists=False)
+        fsutil.copy_file(temp_file1.name, temp_file2.as_url(), raise_on_exists=False)
         # failed copies do not change data
         with ucws.files.download(temp_file2.as_path()).contents as f:
             assert f.read() == data
@@ -358,7 +376,7 @@ def test_copy_file(ucws, temp_ucv):
 
     # remote to remote
     temp_file3 = deepcopy(temp_ucv)
-    temp_file3.path = f"file-{random_name()}"
+    temp_file3.path = f'file-{random_name()}'
     assert not fsutil.exists(temp_file3)
     fsutil.copy_file(temp_file2.as_url(), temp_file3.as_url())
 
@@ -368,8 +386,7 @@ def test_copy_file(ucws, temp_ucv):
     with no_retry():
         with pytest.raises(FileExistsError):
             fsutil.copy_file(temp_file2.as_url(), temp_file3.as_url())
-    fsutil.copy_file(temp_file2.as_url(), temp_file3.as_url(),
-                     raise_on_exists=False)
+    fsutil.copy_file(temp_file2.as_url(), temp_file3.as_url(), raise_on_exists=False)
     fsutil.copy_file(temp_file2.as_url(), temp_file3.as_url(), overwrite=True)
     ucws.files.delete(temp_file2.as_path())
     with no_retry():
@@ -377,8 +394,7 @@ def test_copy_file(ucws, temp_ucv):
             fsutil.copy_file(temp_file2.as_url(), temp_file3.as_url())
     with no_retry():
         with pytest.raises(FileNotFoundError):
-            fsutil.copy_file(temp_file2.as_url(), temp_file3.as_url(),
-                             overwrite=True)
+            fsutil.copy_file(temp_file2.as_url(), temp_file3.as_url(), overwrite=True)
 
     # remote to local
     with tempfile.NamedTemporaryFile() as temp_file4:
@@ -389,24 +405,24 @@ def test_copy_file(ucws, temp_ucv):
 
 
 def fill_dir(uri: UCURI, n_files: int, n_dirs: int, depth: int):
-    content = b"some text data"
+    content = b'some text data'
     fsutil.makedirs(uri, exist_ok=True)
     for i in range(n_files):
         file_uri = deepcopy(uri)
-        file_uri.path = osp.join(file_uri.path, f"file{i}-{random_name()}")
+        file_uri.path = osp.join(file_uri.path, f'file{i}-{random_name()}')
         with fsutil.get_binary_handle(file_uri.as_url(), 'w') as f:
             f.write(content)
     if depth < 1:
         return
     for i in range(n_dirs):
         dir_uri = deepcopy(uri)
-        dir_uri.path = osp.join(dir_uri.path, f"dir{i}-{random_name()}")
+        dir_uri.path = osp.join(dir_uri.path, f'dir{i}-{random_name()}')
         fill_dir(uri=dir_uri, n_files=n_files, n_dirs=n_dirs, depth=depth - 1)
 
 
 def test_listdir(ucws, temp_ucv):
     temp_dir = deepcopy(temp_ucv)
-    temp_dir.path = f"dir-{random_name()}"
+    temp_dir.path = f'dir-{random_name()}'
     n_files = 5
     n_dirs = 1
     fill_dir(temp_dir, n_files, n_dirs, 1)
@@ -425,13 +441,13 @@ def test_listdir(ucws, temp_ucv):
 def test_makedirs(temp_ucv):
     # one-level
     temp_dir1 = deepcopy(temp_ucv)
-    temp_dir1.path = f"dir-{random_name()}"
+    temp_dir1.path = f'dir-{random_name()}'
     fsutil.makedirs(temp_dir1)
     assert fsutil.isdir(temp_dir1)
 
     # two-level
     temp_dir2 = deepcopy(temp_ucv)
-    temp_dir2.path = f"dir-{random_name()}/dir-{random_name()}"
+    temp_dir2.path = f'dir-{random_name()}/dir-{random_name()}'
     fsutil.makedirs(temp_dir2)
     assert fsutil.isdir(temp_dir2)
 
@@ -444,8 +460,8 @@ def test_makedirs(temp_ucv):
 def test_rm(ucws, temp_ucv):
     # file
     temp_file = deepcopy(temp_ucv)
-    temp_file.path = f"file-{random_name()}"
-    content = b"some text data"
+    temp_file.path = f'file-{random_name()}'
+    content = b'some text data'
     with fsutil.get_binary_handle(temp_file.as_url(), 'w') as f:
         f.write(content)
     assert fsutil.exists(temp_file)
@@ -456,7 +472,7 @@ def test_rm(ucws, temp_ucv):
 
     # dir
     temp_dir = deepcopy(temp_ucv)
-    temp_dir.path = f"dir-{random_name()}"
+    temp_dir.path = f'dir-{random_name()}'
     ucws.dbfs.mkdirs(temp_dir.as_path())
     assert fsutil.exists(temp_dir)
     assert fsutil.isdir(temp_dir)
@@ -481,7 +497,7 @@ def test_rm(ucws, temp_ucv):
 def test_modified_time(temp_ucv):
     assert fsutil.get_last_modified_time(temp_ucv) == DEFAULT_DATA_VERSION
     success_file = deepcopy(temp_ucv)
-    success_file.path = "_SUCCESS"
+    success_file.path = '_SUCCESS'
     permitted_skew = 10  # seconds
     t1 = time.time()
     fsutil.touch(success_file)
@@ -509,7 +525,7 @@ def test_parquet_on_ucv(temp_ucv, tempdir):
 
 def test_contains_subdir_on_ucv(temp_ucv, ucws):
     temp_dir = deepcopy(temp_ucv)
-    temp_dir.path = f"dir-{random_name()}"
+    temp_dir.path = f'dir-{random_name()}'
     fsutil.makedirs(temp_dir.as_url())
     assert not fsutil.contains_subdir(temp_dir)
     n_files = 5

@@ -12,6 +12,8 @@ def test_graph_snapshot_uses_strict_query_route():
     auth = mock.Mock()
     router = GraphSnapshotRouter(lambda: None, mock.AsyncMock(), auth)
     create_route = next(
-        route for route in router.router.routes
-        if route.path == '/graphsnapshots' and 'POST' in route.methods)
+        route
+        for route in router.router.routes
+        if route.path == '/graphsnapshots' and 'POST' in route.methods
+    )
     assert isinstance(create_route, StrictQueryAPIRoute)

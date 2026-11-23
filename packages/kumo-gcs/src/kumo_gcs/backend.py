@@ -11,7 +11,6 @@ from kumo_core.sources.object_store_sessions import (
 )
 from kumo_core.sources.principals import IdentityRef, Principal
 from kumo_core.sources.types import ReadMode
-from kumo_gcs.session import GCS_NAMESPACE, _gcs_session_for, _live_token
 from kumoapi.data_source import (
     DataSourceType,
     GCSConnectorResourceConfig,
@@ -27,6 +26,8 @@ from kumoapi.source_table import (
     GCSURISource,
 )
 from pyarrow import fs
+
+from kumo_gcs.session import GCS_NAMESPACE, _gcs_session_for, _live_token
 
 
 class GCSSessions(ObjectStoreSessions):
@@ -60,18 +61,19 @@ class GCSSessions(ObjectStoreSessions):
         destination_path=normalize_gcs_source_relative_path,
     )
 
-    def _source_access(self, connector: Any, bucket: str,
-                       region: Optional[str]) -> ObjectStoreAccess:
+    def _source_access(
+        self, connector: Any, bucket: str, region: Optional[str]
+    ) -> ObjectStoreAccess:
         from .source_access import source_access
 
         config = self._target_config(connector)
         principal = self._principal(connector)
-        credentials = (_gcs_session_for(principal)
-                       if principal is not None else None)
+        credentials = _gcs_session_for(principal) if principal is not None else None
         if isinstance(credentials, fs.GcsFileSystem):
             if getattr(config, 'requester_pays_project', None) is not None:
-                raise ValueError('A prebuilt GcsFileSystem cannot send '
-                                 'requester-pays userProject.')
+                raise ValueError(
+                    'A prebuilt GcsFileSystem cannot send requester-pays userProject.'
+                )
             return ObjectStoreAccess(credentials)
         if credentials is None:
             import google.auth
@@ -82,12 +84,14 @@ class GCSSessions(ObjectStoreSessions):
         else:
             project = getattr(credentials, 'project_id', None)
         return source_access(
-            credentials=credentials, project=project,
-            requester_pays_project=getattr(config, 'requester_pays_project',
-                                           None))
+            credentials=credentials,
+            project=project,
+            requester_pays_project=getattr(config, 'requester_pays_project', None),
+        )
 
-    def _filesystem(self, connector: Any, bucket: str,
-                    region: Optional[str]) -> fs.GcsFileSystem:
+    def _filesystem(
+        self, connector: Any, bucket: str, region: Optional[str]
+    ) -> fs.GcsFileSystem:
         # A GCS bucket is global and carries no region, and the bucket is
         # named in every path rather than in the filesystem.
         del bucket, region
@@ -95,22 +99,21 @@ class GCSSessions(ObjectStoreSessions):
         config = self._target_config(connector)
         if getattr(config, 'requester_pays_project', None) is not None:
             raise ValueError(
-                f"Connector {connector.id!r} names a requester_pays_project, "
-                f"which the Arrow-backed sink does not support: "
+                f'Connector {connector.id!r} names a requester_pays_project, '
+                f'which the Arrow-backed sink does not support: '
                 f"'pyarrow.fs.GcsFileSystem' has no way to send the "
                 f"'userProject' a requester-pays bucket needs on every "
-                f"request. Unset requester_pays_project, or read from a "
-                f"bucket its owner pays for.")
+                f'request. Unset requester_pays_project, or read from a '
+                f'bucket its owner pays for.'
+            )
         principal = self._principal(connector)
-        session = (_gcs_session_for(principal)
-                   if principal is not None else None)
+        session = _gcs_session_for(principal) if principal is not None else None
         if isinstance(session, fs.GcsFileSystem):
             return session
         if session is None:
             return fs.GcsFileSystem()
         token, expiry = _live_token(session)
-        return fs.GcsFileSystem(access_token=token,
-                                credential_token_expiration=expiry)
+        return fs.GcsFileSystem(access_token=token, credential_token_expiration=expiry)
 
 
 class GCSSourceBackend(GCSSessions, ObjectStoreSourceBackend):
@@ -156,8 +159,10 @@ class GCSSourceBackend(GCSSessions, ObjectStoreSourceBackend):
         self.mode = mode
 
     def __repr__(self) -> str:
-        return (f'{type(self).__name__}(identity={self._identity!r}, '
-                f'storage_namespace={self.storage_namespace!r})')
+        return (
+            f'{type(self).__name__}(identity={self._identity!r}, '
+            f'storage_namespace={self.storage_namespace!r})'
+        )
 
 
 def probe(principal: Principal) -> None:

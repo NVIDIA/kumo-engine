@@ -31,13 +31,17 @@ from kumo.engine.explain.results import PredictionExplanations
 logger = logging.getLogger(__name__)
 
 
-def _failed(support: PredictionExplanationSupport,
-            error: str) -> PredictionExplanationResult:
+def _failed(
+    support: PredictionExplanationSupport, error: str
+) -> PredictionExplanationResult:
     return PredictionExplanationResult(
-        ProducerOutcome('failed', error) if support.cohorts else
-        ProducerOutcome('unsupported'),
-        ProducerOutcome('failed', error) if support.samples else
-        ProducerOutcome('unsupported'))
+        ProducerOutcome('failed', error)
+        if support.cohorts
+        else ProducerOutcome('unsupported'),
+        ProducerOutcome('failed', error)
+        if support.samples
+        else ProducerOutcome('unsupported'),
+    )
 
 
 def explain_run(
@@ -64,17 +68,23 @@ def explain_run(
     enabled = bool(explanations)
     support = prediction_explanation_support(task_type)
     record = PredictionExplanationManifest(
-        schema_version=1, kind='prediction_explanations',
-        run_id=run_id, enabled=enabled,
+        schema_version=1,
+        kind='prediction_explanations',
+        run_id=run_id,
+        enabled=enabled,
         state='running' if enabled else 'complete',
-        result=(_failed(support,
-                        'Explanation replay did not complete') if enabled else None))
+        result=(
+            _failed(support, 'Explanation replay did not complete') if enabled else None
+        ),
+    )
     if not enabled:
         try:
             write_record(run_root, record)
         except Exception:
-            logger.exception('Could not retain disabled explanation status for '
-                             'prediction run %s.', run_id)
+            logger.exception(
+                'Could not retain disabled explanation status for prediction run %s.',
+                run_id,
+            )
         return PredictionExplanations.from_run(run_root, run_id=run_id)
 
     try:
@@ -82,36 +92,60 @@ def explain_run(
     except Exception as error:
         outcome = _failed(support, f'{type(error).__name__}: {error}')
     else:
-        record = record.model_copy(update={
-            'result': _failed(support, 'Explanation replay did not complete')})
+        record = record.model_copy(
+            update={'result': _failed(support, 'Explanation replay did not complete')}
+        )
         try:
             write_record(run_root, record)
         except Exception as error:
-            logger.exception('Prediction outputs remain available; could not '
-                             'start explanation status for run %s.', run_id)
+            logger.exception(
+                'Prediction outputs remain available; could not '
+                'start explanation status for run %s.',
+                run_id,
+            )
             return PredictionExplanations.from_run(
-                run_root, enabled=True, run_id=run_id,
-                result=_failed(support, f'{type(error).__name__}: {error}'))
+                run_root,
+                enabled=True,
+                run_id=run_id,
+                result=_failed(support, f'{type(error).__name__}: {error}'),
+            )
         try:
             outcome = explain_prediction(
-                materialized=materialized, model_dir=model_dir, run_id=run_id,
-                output_dir=f'{run_root}/xai', top_k=top_k,
-                binary_threshold=binary_threshold, task_options=task_options,
-                embedding_models=embedding_models, encoders=encoders,
+                materialized=materialized,
+                model_dir=model_dir,
+                run_id=run_id,
+                output_dir=f'{run_root}/xai',
+                top_k=top_k,
+                binary_threshold=binary_threshold,
+                task_options=task_options,
+                embedding_models=embedding_models,
+                encoders=encoders,
                 accelerator=accelerator,
-                options=(explanations if isinstance(
-                    explanations, PredictionExplanationOptions) else None))
+                options=(
+                    explanations
+                    if isinstance(explanations, PredictionExplanationOptions)
+                    else None
+                ),
+            )
         except Exception as error:
             outcome = _failed(support, f'{type(error).__name__}: {error}')
 
     try:
-        write_record(run_root, record.model_copy(update={
-            'state': 'complete', 'result': outcome}))
+        write_record(
+            run_root, record.model_copy(update={'state': 'complete', 'result': outcome})
+        )
     except Exception:
-        logger.exception('Prediction outputs remain available; could not retain '
-                         'explanation status for run %s.', run_id)
+        logger.exception(
+            'Prediction outputs remain available; could not retain '
+            'explanation status for run %s.',
+            run_id,
+        )
     if outcome.failure:
-        logger.warning('Prediction outputs remain available; explanations failed '
-                       'for run %s: %s', run_id, outcome.failure)
+        logger.warning(
+            'Prediction outputs remain available; explanations failed for run %s: %s',
+            run_id,
+            outcome.failure,
+        )
     return PredictionExplanations.from_run(
-        run_root, enabled=True, result=outcome, run_id=run_id)
+        run_root, enabled=True, result=outcome, run_id=run_id
+    )

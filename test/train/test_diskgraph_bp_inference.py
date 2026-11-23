@@ -8,6 +8,7 @@ well-formed and consumable by both the wheel iterator's manifest parser and the
 trainer's manifest loader. The full serve loop needs a real DiskGraph index +
 trained model, so it is covered by an integration run rather than here.
 """
+
 import json
 import os
 
@@ -46,26 +47,22 @@ def test_predict_manifest_predict_stage_is_consumable(tmp_path):
             'node_types': {
                 'users': {
                     'feature_columns': ['age'],
-                    'mapper_key':
-                    'users',
-                    'time_column':
-                    None,
-                    'column_specs': [{
-                        'column_name': 'age',
-                        'dtype': 'int64',
-                        'stype': 'numerical',
-                        'encoder': {
-                            'name': 'Numerical'
-                        },
-                        'stats': {
-                            'MEAN': 0.0
-                        },
-                    }],
+                    'mapper_key': 'users',
+                    'time_column': None,
+                    'column_specs': [
+                        {
+                            'column_name': 'age',
+                            'dtype': 'int64',
+                            'stype': 'numerical',
+                            'encoder': {'name': 'Numerical'},
+                            'stats': {'MEAN': 0.0},
+                        }
+                    ],
                 },
             },
             'target_encoder_input': None,
         },
-        graph_node_types=('users', ),
+        graph_node_types=('users',),
         graph_edge_types=(),
     )
     stage_counts = {'predict': 5}

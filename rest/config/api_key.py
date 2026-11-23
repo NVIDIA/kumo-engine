@@ -11,34 +11,41 @@ from io_utils import kumo_dataclass
 from statedb.config.common import APIKeyID
 from statedb.rest.api_key import APIKeyType
 
-_API_KEY_USER_HASH_PATTERN = re.compile(r"^[0-9a-f]{8}$")
+_API_KEY_USER_HASH_PATTERN = re.compile(r'^[0-9a-f]{8}$')
 
 
 class APIKeyFormat(str, Enum):
     """Supported serialized API key wire formats."""
 
-    OWNER_BOUND = "owner_bound"
-    LEGACY_PREFIXED = "legacy_prefixed"
-    INVALID = "invalid"
+    OWNER_BOUND = 'owner_bound'
+    LEGACY_PREFIXED = 'legacy_prefixed'
+    INVALID = 'invalid'
 
 
 @kumo_dataclass(frozen=True)
 class ParsedAPIKey:
     """Normalized parse result for DB-backed API keys."""
+
     format: APIKeyFormat
     secret: str
-    name: str = "default"
+    name: str = 'default'
     user_hash: Optional[str] = None
 
     @classmethod
     def classify_format(cls, api_key: str) -> APIKeyFormat:
         """Classify an API key string by its owner-bound wire shape."""
-        parts = api_key.split(":")
-        if len(parts) == 3 and all(
-                parts) and _API_KEY_USER_HASH_PATTERN.fullmatch(parts[0]):
+        parts = api_key.split(':')
+        if (
+            len(parts) == 3
+            and all(parts)
+            and _API_KEY_USER_HASH_PATTERN.fullmatch(parts[0])
+        ):
             return APIKeyFormat.OWNER_BOUND
-        if len(parts) == 4 and all(
-                parts) and _API_KEY_USER_HASH_PATTERN.fullmatch(parts[1]):
+        if (
+            len(parts) == 4
+            and all(parts)
+            and _API_KEY_USER_HASH_PATTERN.fullmatch(parts[1])
+        ):
             return APIKeyFormat.LEGACY_PREFIXED
         return APIKeyFormat.INVALID
 
@@ -97,6 +104,7 @@ class APIKeySummary:
     This shape is safe to return to clients. It intentionally excludes
     cryptographic fields that belong only in `APIKeySecretRecord`.
     """
+
     id: APIKeyID
     name: str
     type: APIKeyType
@@ -106,18 +114,22 @@ class APIKeySummary:
     value_preview: str
 
 
-def matches_api_key_search(record: APIKeySummary,
-                           search: Optional[str]) -> bool:
+def matches_api_key_search(record: APIKeySummary, search: Optional[str]) -> bool:
     """Apply case-insensitive API key search matching on summary fields."""
     if search is None or not search.strip():
         return True
     search_term = search.lower().strip()
-    return search_term in " ".join([
-        record.id,
-        record.name,
-        record.owner_display_name,
-        record.value_preview,
-    ]).lower()
+    return (
+        search_term
+        in ' '.join(
+            [
+                record.id,
+                record.name,
+                record.owner_display_name,
+                record.value_preview,
+            ]
+        ).lower()
+    )
 
 
 @kumo_dataclass

@@ -2,8 +2,6 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-from test.fixtures.dg_indexed_graph import materialize_bp_dg
-
 import pandas as pd
 import pytest
 
@@ -11,6 +9,7 @@ from kumo.pquery.predictive_query import PredictiveQueryV2
 from kumo.pquery.utils import validate_forecasting_parameters_consistency
 from kumo.testing.pquery import get_validated_query
 from kumo.validation.train_table_validation import TrainingTableGenerationError
+from test.fixtures.dg_indexed_graph import materialize_bp_dg
 
 
 def test_temporal_link_batch_pred_empty_lhs_table(
@@ -32,9 +31,11 @@ def test_temporal_link_batch_pred_empty_lhs_table(
     graph, index_path = dg_indexed_static_link_pred_graph()
     graph.infer_metadata().infer_encoders()
     # USERS.USER_ID range is 0..2; ``> 100`` excludes every entity.
-    query = ('PREDICT LIST_DISTINCT(TRANS.PRODUCT_ID_FK WHERE PRODUCTS.BRAND '
-             '= "PATAGONIA", 0, 3) RANK TOP 10 FOR EACH USERS.USER_ID '
-             'WHERE USERS.USER_ID > 100')
+    query = (
+        'PREDICT LIST_DISTINCT(TRANS.PRODUCT_ID_FK WHERE PRODUCTS.BRAND '
+        '= "PATAGONIA", 0, 3) RANK TOP 10 FOR EACH USERS.USER_ID '
+        'WHERE USERS.USER_ID > 100'
+    )
     validated_predictive_query = get_validated_query(graph, query)
 
     pquery = PredictiveQueryV2(
@@ -44,10 +45,12 @@ def test_temporal_link_batch_pred_empty_lhs_table(
     )
     _, validation = pquery.generate_current_pred_table(
         pred_time=pd.Timestamp('2023-12-31'),
-        diskgraph_index_path=index_path, destination=str(tmp_path))
+        diskgraph_index_path=index_path,
+        destination=str(tmp_path),
+    )
 
     assert not validation.ok
-    assert "No rows to predict" in validation.error_message()
+    assert 'No rows to predict' in validation.error_message()
 
 
 def test_temporal_link_batch_pred_empty_rhs_table(
@@ -66,8 +69,10 @@ def test_temporal_link_batch_pred_empty_rhs_table(
     graph.infer_metadata().infer_encoders()
     # No PRODUCTS BRAND matches ``"NONEXISTENT"``; the RANK candidate pool is
     # therefore empty -- but the RHS pool is an ingest concern on TT-NG.
-    query = ('PREDICT LIST_DISTINCT(TRANS.PRODUCT_ID_FK WHERE PRODUCTS.BRAND '
-             '= "NONEXISTENT", 0, 3) RANK TOP 10 FOR EACH USERS.USER_ID')
+    query = (
+        'PREDICT LIST_DISTINCT(TRANS.PRODUCT_ID_FK WHERE PRODUCTS.BRAND '
+        '= "NONEXISTENT", 0, 3) RANK TOP 10 FOR EACH USERS.USER_ID'
+    )
     validated_predictive_query = get_validated_query(graph, query)
 
     pquery = PredictiveQueryV2(
@@ -77,7 +82,9 @@ def test_temporal_link_batch_pred_empty_rhs_table(
     )
     _, validation = pquery.generate_current_pred_table(
         pred_time=pd.Timestamp('2023-12-31'),
-        diskgraph_index_path=index_path, destination=str(tmp_path))
+        diskgraph_index_path=index_path,
+        destination=str(tmp_path),
+    )
 
     # LHS predict seeds gen successfully; RHS emptiness is not a gen-time error.
     assert validation.ok
@@ -95,8 +102,10 @@ def test_temporal_link_batch_pred_empty_target_table(
     # valid, non-empty pred table; we assert ok=True.
     graph, index_path = dg_indexed_static_link_pred_graph()
     graph.infer_metadata().infer_encoders()
-    query = ('PREDICT LIST_DISTINCT(TRANS.PRODUCT_ID_FK WHERE PRODUCTS.BRAND '
-             '= "PATAGONIA", 0, 3) RANK TOP 10 FOR EACH USERS.USER_ID')
+    query = (
+        'PREDICT LIST_DISTINCT(TRANS.PRODUCT_ID_FK WHERE PRODUCTS.BRAND '
+        '= "PATAGONIA", 0, 3) RANK TOP 10 FOR EACH USERS.USER_ID'
+    )
     validated_predictive_query = get_validated_query(graph, query)
 
     pquery = PredictiveQueryV2(
@@ -106,13 +115,16 @@ def test_temporal_link_batch_pred_empty_target_table(
     )
     _, validation = pquery.generate_current_pred_table(
         pred_time=pd.Timestamp('2023-12-31'),
-        diskgraph_index_path=index_path, destination=str(tmp_path))
+        diskgraph_index_path=index_path,
+        destination=str(tmp_path),
+    )
 
     assert validation.ok
 
 
 def test_temporal_node_empty_pred_table(
-        dg_indexed_temporal_synthetic_node_pred_graph, tmp_path):
+    dg_indexed_temporal_synthetic_node_pred_graph, tmp_path
+):
     # Drive the production DG bp producer with the real index via the
     # `materialize_bp_dg` read-back helper. A restrictive entity filter that
     # excludes every row makes the DG empty-bp guard fire, raising
@@ -121,13 +133,13 @@ def test_temporal_node_empty_pred_table(
     graph.infer_metadata().infer_encoders()
     # empty pred table due to an entity filter that excludes every USERS row
     # (USER_ID range is 0..4).
-    query = ('PREDICT SUM(ORDERS.ORDER_SCORE, 0, 2) FOR EACH '
-             'USERS.USER_ID WHERE USERS.USER_ID > 100')
+    query = (
+        'PREDICT SUM(ORDERS.ORDER_SCORE, 0, 2) FOR EACH '
+        'USERS.USER_ID WHERE USERS.USER_ID > 100'
+    )
     validated_predictive_query = get_validated_query(graph, query)
-    with pytest.raises(TrainingTableGenerationError,
-                       match=r"No rows to predict"):
-        materialize_bp_dg(graph, validated_predictive_query, index_path,
-                          tmp_path)
+    with pytest.raises(TrainingTableGenerationError, match=r'No rows to predict'):
+        materialize_bp_dg(graph, validated_predictive_query, index_path, tmp_path)
 
 
 def test_forecasting_parameters_consistency():
@@ -138,9 +150,11 @@ def test_forecasting_parameters_consistency():
         prediction_forecast_length=1,
     )
     assert not result.ok
-    assert ("forecast length in the training job "
-            "(2) does not match the forecast length in the "
-            "prediction job (1)") in result.error_message()
+    assert (
+        'forecast length in the training job '
+        '(2) does not match the forecast length in the '
+        'prediction job (1)'
+    ) in result.error_message()
 
     # Test success case (forecast_length defaults to 1)
     result = validate_forecasting_parameters_consistency(
@@ -155,9 +169,11 @@ def test_forecasting_parameters_consistency():
         prediction_lag_timesteps=1,
     )
     assert not result.ok
-    assert ("lag timesteps in the training job "
-            "(0) does not match the lag timesteps in the "
-            "prediction job (1)") in result.error_message()
+    assert (
+        'lag timesteps in the training job '
+        '(0) does not match the lag timesteps in the '
+        'prediction job (1)'
+    ) in result.error_message()
 
     # Test success case (lag_timesteps defaults to 0)
     result = validate_forecasting_parameters_consistency(

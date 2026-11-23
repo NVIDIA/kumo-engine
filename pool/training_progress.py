@@ -28,7 +28,7 @@ def training_progress_output(
     if progress is None:
         return None
 
-    if (progress.iterations_remaining == 0 and training_job_cfg.refit_trainval):
+    if progress.iterations_remaining == 0 and training_job_cfg.refit_trainval:
         log_entry = JobEventLogEntry.refit_trainval()
     elif progress.iterations_remaining == 0 and training_job_cfg.refit_full:
         log_entry = JobEventLogEntry.refit_full()
@@ -42,8 +42,7 @@ def training_progress_output(
     )
 
 
-def _read_training_progress_output(
-        job_config_path: str) -> TrainingJobOutput | None:
+def _read_training_progress_output(job_config_path: str) -> TrainingJobOutput | None:
     """Read the running-job output from blob storage.
 
     Several blocking ``fsutil`` reads; run off the event loop (see
@@ -61,12 +60,14 @@ def _read_training_progress_output(
         metric=tune_metric,
         metric_mode=MetricStore.tune_mode(tune_metric),
     )
-    return training_progress_output(reporter.get_training_job_progress(),
-                                    automl_cfg.training_job)
+    return training_progress_output(
+        reporter.get_training_job_progress(), automl_cfg.training_job
+    )
 
 
-async def publish_training_progress(job_id: JobID, job_config_path: str,
-                                    job_store: MLJobOutputStore) -> bool:
+async def publish_training_progress(
+    job_id: JobID, job_config_path: str, job_store: MLJobOutputStore
+) -> bool:
     """Publish training progress for a running pool ``kumo-auto`` job.
 
     ``job_store`` is the self-contained store owned by the pool worker's

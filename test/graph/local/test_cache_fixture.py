@@ -10,19 +10,22 @@ import pytest
 pytest_plugins = ['pytester']
 
 
-@pytest.mark.parametrize('setup, enabled', [
-    ('test', True),
-    ('test', False),
-    ('test/connector/local', True),
-    ('test/graph/local', True),
-])
+@pytest.mark.parametrize(
+    'setup, enabled',
+    [
+        ('test', True),
+        ('test', False),
+        ('test/connector/local', True),
+        ('test/graph/local', True),
+    ],
+)
 @pytest.mark.parametrize('fail', [False, True])
 def test_cache_lifecycle(pytester, monkeypatch, setup, enabled, fail):
     root = Path(__file__).resolve().parents[3]
     conftest = root / setup / 'conftest.py'
     # Exercise ordinary discovery, without the public runner's plugin.
     source = conftest.read_text() if conftest.exists() else ''
-    source += '''
+    source += """
 import pytest
 from kumo.graph.table import Table
 
@@ -31,17 +34,17 @@ def check_statistics_restored():
     original = (Table.compute_col_stats, Table.compute_exact_stats)
     yield
     assert (Table.compute_col_stats, Table.compute_exact_stats) == original
-'''
+"""
     if not enabled:
-        source += '''
+        source += """
 @pytest.fixture
 def auto_setup_kumo_backend():
     return False
-'''
+"""
     pytester.makeconftest(source)
     monkeypatch.setenv('HOME', str(pytester.path / 'home'))
     monkeypatch.setenv('KUMO_HOME', str(pytester.path / 'home/kumo'))
-    pytester.makepyfile(f'''
+    pytester.makepyfile(f"""
 from pathlib import Path
 import pytest
 import kumo.home
@@ -76,12 +79,20 @@ def test_next_starts_clean():
     for path in (persist, pseudo):
         assert (path / 'previous-test').exists() is {not enabled!r}
     assert (data.get_active_cache() is cache) is {not enabled!r}
-''')
+""")
     result = pytester.runpytest_subprocess(
-        '-c', str(root / 'tests/public_setup/pytest.ini'),
-        f'--confcutdir={pytester.path}', f'--rootdir={pytester.path}',
-        '-p', 'no:cacheprovider', '-o', 'addopts=', '-q',
-        str(pytester.path), timeout=120)
+        '-c',
+        str(root / 'tests/public_setup/pytest.ini'),
+        f'--confcutdir={pytester.path}',
+        f'--rootdir={pytester.path}',
+        '-p',
+        'no:cacheprovider',
+        '-o',
+        'addopts=',
+        '-q',
+        str(pytester.path),
+        timeout=120,
+    )
     result.assert_outcomes(passed=1 if fail else 2, failed=int(fail))
     if fail:
         result.stdout.fnmatch_lines(['*Failed: intentional test failure*'])

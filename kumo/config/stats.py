@@ -10,6 +10,7 @@ from io_utils import kumo_dataclass
 @kumo_dataclass
 class StatsConfig:
     """General configuration for a computed statistic."""
+
     value: Any
     approx: bool
     data_version: Any

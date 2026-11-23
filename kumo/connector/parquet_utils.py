@@ -25,21 +25,25 @@ from service_framework.env_var import EnvVar
 S3_READ_TIMEOUT = 600  # 10 minutes
 _MAX_READ_SAMPLE_TIME = 10  # 10 seconds
 PARQUET_PARTITION_SIZE = EnvVar(
-    name='PARQUET_PARTITION_SIZE', type=int,
+    name='PARQUET_PARTITION_SIZE',
+    type=int,
     description='Maximum allowed partition size '
     'in bytes, while reading parquet files into driver memory.'
     'Default is 4GiB, which is 4x the recommended max size '
-    'of a partition.', default_value=4 * 1024 * 1024 * 1024)  # 4GiB
+    'of a partition.',
+    default_value=4 * 1024 * 1024 * 1024,
+)  # 4GiB
 
 logger = logging.getLogger(__name__)
 
 
 def add_metadata_cols_from_parquet_dataset(
-        metadata: TableMetadataConfig,
-        dataset: pq.ParquetDataset) -> TableMetadataConfig:
+    metadata: TableMetadataConfig, dataset: pq.ParquetDataset
+) -> TableMetadataConfig:
     metadata.cols.extend(
         BaseColumnConfig(name, dtype=dtype)
-        for name, dtype in iter_column_dtypes(dataset.schema))
+        for name, dtype in iter_column_dtypes(dataset.schema)
+    )
     return metadata
 
 
@@ -56,10 +60,11 @@ def warn_on_large_parquet_partition(
     for file_size, file_path in zip(file_sizes, file_paths):
         if file_size > size_limit:
             logger.error(
-                "Bad parquet partitioning detected. "
+                'Bad parquet partitioning detected. '
                 f"File '{file_path}' is larger than the maximum allowed size "
-                f"of {size_limit/1024*1024} MB. "
-                "Might cause OOM errors. ")
+                f'of {size_limit / 1024 * 1024} MB. '
+                'Might cause OOM errors. '
+            )
 
 
 def validate_parquet_schema(schema: pa.Schema):
@@ -74,11 +79,15 @@ def validate_parquet_schema(schema: pa.Schema):
     ]
     if len(unsupported_columns) > 0:
         raise ValidationException(
-            title="Unsupported Parquet Data Types",
-            message=("One or more columns in this parquet table contains data "
-                     "types that are not supported by Kumo:\n\n" +
-                     "\n".join(unsupported_columns) + "\n\n" +
-                     arrow_parquet.UNSUPPORTED_ADVICE))
+            title='Unsupported Parquet Data Types',
+            message=(
+                'One or more columns in this parquet table contains data '
+                'types that are not supported by Kumo:\n\n'
+                + '\n'.join(unsupported_columns)
+                + '\n\n'
+                + arrow_parquet.UNSUPPORTED_ADVICE
+            ),
+        )
 
 
 def clean_parquet_table(
@@ -87,16 +96,16 @@ def clean_parquet_table(
     sample: bool = False,
 ):
     """
-        Clean the parquet table that can be loaded into pandas dataframe. It
-        transforms the decimal columns to float columns.
+    Clean the parquet table that can be loaded into pandas dataframe. It
+    transforms the decimal columns to float columns.
 
-        Args:
-            table (pyarrow.Table): The parquet table to be cleaned.
-            col_types (Dict[str, Any], optional): The column types expected by
-                pandas. (default: :obj:`None`)
-            sample (bool): Whether we are sampling the table or not.
-                (default: :obj:`False`)
-        """
+    Args:
+        table (pyarrow.Table): The parquet table to be cleaned.
+        col_types (Dict[str, Any], optional): The column types expected by
+            pandas. (default: :obj:`None`)
+        sample (bool): Whether we are sampling the table or not.
+            (default: :obj:`False`)
+    """
     if not sample:
         validate_parquet_schema(table.schema)
 
@@ -127,8 +136,10 @@ def clean_parquet_table(
             if col_types is not None and col_name in col_types:
                 # pyarrow Decimal -> string not yet supported, see above
                 # Avoid casting Decimal128 to string even if provided
-                if not (pa.types.is_decimal(col.type) and to_pyarrow_type(
-                        col_types[col_name]) == pa.string()):
+                if not (
+                    pa.types.is_decimal(col.type)
+                    and to_pyarrow_type(col_types[col_name]) == pa.string()
+                ):
                     expected_type = to_pyarrow_type(col_types[col_name])
                 else:
                     logger.warning(
@@ -136,7 +147,8 @@ def clean_parquet_table(
                         f'has dtype set to {col_types[col_name]}. '
                         f'Cast from {col.type} to {col_types[col_name]} '
                         f'is not yet supported, the column will be cast '
-                        f'into {expected_type} instead.')
+                        f'into {expected_type} instead.'
+                    )
             col = col.cast(expected_type, safe=False)
             table = table.set_column(idx, col_name, col)
         # NOTE add other necessary transform such as datetime.
@@ -149,10 +161,12 @@ def clean_parquet_table(
         else:
             if unsupported_pyarrow_composite(col.type):
                 raise UnreadableColumnError(
-                    f"Column {col_name} is a "
-                    "composite type not supported by Kumo. Please "
-                    "remove the column or modify the type in the"
-                    " source data", unreadable_column=col_name)
+                    f'Column {col_name} is a '
+                    'composite type not supported by Kumo. Please '
+                    'remove the column or modify the type in the'
+                    ' source data',
+                    unreadable_column=col_name,
+                )
     return table
 
 
@@ -206,24 +220,23 @@ def _clamp_temporal_column_to_ns(col: pa.ChunkedArray, col_name: str):
     ints = col.cast(pa.int64())
     below = pc.less(ints, pa.scalar(lo, pa.int64()))  # type: ignore
     above = pc.greater(ints, pa.scalar(hi, pa.int64()))  # type: ignore
-    num_clamped = pc.sum(pc.cast(pc.or_(below, above),
-                                 pa.int64())).as_py()  # type: ignore
+    num_clamped = pc.sum(pc.cast(pc.or_(below, above), pa.int64())).as_py()  # type: ignore
     if not num_clamped:
         return col
 
     logger.warning(
         f"Column '{col_name}' contains {num_clamped} temporal value(s) "
-        f"outside the representable nanosecond range "
-        f"({pd.Timestamp.min} to {pd.Timestamp.max}); these values were "
-        f"clamped to the nearest in-range boundary to avoid silent integer "
-        f"overflow. The original out-of-range values are not preserved.")
+        f'outside the representable nanosecond range '
+        f'({pd.Timestamp.min} to {pd.Timestamp.max}); these values were '
+        f'clamped to the nearest in-range boundary to avoid silent integer '
+        f'overflow. The original out-of-range values are not preserved.'
+    )
     clamped = pc.if_else(below, pa.scalar(lo, pa.int64()), ints)  # type: ignore
-    clamped = pc.if_else(above, pa.scalar(hi, pa.int64()),
-                         clamped)  # type: ignore
+    clamped = pc.if_else(above, pa.scalar(hi, pa.int64()), clamped)  # type: ignore
     return clamped.cast(col.type)
 
 
-def to_pandas_ns_safe(table: pa.Table, **kwargs) -> "pd.DataFrame":
+def to_pandas_ns_safe(table: pa.Table, **kwargs) -> 'pd.DataFrame':
     """Convert a pyarrow table to pandas at Kumo's ``datetime64[ns]`` contract
     without silently wrapping out-of-range temporal values.
 

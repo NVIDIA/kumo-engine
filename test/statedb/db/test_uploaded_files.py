@@ -58,7 +58,7 @@ async def _seed_projects(db: StateDB) -> None:
                 ProjectDBEntry(
                     id=project_id,
                     group_id=group_id,
-                    slug=f"project-{str(project_id)[-8:]}",
+                    slug=f'project-{str(project_id)[-8:]}',
                     display_name=str(project_id),
                     normalized_display_name=str(project_id),
                     timestamps=_timestamps(),
@@ -82,9 +82,11 @@ async def test_upload_metadata_connector_and_table_are_project_isolated(
     uploads = UploadedFileService(db)
     tables = TableService(db)
     connector_a = await connectors.register_project_upload_connector(
-        PROJECT_A, '/data/project-a/uploads')
+        PROJECT_A, '/data/project-a/uploads'
+    )
     connector_b = await connectors.register_project_upload_connector(
-        PROJECT_B, '/data/project-b/uploads')
+        PROJECT_B, '/data/project-b/uploads'
+    )
     source_name = SourceTableName(f'customers-{file_type.value.lower()}')
 
     uploaded_a = await uploads.record_completed(
@@ -104,12 +106,13 @@ async def test_upload_metadata_connector_and_table_are_project_isolated(
     assert uploaded_a.project_id == PROJECT_A
     assert uploaded_b.project_id == PROJECT_B
     assert uploaded_a.id != uploaded_b.id
-    assert await uploads.get_completed(PROJECT_A, connector_a,
-                                       source_name) == uploaded_a
-    assert await uploads.get_completed(PROJECT_B, connector_b,
-                                       source_name) == uploaded_b
-    assert await uploads.get(PROJECT_B, connector_a, source_name,
-                             file_type) is None
+    assert (
+        await uploads.get_completed(PROJECT_A, connector_a, source_name) == uploaded_a
+    )
+    assert (
+        await uploads.get_completed(PROJECT_B, connector_b, source_name) == uploaded_b
+    )
+    assert await uploads.get(PROJECT_B, connector_a, source_name, file_type) is None
 
     with pytest.raises(ValueError, match='project upload connector'):
         await uploads.record_completed(
@@ -139,6 +142,5 @@ async def test_upload_metadata_connector_and_table_are_project_isolated(
     )
     await tables.save_table_definition(PROJECT_A, definition, alias='upload')
     with pytest.raises(ValueError, match='not active in project'):
-        await tables.save_table_definition(PROJECT_B, definition,
-                                           alias='stolen-upload')
+        await tables.save_table_definition(PROJECT_B, definition, alias='stolen-upload')
     await db.close()

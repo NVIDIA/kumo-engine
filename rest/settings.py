@@ -56,14 +56,12 @@ log = logging.getLogger(__name__)
 T = TypeVar('T', bound=Union[bool, int, str, Enum])
 
 # List of ALL env variables to be configured in prod, pre-prod, staging, dev
-_REST_API_HOST = EnvVar('REST_API_HOST', str, required=False,
-                        default_value='0.0.0.0')
-_REST_API_PORT = EnvVar('REST_API_PORT', int, required=False,
-                        default_value=8000)
-_REST_CORS_ALLOWED_ORIGINS = EnvVar('REST_CORS_ALLOWED_ORIGINS', str,
-                                    required=False, default_value='*')
-_DISABLE_AUTH = EnvVar('DISABLE_AUTH', bool, required=False,
-                       default_value=False)
+_REST_API_HOST = EnvVar('REST_API_HOST', str, required=False, default_value='0.0.0.0')
+_REST_API_PORT = EnvVar('REST_API_PORT', int, required=False, default_value=8000)
+_REST_CORS_ALLOWED_ORIGINS = EnvVar(
+    'REST_CORS_ALLOWED_ORIGINS', str, required=False, default_value='*'
+)
+_DISABLE_AUTH = EnvVar('DISABLE_AUTH', bool, required=False, default_value=False)
 _PROXY_AUTH = EnvVar('PROXY_AUTH', bool, required=False, default_value=False)
 _DIRECT_CONNECT_PASSWORD_LOGIN_IP_RATE_LIMIT_ENABLED = EnvVar(
     'DIRECT_CONNECT_PASSWORD_LOGIN_IP_RATE_LIMIT_ENABLED',
@@ -71,30 +69,33 @@ _DIRECT_CONNECT_PASSWORD_LOGIN_IP_RATE_LIMIT_ENABLED = EnvVar(
     required=False,
     default_value=True,
 )
-_ENABLE_ASYNC_INGESTION = EnvVar('ENABLE_ASYNC_INGESTION', bool, required=False,
-                                 default_value=False)
+_ENABLE_ASYNC_INGESTION = EnvVar(
+    'ENABLE_ASYNC_INGESTION', bool, required=False, default_value=False
+)
 SAMPLE_COL_STATS_WARMUP_CONCURRENCY = EnvVar(
-    'SAMPLE_COL_STATS_WARMUP_CONCURRENCY', int, required=False, default_value=2)
+    'SAMPLE_COL_STATS_WARMUP_CONCURRENCY', int, required=False, default_value=2
+)
 _LOCAL_FIXTURE_EXPORT_PATH = './fixtures'
-_DB_STORAGE_ROOT = EnvVar('DB_STORAGE_ROOT', str, required=False,
-                          default_value='')
+_DB_STORAGE_ROOT = EnvVar('DB_STORAGE_ROOT', str, required=False, default_value='')
 
 # Max edges per edge type defined in GE
 MAX_EDGES_PER_EDGE_TYPE = 2 * (10**9)
 # Max tables in a graph, impact the LRU data backend cache capacity.
-_MAX_TABLES_IN_A_GRAPH = EnvVar('MAX_TABLES_IN_A_GRAPH', int,
-                                default_value=12).parse_value()
+_MAX_TABLES_IN_A_GRAPH = EnvVar(
+    'MAX_TABLES_IN_A_GRAPH', int, default_value=12
+).parse_value()
 
 # Allow connector to ingested data path.
-_ALLOW_LOCAL_CONNECTOR = EnvVar('ALLOW_LOCAL_CONNECTOR', bool,
-                                default_value=False)
+_ALLOW_LOCAL_CONNECTOR = EnvVar('ALLOW_LOCAL_CONNECTOR', bool, default_value=False)
 
 # Use the V2 decoupled splits
-_USE_DECOUPLED_SPLITS = EnvVar('USE_DECOUPLED_SPLITS', bool,
-                               default_value=False).parse_value()
+_USE_DECOUPLED_SPLITS = EnvVar(
+    'USE_DECOUPLED_SPLITS', bool, default_value=False
+).parse_value()
 
-MAX_DATA_SCANNED_FOR_BQ = EnvVar('MAX_DATA_SCANNED_FOR_BQ', int,
-                                 default_value=1 * (1024**4))  # 1 TB
+MAX_DATA_SCANNED_FOR_BQ = EnvVar(
+    'MAX_DATA_SCANNED_FOR_BQ', int, default_value=1 * (1024**4)
+)  # 1 TB
 
 
 def get_db_storage_root() -> str:
@@ -108,10 +109,10 @@ def get_db_storage_root() -> str:
 @kumo_dataclass
 class DataScaleLimits:
     r"""The data scale limits defined here are determined based on:
-        1. The ability for a graph of this size to fit on a single GPU
-            node with 64 GB RAM.
-        2. The ability to run standard datasets E2E on a demo environment,
-            e.g. H&M.
+    1. The ability for a graph of this size to fit on a single GPU
+        node with 64 GB RAM.
+    2. The ability to run standard datasets E2E on a demo environment,
+        e.g. H&M.
     """
 
     # Max number of tables in a graph:
@@ -121,8 +122,8 @@ class DataScaleLimits:
     max_table_cols: int = 2048
     max_table_size_bytes: int = int(2 * (1024**4))  # 2 TB
     max_table_size_bytes_by_connector: Dict[str, int] = field(
-        default_factory=lambda:
-        {'bigquery': MAX_DATA_SCANNED_FOR_BQ.parse_value()})
+        default_factory=lambda: {'bigquery': MAX_DATA_SCANNED_FOR_BQ.parse_value()}
+    )
 
     # Graph size limits:
     max_graph_total_size_bytes: int = int(2 * (1024**4))  # 2 TB
@@ -146,30 +147,36 @@ class DataScaleLimits:
         approx_factor = 1.0 if not approx else 2.0
         if num_cols > self.max_table_cols:
             limit = self.max_table_cols
-            log.error(f"Mum cols {num_cols}, limits {self.max_table_cols}")
+            log.error(f'Mum cols {num_cols}, limits {self.max_table_cols}')
             resp.errors.append(
                 ValidationError(
                     title='Table has too many columns',
                     message=f'Table {table_name} has too many columns. '
                     f'For your product tier, Kumo supports up to {limit} '
                     'columns per table. Please select fewer columns and '
-                    'try again.'))
+                    'try again.',
+                )
+            )
         if size_bytes > self.max_table_size_bytes * approx_factor:
             limit = humanize.naturalsize(self.max_table_size_bytes)
-            log.error(f"Estimate table size {size_bytes}, "
-                      f"limits {self.max_table_size_bytes} "
-                      f"with approx factor {approx_factor}")
+            log.error(
+                f'Estimate table size {size_bytes}, '
+                f'limits {self.max_table_size_bytes} '
+                f'with approx factor {approx_factor}'
+            )
             resp.errors.append(
                 ValidationError(
                     'Table size is too large',
                     f'Table {table_name} is too large. For your product tier, '
                     f'Kumo supports up to {limit} table size. Please '
-                    'reduce the table size and try again.'))
+                    'reduce the table size and try again.',
+                )
+            )
 
         if raise_on_error and resp.errors:
             raise ValueError(
-                f'Table {table_name} exceeds data scale limits, details: '
-                f'{resp.errors}')
+                f'Table {table_name} exceeds data scale limits, details: {resp.errors}'
+            )
 
         return resp
 
@@ -190,11 +197,14 @@ class DataScaleLimits:
                     'Graph is too large',
                     'Total data size of all tables in the graph exceeds the '
                     f'max limit {limit} for your product tier. '
-                    'Please reduce graph size and try again.'))
+                    'Please reduce graph size and try again.',
+                )
+            )
 
         total_edges = sum(edge_counts)
         total_downsampled_edges = sum(
-            [min(count, MAX_EDGES_PER_EDGE_TYPE) for count in edge_counts])
+            [min(count, MAX_EDGES_PER_EDGE_TYPE) for count in edge_counts]
+        )
 
         edges_limit = humanize.intword(self.max_graph_total_edges)
         graph_total_edges = humanize.intword(total_edges)
@@ -202,31 +212,35 @@ class DataScaleLimits:
         if total_downsampled_edges > self.max_graph_total_edges:
             resp.errors.append(
                 ValidationError(
-                    "Graph is too large",
-                    (f"The provided graph exceeds Kumo's graph size limits. "
-                     f"The graph contains a total of {graph_total_edges} edges,"
-                     f" whereas Kumo supports a maximum of 2 billion edges "
-                     f"per edge type and a total of {edges_limit} edges."
-                     f" After downsampling each edge to a maximum of 2 "
-                     f"billion edges, the graph still contains "
-                     f"{graph_downsampled_edges} edges."
-                     f" Please reduce the number of edges in your graph "
-                     f"(e.g. by removing links or reducing the size of your "
-                     f"tables) to proceed.")))
+                    'Graph is too large',
+                    (
+                        f"The provided graph exceeds Kumo's graph size limits. "
+                        f'The graph contains a total of {graph_total_edges} edges,'
+                        f' whereas Kumo supports a maximum of 2 billion edges '
+                        f'per edge type and a total of {edges_limit} edges.'
+                        f' After downsampling each edge to a maximum of 2 '
+                        f'billion edges, the graph still contains '
+                        f'{graph_downsampled_edges} edges.'
+                        f' Please reduce the number of edges in your graph '
+                        f'(e.g. by removing links or reducing the size of your '
+                        f'tables) to proceed.'
+                    ),
+                )
+            )
         # We can support but will have to downsample, so we warn:
         elif total_edges > self.max_graph_total_edges:
             warn_msg = (
                 f"The provided graph exceeds Kumo's graph size limits. "
-                f"The graph contains a total of {graph_total_edges} edges,"
-                f" whereas Kumo supports a maximum of 2 billion edges "
-                f"per edge type and a total of {edges_limit} edges."
-                f"The graph will be downsampled to contain "
-                f"{graph_downsampled_edges} edges.")
+                f'The graph contains a total of {graph_total_edges} edges,'
+                f' whereas Kumo supports a maximum of 2 billion edges '
+                f'per edge type and a total of {edges_limit} edges.'
+                f'The graph will be downsampled to contain '
+                f'{graph_downsampled_edges} edges.'
+            )
             log.warning(warn_msg)
 
         if raise_on_error and resp.errors:
-            raise ValueError('Graph exceeds data scale limits, details: '
-                             f'{resp.errors}')
+            raise ValueError(f'Graph exceeds data scale limits, details: {resp.errors}')
         return resp
 
     def validate_graph_object(
@@ -245,61 +259,70 @@ class DataScaleLimits:
             resp.errors.append(
                 ValidationError(
                     'Graph contains too many tables',
-                    (f'Total number of tables in the graph exceeds the max '
-                     f'limit {self.max_tables_in_a_graph} for your product '
-                     f'tier. Please remove some tables and try again.')))
+                    (
+                        f'Total number of tables in the graph exceeds the max '
+                        f'limit {self.max_tables_in_a_graph} for your product '
+                        f'tier. Please remove some tables and try again.'
+                    ),
+                )
+            )
 
         for table in graph.tables:
             size_bytes = int(
-                table_stats[table.table_name][TableStatType.SOURCE_SIZE].value)
+                table_stats[table.table_name][TableStatType.SOURCE_SIZE].value
+            )
             resp.merge(
                 self.validate_table(
                     table.name,
                     size_bytes=size_bytes,
                     raise_on_error=False,
-                ))
+                )
+            )
             total_size += int(
-                table_stats[table.table_name][TableStatType.SOURCE_SIZE].value)
+                table_stats[table.table_name][TableStatType.SOURCE_SIZE].value
+            )
         resp.merge(
             self.validate_graph(
                 total_size_bytes=total_size,
                 raise_on_error=False,
-            ))
+            )
+        )
 
         if raise_on_error and resp.errors:
             raise ValueError(
-                f'Graph {graph.name} exceeds data scale limits, details: '
-                f'{resp.errors}')
+                f'Graph {graph.name} exceeds data scale limits, details: {resp.errors}'
+            )
 
         return resp
 
     @staticmethod
     def parse_from_env(
-            deploy_config: Optional[DeployEnvConfig] = None
+        deploy_config: Optional[DeployEnvConfig] = None,
     ) -> 'DataScaleLimits':
         limits = DataScaleLimits()  # default values are set for GA mode.
-        max_table_size_prefix = "MAX_TABLE_SIZE_BYTES_"
+        max_table_size_prefix = 'MAX_TABLE_SIZE_BYTES_'
 
         # Allow overrides by env flags, if set.
         limits.max_table_cols = EnvVar(
-            'MAX_TABLE_COLS', int,
-            default_value=limits.max_table_cols).parse_value()
+            'MAX_TABLE_COLS', int, default_value=limits.max_table_cols
+        ).parse_value()
         limits.max_table_size_bytes = EnvVar(
-            'MAX_TABLE_SIZE_BYTES', int,
-            default_value=limits.max_table_size_bytes).parse_value()
+            'MAX_TABLE_SIZE_BYTES', int, default_value=limits.max_table_size_bytes
+        ).parse_value()
         limits.max_table_size_bytes_by_connector = {
-            connector:
-            EnvVar((max_table_size_prefix + connector).upper(), int,
-                   default_value=default).parse_value()
-            for connector, default in
-            limits.max_table_size_bytes_by_connector.items()
+            connector: EnvVar(
+                (max_table_size_prefix + connector).upper(), int, default_value=default
+            ).parse_value()
+            for connector, default in limits.max_table_size_bytes_by_connector.items()
         }
         limits.max_graph_total_size_bytes = EnvVar(
-            'MAX_GRAPH_TOTAL_SIZE_BYTES', int,
-            default_value=limits.max_graph_total_size_bytes).parse_value()
+            'MAX_GRAPH_TOTAL_SIZE_BYTES',
+            int,
+            default_value=limits.max_graph_total_size_bytes,
+        ).parse_value()
         limits.max_graph_total_edges = EnvVar(
-            'MAX_GRAPH_TOTAL_EDGES', int,
-            default_value=limits.max_graph_total_edges).parse_value()
+            'MAX_GRAPH_TOTAL_EDGES', int, default_value=limits.max_graph_total_edges
+        ).parse_value()
         limits.max_tables_in_a_graph = _MAX_TABLES_IN_A_GRAPH
         return limits
 
@@ -387,29 +410,27 @@ class PredictiveQuerySettings:
 
     def get_pquery_settings(self) -> PQuerySettings:
         settings = PQuerySettings()
-        settings.disable_static_node_prediction = \
-            self.disable_static_node_prediction
-        settings.disable_static_link_prediction = \
-            self.disable_static_link_prediction
-        settings.disable_temporal_link_prediction = \
+        settings.disable_static_node_prediction = self.disable_static_node_prediction
+        settings.disable_static_link_prediction = self.disable_static_link_prediction
+        settings.disable_temporal_link_prediction = (
             self.disable_temporal_link_prediction
-        settings.disable_multilabel_classification = \
+        )
+        settings.disable_multilabel_classification = (
             self.disable_multilabel_classification
-        settings.disable_multilabel_ranking = \
-            self.disable_multilabel_ranking
-        settings.disable_temporal_node_regression = \
+        )
+        settings.disable_multilabel_ranking = self.disable_multilabel_ranking
+        settings.disable_temporal_node_regression = (
             self.disable_temporal_node_regression
+        )
         settings.disable_first_last = self.disable_first_last
-        settings.disable_first_last_on_fkey = \
-            self.disable_first_last_on_fkey
-        settings.disable_pquery_advanced_options = \
-            self.disable_pquery_advanced_options
+        settings.disable_first_last_on_fkey = self.disable_first_last_on_fkey
+        settings.disable_pquery_advanced_options = self.disable_pquery_advanced_options
         settings.use_decoupled_splits = self.use_decoupled_splits
         return settings
 
     @staticmethod
     def parse_from_env(
-        deploy_config: Optional[DeployEnvConfig] = None
+        deploy_config: Optional[DeployEnvConfig] = None,
     ) -> 'PredictiveQuerySettings':
         # deploy_config param kept for backward compat (unused in body)
         settings = PredictiveQuerySettings()  # GA mode is default
@@ -439,7 +460,8 @@ class RestApiDriverSettings:
     #
     # Which connector types are supported/allowed.
     supported_connector_types: List[ConnectorType] = field(
-        default_factory=lambda: [ConnectorType.FILE, ConnectorType.SNOWFLAKE])
+        default_factory=lambda: [ConnectorType.FILE, ConnectorType.SNOWFLAKE]
+    )
     # Whether we allow running Batch Prediction on table data version newer
     # than the versions used in last (sucessful) training.
     allow_predict_on_new_data_version: bool = False
@@ -449,13 +471,14 @@ class RestApiDriverSettings:
     data_scale_limits: DataScaleLimits = field(default_factory=DataScaleLimits)
     # PQ settings
     pquery_settings: PredictiveQuerySettings = field(
-        default_factory=PredictiveQuerySettings)
+        default_factory=PredictiveQuerySettings
+    )
 
 
 @kumo_dataclass
 class AppSettings:
-    middleware_origin: str = "*"  # Allows requests from any other origin
-    server_host: str = "0.0.0.0"  # Fully open configuration
+    middleware_origin: str = '*'  # Allows requests from any other origin
+    server_host: str = '0.0.0.0'  # Fully open configuration
     is_unit_test: bool = False  # True when the app is running in a unit test
     # TODO(zack): Change the production default to False before we go GA
     debug: bool = True  # If True, 500 errors will return the full stacktrace
@@ -475,16 +498,19 @@ def _normalize_cors_origin(origin: str) -> str:
 def parse_cors_allowed_origins(middleware_origin: str) -> List[str]:
     return [
         _normalize_cors_origin(origin)
-        for origin in middleware_origin.split(',') if origin.strip()
+        for origin in middleware_origin.split(',')
+        if origin.strip()
     ]
 
 
-def validate_cors_allowed_origins(allowed_origins: Sequence[str], *,
-                                  allow_credentials: bool) -> None:
+def validate_cors_allowed_origins(
+    allowed_origins: Sequence[str], *, allow_credentials: bool
+) -> None:
     if allow_credentials and '*' in allowed_origins:
         raise ValueError(
-            "REST_CORS_ALLOWED_ORIGINS must list explicit origins when "
-            "Direct Connect auth uses cookie credentials.")
+            'REST_CORS_ALLOWED_ORIGINS must list explicit origins when '
+            'Direct Connect auth uses cookie credentials.'
+        )
 
 
 @kumo_dataclass
@@ -506,13 +532,15 @@ class KumoRestSettings:
     # py3.14 stdlib dataclasses reject mutable instance defaults; use
     # field(default_factory=...).
     rest_api_driver: RestApiDriverSettings = field(
-        default_factory=RestApiDriverSettings)
-    monitoring_settings: MonitoringSettings = field(
-        default_factory=MonitoringSettings)
+        default_factory=RestApiDriverSettings
+    )
+    monitoring_settings: MonitoringSettings = field(default_factory=MonitoringSettings)
     authentication: AuthenticationSettings = field(
-        default_factory=_default_authentication_settings)
+        default_factory=_default_authentication_settings
+    )
     data_backend_settings: DataBackendSettings = field(
-        default_factory=DataBackendSettings)
+        default_factory=DataBackendSettings
+    )
     app: AppSettings = field(default_factory=AppSettings)
 
     @property
@@ -522,7 +550,8 @@ class KumoRestSettings:
     def validate(self):
         validate_cors_allowed_origins(
             parse_cors_allowed_origins(self.app.middleware_origin),
-            allow_credentials=not self.authentication.disable)
+            allow_credentials=not self.authentication.disable,
+        )
 
     # NOTE: the v1 ``class Config: env_nested_delimiter = '__'`` was a
     # pydantic-settings (BaseSettings) concept. This is a ``kumo_dataclass``
@@ -539,7 +568,7 @@ def parse_from_env_vars(disable_auth: bool = False) -> KumoRestSettings:
     deploy_mode = deploy_config.deploy_mode
     assert deploy_mode != DeployStage.TEST
     resolved_auth = resolve_auth_settings_config(deploy_config)
-    env_disable_auth = ((not resolved_auth.enabled) or deploy_mode.is_preprod)
+    env_disable_auth = (not resolved_auth.enabled) or deploy_mode.is_preprod
     auth_proxied = _PROXY_AUTH.parse_value()
     disable_auth = disable_auth or env_disable_auth
 
@@ -548,19 +577,25 @@ def parse_from_env_vars(disable_auth: bool = False) -> KumoRestSettings:
         proxy=auth_proxied,
         direct_connect_login_method=(resolved_auth.direct_connect.login_method),
         direct_connect_allowed_return_origins=list(
-            resolved_auth.direct_connect.allowed_return_origins),
+            resolved_auth.direct_connect.allowed_return_origins
+        ),
         direct_connect_password_login_ip_rate_limit_enabled=(
-            _DIRECT_CONNECT_PASSWORD_LOGIN_IP_RATE_LIMIT_ENABLED.parse_value()),
+            _DIRECT_CONNECT_PASSWORD_LOGIN_IP_RATE_LIMIT_ENABLED.parse_value()
+        ),
     )
     rest_api_driver = RestApiDriverSettings(
-        fixture_export_path=os.path.join(deploy_config.data_plane_storage_root,
-                                         'fixtures'),
+        fixture_export_path=os.path.join(
+            deploy_config.data_plane_storage_root, 'fixtures'
+        ),
         allow_local_batch_pred_paths=deploy_mode.is_dev,
-        allow_local_connector_file_paths=(deploy_mode.is_preprod
-                                          or deploy_mode.is_test or
-                                          _ALLOW_LOCAL_CONNECTOR.parse_value()),
+        allow_local_connector_file_paths=(
+            deploy_mode.is_preprod
+            or deploy_mode.is_test
+            or _ALLOW_LOCAL_CONNECTOR.parse_value()
+        ),
         data_scale_limits=DataScaleLimits.parse_from_env(deploy_config),
-        pquery_settings=PredictiveQuerySettings.parse_from_env(deploy_config))
+        pquery_settings=PredictiveQuerySettings.parse_from_env(deploy_config),
+    )
 
     connector_types = {v: None for v in ConnectorType.__members__.values()}
 
@@ -572,28 +607,32 @@ def parse_from_env_vars(disable_auth: bool = False) -> KumoRestSettings:
     if not disable_auth and cors_allowed_origins == '*':
         if resolved_auth.direct_connect.allowed_return_origins:
             cors_allowed_origins = ','.join(
-                resolved_auth.direct_connect.allowed_return_origins)
+                resolved_auth.direct_connect.allowed_return_origins
+            )
 
     is_prod = deploy_mode == DeployStage.PROD
     settings = KumoRestSettings(
-        rest_api_driver=rest_api_driver, authentication=authentication,
+        rest_api_driver=rest_api_driver,
+        authentication=authentication,
         monitoring_settings=MonitoringSettings.parse_from_env(),
         data_backend_settings=DataBackendSettings(
-            disable_async_ingestion=not _ENABLE_ASYNC_INGESTION.parse_value()),
+            disable_async_ingestion=not _ENABLE_ASYNC_INGESTION.parse_value()
+        ),
         app=AppSettings(
             middleware_origin=cors_allowed_origins,
             server_host=_REST_API_HOST.parse_value(),
             port=_REST_API_PORT.parse_value(),
             debug=not is_prod,
-        ))
+        ),
+    )
 
     # Validate the settings
     settings.validate()
 
     log.info(
-        "Using settings:\n%s",
+        'Using settings:\n%s',
         yaml.safe_dump(
-            json.loads(
-                json.dumps(settings, default=to_jsonable_python,
-                           allow_nan=True))))
+            json.loads(json.dumps(settings, default=to_jsonable_python, allow_nan=True))
+        ),
+    )
     return settings

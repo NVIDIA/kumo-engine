@@ -67,8 +67,8 @@ def _make_bp_config(
     forecast_length: int | None = None,
 ) -> BatchPredictionJobConfig:
     return BatchPredictionJobConfig(
-        predictive_query_id=PredictiveQueryID("pquery_test"),
-        training_job_id=TrainingJobID("trainingjob-test"),
+        predictive_query_id=PredictiveQueryID('pquery_test'),
+        training_job_id=TrainingJobID('trainingjob-test'),
         task_type=task_type,
         forecast_length=forecast_length,
         lag_timesteps=30 if forecast_length else None,
@@ -77,8 +77,7 @@ def _make_bp_config(
 
 
 @pytest.mark.asyncio
-async def test_train_propagates_project_to_graph_snapshot_and_pquery(
-        monkeypatch):
+async def test_train_propagates_project_to_graph_snapshot_and_pquery(monkeypatch):
     pquery_driver: PQueryApiDriver = AsyncMock()
     data_snapshot_driver: DataSnapshotApiDriver = AsyncMock()
     ml_job_backend: MLJobBackend = AsyncMock()
@@ -101,11 +100,13 @@ async def test_train_propagates_project_to_graph_snapshot_and_pquery(
     reserved_id = TrainingJobID('trainingjob-reserved')
     ml_job_backend.reserve_training_job_id.return_value = reserved_id
     data_snapshot_driver.create_graph_snapshot.return_value = GraphSnapshotID(
-        'graph-snapshot-test')
+        'graph-snapshot-test'
+    )
     pquery_id = PredictiveQueryID('pquery_test')
     pquery_driver.create_predictive_query_v2.return_value = pquery_id
     pquery_driver.start_training_job_v2.return_value = TrainingJobID(
-        'trainingjob-created')
+        'trainingjob-created'
+    )
     monkeypatch.setattr(
         'rest.driver.jobs_driver.TrainingJobInternalRequest',
         lambda **kwargs: SimpleNamespace(**kwargs),
@@ -128,11 +129,16 @@ async def test_train_propagates_project_to_graph_snapshot_and_pquery(
 
     # Both plans reach the driver as the caller's internal objects, without a
     # round trip through the public contract.
-    assert (pquery_driver.start_training_job_v2.await_args.kwargs['request'].
-            model_plan is request.model_plan)
-    assert (pquery_driver.start_training_job_v2.await_args.
-            kwargs['training_table_generation_plan']
-            is request.training_table_gen_plan)
+    assert (
+        pquery_driver.start_training_job_v2.await_args.kwargs['request'].model_plan
+        is request.model_plan
+    )
+    assert (
+        pquery_driver.start_training_job_v2.await_args.kwargs[
+            'training_table_generation_plan'
+        ]
+        is request.training_table_gen_plan
+    )
 
     graph_driver.create_full_graph_v2.assert_awaited_once_with(
         graph_definition,
@@ -145,10 +151,14 @@ async def test_train_propagates_project_to_graph_snapshot_and_pquery(
         project_id=project_id,
     )
     pquery_driver.create_predictive_query_v2.assert_awaited_once()
-    assert (pquery_driver.create_predictive_query_v2.await_args.
-            kwargs['project_id'] == project_id)
-    assert (pquery_driver.start_training_job_v2.await_args.kwargs['project_id']
-            == project_id)
+    assert (
+        pquery_driver.create_predictive_query_v2.await_args.kwargs['project_id']
+        == project_id
+    )
+    assert (
+        pquery_driver.start_training_job_v2.await_args.kwargs['project_id']
+        == project_id
+    )
 
 
 @dataclasses.dataclass
@@ -158,37 +168,37 @@ class _GraphForSdk:
 
 def _patch_prediction_to_sdk_normal_path(monkeypatch, is_diskgraph: bool):
     monkeypatch.setattr(
-        "rest.driver.jobs_driver.deploy_env",
+        'rest.driver.jobs_driver.deploy_env',
         lambda: SimpleNamespace(is_diskgraph=is_diskgraph),
     )
     monkeypatch.setattr(
-        "rest.driver.jobs_driver.bp_job_ouput_conf",
-        lambda outputs: ({}, "bp-connector"),
+        'rest.driver.jobs_driver.bp_job_ouput_conf',
+        lambda outputs: ({}, 'bp-connector'),
     )
     monkeypatch.setattr(
-        "rest.driver.jobs_driver.GraphDefinition",
-        lambda **kwargs: SimpleNamespace(fpid=kwargs["fpid"]),
+        'rest.driver.jobs_driver.GraphDefinition',
+        lambda **kwargs: SimpleNamespace(fpid=kwargs['fpid']),
     )
     monkeypatch.setattr(
-        "rest.driver.jobs_driver.clean_up_pquery_string",
+        'rest.driver.jobs_driver.clean_up_pquery_string',
         lambda query, table_refs: query,
     )
-    generate_header = MagicMock(return_value="HEADER")
+    generate_header = MagicMock(return_value='HEADER')
     monkeypatch.setattr(
-        "rest.driver.jobs_driver.generate_header",
+        'rest.driver.jobs_driver.generate_header',
         generate_header,
     )
     monkeypatch.setattr(
-        "rest.driver.jobs_driver.generate_prediction_only_sdk_script",
-        lambda training_job_id: f"LOAD_MODEL({training_job_id})",
+        'rest.driver.jobs_driver.generate_prediction_only_sdk_script',
+        lambda training_job_id: f'LOAD_MODEL({training_job_id})',
     )
-    generate_prediction = MagicMock(return_value="PREDICTION_SCRIPT")
+    generate_prediction = MagicMock(return_value='PREDICTION_SCRIPT')
     monkeypatch.setattr(
-        "rest.driver.jobs_driver.generate_prediction_job_sdk_script",
+        'rest.driver.jobs_driver.generate_prediction_job_sdk_script',
         generate_prediction,
     )
     monkeypatch.setattr(
-        "rest.driver.jobs_driver.make_stype_and_dtype_sdk_compat",
+        'rest.driver.jobs_driver.make_stype_and_dtype_sdk_compat',
         lambda script: script,
     )
     return generate_header, generate_prediction
@@ -196,24 +206,27 @@ def _patch_prediction_to_sdk_normal_path(monkeypatch, is_diskgraph: bool):
 
 @pytest.mark.asyncio
 async def test_prediction_to_sdk_skips_diskgraph_forecasting_before_training(
-        monkeypatch):
+    monkeypatch,
+):
     monkeypatch.setattr(
-        "rest.driver.jobs_driver.deploy_env",
+        'rest.driver.jobs_driver.deploy_env',
         lambda: SimpleNamespace(is_diskgraph=True),
     )
     jobs_driver, pquery_driver, graph_driver, connector_driver = (
-        _make_prediction_to_sdk_driver())
+        _make_prediction_to_sdk_driver()
+    )
     pquery_driver.get_batch_prediction_job.return_value = SimpleNamespace(
-        config=_make_bp_config(forecast_length=30))
+        config=_make_bp_config(forecast_length=30)
+    )
 
     script = await jobs_driver.prediction_to_sdk(
-        BatchPredictionJobID("bp-job-test"),
+        BatchPredictionJobID('bp-job-test'),
         AsyncMock(),
     )
 
-    assert "SKIPPED_UNSUPPORTED" in script
-    assert "generate_training_table" not in script
-    assert "generate_prediction_table" not in script
+    assert 'SKIPPED_UNSUPPORTED' in script
+    assert 'generate_training_table' not in script
+    assert 'generate_prediction_table' not in script
     pquery_driver.training_to_sdk.assert_not_called()
     pquery_driver.get_predictive_query_v2.assert_not_called()
     connector_driver.get_bp_connector_metadata_for_sdk.assert_not_called()
@@ -221,20 +234,22 @@ async def test_prediction_to_sdk_skips_diskgraph_forecasting_before_training(
 
 
 @pytest.mark.parametrize(
-    "is_diskgraph,bp_config",
+    'is_diskgraph,bp_config',
     [
-        (False,
-         _make_bp_config(task_type=TaskType.FORECASTING, forecast_length=30)),
+        (False, _make_bp_config(task_type=TaskType.FORECASTING, forecast_length=30)),
         (True, _make_bp_config()),
     ],
 )
 @pytest.mark.asyncio
 async def test_prediction_to_sdk_normal_path_for_non_diskgraph_or_non_forecast(
-        monkeypatch, is_diskgraph, bp_config):
-    generate_header, generate_prediction = (
-        _patch_prediction_to_sdk_normal_path(monkeypatch, is_diskgraph))
+    monkeypatch, is_diskgraph, bp_config
+):
+    generate_header, generate_prediction = _patch_prediction_to_sdk_normal_path(
+        monkeypatch, is_diskgraph
+    )
     jobs_driver, pquery_driver, graph_driver, connector_driver = (
-        _make_prediction_to_sdk_driver())
+        _make_prediction_to_sdk_driver()
+    )
     ctx = AsyncMock()
     pquery_driver.get_batch_prediction_job.return_value = SimpleNamespace(
         config=bp_config,
@@ -242,28 +257,27 @@ async def test_prediction_to_sdk_normal_path_for_non_diskgraph_or_non_forecast(
     )
     connector_driver.get_bp_connector_metadata_for_sdk.return_value = {}
     pquery_driver.get_predictive_query_v2.return_value = SimpleNamespace(
-        graph=_GraphForSdk(FPID("37371883384758475869584735748685")),
-        query_string="PREDICT SUM(t.y, 0, 1) FOR EACH e.id",
+        graph=_GraphForSdk(FPID('37371883384758475869584735748685')),
+        query_string='PREDICT SUM(t.y, 0, 1) FOR EACH e.id',
     )
     graph_driver.get_graph_metadata_for_sdk.return_value = ([], [], None)
     pquery_driver.get_training_job_pquery_id_v2.return_value = None
 
     script = await jobs_driver.prediction_to_sdk(
-        BatchPredictionJobID("bp-job-test"),
+        BatchPredictionJobID('bp-job-test'),
         ctx,
     )
 
-    assert script == "HEADERLOAD_MODEL(trainingjob-test)PREDICTION_SCRIPT"
+    assert script == 'HEADERLOAD_MODEL(trainingjob-test)PREDICTION_SCRIPT'
     generate_header.assert_called_once_with(str(_PROJECT_ID))
-    assert generate_prediction.call_args.kwargs["project_id"] == str(
-        _PROJECT_ID)
+    assert generate_prediction.call_args.kwargs['project_id'] == str(_PROJECT_ID)
     pquery_driver.training_to_sdk.assert_not_called()
     pquery_driver.get_training_job_pquery_id_v2.assert_awaited_once_with(
         ctx,
         bp_config.training_job_id,
     )
     connector_driver.get_bp_connector_metadata_for_sdk.assert_awaited_once_with(
-        "bp-connector",
+        'bp-connector',
         _PROJECT_ID,
         ctx.user_authorization,
     )
@@ -295,13 +309,16 @@ async def test_create_batch_prediction_job_without_pquery():
         model_training_job_id='training-job-383789',
         predict_options=BatchPredictionOptions(num_workers=1),
         project_id=_PROJECT_ID,
-        outputs=cast(List[PredictionOutputConfig], [
-            S3PredictionOutput(
-                artifact_type=PredictionArtifactType.PREDICTIONS,
-                connector_id=_CONNECTOR_ID,
-                file_path=('s3://kumo-public-datasets/test/prediction.parquet'),
-            )
-        ]),
+        outputs=cast(
+            List[PredictionOutputConfig],
+            [
+                S3PredictionOutput(
+                    artifact_type=PredictionArtifactType.PREDICTIONS,
+                    connector_id=_CONNECTOR_ID,
+                    file_path=('s3://kumo-public-datasets/test/prediction.parquet'),
+                )
+            ],
+        ),
         filter_overrides=filter_overrides_input,
         explanations=False,
         anchor_time=datetime(2021, 1, 1),
@@ -337,8 +354,7 @@ async def test_create_batch_prediction_job_without_pquery():
     assert request.graph_snapshot_id is None
     assert len(request.outputs) == 1
     assert isinstance(request.outputs[0], S3PredictionOutput)
-    assert request.outputs[
-        0].artifact_type == PredictionArtifactType.PREDICTIONS
+    assert request.outputs[0].artifact_type == PredictionArtifactType.PREDICTIONS
     assert request.pred_table_job_id is not None
     assert 'batch_pred_job' in request.job_tags
     assert 'with_entity_filter' in request.job_tags
@@ -365,18 +381,25 @@ async def test_create_batch_prediction_job_with_pquery():
 
     project_id = ProjectID('project_0123456789abcdef0123456789abcdef')
     request = BatchPredictionInternalRequest(
-        tags=['custom_tag1'], model_training_job_id='training-job-383789',
+        tags=['custom_tag1'],
+        model_training_job_id='training-job-383789',
         predict_options=BatchPredictionOptions(num_workers=1),
-        outputs=cast(List[PredictionOutputConfig], [
-            S3PredictionOutput(
-                artifact_type=PredictionArtifactType.PREDICTIONS,
-                connector_id=_CONNECTOR_ID,
-                file_path=('s3://kumo-public-datasets/test/prediction.parquet'),
-            )
-        ]), explanations=False,
+        outputs=cast(
+            List[PredictionOutputConfig],
+            [
+                S3PredictionOutput(
+                    artifact_type=PredictionArtifactType.PREDICTIONS,
+                    connector_id=_CONNECTOR_ID,
+                    file_path=('s3://kumo-public-datasets/test/prediction.parquet'),
+                )
+            ],
+        ),
+        explanations=False,
         predictive_query='PREDICT COUNT(t.*, 0, 10) FOR EACH c.id',
         graph_id=FPID('37371883384758475869584735748685'),
-        project_id=project_id, anchor_time=datetime(2021, 1, 1))
+        project_id=project_id,
+        anchor_time=datetime(2021, 1, 1),
+    )
 
     result = ('bp-job-diudiddui', ValidationResponse())
     pquery_driver.start_batch_prediction_job_v2.return_value = result
@@ -385,11 +408,11 @@ async def test_create_batch_prediction_job_with_pquery():
         graph_definition,
     )
     pquery_driver.create_predictive_query_v2.return_value = PredictiveQueryID(
-        'pq-30983849384839483848495838294959')
+        'pq-30983849384839483848495838294959'
+    )
     gen_pred_table_id = GeneratePredictionTableJobID('gen-pred-2897')
-    graph_snapshot_id = GraphSnapshotID(
-        'graph-37371883384758475869584735748688@47843')
-    pquery_driver.start_generate_pred_table.return_value = (gen_pred_table_id)
+    graph_snapshot_id = GraphSnapshotID('graph-37371883384758475869584735748688@47843')
+    pquery_driver.start_generate_pred_table.return_value = gen_pred_table_id
     data_snapshot_driver.create_graph_snapshot.return_value = graph_snapshot_id
 
     result = await jobs_driver.create_batch_prediction_job(
@@ -419,8 +442,10 @@ async def test_create_batch_prediction_job_with_pquery():
     assert data_snapshot_driver.create_graph_snapshot.call_args.kwargs == {
         'project_id': project_id
     }
-    assert (pquery_driver.create_predictive_query_v2.await_args.
-            kwargs['project_id'] == project_id)
+    assert (
+        pquery_driver.create_predictive_query_v2.await_args.kwargs['project_id']
+        == project_id
+    )
 
     call_args = pquery_driver.start_batch_prediction_job_v2.call_args
     assert call_args is not None
@@ -435,8 +460,7 @@ async def test_create_batch_prediction_job_with_pquery():
     assert request.model_training_job_id == 'training-job-383789'
     assert len(request.outputs) == 1
     assert isinstance(request.outputs[0], S3PredictionOutput)
-    assert request.outputs[
-        0].artifact_type == PredictionArtifactType.PREDICTIONS
+    assert request.outputs[0].artifact_type == PredictionArtifactType.PREDICTIONS
     assert request.pred_table_job_id == gen_pred_table_id
     assert request.graph_snapshot_id == graph_snapshot_id
     assert call_args['custom_tags'] == ['custom_tag1']

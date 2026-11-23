@@ -25,25 +25,30 @@ class ValidationException(PublicException):
 
     Supports conversion to ValidationError/Warning for backward compatibility.
     """
-    template = ""  # Empty - we format the message manually
 
-    def __init__(self, title: str = "", message: str = "",
-                 id: Optional[str] = None,
-                 related_errors: Optional[List[Exception]] = None,
-                 **kwargs) -> None:
+    template = ''  # Empty - we format the message manually
+
+    def __init__(
+        self,
+        title: str = '',
+        message: str = '',
+        id: Optional[str] = None,
+        related_errors: Optional[List[Exception]] = None,
+        **kwargs,
+    ) -> None:
         self._title = title
         self._message = message
         self._id = id
 
         # Format display message flexibly
         if title and message:
-            display_message = f"{title}: {message}"
+            display_message = f'{title}: {message}'
         elif message:
             display_message = message
         elif title:
             display_message = title
         else:
-            display_message = ""
+            display_message = ''
 
         super().__init__(related_errors=related_errors, **kwargs)
         self.message = display_message
@@ -55,11 +60,11 @@ class ValidationException(PublicException):
         return ValidationWarning(self._title, self._message)
 
     def as_info(self) -> ValidationInfo:
-        return ValidationInfo(self._title, self._message, self._id or "")
+        return ValidationInfo(self._title, self._message, self._id or '')
 
     def title_and_message(self) -> str:
         # Preserve original format for backward compatibility
-        return f"{self._title} - {self._message}"
+        return f'{self._title} - {self._message}'
 
     def to_dict(self) -> dict:
         """Override to preserve title, message, and id for proper deserialization"""
@@ -69,7 +74,7 @@ class ValidationException(PublicException):
             'title': self._title,
             'message': self._message,
             'id': self._id,
-            **result['kwargs']
+            **result['kwargs'],
         }
         return result
 
@@ -79,17 +84,16 @@ class ValidationResponse(api.ValidationResponse):
     def error_message(self) -> str:
         """Serialized error message without the 'Errors:' prefix."""
         if len(self.errors) == 0:
-            return ""
+            return ''
 
         def _fmt(err: api.ValidationError) -> str:
             if err.message:
-                return f"{err.title}. {err.message}"
+                return f'{err.title}. {err.message}'
             return err.title
 
         if len(self.errors) == 1:
             return _fmt(self.errors[0])
-        return "\n".join(
-            [f"{i}. {_fmt(err)}" for i, err in enumerate(self.errors, 1)])
+        return '\n'.join([f'{i}. {_fmt(err)}' for i, err in enumerate(self.errors, 1)])
 
     def merge(self, other: 'ValidationResponse') -> 'ValidationResponse':
         self.warnings = list(set(self.warnings).union(other.warnings))
@@ -111,8 +115,7 @@ class ValidationResponse(api.ValidationResponse):
         return json.load_json(path, cls)
 
     @classmethod
-    def load_or_create(cls, home_dir: str,
-                       unique_id: str) -> 'ValidationResponse':
+    def load_or_create(cls, home_dir: str, unique_id: str) -> 'ValidationResponse':
         r"""Loads existing ValidationResponse or creates empty one if not found."""
         path = HomeDirManager(home_dir).validation_path(unique_id)
         return json.load_json(
@@ -132,8 +135,7 @@ class ValidationResponse(api.ValidationResponse):
             ValidationException with validation errors in message, warnings as related_errors
         """
         if self.ok:
-            raise ValueError(
-                "Cannot convert successful validation to exception")
+            raise ValueError('Cannot convert successful validation to exception')
 
         primary_message = self.error_message()
 
@@ -141,7 +143,7 @@ class ValidationResponse(api.ValidationResponse):
 
         # Add warnings as related errors for additional context
         for warning in self.warnings:
-            warning_exc = Warning(f"{warning.title}: {warning.message}")
+            warning_exc = Warning(f'{warning.title}: {warning.message}')
             exc.add_related_error(warning_exc)
 
         return exc

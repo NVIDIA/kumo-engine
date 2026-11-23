@@ -15,18 +15,14 @@ from rest.utils.routers import enable_api_caching
 class ConstantsResource:
     def __init__(self, auth: Authentication) -> None:
         self.router = APIRouter(
-            prefix="/v0/constants",
-            tags=["Constants"],
+            prefix='/v0/constants',
+            tags=['Constants'],
             dependencies=[Depends(auth.authenticate_request_header)],
-            responses={
-                HTTPStatus.NOT_FOUND: {
-                    "description": "Not found (Constants)"
-                }
-            },
+            responses={HTTPStatus.NOT_FOUND: {'description': 'Not found (Constants)'}},
         )
 
         self.router.add_api_route(
-            "/flags",
+            '/flags',
             self.flags,
             response_model=DebugInfo,
             methods=['GET'],

@@ -27,8 +27,7 @@ VOCABULARY = {
     'text': ['alpha', 'beta', 'gamma'],
     'hex': ['0x10', '0x20', '0x30'],
     'iso_date': ['2026-01-01', '2026-01-02', '2026-01-03'],
-    'timestamp':
-    ['2026-01-01 10:00:00', '2026-01-02 11:00:00', '2026-01-03 12:00:00'],
+    'timestamp': ['2026-01-01 10:00:00', '2026-01-02 11:00:00', '2026-01-03 12:00:00'],
     'na_tokens': ['NA', 'N/A', 'null'],
     'empty': ['', '', ''],
     'mixed_number_text': ['1', 'ABC', '3'],
@@ -91,10 +90,7 @@ def _corpus():
     names = sorted(families)
     for index in range(25):
         picked = rng.sample(names, 4)
-        cases.append((f'mixed{index}', {
-            name: families[name]
-            for name in picked
-        }))
+        cases.append((f'mixed{index}', {name: families[name] for name in picked}))
     return cases
 
 
@@ -105,12 +101,8 @@ def _long_corpus():
     for rows in SAMPLE_BOUNDARIES:
         cases.append((f'late_text_{rows}', {'a': ['1'] * rows + ['ABC', '2']}))
         cases.append((f'late_float_{rows}', {'a': ['1'] * rows + ['2.5', '3']}))
-        cases.append((f'late_whole_float_{rows}', {
-            'a': ['1'] * rows + ['10.0', '2']
-        }))
-        cases.append((f'late_infinity_{rows}', {
-            'a': ['1.5'] * rows + ['inf', '2.5']
-        }))
+        cases.append((f'late_whole_float_{rows}', {'a': ['1'] * rows + ['10.0', '2']}))
+        cases.append((f'late_infinity_{rows}', {'a': ['1.5'] * rows + ['inf', '2.5']}))
         cases.append((f'late_na_{rows}', {'a': ['1'] * rows + ['NA', '2']}))
     return cases
 
@@ -126,6 +118,7 @@ def _hosted(root, table):
 def _core(root, table):
     from kumo_core.sources.object_store import ObjectStoreSourceReader
     from pyarrow.fs import LocalFileSystem
+
     return ObjectStoreSourceReader(LocalFileSystem(), root=root).dtypes(table)
 
 
@@ -144,19 +137,19 @@ def _hosted_staged(root, table, dtypes, tmp_path):
     from kumo_core.types.schema import IngestedTableFingerprint
 
     connector = CSVConnector(name='parity', root_dir=root)
-    fingerprint = IngestedTableFingerprint(connector_name='parity',
-                                           source_name=table, cols=dict(dtypes),
-                                           pkey=None, time_col=None,
-                                           end_time_col=None)
+    fingerprint = IngestedTableFingerprint(
+        connector_name='parity',
+        source_name=table,
+        cols=dict(dtypes),
+        pkey=None,
+        time_col=None,
+        end_time_col=None,
+    )
     destination = str(tmp_path / 'hosted')
-    with patch('kumo.data.utils.get_materialize_path',
-               return_value=destination):
+    with patch('kumo.data.utils.get_materialize_path', return_value=destination):
         connector.export_table(table, fingerprint, 'version')
     written = pq.read_table(destination)
-    return {
-        name: written.column(name).to_pylist()
-        for name in written.schema.names
-    }
+    return {name: written.column(name).to_pylist() for name in written.schema.names}
 
 
 def _core_staged(root, table, dtypes, tmp_path):
@@ -166,13 +159,11 @@ def _core_staged(root, table, dtypes, tmp_path):
     from pyarrow.fs import LocalFileSystem
 
     reader = ObjectStoreSourceReader(LocalFileSystem(), root=root)
-    staged = reader.prepare(table, str(tmp_path / 'core'), columns=dict(dtypes),
-                            mode=ReadMode.STREAMED)
+    staged = reader.prepare(
+        table, str(tmp_path / 'core'), columns=dict(dtypes), mode=ReadMode.STREAMED
+    )
     written = pq.read_table(sorted(staged.paths))
-    return {
-        name: written.column(name).to_pylist()
-        for name in written.schema.names
-    }
+    return {name: written.column(name).to_pylist() for name in written.schema.names}
 
 
 def _comparable(values, dtype):
@@ -182,8 +173,7 @@ def _comparable(values, dtype):
     for value in values:
         if value is None or (isinstance(value, float) and math.isnan(value)):
             out.append(None)
-        elif (dtype.is_int() and isinstance(value, float)
-              and math.isfinite(value)):
+        elif dtype.is_int() and isinstance(value, float) and math.isfinite(value):
             out.append(int(round(value)))
         else:
             out.append(value)
@@ -196,7 +186,8 @@ def _assert_staged_alike(label, columns, dtypes, core, hosted):
         right = _comparable(hosted[column], dtype)
         assert left == right, (
             f'{label}.{column} ({dtype}): core staged {core[column]}, '
-            f'platform staged {hosted[column]}')
+            f'platform staged {hosted[column]}'
+        )
 
 
 def _staging_pair(root, table, dtypes, tmp_path):
@@ -205,8 +196,7 @@ def _staging_pair(root, table, dtypes, tmp_path):
     return hosted, core
 
 
-@pytest.mark.parametrize('name,columns', _corpus(),
-                         ids=[case[0] for case in _corpus()])
+@pytest.mark.parametrize('name,columns', _corpus(), ids=[case[0] for case in _corpus()])
 def test_the_two_readers_type_a_csv_the_same_way(name, columns, tmp_path):
     root = str(tmp_path / name)
     _write(os.path.join(root, name), columns)
@@ -217,13 +207,13 @@ def test_the_two_readers_type_a_csv_the_same_way(name, columns, tmp_path):
     if hosted == REFUSED or core == REFUSED:
         assert hosted == core == REFUSED, (
             f'{name}: one side refused and the other did not -- '
-            f'hosted={hosted}, core={core}')
+            f'hosted={hosted}, core={core}'
+        )
         return
     assert core == hosted, f'{name}: hosted={hosted} core={core}'
 
 
-@pytest.mark.parametrize('name,columns', _corpus(),
-                         ids=[case[0] for case in _corpus()])
+@pytest.mark.parametrize('name,columns', _corpus(), ids=[case[0] for case in _corpus()])
 def test_the_two_readers_stage_the_same_values(name, columns, tmp_path):
     """Agreeing on the type is not agreeing on the data: ``1_000`` is an
     integer to both and the value 1000 only if the text is rewritten first.
@@ -242,7 +232,8 @@ def test_the_two_readers_stage_the_same_values(name, columns, tmp_path):
         assert hosted == REFUSED, (
             f'{name}: the platform is now able to stage {sorted(refused)}; '
             f'PLATFORM_CANNOT_STAGE is stale and the comparison it suppresses '
-            f'should be reinstated')
+            f'should be reinstated'
+        )
         assert core == REFUSED, (name, core)
         return
 
@@ -251,10 +242,10 @@ def test_the_two_readers_stage_the_same_values(name, columns, tmp_path):
     _assert_staged_alike(name, columns, dtypes, core, hosted)
 
 
-@pytest.mark.parametrize('name,columns', _long_corpus(),
-                         ids=[case[0] for case in _long_corpus()])
-def test_the_two_readers_agree_past_a_sampling_boundary(name, columns,
-                                                        tmp_path):
+@pytest.mark.parametrize(
+    'name,columns', _long_corpus(), ids=[case[0] for case in _long_corpus()]
+)
+def test_the_two_readers_agree_past_a_sampling_boundary(name, columns, tmp_path):
     """Each side stops sampling somewhere, and a table shorter than both
     boundaries cannot tell whether they stop in the same place. The staged
     values are compared as well as the type, because the row that contradicts
@@ -271,15 +262,14 @@ def test_the_two_readers_agree_past_a_sampling_boundary(name, columns,
     staged_hosted, staged_core = _staging_pair(root, name, hosted, tmp_path)
     if staged_hosted == REFUSED:
         assert staged_core == REFUSED, (
-            f'{name}: the platform refuses to stage this and core read '
-            f'{staged_core}')
+            f'{name}: the platform refuses to stage this and core read {staged_core}'
+        )
         return
     _assert_staged_alike(name, columns, hosted, staged_core, staged_hosted)
 
 
 @pytest.mark.parametrize('dtype_name', ['date', 'time', 'timedelta'])
-def test_a_declared_type_with_no_arrow_spelling_stages_alike(
-        dtype_name, tmp_path):
+def test_a_declared_type_with_no_arrow_spelling_stages_alike(dtype_name, tmp_path):
     """A graph may declare a type CSV inference never produces. The hosted
     export has no Arrow spelling for these either, and leaves the column to
     Arrow's own inference rather than to text.
@@ -304,14 +294,12 @@ def test_a_ragged_row_is_refused_by_both_before_anything_is_staged(tmp_path):
     rows = ['a,b'] + [f'{index},{index}' for index in range(20_000)]
     rows.insert(15_000, '1,2,3')
     os.makedirs(os.path.join(root, 'ragged'), exist_ok=True)
-    with open(os.path.join(root, 'ragged', 't.csv'), 'w',
-              encoding='utf-8') as out:
+    with open(os.path.join(root, 'ragged', 't.csv'), 'w', encoding='utf-8') as out:
         out.write('\n'.join(rows) + '\n')
 
     hosted = _outcome(_hosted, root, 'ragged')
     assert hosted != REFUSED, 'the platform still types a file it will not read'
-    assert _hosted_staged_or_refused(root, 'ragged', hosted,
-                                     tmp_path) == REFUSED
+    assert _hosted_staged_or_refused(root, 'ragged', hosted, tmp_path) == REFUSED
     assert _outcome(_core, root, 'ragged') == REFUSED
 
 
@@ -339,6 +327,7 @@ def test_the_two_backends_hold_a_csv_table_to_the_same_ceilings():
     assert csv_connector.MAX_CSV_DATASIZE == layout.MAX_CSV_DATASIZE
     assert layout.csv_partitions_refusal(layout.MAX_CSV_PARTITIONS) is None
     assert 'partitions' in str(
-        layout.csv_partitions_refusal(layout.MAX_CSV_PARTITIONS + 1))
+        layout.csv_partitions_refusal(layout.MAX_CSV_PARTITIONS + 1)
+    )
     assert layout.csv_size_refusal(layout.MAX_CSV_DATASIZE) is None
     assert 'bytes' in str(layout.csv_size_refusal(layout.MAX_CSV_DATASIZE + 1))

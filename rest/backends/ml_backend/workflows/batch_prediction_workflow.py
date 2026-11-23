@@ -47,7 +47,9 @@ from rest.settings import DataBackendSettings
 
 # isort: off
 from rest.backends.ml_backend.activities.common import (
-    update_graph_config_from_graph_input, )
+    update_graph_config_from_graph_input,
+)
+
 # isort: on
 from rest.backends.ml_backend.data_util import get_job_base_dir, get_job_dir
 from rest.backends.ml_backend.settings import MLJobSettings
@@ -58,7 +60,9 @@ from rest.backends.ml_backend.validation import (
 
 # isort: off
 from rest.backends.ml_backend.workflows.mixins import (
-    JobWorkflowCancellationMixin, )
+    JobWorkflowCancellationMixin,
+)
+
 # isort: on
 from kumo_core.types import PredictionArtifactType, TaskType
 
@@ -107,8 +111,9 @@ class BatchPredictionParentWorkflow(JobWorkflowCancellationMixin):
     async def _save_output(self, output: BatchPredictionJobOutput):
         await workflow.execute_activity(
             JobOutputActivities.save_batch_prediction_job_output,
-            args=[self._job_input.id,
-                  output], schedule_to_close_timeout=timedelta(minutes=10))
+            args=[self._job_input.id, output],
+            schedule_to_close_timeout=timedelta(minutes=10),
+        )
         self.check_cancelled()
 
     async def _exit_cleanup(
@@ -126,8 +131,10 @@ class BatchPredictionParentWorkflow(JobWorkflowCancellationMixin):
         """
         await save_validation_response(validation_response, home_dir, job_id)
         job_output = BatchPredictionJobOutput.failed(
-            exception=exception, validation=validation_response,
-            workflow_end_state=WorkflowExecutionStatus.COMPLETED)
+            exception=exception,
+            validation=validation_response,
+            workflow_end_state=WorkflowExecutionStatus.COMPLETED,
+        )
         await self._save_output(job_output)
         return validation_response
 
@@ -146,14 +153,14 @@ class BatchPredictionParentWorkflow(JobWorkflowCancellationMixin):
         # DiskgraphIngestWorkflow + BatchPredictionJobWorkflow, where
         # the canonical GraphSnapshotID is derivable.
         try:
-            return await self.run_until_canceled(
-                self._run(job_input, ml_job_settings))
+            return await self.run_until_canceled(self._run(job_input, ml_job_settings))
         except BaseException as ex:
             # Record the real cause so finalize_job doesn't mask it with the
             # generic "did not report a terminal status" message; cancellation
             # and continue-as-new are control flow, not failures.
             if is_cancelled_exception(ex) or isinstance(
-                    ex, workflow.ContinueAsNewError):
+                ex, workflow.ContinueAsNewError
+            ):
                 raise
             # Never let a terminalize failure swallow the original exception.
             with catch_and_log():
@@ -168,17 +175,24 @@ class BatchPredictionParentWorkflow(JobWorkflowCancellationMixin):
                 raw_message = root_cause_message(ex)
                 log.error(
                     'Batch prediction job %s failed; internal root cause: %s',
-                    job_input.id, raw_message)
+                    job_input.id,
+                    raw_message,
+                )
                 validation_response = ValidationResponse()
                 validation_response.errors.append(
                     ValidationError(
-                        title="Batch prediction failed",
+                        title='Batch prediction failed',
                         message=maybe_get_public_message(ex)
-                        or ("An internal error occurred while running the "
-                            "batch prediction job. Please retry the job. If "
-                            "the problem continues, contact Kumo support.")))
-                await self._exit_cleanup(validation_response, job_input.id,
-                                         home_dir, exception=ex)
+                        or (
+                            'An internal error occurred while running the '
+                            'batch prediction job. Please retry the job. If '
+                            'the problem continues, contact Kumo support.'
+                        ),
+                    )
+                )
+                await self._exit_cleanup(
+                    validation_response, job_input.id, home_dir, exception=ex
+                )
             raise
         finally:
             # Finalize unconditionally so a pre-enqueue failure can't leave the
@@ -201,7 +215,8 @@ class BatchPredictionParentWorkflow(JobWorkflowCancellationMixin):
                 _configured_max_durable_gpu_slots(),
             )
         self._data_backend_ctx = DataBackendContext(
-            deploy_env(), DataBackendSettings(disable_async_ingestion=False))
+            deploy_env(), DataBackendSettings(disable_async_ingestion=False)
+        )
 
         validation_response = ValidationResponse()
 
@@ -216,14 +231,18 @@ class BatchPredictionParentWorkflow(JobWorkflowCancellationMixin):
         home_dir = get_job_dir(get_job_base_dir(), job_input.id)
         self._home_dir = home_dir
         await workflow.execute_activity(
-            init_home_dir_activity, args=[home_dir],
-            schedule_to_close_timeout=timedelta(hours=1))
+            init_home_dir_activity,
+            args=[home_dir],
+            schedule_to_close_timeout=timedelta(hours=1),
+        )
         self.check_cancelled()
 
         # Mark job status as RUNNING
         await self._save_output(
-            BatchPredictionJobOutput(status=JobStatus.RUNNING,
-                                     log=JobEventLogEntry.starting()))
+            BatchPredictionJobOutput(
+                status=JobStatus.RUNNING, log=JobEventLogEntry.starting()
+            )
+        )
 
         # This batch-prediction job may reuse a separate prediction-table
         # generation ("gen") job. BP must score on the SAME graph version the
@@ -234,8 +253,7 @@ class BatchPredictionParentWorkflow(JobWorkflowCancellationMixin):
         # when the version is still unset: TT-NG leaves it unset at submission
         # for this reason; the non-TT-NG path sets it at submission and skips.
         gen_pred_table_job_id = job_input.generate_pred_table_job_id
-        if (gen_pred_table_job_id is not None
-                and job_input.graph_version_info is None):
+        if gen_pred_table_job_id is not None and job_input.graph_version_info is None:
             gen_job_id = GeneratePredictionTableJobID(gen_pred_table_job_id)
             if not gen_job_id.is_child_of(job_input.id):
                 # Wait for the gen job to finish, then read the version it used.
@@ -245,22 +263,26 @@ class BatchPredictionParentWorkflow(JobWorkflowCancellationMixin):
                     task_queue=DATA_BACKEND_TASK_QUEUE,
                     retry_policy=CHILD_WF_WAITING_RETRY_POLICY,
                     schedule_to_close_timeout=timedelta(
-                        hours=DATA_BACKEND_MATERIALIZE_TIMEOUT_HOURS),
+                        hours=DATA_BACKEND_MATERIALIZE_TIMEOUT_HOURS
+                    ),
                 )
                 self.check_cancelled()
                 gen_input = await workflow.execute_activity(
                     MLBackendActivities.load_decoupled_gen_pred_table_input,
                     args=[job_input, gen_job_id],
-                    schedule_to_close_timeout=timedelta(minutes=10))
+                    schedule_to_close_timeout=timedelta(minutes=10),
+                )
                 if gen_input is not None:
                     # Use the gen job's graph version for this BP job. The
                     # version step + refresh below run on it; the later wait
                     # for the gen job is then a no-op (it already finished).
                     job_input.graph_data_compute_input = (
-                        gen_input.graph_data_compute_input)
+                        gen_input.graph_data_compute_input
+                    )
                     job_input.graph_version_info = gen_input.graph_version_info
                     job_input.config.graph_data_version = (
-                        gen_input.graph_version_info.graph_data_version)
+                        gen_input.graph_version_info.graph_data_version
+                    )
                     self.check_cancelled()
 
         # Determine graph data version.
@@ -271,19 +293,24 @@ class BatchPredictionParentWorkflow(JobWorkflowCancellationMixin):
                 args=[job_input.graph_data_compute_input, job_input.id],
                 task_queue=DATA_BACKEND_TASK_QUEUE,
                 schedule_to_close_timeout=timedelta(
-                    hours=DATA_BACKEND_IO_TIMEOUT_HOURS),
+                    hours=DATA_BACKEND_IO_TIMEOUT_HOURS
+                ),
                 cancellation_type=(
-                    ActivityCancellationType.WAIT_CANCELLATION_COMPLETED),
+                    ActivityCancellationType.WAIT_CANCELLATION_COMPLETED
+                ),
             )
             self.check_cancelled()
             # Save {job_id: graph data version} mapping explicitly into
             # job DB.  Note that today we write {job_id: table versions} to
             # data backend cache which we should get rid of.
             await workflow.execute_activity(
-                JobOutputActivities.save_pred_job_graph_version, args=[
+                JobOutputActivities.save_pred_job_graph_version,
+                args=[
                     job_input.id,
                     graph_version_info.graph_data_version,
-                ], schedule_to_close_timeout=timedelta(minutes=10))
+                ],
+                schedule_to_close_timeout=timedelta(minutes=10),
+            )
             self.check_cancelled()
             # Set graph version info in job_input to propagate it to
             # child workflow(s).
@@ -299,28 +326,27 @@ class BatchPredictionParentWorkflow(JobWorkflowCancellationMixin):
                 job_input.id,
                 self._resource_hint,
             ],
-            id=GraphRefreshWorkflow.compose_wf_id(
-                job_input.graph_data_compute_input),
-            execution_timeout=timedelta(
-                hours=DATA_BACKEND_REFRESH_TIMEOUT_HOURS),
+            id=GraphRefreshWorkflow.compose_wf_id(job_input.graph_data_compute_input),
+            execution_timeout=timedelta(hours=DATA_BACKEND_REFRESH_TIMEOUT_HOURS),
             task_queue=DATA_BACKEND_TASK_QUEUE,
             cancellation_type=ChildWorkflowCancellationType.TRY_CANCEL,
             parent_close_policy=ParentClosePolicy.REQUEST_CANCEL,
         )
         validation_response.merge(result.validation)
         if not validation_response.ok:
-            await save_validation_response(validation_response, home_dir,
-                                           job_input.id)
+            await save_validation_response(validation_response, home_dir, job_input.id)
 
             job_output = BatchPredictionJobOutput.failed(
                 validation=validation_response,
-                workflow_end_state=WorkflowExecutionStatus.COMPLETED)
+                workflow_end_state=WorkflowExecutionStatus.COMPLETED,
+            )
             await self._save_output(job_output)
             return validation_response
 
         # Update timestamp unit for graph config in job input
         updated_graph_config = update_graph_config_from_graph_input(
-            job_input.predictive_query.graph, graph_input)
+            job_input.predictive_query.graph, graph_input
+        )
         job_input.predictive_query.graph = updated_graph_config
 
         # Step 2: Generate Prediction Table
@@ -329,19 +355,21 @@ class BatchPredictionParentWorkflow(JobWorkflowCancellationMixin):
 
         validation_response.merge(pred_table_result.validation)
         if not validation_response.ok:
-            await save_validation_response(validation_response, home_dir,
-                                           job_input.id)
+            await save_validation_response(validation_response, home_dir, job_input.id)
             job_output = BatchPredictionJobOutput.failed(
                 validation=validation_response,
-                workflow_end_state=WorkflowExecutionStatus.COMPLETED)
+                workflow_end_state=WorkflowExecutionStatus.COMPLETED,
+            )
             await self._save_output(job_output)
             return validation_response
 
         if job_input.stop_after_table_gen:
             path = pred_table_result.pred_table_path
-            log.info(f"Workflow was requested to stop after prediction table "
-                     f"generation (output path {path}, so it is "
-                     f"exiting.")
+            log.info(
+                f'Workflow was requested to stop after prediction table '
+                f'generation (output path {path}, so it is '
+                f'exiting.'
+            )
             # This is a SUCCESS-shaped early-return: the pred table was
             # generated and validation passed, but no prediction ran. Without
             # an explicit terminal status, finalize_job's safety-net would see
@@ -351,9 +379,11 @@ class BatchPredictionParentWorkflow(JobWorkflowCancellationMixin):
             # (no predictions produced), which still satisfies the DONE
             # invariant (results present).
             job_output = BatchPredictionJobOutput(
-                status=JobStatus.DONE, log=JobEventLogEntry.done(),
+                status=JobStatus.DONE,
+                log=JobEventLogEntry.done(),
                 results=BatchPredictionJobResults(key_cols=[]),
-                workflow_end_state=WorkflowExecutionStatus.COMPLETED)
+                workflow_end_state=WorkflowExecutionStatus.COMPLETED,
+            )
             await self._save_output(job_output)
             return validation_response
 
@@ -374,15 +404,16 @@ class BatchPredictionParentWorkflow(JobWorkflowCancellationMixin):
             ],
             id=MaterializePredictionTaskWorkflow.generate_wf_id(job_input.id),
             cancellation_type=ChildWorkflowCancellationType.TRY_CANCEL,
-            parent_close_policy=ParentClosePolicy.TERMINATE)
+            parent_close_policy=ParentClosePolicy.TERMINATE,
+        )
 
         validation_response.merge(response)
         if not validation_response.ok:
-            await save_validation_response(validation_response, home_dir,
-                                           job_input.id)
+            await save_validation_response(validation_response, home_dir, job_input.id)
             job_output = BatchPredictionJobOutput.failed(
                 validation=validation_response,
-                workflow_end_state=WorkflowExecutionStatus.COMPLETED)
+                workflow_end_state=WorkflowExecutionStatus.COMPLETED,
+            )
             await self._save_output(job_output)
             return validation_response
 
@@ -390,25 +421,32 @@ class BatchPredictionParentWorkflow(JobWorkflowCancellationMixin):
         self.check_cancelled()
         # parent's Databricks cluster.
         output = await workflow.execute_child_workflow(
-            BatchPredictionJobWorkflow.run, args=[
+            BatchPredictionJobWorkflow.run,
+            args=[
                 job_input,
                 ml_job_settings,
                 job_config_path,
                 self._resource_hint,
-            ], id=BatchPredictionJobWorkflow.generate_wf_id(job_input.id),
+            ],
+            id=BatchPredictionJobWorkflow.generate_wf_id(job_input.id),
             cancellation_type=ChildWorkflowCancellationType.TRY_CANCEL,
-            parent_close_policy=ParentClosePolicy.REQUEST_CANCEL)
+            parent_close_policy=ParentClosePolicy.REQUEST_CANCEL,
+        )
 
         if output.status == JobStatus.DONE:
             self.check_cancelled()
 
             # Step 6 (may be optional): XAI aggregation
-            if job_input.config.task_type not in {
-                    TaskType.FORECASTING, TaskType.MULTILABEL_RANKING
-            } and job_input.config.explanations:
+            if (
+                job_input.config.task_type
+                not in {TaskType.FORECASTING, TaskType.MULTILABEL_RANKING}
+                and job_input.config.explanations
+            ):
                 await workflow.execute_activity(
-                    xai_aggregation_activity, args=[job_input, ml_job_settings],
-                    schedule_to_close_timeout=timedelta(minutes=30))
+                    xai_aggregation_activity,
+                    args=[job_input, ml_job_settings],
+                    schedule_to_close_timeout=timedelta(minutes=30),
+                )
 
         else:
             log.warning('Skipping BP stats activity because job failed')
@@ -423,15 +461,17 @@ class BatchPredictionParentWorkflow(JobWorkflowCancellationMixin):
             )
 
         # Write validation outputs to the job directory before terminalizing.
-        await save_validation_response(validation_response, home_dir,
-                                       job_input.id)
+        await save_validation_response(validation_response, home_dir, job_input.id)
 
-        if (output.status == JobStatus.DONE and PredictionArtifactType.PREDICTIONS
-                in requested_prediction_artifact_types(job_input.config)):
+        if (
+            output.status == JobStatus.DONE
+            and PredictionArtifactType.PREDICTIONS
+            in requested_prediction_artifact_types(job_input.config)
+        ):
             # Detailed BP column statistics are eventual MLOps data, not part
             # of BP success. Temporal owns this child after start is accepted;
             # parent completion and cancellation must not terminate it.
-            with catch_and_log(ex_to_raise=(CancelledError, )):
+            with catch_and_log(ex_to_raise=(CancelledError,)):
                 deadline_hours = DATA_BACKEND_BP_STATS_TIMEOUT_HOURS * 2
                 await workflow.start_child_workflow(
                     BatchPredictionStatsWorkflow.run,
@@ -453,14 +493,17 @@ class BatchPredictionParentWorkflow(JobWorkflowCancellationMixin):
             await self._save_output(output)
         return validation_response
 
-    async def _generate_pred_table(self, ) -> GeneratePredTableResult:
+    async def _generate_pred_table(
+        self,
+    ) -> GeneratePredTableResult:
         custom_source = self._job_input.config.custom_pred_table_source
         if custom_source is not None:
             reference = self._job_input.custom_pred_table_connector
             if reference is None:
                 raise ValueError(
                     'Custom prediction source is missing its connector '
-                    'execution reference')
+                    'execution reference'
+                )
             # On TT-NG the custom pred table needs a gen-only durable bundle
             # (build_prediction_table_artifacts_for_existing_table) beside the
             # pred table, mirroring the custom TRAIN path -- otherwise
@@ -477,11 +520,13 @@ class BatchPredictionParentWorkflow(JobWorkflowCancellationMixin):
             # lives in the activity (not here) to keep the workflow deterministic
             # (no env/wheel probe in workflow code), exactly like
             # CustomTrainTableWorkflow.
-            custom_pred_table_path = osp.join(self._home_dir, 'inputs',
-                                              'custom_prediction_table')
+            custom_pred_table_path = osp.join(
+                self._home_dir, 'inputs', 'custom_prediction_table'
+            )
             from rest.backends.ml_backend.activities import (
                 stage_custom_prediction_table,
             )
+
             custom_pred_table_path = await workflow.execute_activity(
                 stage_custom_prediction_table,
                 args=[
@@ -491,18 +536,19 @@ class BatchPredictionParentWorkflow(JobWorkflowCancellationMixin):
                 ],
                 task_queue=DATA_BACKEND_TASK_QUEUE,
                 schedule_to_close_timeout=timedelta(
-                    hours=DATA_BACKEND_IO_TIMEOUT_HOURS),
+                    hours=DATA_BACKEND_IO_TIMEOUT_HOURS
+                ),
             )
             assert self._job_input.graph_data_compute_input is not None
             assert self._job_input.graph_version_info is not None
             snapshot_id = DataSnapshot.GRAPH.canonicalize(
                 f'{_graph_key_to_v2(self._job_input.graph_data_compute_input.graph_key)}'
-                f'@{self._job_input.graph_version_info.graph_data_version}')
+                f'@{self._job_input.graph_version_info.graph_data_version}'
+            )
             await run_pooled_activity(
                 snapshot_id=snapshot_id,
                 activity=SnapshotActivity.GEN_CUSTOM_TT,
-                activity_fn=(
-                    SnapshotActivities.build_ttng_custom_pred_table_bundle),
+                activity_fn=(SnapshotActivities.build_ttng_custom_pred_table_bundle),
                 args=[
                     snapshot_id,
                     self._job_input,
@@ -510,27 +556,29 @@ class BatchPredictionParentWorkflow(JobWorkflowCancellationMixin):
                     custom_pred_table_path,
                 ],
                 schedule_to_close_timeout=timedelta(
-                    hours=DATA_BACKEND_MATERIALIZE_TIMEOUT_HOURS),
+                    hours=DATA_BACKEND_MATERIALIZE_TIMEOUT_HOURS
+                ),
                 heartbeat_timeout=HEARTBEAT_TIMEOUT_COMPUTE_ACTIVITY,
                 retry_policy=COMPUTE_ACTIVITY_RETRY_POLICY,
             )
-            return GeneratePredTableResult(custom_pred_table_path,
-                                           ValidationResponse())
+            return GeneratePredTableResult(custom_pred_table_path, ValidationResponse())
 
         # If generate-train-table is executed in a decoupled workflow,
         # wait for the workflow result; otherwise kick it off as child
         # workflow.
         assert self._job_input.generate_pred_table_job_id
         gen_pred_table_job_id = GeneratePredictionTableJobID(
-            self._job_input.generate_pred_table_job_id)
+            self._job_input.generate_pred_table_job_id
+        )
         if not gen_pred_table_job_id.is_child_of(self._job_input.id):
             # Generate-Pred-Table job was executed in standalone
             # (decoupled) mode.
             await self._save_output(
                 BatchPredictionJobOutput(
                     status=JobStatus.RUNNING,
-                    log=JobEventLogEntry.waiting_pred_table(
-                        gen_pred_table_job_id)))
+                    log=JobEventLogEntry.waiting_pred_table(gen_pred_table_job_id),
+                )
+            )
 
             pred_table_result: GeneratePredTableResult = (
                 await workflow.execute_activity(
@@ -539,8 +587,10 @@ class BatchPredictionParentWorkflow(JobWorkflowCancellationMixin):
                     task_queue=DATA_BACKEND_TASK_QUEUE,
                     retry_policy=CHILD_WF_WAITING_RETRY_POLICY,
                     schedule_to_close_timeout=timedelta(
-                        hours=DATA_BACKEND_MATERIALIZE_TIMEOUT_HOURS),
-                ))
+                        hours=DATA_BACKEND_MATERIALIZE_TIMEOUT_HOURS
+                    ),
+                )
+            )
 
         else:
             home_dir = get_job_dir(
@@ -551,7 +601,9 @@ class BatchPredictionParentWorkflow(JobWorkflowCancellationMixin):
             await self._save_output(
                 BatchPredictionJobOutput(
                     status=JobStatus.RUNNING,
-                    log=JobEventLogEntry.generating_pred_table()))
+                    log=JobEventLogEntry.generating_pred_table(),
+                )
+            )
             # parent's Databricks cluster.
             pred_table_result = await workflow.execute_child_workflow(
                 GeneratePredictionTableWorkflow.run,
@@ -565,6 +617,7 @@ class BatchPredictionParentWorkflow(JobWorkflowCancellationMixin):
                 ],
                 id=gen_pred_table_job_id.wf_id,
                 cancellation_type=ChildWorkflowCancellationType.TRY_CANCEL,
-                parent_close_policy=ParentClosePolicy.TERMINATE)
+                parent_close_policy=ParentClosePolicy.TERMINATE,
+            )
 
         return pred_table_result

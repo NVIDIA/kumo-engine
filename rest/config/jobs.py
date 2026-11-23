@@ -171,8 +171,10 @@ class BatchPredictionRequest:
             filter_override_args=filter_override_args,
             task_type=task_type,
             num_classes_to_return=(
-                effective_num_classes_to_return if task_type
-                not in {TaskType.REGRESSION, TaskType.FORECASTING} else None),
+                effective_num_classes_to_return
+                if task_type not in {TaskType.REGRESSION, TaskType.FORECASTING}
+                else None
+            ),
             binary_classification_threshold=effective_threshold,
             outputs=self.outputs,
             prediction_time=self.predict_options.prediction_time,
@@ -185,6 +187,7 @@ class BatchPredictionRequest:
 @kumo_dataclass
 class BatchPredictionJobSummary:
     """Summary of a successful batch prediction job."""
+
     num_entities_predicted: int
     # TODO(zack): Add more stats #1847
     # TODO(zack): maybe add stats per artifact?

@@ -29,8 +29,11 @@ from statedb.utils.errors import ProjectNotFoundError
 log = logging.getLogger(__name__)
 
 _NON_TAG_QUERY_PARAMETERS = {*RESERVED_KEYWORDS, 'project_id'}
-_RESERVED_QUERY_PARAMETERS = (_NON_TAG_QUERY_PARAMETERS
-                              | {'model_id', 'pquery_id', 'pquery_name'})
+_RESERVED_QUERY_PARAMETERS = _NON_TAG_QUERY_PARAMETERS | {
+    'model_id',
+    'pquery_id',
+    'pquery_name',
+}
 APPLIED_TAG_FILTERS_HEADER = 'X-Applied-Job-Tag-Filters'
 
 
@@ -45,17 +48,18 @@ def public_job_failure_validation(
     message = failure_info.message or title
     prefix = f'{title}. '
     if message.casefold().startswith(prefix.casefold()):
-        message = message[len(prefix):]
-    return ValidationResponse(errors=[
-        ValidationError(
-            title=title,
-            message=message,
-        )
-    ])
+        message = message[len(prefix) :]
+    return ValidationResponse(
+        errors=[
+            ValidationError(
+                title=title,
+                message=message,
+            )
+        ]
+    )
 
 
-def export_training_metrics(
-        result: TrainingJobResults) -> ModelEvaluationMetrics:
+def export_training_metrics(result: TrainingJobResults) -> ModelEvaluationMetrics:
     exported_metrics = ModelEvaluationMetrics()
 
     def transform(metrics: Optional[List[training_job.Metric]]) -> List[Metric]:
@@ -71,15 +75,16 @@ def export_training_metrics(
 
 # Check custom job tags and raise 422 HTTP exception if any tag is invalid.
 def validate_custom_job_tags(
-        raw_tags: Dict[str, str],
-        allow_null_value: bool = False) -> Dict[JobTagKey, JobTagValue]:
+    raw_tags: Dict[str, str], allow_null_value: bool = False
+) -> Dict[JobTagKey, JobTagValue]:
     try:
         tags = {JobTagKey(k): JobTagValue(v) for k, v in raw_tags.items()}
         for k, v in tags.items():
             check_custom_tag_key(k)
             if not allow_null_value and JobTagValue.null_or_empty(v):
                 raise ValueError(
-                    f'Custom job tag key={k} has null/none/empty value: {v}')
+                    f'Custom job tag key={k} has null/none/empty value: {v}'
+                )
     except ValueError as ex:
         raise HTTPException(HTTPStatus.UNPROCESSABLE_ENTITY, str(ex)) from ex
 
@@ -103,8 +108,8 @@ async def update_job_tags(
         values = request.query_params.getlist(k)
         if len(values) > 1:
             raise HTTPException(
-                HTTPStatus.BAD_REQUEST,
-                f'Job tag key={k} has multiple values: {values}')
+                HTTPStatus.BAD_REQUEST, f'Job tag key={k} has multiple values: {values}'
+            )
         assert len(values) == 1
         raw_tags[str(k)] = str(values[0])
 
@@ -136,15 +141,16 @@ def get_tag_filters(
         if lowered != key and lowered in _RESERVED_QUERY_PARAMETERS:
             raise HTTPException(
                 HTTPStatus.BAD_REQUEST,
-                f"Unknown query parameter '{key}'; did you mean "
-                f"'{lowered}'?")
+                f"Unknown query parameter '{key}'; did you mean '{lowered}'?",
+            )
         tag_filters[key] = request.query_params[k]
 
     try:
         filters = {JobTagKey(k): JobTagValue(v) for k, v in tag_filters.items()}
     except ValueError as ex:
-        raise HTTPException(HTTPStatus.BAD_REQUEST,
-                            f'Invalid query parameter: {ex}') from ex
+        raise HTTPException(
+            HTTPStatus.BAD_REQUEST, f'Invalid query parameter: {ex}'
+        ) from ex
     if filters and response is not None:
         response.headers[APPLIED_TAG_FILTERS_HEADER] = ','.join(sorted(filters))
     return filters
@@ -235,5 +241,6 @@ def require_project_id_valid(
                 HTTPStatus.SERVICE_UNAVAILABLE,
                 'External group membership is unavailable; please retry.',
             )
-        raise HTTPException(HTTPStatus.FORBIDDEN,
-                            f'Project {project_id} is not accessible.')
+        raise HTTPException(
+            HTTPStatus.FORBIDDEN, f'Project {project_id} is not accessible.'
+        )

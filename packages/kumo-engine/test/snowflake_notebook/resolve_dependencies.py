@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Resolve a candidate's Snowflake extra and create a dependency-only archive."""
+
 import argparse
 import json
 import os
@@ -16,8 +17,11 @@ from dependency_inventory import inventory
 
 
 def runtime_target():
-    return dict(python='.'.join(map(str, sys.version_info[:2])),
-                system=platform.system(), architecture=platform.machine())
+    return dict(
+        python='.'.join(map(str, sys.version_info[:2])),
+        system=platform.system(),
+        architecture=platform.machine(),
+    )
 
 
 def resolve(wheel, destination, plan):
@@ -40,24 +44,52 @@ def resolve(wheel, destination, plan):
             raise ValueError('Authored source builds must be pure Python wheels')
         name, version, *_ = filename.split('-')
         requirement = name + '==' + version
-        subprocess.run(command + [
-            'wheel', '--no-deps', '--index-url', plan['source_index'],
-            '--wheel-dir', str(wheels), requirement
-        ], check=True, env=dict(os.environ, SOURCE_DATE_EPOCH='0'))
+        subprocess.run(
+            command
+            + [
+                'wheel',
+                '--no-deps',
+                '--index-url',
+                plan['source_index'],
+                '--wheel-dir',
+                str(wheels),
+                requirement,
+            ],
+            check=True,
+            env=dict(os.environ, SOURCE_DATE_EPOCH='0'),
+        )
     platforms = []
     minor = int(target['maximum_manylinux'].removeprefix('2.'))
     for version in range(minor, 4, -1):
         platforms += ['--platform', f'manylinux_2_{version}_x86_64']
-    for legacy in ('manylinux2014_x86_64', 'manylinux2010_x86_64',
-                   'manylinux1_x86_64'):
+    for legacy in ('manylinux2014_x86_64', 'manylinux2010_x86_64', 'manylinux1_x86_64'):
         platforms += ['--platform', legacy]
-    subprocess.run(command + [
-        'download', '--only-binary=:all:', '--index-url', plan['source_index'],
-        '--python-version', target['python'], '--implementation', 'cp',
-        '--abi', 'cp' + target['python'].replace('.', ''), '--abi', 'abi3',
-        '--abi', 'none', *platforms, '--find-links', str(wheels),
-        '--dest', str(wheels), str(wheel.resolve()) + '[snowflake]'
-    ], check=True)
+    subprocess.run(
+        command
+        + [
+            'download',
+            '--only-binary=:all:',
+            '--index-url',
+            plan['source_index'],
+            '--python-version',
+            target['python'],
+            '--implementation',
+            'cp',
+            '--abi',
+            'cp' + target['python'].replace('.', ''),
+            '--abi',
+            'abi3',
+            '--abi',
+            'none',
+            *platforms,
+            '--find-links',
+            str(wheels),
+            '--dest',
+            str(wheels),
+            str(wheel.resolve()) + '[snowflake]',
+        ],
+        check=True,
+    )
     archive = destination / 'wheelhouse.tar'
     with tarfile.open(archive, 'w', format=tarfile.PAX_FORMAT) as bundle:
         for path in sorted(wheels.iterdir()):
@@ -73,8 +105,7 @@ def resolve(wheel, destination, plan):
                 bundle.addfile(member, source)
             path.unlink()
     result = inventory(archive, plan)
-    (destination / 'dependencies.json').write_text(
-        json.dumps(result, indent=2) + '\n')
+    (destination / 'dependencies.json').write_text(json.dumps(result, indent=2) + '\n')
     shutil.rmtree(wheels)
     return archive
 
@@ -83,11 +114,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--wheel', type=Path, required=True)
     parser.add_argument('--output-dir', type=Path, required=True)
-    parser.add_argument('--plan', type=Path,
-                        default=Path(__file__).with_name('dependency-plan.json'))
+    parser.add_argument(
+        '--plan', type=Path, default=Path(__file__).with_name('dependency-plan.json')
+    )
     args = parser.parse_args()
-    print(resolve(args.wheel, args.output_dir,
-                  json.loads(args.plan.read_text())))
+    print(resolve(args.wheel, args.output_dir, json.loads(args.plan.read_text())))
 
 
 if __name__ == '__main__':

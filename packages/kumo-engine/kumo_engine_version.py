@@ -18,4 +18,4 @@ def installed_version() -> Optional[str]:
     r"""The release version of the installed `kumo-engine` wheel (the root
     `VERSION`, stamped at build time). Editable installs defer (return `None`),
     so a source checkout still reports its git revision."""
-    return installed_distribution_version("kumo-engine")
+    return installed_distribution_version('kumo-engine')

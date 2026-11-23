@@ -4,6 +4,7 @@
 """Utility functions for normalizing persist-directory paths across
 local and cloud storage backends.
 """
+
 import os
 
 from io_utils.fsutil import is_local

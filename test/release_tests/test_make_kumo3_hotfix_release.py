@@ -9,6 +9,9 @@ Everywhere else this script appears it is either refusing something
 it could be broken end to end with the suite still green. This drives the
 real script through a real cut against a synthetic origin.
 """
+
+import pytest
+
 from test.release_tests.conftest import (
     GH_STUB,
     REPO_ROOT,
@@ -19,9 +22,7 @@ from test.release_tests.conftest import (
     stub,
 )
 
-import pytest
-
-SCRIPT_REL = "scripts/release/make_kumo3_hotfix_release.sh"
+SCRIPT_REL = 'scripts/release/make_kumo3_hotfix_release.sh'
 
 # Two different things reach `python3`: preflight's import check, which only
 # has to succeed, and the image builds, which are the point of the test and so
@@ -43,18 +44,18 @@ class Kumo3HotfixRepo(SandboxRepo):
 def hotfix_repo(tmp_path):
     origin, root = init_sandbox_repo(tmp_path)
 
-    (root / "scripts" / "release").mkdir(parents=True)
+    (root / 'scripts' / 'release').mkdir(parents=True)
     (root / SCRIPT_REL).write_text((REPO_ROOT / SCRIPT_REL).read_text())
 
-    (root / "README.md").write_text("seed\n")
-    git(root, "add", "-A")
-    git(root, "commit", "-m", "seed")
-    git(root, "push", "origin", "master")
+    (root / 'README.md').write_text('seed\n')
+    git(root, 'add', '-A')
+    git(root, 'commit', '-m', 'seed')
+    git(root, 'push', 'origin', 'master')
 
-    bin_dir = tmp_path / "bin"
+    bin_dir = tmp_path / 'bin'
     bin_dir.mkdir()
-    stub(bin_dir / "gh", GH_STUB)
-    stub(bin_dir / "python3", PYTHON_STUB)
+    stub(bin_dir / 'gh', GH_STUB)
+    stub(bin_dir / 'python3', PYTHON_STUB)
 
     return Kumo3HotfixRepo(root=root, origin=origin, bin=bin_dir)
 
@@ -63,18 +64,19 @@ def test_cuts_a_kumo3_hotfix(hotfix_repo):
     # CI=true and no --dry-run: the mode the sweep runs unattended, and the
     # only one that genuinely mutates. `git` is real, so the tag assertion
     # below is about a ref that truly reached the sandbox remote.
-    release_branch_with_backport(hotfix_repo, "v3.0", "v3.0.0")
-    proc = hotfix_repo.run("true")
+    release_branch_with_backport(hotfix_repo, 'v3.0', 'v3.0.0')
+    proc = hotfix_repo.run('true')
 
-    assert proc.returncode == 0, (
-        f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}")
-    assert "refs/tags/v3.0.1" in hotfix_repo.origin_refs()
-    assert "gh release create v3.0.1 --verify-tag --title v3.0.1" in proc.stdout
+    assert proc.returncode == 0, f'stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}'
+    assert 'refs/tags/v3.0.1' in hotfix_repo.origin_refs()
+    assert 'gh release create v3.0.1 --verify-tag --title v3.0.1' in proc.stdout
     # Both builds, for the new patch tag and for the floating minor tag that
     # keeps 'v3.0' pointing at the newest v3.0.x images.
-    for tag in ("v3.0.1", "v3.0"):
-        assert (f"python3 scripts/release/build_kumo_images.py {tag} "
-                "--app kumo3 --target saas --publish_to_acr") in proc.stdout
+    for tag in ('v3.0.1', 'v3.0'):
+        assert (
+            f'python3 scripts/release/build_kumo_images.py {tag} '
+            '--app kumo3 --target saas --publish_to_acr'
+        ) in proc.stdout
     # check_updated_release_branches.sh greps for exactly this line and awks
     # the fourth field out of it; without it the hotfix is never recorded.
-    assert "New version is v3.0.1" in proc.stdout
+    assert 'New version is v3.0.1' in proc.stdout

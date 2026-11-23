@@ -18,7 +18,8 @@ logger = logging.getLogger(__name__)
 
 # Constant, default encryption key that's only meant for dev/test
 _DEFAULT_ENCRYPTION_KEY = urlsafe_b64encode(
-    hashlib.md5("kumo-default-encryption-key".encode()).hexdigest().encode())
+    hashlib.md5('kumo-default-encryption-key'.encode()).hexdigest().encode()
+)
 
 
 class GlobalEncryptor:
@@ -40,34 +41,30 @@ class GlobalEncryptor:
         else:
             secret_name = os.getenv('FERNET_SECRET_NAME', 'kumo-secret-key')
             secrets = get_secrets(secret_name)
-            encryption_key: bytes = secrets[
-                'credentials_encryption_key'].encode()
+            encryption_key: bytes = secrets['credentials_encryption_key'].encode()
         try:
             self._cipher = Fernet(encryption_key)
         except ValueError as err:
             raise ValueError('Invalid credentials encryption key') from err
 
     def encrypt(self, secret: str) -> str:
-        return b64encode(self._cipher.encrypt(
-            secret.encode('utf-8'))).decode('utf-8')
+        return b64encode(self._cipher.encrypt(secret.encode('utf-8'))).decode('utf-8')
 
     def decrypt(self, encrypted: str) -> str:
         try:
             return self._cipher.decrypt(b64decode(encrypted)).decode('utf-8')
         except Exception as ex:  # noqa: E722
             logger.error('Failed to decrypt[%s]: %s', type(ex), ex)
-            raise ValueError(
-                f'Failed to decrypt secret ({type(ex)}): {ex}') from ex
+            raise ValueError(f'Failed to decrypt secret ({type(ex)}): {ex}') from ex
 
 
 class EncryptedStr(SecretStr):
     PREFIX = '__encrypted__'
 
     def __init__(self, value: str | SecretStr):
-        value_str = (value
-                     if isinstance(value, str) else value.get_secret_value())
+        value_str = value if isinstance(value, str) else value.get_secret_value()
         if value_str.startswith(self.PREFIX):
-            value_str = GlobalEncryptor().decrypt(value_str[len(self.PREFIX):])
+            value_str = GlobalEncryptor().decrypt(value_str[len(self.PREFIX) :])
 
         return super().__init__(value_str)
 
@@ -84,13 +81,16 @@ class EncryptedStr(SecretStr):
     @classmethod
     def __get_pydantic_core_schema__(cls, source_type, handler):
         from pydantic_core import core_schema
+
         str_schema = core_schema.no_info_before_validator_function(
-            cls._unwrap, core_schema.str_schema())
+            cls._unwrap, core_schema.str_schema()
+        )
         return core_schema.no_info_after_validator_function(
             cls._wrap,
             str_schema,
             serialization=core_schema.plain_serializer_function_ser_schema(
-                cls._serialize, info_arg=True, when_used='always'),
+                cls._serialize, info_arg=True, when_used='always'
+            ),
         )
 
     @classmethod
@@ -105,7 +105,7 @@ class EncryptedStr(SecretStr):
             return value.get_secret_value()
         if isinstance(value, str):
             return value
-        raise TypeError(f"Unsupported value for EncryptedStr: {value!r}")
+        raise TypeError(f'Unsupported value for EncryptedStr: {value!r}')
 
     @classmethod
     def _wrap(cls, value):
