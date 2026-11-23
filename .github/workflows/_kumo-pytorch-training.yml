@@ -1,0 +1,109 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: PyTorch training
+on:  # yamllint disable-line rule:truthy
+  workflow_call:
+    inputs:
+      binding:
+        description: Registered GPU training binding, or empty for a CPU model.
+        type: string
+        required: true
+      full-population:
+        description: Run the manual two-epoch campaign on the complete source.
+        type: boolean
+        default: false
+      tier:
+        description: CPU model dataset tier.
+        type: string
+      flow:
+        description: CPU model flow.
+        type: string
+      seed:
+        description: CPU model training seed.
+        type: string
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+    working-directory: packages/experimental/kumo-pytorch
+
+jobs:
+  cpu:
+    name: CPU
+    if: inputs.binding == ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ inputs.tier == 't2a' && 30 || 75 }}
+    steps:
+      - &checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with: {persist-credentials: false}
+      - uses: ./.github/actions/kumo-pytorch-setup
+        with: {diskgraph-wheel-artifact: diskgraph-wheel}
+      - name: Train, persist, infer and serve
+        env:
+          KUMO_PYTORCH_DIAGNOSTICS: &diagnostics ${{ runner.temp }}/pytorch-${{ github.run_id }}-${{ github.run_attempt }}
+          TIER: ${{ inputs.tier }}
+          FLOW: ${{ inputs.flow }}
+          SEED: ${{ inputs.seed }}
+        run: |
+          python -m tests.e2e.ci_command "$KUMO_PYTORCH_DIAGNOSTICS/training.log" \
+            python -m tests.e2e.runs "$TIER" "$FLOW" "$SEED" --e2e-dir "$RUNNER_TEMP/e2e"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: kumo-pytorch-${{ inputs.tier }}-${{ github.run_attempt }}-${{ inputs.flow }}-seed${{ inputs.seed }}
+          path: |
+            ${{ runner.temp }}/e2e/${{ inputs.tier }}/${{ inputs.flow }}-seed${{ inputs.seed }}/
+            !${{ runner.temp }}/e2e/${{ inputs.tier }}/**/index/**
+          retention-days: 14
+      - uses: ./.github/actions/kumo-pytorch-results
+        if: always()
+        with:
+          name: ${{ inputs.tier }}-log-${{ inputs.flow }}-${{ inputs.seed }}
+
+  gpu:
+    name: GPU
+    if: inputs.binding != ''
+    runs-on: ${{ vars.KUMO_PYTORCH_BINDING_RUNNER || 'linux-amd64-gpu-rtxpro6000-latest-1' }}
+    timeout-minutes: 4320
+    environment: {name: gha-kumo-workflow-tests, deployment: false}
+    permissions: {contents: read, id-token: write}
+    env:
+      BINDING: ${{ inputs.binding }}
+      SCRATCH: ${{ vars.KUMO_PYTORCH_BINDING_SCRATCH }}
+      STAGE_FULL_BINDING: ${{ inputs.full-population && 'true' || 'false' }}
+      WORKLOAD: ${{ inputs.full-population && 'binding-train' || 'binding-throughput' }}
+    steps:
+      - *checkout
+      - name: Select read access for this binding
+        run: |
+          if [[ "$STAGE_FULL_BINDING" == true ]]; then
+            policy=$(python3 -m e2e.datasets.binding_sources "$BINDING" --policy)
+          else
+            pin="e2e/datasets/pins/throughput/${BINDING,,}.json"
+            policy=$(jq -c '{Version:"2012-10-17",Statement:[{Effect:"Allow",Action:"s3:GetObject",
+              Resource:(.bucket as $bucket | [.objects[].key | "arn:aws:s3:::" + $bucket + "/" + .] | unique)}]}' "$pin")
+            echo "DATASET_PINS=$pin" >> "$GITHUB_ENV"
+          fi
+          jq -e '.Statement[0].Resource | length > 0' <<< "$policy"
+          echo "DATASET_SESSION_POLICY=$policy" >> "$GITHUB_ENV"
+      - uses: ./.github/actions/kumo-pytorch-stage
+      - uses: ./.github/actions/kumo-pytorch-setup
+        with:
+          diskgraph-wheel-artifact: diskgraph-wheel
+          torch-backend: cu130
+      - name: ${{ inputs.full-population && 'Train for two complete epochs' || 'Measure training throughput' }}
+        env:
+          KUMO_PYTORCH_DIAGNOSTICS: *diagnostics
+        run: |
+          python -m tests.e2e.ci_command "$KUMO_PYTORCH_DIAGNOSTICS/training.log" \
+            python -m tests.e2e.runs "$WORKLOAD" "$BINDING" --e2e-dir "${TMPDIR:-$RUNNER_TEMP}" --output "$KUMO_PYTORCH_DIAGNOSTICS/report.json"
+      - uses: ./.github/actions/kumo-pytorch-results
+        if: always()
+        with:
+          name: ${{ env.WORKLOAD }}-${{ inputs.binding }}
+          path: ${{ runner.temp }}/pytorch-${{ github.run_id }}-${{ github.run_attempt }}/report.json

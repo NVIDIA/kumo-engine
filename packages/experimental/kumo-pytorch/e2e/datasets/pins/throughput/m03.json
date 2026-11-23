@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "bucket": "kumo-engine-arena",
+  "region": "us-west-2",
+  "expected_bucket_owner": "926922431314",
+  "upstream_sha256": {
+    "source_manifest": "db51ea0bf5bcae9252b87b684720dd7d74520acc34a4f042788abae1e0eb4bb5",
+    "anchor_manifest": "404ff82d14061b1b7b36d40626d0acf874662d4c1af662f4dd630b6eb598b7b2",
+    "anchors": "5a6476f7fc67761595ac063ba9892a8d9fbc08ff0f6e73b4dc8b4983efbbd5b6"
+  },
+  "capacity": 10440,
+  "split_counts": {
+    "train": 8192,
+    "valid": 256,
+    "test": 256
+  },
+  "expected_eligible": {
+    "event_type": {
+      "train": 6325,
+      "valid": 197,
+      "test": 194
+    },
+    "event_subtype": {
+      "train": 6325,
+      "valid": 197,
+      "test": 194
+    }
+  },
+  "objects": {
+    "anchors": {
+      "size": 612696,
+      "sha256": "dc7c5a5ab06e13e25dcb996505810b9e737da216f823837633e2ebe2276dd29b",
+      "key": "datasets/kumo-pytorch/throughput/v1/m03/598086e85a177d47ead802360ce5cd07fe45d9a756bc38b9767e3ad5315ac55b/anchors.parquet"
+    },
+    "roots": {
+      "size": 53759,
+      "sha256": "84f9e70d1c0fcf2cebd76b745491d69862e3fe9547a5840157a774b589fe3aac",
+      "key": "datasets/kumo-pytorch/throughput/v1/m03/598086e85a177d47ead802360ce5cd07fe45d9a756bc38b9767e3ad5315ac55b/roots.parquet"
+    },
+    "transactions": {
+      "size": 130056333,
+      "sha256": "59c428889d3c1da0847c99bf00e37a773351736d39eaa501c74b8c2889c53c5c",
+      "key": "datasets/kumo-pytorch/throughput/v1/m03/598086e85a177d47ead802360ce5cd07fe45d9a756bc38b9767e3ad5315ac55b/transactions.parquet"
+    }
+  }
+}

@@ -1,0 +1,305 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: PyTorch benchmarks
+run-name: PyTorch benchmark · ${{ inputs.mode }} · ${{ github.ref_name }}
+
+on:  # yamllint disable-line rule:truthy
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Benchmark to run
+        type: choice
+        required: true
+        default: cuda
+        options: [cuda, aml, l01-cuda, hi-small-memory, binding-full, binding-train, all, smoke, training, lifecycle, full]
+      binding:
+        description: Full-population binding (binding-train accepts one nightly binding or all six)
+        type: choice
+        default: E01
+        options: [E01, E02, E03, E04, E05, L01, S01, S02, S04, M03, M04, all]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ (endsWith(inputs.mode, 'cuda') || inputs.mode == 'aml') && 'cuda' || contains(fromJSON('["hi-small-memory","binding-full","binding-train"]'), inputs.mode) && inputs.mode || '25b' }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+    working-directory: packages/experimental/kumo-pytorch
+
+jobs:
+  plan:
+    name: Select benchmark
+    runs-on: ubuntu-24.04
+    permissions: {contents: read}
+    outputs:
+      plan: ${{ steps.select.outputs.plan }}
+      training: ${{ steps.select.outputs.training }}
+      evidence_pattern: ${{ steps.select.outputs.evidence_pattern }}
+    steps:
+      - &checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with:
+          persist-credentials: false
+      - id: select
+        run: python3 -m tests.e2e.ci_plan plan --output "$RUNNER_TEMP/plan.json"
+
+  diskgraph-wheel:
+    name: Build
+    if: github.repository == 'NVIDIA/kumo-engine' && github.ref_type == 'branch'
+    uses: ./.github/workflows/_diskgraph-wheel.yml
+    with: {diagnostics: true}
+
+  dataset-source:
+    needs: plan
+    if: github.repository == 'NVIDIA/kumo-engine' && github.ref_type == 'branch'
+    runs-on: ubuntu-24.04
+    permissions: {contents: read, pull-requests: read}
+    outputs:
+      pins: ${{ steps.source.outputs.pins }}
+      policy: ${{ steps.source.outputs.policy }}
+    steps:
+      - *checkout
+      - id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODE: ${{ inputs.mode }}
+          BINDING: ${{ inputs.binding }}
+        run: |
+          if [[ "$GITHUB_REF" != refs/heads/main ]]; then
+            gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq \
+              '.[] | select(.state == "open" and .head.repo.full_name == .base.repo.full_name) | .head.sha' | grep -Fx "$GITHUB_SHA"
+          fi
+          if [[ "$MODE" == binding-train ]]; then
+            exit 0
+          elif [[ "$MODE" == binding-full ]]; then
+            policy=$(python3 -m e2e.datasets.binding_sources "$BINDING" --policy)
+            echo "policy=$policy" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          pins=(e2e/datasets/pins/aml-{l01,e01}.json)
+          case "$MODE" in
+            cuda) pins=(e2e/datasets/pins/{aml-l01,mbd-m0{3,4},synthetic-{medium,weekly-account,weekly-customer,ltv}}.json);;
+            l01-cuda) pins=("${pins[0]}");;
+            hi-small-memory) pins=("${pins[1]}");;
+            all|smoke) pins=(e2e/datasets/pins/streaming-25b.json);;
+            training|lifecycle|full) exit 0;;
+          esac
+          echo "pins=${pins[*]}" >> "$GITHUB_OUTPUT"
+          # The combined CUDA pins exceed STS's 2 KiB limit when listed object by object.
+          jq -sc --arg mode "$MODE" '{Version:"2012-10-17",Statement:[{Effect:"Allow",Action:"s3:GetObject",
+            Resource:([.[] | .bucket as $bucket | .objects[].key |
+            if $mode == "cuda" then split("/")[:3] | join("/") + "/*" else . end |
+            "arn:aws:s3:::" + $bucket + "/" + .] | unique)}]}' \
+            "${pins[@]}" | sed 's/^/policy=/' >> "$GITHUB_OUTPUT"
+
+  cuda:
+    if: inputs.mode == 'cuda' && github.repository == 'NVIDIA/kumo-engine'
+    needs: [diskgraph-wheel, dataset-source]
+    runs-on: linux-amd64-gpu-rtxpro6000-latest-1
+    timeout-minutes: 90
+    environment: {name: gha-kumo-workflow-tests, deployment: false}
+    permissions: {contents: read, id-token: write}
+    env:
+      DATASET_PINS: ${{ needs.dataset-source.outputs.pins }}
+      DATASET_SESSION_POLICY: ${{ needs.dataset-source.outputs.policy }}
+    steps:
+      - *checkout
+      - &require_pins
+        run: test -n "$DATASET_SESSION_POLICY" && test -n "$DATASET_PINS"
+      - uses: ./.github/actions/kumo-pytorch-stage
+      - uses: ./.github/actions/kumo-pytorch-setup
+        with:
+          diskgraph-wheel-artifact: diskgraph-wheel
+          torch-backend: cu130
+      - id: cuda_measure
+        env:
+          KUMO_PYTORCH_DIAGNOSTICS: ${{ runner.temp }}/pytorch-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          python -m tests.e2e.ci_command "$KUMO_PYTORCH_DIAGNOSTICS/cuda.log" \
+            python -m tests.e2e.runs cuda --e2e-dir "$KUMO_PYTORCH_DIAGNOSTICS/cuda" --repetitions 1
+      - name: Validate the six training models on CUDA
+        env:
+          KUMO_PYTORCH_DIAGNOSTICS: ${{ runner.temp }}/pytorch-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          python -m tests.e2e.ci_command "$KUMO_PYTORCH_DIAGNOSTICS/binding-cuda.log" \
+            env -u KUMO_PYTORCH_DIAGNOSTICS KUMO_PYTORCH_BINDING_SMOKE_DEVICE=cuda \
+            python -m pytest -q --junitxml="$KUMO_PYTORCH_DIAGNOSTICS/binding-cuda.xml" \
+              tests/e2e/test_synthetic.py::test_registered_history tests/e2e/test_mbd.py::test_mbd_transaction_forecast \
+              tests/e2e/test_aml.py::test_li_medium_l01_combined_forecast tests/e2e/test_aml.py::test_l01_nightly_outlier
+      - uses: ./.github/actions/kumo-pytorch-results
+        if: always() && steps.cuda_measure.outcome != 'skipped'
+        with:
+          name: cuda-measurements
+          path: |
+            ${{ runner.temp }}/pytorch-${{ github.run_id }}-${{ github.run_attempt }}/cuda/**/*.json
+            ${{ runner.temp }}/pytorch-${{ github.run_id }}-${{ github.run_attempt }}/cuda/**/*.xml
+
+  aml-benchmark:
+    name: aml-benchmark
+    if: contains(fromJSON('["aml","l01-cuda","hi-small-memory"]'), inputs.mode)
+    needs: [diskgraph-wheel, dataset-source]
+    runs-on: linux-amd64-gpu-rtxpro6000-latest-1
+    timeout-minutes: ${{ inputs.mode == 'l01-cuda' && 90 || 720 }}
+    environment: {name: gha-kumo-workflow-tests, deployment: false}
+    permissions: {contents: read, id-token: write}
+    env:
+      DATASET_PINS: ${{ needs.dataset-source.outputs.pins }}
+      DATASET_SESSION_POLICY: ${{ needs.dataset-source.outputs.policy }}
+      WORKLOAD: ${{ inputs.mode == 'l01-cuda' && 'l01' || inputs.mode == 'hi-small-memory' && 'hi-small' || 'aml' }}
+    steps:
+      - *checkout
+      - *require_pins
+      - uses: ./.github/actions/kumo-pytorch-stage
+      - uses: ./.github/actions/kumo-pytorch-setup
+        with:
+          diskgraph-wheel-artifact: diskgraph-wheel
+          torch-backend: ${{ inputs.mode == 'hi-small-memory' && 'cpu' || 'cu130' }}
+      - id: aml_measure
+        name: Run paired AML fits
+        env:
+          KUMO_PYTORCH_DIAGNOSTICS: ${{ runner.temp }}/pytorch-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          monitor=(python -m tests.e2e.ci_command "$KUMO_PYTORCH_DIAGNOSTICS/aml.log")
+          if [[ "$WORKLOAD" == aml ]]; then
+            exec "${monitor[@]}" python -m tests.e2e.runs aml --e2e-dir "$KUMO_PYTORCH_DIAGNOSTICS/aml" --cgroup-parent /sys/fs/cgroup --sudo
+          fi
+          args=(--host-memory sampled)
+          if [[ "$WORKLOAD" == l01 ]]; then args=(--cuda); fi
+          "${monitor[@]}" sudo -n -- env PATH="$PATH" KUMO_PYTORCH_DATA_ROOT="$KUMO_PYTORCH_DATA_ROOT" \
+            "$(command -v python)" -m tests.e2e.runs "$WORKLOAD" "${args[@]}" \
+            --cgroup-parent /sys/fs/cgroup --e2e-dir "$KUMO_PYTORCH_DIAGNOSTICS/$WORKLOAD"
+      - uses: ./.github/actions/kumo-pytorch-results
+        if: always() && steps.aml_measure.outcome != 'skipped'
+        with:
+          name: ${{ inputs.mode }}-measurements
+          path: |
+            ${{ runner.temp }}/pytorch-${{ github.run_id }}-${{ github.run_attempt }}/${{ env.WORKLOAD }}/**/campaign.json
+            ${{ runner.temp }}/pytorch-${{ github.run_id }}-${{ github.run_attempt }}/${{ env.WORKLOAD }}/**/timings.json
+            ${{ runner.temp }}/pytorch-${{ github.run_id }}-${{ github.run_attempt }}/${{ env.WORKLOAD }}/**/prepared/identity.json
+            ${{ runner.temp }}/pytorch-${{ github.run_id }}-${{ github.run_attempt }}/${{ env.WORKLOAD }}/**/results.json
+            ${{ runner.temp }}/pytorch-${{ github.run_id }}-${{ github.run_attempt }}/${{ env.WORKLOAD }}/**/cuda.xml
+
+  binding-full:
+    if: inputs.mode == 'binding-full'
+    needs: [diskgraph-wheel, dataset-source]
+    runs-on: ${{ (startsWith(inputs.binding, 'M') || startsWith(inputs.binding, 'S')) && (vars.KUMO_PYTORCH_BINDING_RUNNER || 'linux-amd64-gpu-rtxpro6000-latest-1') || 'ubuntu-24.04' }}
+    timeout-minutes: 720
+    environment: {name: gha-kumo-workflow-tests, deployment: false}
+    permissions: {contents: read, id-token: write}
+    env:
+      BINDING: ${{ inputs.binding }}
+      SCRATCH: ${{ vars.KUMO_PYTORCH_BINDING_SCRATCH }}
+      DATASET_SESSION_POLICY: ${{ needs.dataset-source.outputs.policy }}
+    steps:
+      - *checkout
+      - run: test -n "$DATASET_SESSION_POLICY"
+      - uses: ./.github/actions/kumo-pytorch-stage
+        env: {STAGE_FULL_BINDING: 'true'}
+      - uses: ./.github/actions/kumo-pytorch-setup
+        with:
+          diskgraph-wheel-artifact: diskgraph-wheel
+      - id: population
+        env:
+          KUMO_PYTORCH_DIAGNOSTICS: ${{ runner.temp }}/pytorch-${{ github.run_id }}-${{ github.run_attempt }}
+          KUMO_PYTORCH_FULL_BINDING: ${{ inputs.binding }}
+        run: |
+          python -m tests.e2e.ci_command "$KUMO_PYTORCH_DIAGNOSTICS/population.log" \
+            python -m pytest -q -o tmp_path_retention_policy=none --junitxml="$KUMO_PYTORCH_DIAGNOSTICS/junit.xml" \
+              "tests/e2e/test_binding_population.py::test_full_binding[$BINDING]"
+      - uses: ./.github/actions/kumo-pytorch-results
+        if: always() && steps.population.outcome != 'skipped'
+        with: {name: 'binding-full-${{ inputs.binding }}'}
+
+  binding-train:
+    name: ${{ matrix.label && format('GPU training / {0}', matrix.label) || 'GPU training' }}
+    if: github.repository == 'NVIDIA/kumo-engine' && github.event_name == 'workflow_dispatch' && inputs.mode == 'binding-train'
+    needs: [plan, diskgraph-wheel, dataset-source]
+    permissions: {contents: read, id-token: write}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.training) }}
+    uses: ./.github/workflows/_kumo-pytorch-training.yml
+    with: {binding: '${{ matrix.binding }}', full-population: true}
+
+  streaming-25b:
+    if: >-
+      contains(fromJSON('["all","smoke","training","lifecycle","full"]'), inputs.mode) &&
+      github.repository == 'NVIDIA/kumo-engine' &&
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/pull-request/'))
+    needs: [diskgraph-wheel, dataset-source]
+    runs-on: ${{ vars.KUMO_PYTORCH_25B_RUNNER || 'linux-amd64-gpu-rtxpro6000-latest-1' }}
+    environment: {name: gha-kumo-workflow-tests, deployment: false}
+    permissions: {contents: read, id-token: write}
+    env:
+      STAGE_PINNED_DATASETS: ${{ (inputs.mode == 'all' || inputs.mode == 'smoke') && 'true' || 'false' }}
+      DATASET_PINS: ${{ needs.dataset-source.outputs.pins }}
+      DATASET_SESSION_POLICY: ${{ needs.dataset-source.outputs.policy }}
+    timeout-minutes: 720
+    steps:
+      - *checkout
+      - name: Check scratch for the full index
+        env:
+          SCRATCH: ${{ vars.KUMO_PYTORCH_25B_SCRATCH || runner.temp }}
+        run: |
+          if [[ "$STAGE_PINNED_DATASETS" == true ]]; then
+            test -n "$DATASET_PINS" && test -n "$DATASET_SESSION_POLICY" || exit 1
+          fi
+          [[ "$SCRATCH" == /* && -d "$SCRATCH" && -w "$SCRATCH" ]] || {
+            echo "::error::Set KUMO_PYTORCH_25B_SCRATCH to a writable scratch directory"; exit 1;
+          }
+          available=$(df -B1 --output=avail "$SCRATCH" | tail -1)
+          (( available >= 3 * 1024**4 )) || { echo "::error::25B needs 3 TiB of free scratch"; exit 1; }
+          mkdir -p "$SCRATCH/kumo-pytorch-25b/tmp"
+          echo "TMPDIR=$SCRATCH/kumo-pytorch-25b/tmp" >> "$GITHUB_ENV"
+          echo "KUMO_PYTORCH_25B_ROOT=$SCRATCH/kumo-pytorch-25b/cache" >> "$GITHUB_ENV"
+          echo 'unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN' > "$RUNNER_TEMP/without-oidc"
+          echo "BASH_ENV=$RUNNER_TEMP/without-oidc" >> "$GITHUB_ENV"
+      - uses: ./.github/actions/kumo-pytorch-stage
+        if: env.STAGE_PINNED_DATASETS == 'true'
+      - uses: ./.github/actions/kumo-pytorch-setup
+        with:
+          diskgraph-wheel-artifact: diskgraph-wheel
+      - name: Run the full-source campaign
+        id: campaign
+        env:
+          KUMO_PYTORCH_DIAGNOSTICS: ${{ runner.temp }}/pytorch-${{ github.run_id }}-${{ github.run_attempt }}
+          MODE: ${{ inputs.mode }}
+        run: |
+          suite=tests/e2e/test_streaming.py
+          smoke="$suite::test_streaming_weekly_session_forecast"
+          campaign="$suite::test_streaming_campaign"
+          case "$MODE" in
+            all) nodes=("$smoke" "$campaign") ;;
+            smoke) nodes=("$smoke") ;;
+            *) nodes=("$campaign[$MODE]") ;;
+          esac
+          python -m tests.e2e.ci_command "$KUMO_PYTORCH_DIAGNOSTICS/streaming.log" \
+            python -m pytest -q --durations=0 -o tmp_path_retention_policy=none \
+            --junitxml="$KUMO_PYTORCH_DIAGNOSTICS/streaming-25b.xml" "${nodes[@]}"
+      - uses: ./.github/actions/kumo-pytorch-results
+        if: always() && steps.campaign.outcome != 'skipped'
+        with:
+          name: streaming-25b-${{ inputs.mode }}
+
+  results:
+    name: Publish results
+    if: always()
+    needs: [plan, diskgraph-wheel, dataset-source, cuda, aml-benchmark, binding-full, binding-train, streaming-25b]
+    runs-on: ubuntu-24.04
+    permissions: {contents: read, actions: read}
+    steps:
+      - *checkout
+      - uses: ./.github/actions/kumo-pytorch-report
+        with:
+          pattern: ${{ needs.plan.outputs.evidence_pattern }}
+          plan: ${{ needs.plan.outputs.plan }}
+      - name: Verify benchmark evidence
+        env:
+          PLAN_JSON: ${{ needs.plan.outputs.plan }}
+        run: python3 -m tests.e2e.ci_plan gate --results "$RUNNER_TEMP/results.json"

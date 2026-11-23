@@ -7,13 +7,14 @@
 import argparse
 import hashlib
 import json
+import shutil
 import subprocess
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 
 def _check(path: Path, pin: dict) -> None:
-    if path.stat().st_size != pin["size"]:
+    if pin["size"] is not None and path.stat().st_size != pin["size"]:
         raise ValueError(f"Size mismatch: {pin['key']}")
     with path.open("rb") as stream:
         if hashlib.file_digest(stream, "sha256").hexdigest() != pin["sha256"]:
@@ -57,14 +58,37 @@ def _stage(root: Path, spec: dict, pins: dict, download: bool) -> dict[str, Path
     return files
 
 
-def verify(root: Path, manifest: Path, *, download: bool = False) -> dict[str, Path]:
-    """Return verified files by logical name. By default, only read local files."""
+def _manifest(manifest: Path) -> dict:
     spec = json.loads(manifest.read_text())
     if spec["version"] != 1 or not spec["objects"]:
         raise ValueError(f"Invalid dataset manifest: {manifest}")
     if shared := spec.get("include_objects_from"):
         shared_objects = json.loads(manifest.with_name(shared).read_text())["objects"]
         spec["objects"] = shared_objects | spec["objects"]
+    return spec
+
+
+def admit(root: Path, manifests=(), *, minimum_free_gib: int = 0) -> None:
+    """Check the actual cache volume before fetching any private objects."""
+    if type(minimum_free_gib) is not int or minimum_free_gib < 0:
+        raise ValueError("minimum free GiB must be a nonnegative integer")
+    root.mkdir(parents=True, exist_ok=True)
+    pins = {
+        pin["key"]: pin["size"]
+        for manifest in manifests
+        for pin in _manifest(manifest)["objects"].values()
+    }
+    uncached = sum(size for key, size in pins.items() if not (root / key).exists())
+    required = max(minimum_free_gib * 1024**3, uncached)
+    free = shutil.disk_usage(root).free
+    print(f"Scratch {root}: {free} bytes free, {required} required", flush=True)
+    if free < required:
+        raise OSError(f"Insufficient scratch at {root}: {free} bytes free, {required} required")
+
+
+def verify(root: Path, manifest: Path, *, download: bool = False) -> dict[str, Path]:
+    """Return verified files by logical name. By default, only read local files."""
+    spec = _manifest(manifest)
     root = root.resolve()
     files = _stage(root, spec, spec["objects"], download)
     if prefix := spec.get("table_source_prefix"):
@@ -99,5 +123,6 @@ if __name__ == "__main__":
     parser.add_argument("manifests", type=Path, nargs="+")
     parser.add_argument("--root", type=Path, required=True)
     args = parser.parse_args()
+    admit(args.root, args.manifests)
     for manifest in args.manifests:
         verify(args.root, manifest, download=True)

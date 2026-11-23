@@ -14,6 +14,52 @@ from time import perf_counter_ns
 import torch
 
 
+def _utilization_reader(resources, device):
+    import pynvml as nvml
+
+    props = torch.cuda.get_device_properties(device)
+    raw = props.uuid
+    raw = raw.decode("ascii") if isinstance(raw, bytes) else str(raw)
+    uuid = raw if raw.startswith(("GPU-", "MIG-")) else "GPU-" + raw
+    nvml.nvmlInit()
+    resources.callback(nvml.nvmlShutdown)
+    handle = nvml.nvmlDeviceGetHandleByUUID(uuid)
+    found = nvml.nvmlDeviceGetUUID(handle)
+    if (found.decode("ascii") if isinstance(found, bytes) else found) != uuid:
+        raise RuntimeError(f"NVML UUID {found!r} differs from CUDA UUID {uuid}")
+
+    def read():
+        value = nvml.nvmlDeviceGetUtilizationRates(handle).gpu
+        if not 0 <= value <= 100:
+            raise ValueError(f"Invalid NVML utilization: {value}")
+        return value
+
+    return {"device": str(device), "name": props.name, "device_uuid": uuid}, read
+
+
+@contextmanager
+def training_gpu_window(device, row):
+    """Keep an online mean for training epochs of any duration."""
+    with ExitStack() as resources:
+        identity, read = _utilization_reader(resources, device)
+        stop = Event()
+
+        def poll():
+            count, total = 1, read()
+            while not stop.wait(0.1):
+                total += read()
+                count += 1
+            return count, total
+
+        pool = resources.enter_context(ThreadPoolExecutor(max_workers=1))
+        polling = pool.submit(poll)
+        resources.callback(stop.set)
+        yield
+        stop.set()
+        count, total = polling.result()
+        row["gpu"] = dict(identity, samples=count, mean_percent=total / count)
+
+
 class _Window:
     def __init__(self, device, data, sample):
         self.device, self.data, self.sample = device, data, sample
@@ -63,18 +109,9 @@ def cuda_epoch(device, row):
     }
     samples = data["samples"]
     try:
-        import pynvml as nvml
-
         device = torch.cuda.current_stream(device).device
-        props = torch.cuda.get_device_properties(device)
-        raw = props.uuid
-        raw = raw.decode("ascii") if isinstance(raw, bytes) else str(raw)
-        uuid = raw if raw.startswith(("GPU-", "MIG-")) else "GPU-" + raw
         allocator = torch.cuda.get_allocator_backend()
         data.update(
-            device=str(device),
-            device_uuid=uuid,
-            name=props.name,
             allocator=allocator,
             utilization_scope="device-wide NVML snapshots",
         )
@@ -83,12 +120,8 @@ def cuda_epoch(device, row):
                 f"CUDA allocator peak measurement requires native, found {allocator}"
             )
         with ExitStack() as resources:
-            nvml.nvmlInit()
-            resources.callback(nvml.nvmlShutdown)
-            handle = nvml.nvmlDeviceGetHandleByUUID(uuid)
-            found = nvml.nvmlDeviceGetUUID(handle)
-            if (found.decode("ascii") if isinstance(found, bytes) else found) != uuid:
-                raise RuntimeError(f"NVML UUID {found!r} differs from CUDA UUID {uuid}")
+            identity, read = _utilization_reader(resources, device)
+            data.update(identity)
             lock, stop = Lock(), Event()
 
             def sample(kind):
@@ -98,10 +131,7 @@ def cuda_epoch(device, row):
                     reading = {"kind": kind, "start_ns": perf_counter_ns()}
                     samples.append(reading)
                     try:
-                        value = nvml.nvmlDeviceGetUtilizationRates(handle).gpu
-                        if not 0 <= value <= 100:
-                            raise ValueError(f"Invalid NVML utilization: {value}")
-                        reading["gpu_percent"] = value
+                        reading["gpu_percent"] = read()
                     except Exception as error:
                         reading["error"] = str(error)
                         raise

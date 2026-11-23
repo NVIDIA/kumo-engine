@@ -1,0 +1,65 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: kumo-pytorch-stage
+description: Stage pinned sources or one full binding with job-scoped read credentials.
+runs:
+  using: composite
+  steps:
+    - id: aws
+      uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6
+      with:
+        role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-workflow-tests
+        aws-region: us-west-2
+        # Intersect the role's existing grants with read-only dataset and anchor access.
+        inline-session-policy: >-
+          ${{ env.DATASET_SESSION_POLICY || '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:GetObject",
+          "Resource":["arn:aws:s3:::kumo-engine-arena/datasets/*","arn:aws:s3:::kumo-engine-arena/anchors/*"]}]}' }}
+        output-env-credentials: false
+        output-credentials: true
+        unset-current-credentials: true
+    - name: Stage pinned datasets
+      if: env.STAGE_FULL_BINDING != 'true'
+      shell: bash
+      working-directory: packages/experimental/kumo-pytorch
+      env:
+        AWS_ACCESS_KEY_ID: ${{ steps.aws.outputs.aws-access-key-id }}
+        AWS_SECRET_ACCESS_KEY: ${{ steps.aws.outputs.aws-secret-access-key }}
+        AWS_SESSION_TOKEN: ${{ steps.aws.outputs.aws-session-token }}
+      run: |
+        root="$RUNNER_TEMP/kumo-pytorch-data"
+        if [[ -n "${DATASET_PINS:-}" ]]; then
+          read -ra pins <<< "$DATASET_PINS"
+        else
+          pins=()
+          for pin in e2e/datasets/pins/*.json; do
+            [[ $pin == */streaming-25b.json ]] || pins+=("$pin")
+          done
+        fi
+        start=$(python3 -c 'from time import monotonic; print(monotonic())')
+        python3 -m e2e.datasets.staging "${pins[@]}" --root "$root"
+        python3 -c 'import sys, time; print("KUMO_PYTORCH_STAGE_SECONDS=", time.monotonic() - float(sys.argv[1]), sep="")' "$start" >> "$GITHUB_ENV"
+        echo "KUMO_PYTORCH_DATA_ROOT=$root" >> "$GITHUB_ENV"
+        # Bash also reads this before running package code inside the shared setup action.
+        echo 'unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN' > "$RUNNER_TEMP/without-oidc"
+        echo "BASH_ENV=$RUNNER_TEMP/without-oidc" >> "$GITHUB_ENV"
+    - name: Stage the complete registered source
+      if: env.STAGE_FULL_BINDING == 'true'
+      shell: bash
+      working-directory: packages/experimental/kumo-pytorch
+      env:
+        AWS_ACCESS_KEY_ID: ${{ steps.aws.outputs.aws-access-key-id }}
+        AWS_SECRET_ACCESS_KEY: ${{ steps.aws.outputs.aws-secret-access-key }}
+        AWS_SESSION_TOKEN: ${{ steps.aws.outputs.aws-session-token }}
+      run: |
+        scratch=${SCRATCH:-$RUNNER_TEMP}
+        [[ "$scratch" == /* && -d "$scratch" && -w "$scratch" ]]
+        root="$scratch/kumo-pytorch-data"
+        start=$(python3 -c 'from time import monotonic; print(monotonic())')
+        python3 -m e2e.datasets.binding_sources "$BINDING" --root "$root"
+        python3 -c 'import sys, time; print("KUMO_PYTORCH_STAGE_SECONDS=", time.monotonic() - float(sys.argv[1]), sep="")' "$start" >> "$GITHUB_ENV"
+        echo "KUMO_PYTORCH_DATA_ROOT=$root" >> "$GITHUB_ENV"
+        echo "TMPDIR=$scratch" >> "$GITHUB_ENV"
+        echo 'unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN' > "$RUNNER_TEMP/without-oidc"
+        echo "BASH_ENV=$RUNNER_TEMP/without-oidc" >> "$GITHUB_ENV"

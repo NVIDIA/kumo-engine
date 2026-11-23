@@ -18,6 +18,7 @@ from conformance.properties import seed_batches
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--engine", choices=("in_memory", "diskgraph", "all"), default="in_memory")
+    parser.add_argument("--shard", choices=range(3), type=int, help="select one of three workers")
     parser.add_argument(
         "--seeds",
         type=int,
@@ -48,6 +49,7 @@ def main() -> int:
             "tests/conformance",
             f"--conformance-engine={args.engine}",
             "--conformance-complete",
+            *([f"--conformance-shard={args.shard}"] if args.shard is not None else []),
             *([f"--conformance-seeds={args.seeds}"] if args.seeds is not None else []),
             f"--conformance-seed-start={args.seed_start}",
         ]

@@ -133,7 +133,7 @@ def read_mbd(files, manifest=M04_MANIFEST):
     return anchors, transactions, ranks
 
 
-def _contract(ids, categories):
+def _contract(fanout, categories):
     relation = api.RelationSpec(
         "client_transactions", "roots", "root_id", "transactions", "root_id"
     )
@@ -146,7 +146,6 @@ def _contract(ids, categories):
     )
     if categories:
         return _category_contract(schema, relation.name)
-    fanout = max(Counter(ids.to_pylist()).values(), default=1)
     layer = api.GraphLayer((api.GraphSample(relation.name, fanout, time_column="event_time"),))
     future = api.Rows((relation.name,), api.TimeWindow("event_time", 0, 30 * 86400))
     targets = {
@@ -227,14 +226,13 @@ def _category(value):
     return str(int(value)) if int(value) == value else repr(value)
 
 
-def prepare_mbd(tables, directory):
-    """Bind projected source rows and registered anchors for the package test or a benchmark."""
-    anchors, transactions, ranks = tables
-    categories = "next_event_type" in anchors.column_names
-    if directory.exists():
-        raise FileExistsError(directory)
-    directory.parent.mkdir(parents=True, exist_ok=True)
-    ids = pa.array([ranks[name] for name in transactions["client_id"].to_pylist()], pa.int64())
+def _category_strings(column):
+    codes = pc.dictionary_encode(column.combine_chunks())
+    labels = pa.array([_category(v) for v in codes.dictionary.to_pylist()], pa.string())
+    return pc.take(labels, codes.indices)
+
+
+def _project_events(transactions, ids, categories):
     seconds = pc.floor_temporal(transactions["event_time"], unit="second").cast(pa.timestamp("s"))
     nanoseconds = transactions["event_time"].cast(pa.int64())
     event_ids = transactions["event_id"]
@@ -248,7 +246,7 @@ def prepare_mbd(tables, directory):
             ":",
         )
     amounts = transactions["amount"].cast(pa.float64())
-    events = pa.table(
+    return pa.table(
         {
             "event_id": event_ids,
             "root_id": ids,
@@ -256,12 +254,12 @@ def prepare_mbd(tables, directory):
             "event_time_seconds": seconds.cast(pa.int64()),
             "event_time_ns": nanoseconds,
             "amount": pc.if_else(pc.is_finite(amounts), amounts, None),
-            **{
-                n: pa.array([_category(v) for v in transactions[n].to_pylist()], pa.string())
-                for n in CATEGORIES
-            },
+            **{n: _category_strings(transactions[n]) for n in CATEGORIES},
         }
     )
+
+
+def _project_anchors(anchors, ids, categories):
     if categories:
         labels = {}
         for name in _HEADS:
@@ -274,10 +272,10 @@ def prepare_mbd(tables, directory):
             "original_count": anchors["future_count"],
             "count": anchors["future_count"].cast(pa.float32(), safe=False),
         }
-    projected = pa.table(
+    return pa.table(
         {
             "sample_id": anchors["sample_id"],
-            "root_id": [ranks[n] for n in anchors["entity_id"].to_pylist()],
+            "root_id": ids,
             "registered_entity_id": anchors["entity_id"],
             "prediction_time_ns": anchors["as_of_time"].cast(pa.int64()),
             "as_of_time": anchors["as_of_time" if categories else "graph_as_of_time"],
@@ -286,6 +284,19 @@ def prepare_mbd(tables, directory):
             **labels,
         }
     )
+
+
+def prepare_mbd(tables, directory):
+    """Bind projected source rows and registered anchors for the package test or a benchmark."""
+    anchors, transactions, ranks = tables
+    categories = "next_event_type" in anchors.column_names
+    if directory.exists():
+        raise FileExistsError(directory)
+    directory.parent.mkdir(parents=True, exist_ok=True)
+    ids = pa.array([ranks[name] for name in transactions["client_id"].to_pylist()], pa.int64())
+    events = _project_events(transactions, ids, categories)
+    anchor_ids = [ranks[name] for name in anchors["entity_id"].to_pylist()]
+    projected = _project_anchors(anchors, anchor_ids, categories)
     with TemporaryDirectory(dir=directory.parent) as temp:
         work = Path(temp)
         pq.write_table(pa.table({"root_id": sorted(ranks.values())}), work / "roots.parquet")
@@ -293,7 +304,8 @@ def prepare_mbd(tables, directory):
         pq.write_table(projected, work / "anchors.parquet")
         work.rename(directory)
     targets = _HEADS if categories else ("count",)
-    return bind_tables(directory, _contract(ids, categories), "root_id", targets=targets)
+    fanout = max(Counter(ids.to_pylist()).values(), default=1)
+    return bind_tables(directory, _contract(fanout, categories), "root_id", targets=targets)
 
 
 read_m04 = read_mbd

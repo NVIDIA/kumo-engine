@@ -2,7 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Reload the T01 checkpoint in a fresh interpreter and continue training."""
+"""Reload the package task and optimizer in a fresh interpreter and continue training."""
 
 import json
 import os
@@ -16,10 +16,9 @@ from unittest.mock import patch
 import pyarrow.parquet as pq
 import torch
 
-from e2e.datasets import bind_tables
 from e2e.flows.common import BatchDigest
 from kumo.pytorch import api
-from tests.e2e.streaming_training import CountSAGE, count_loss
+from tests.e2e.binding_model import make_model
 from tests.test_inference_lifecycle import ROOT, assert_same
 
 
@@ -29,7 +28,7 @@ def _train_batches(task):
 
 def _update(batch, model, optimizer):
     optimizer.zero_grad()
-    loss = count_loss(model, batch)
+    loss = model.loss(batch)
     loss.backward()
     optimizer.step()
     return batch.metadata["sample_ids"], loss.item()
@@ -56,22 +55,24 @@ def _finish(batches, model, optimizer, evidence=None):
 @torch.no_grad()
 def _predictions(task, model, *, inference, evidence=None):
     scores, inputs = {}, BatchDigest()
-    for batch in task.batches(split=("valid", "test"), batch_size=4, output_format="model"):
-        if inference:
-            assert not batch.targets
-        inputs.update(batch)
-        values = model(batch)
-        if evidence is not None:
-            evidence.observe(batch)
-        assert values.isfinite().all()
-        for sample, score in zip(batch.metadata["sample_ids"], values.tolist(), strict=True):
-            assert sample not in scores
-            scores[sample] = score
+    for split in ("valid", "test"):
+        for batch in task.batches(split=split, batch_size=4, output_format="model"):
+            if inference:
+                assert not batch.targets
+            inputs.update(batch)
+            values = model(batch)
+            if evidence is not None:
+                evidence.observe(batch)
+            assert values.isfinite().all()
+            for sample, score in zip(batch.metadata["sample_ids"], values.detach(), strict=True):
+                assert sample not in scores
+                scores[sample] = score
     return scores, inputs.hexdigest()
 
 
-def run_lifecycle(task, data, table, index, work, evidence):
-    model = CountSAGE(task)
+def run_lifecycle(task, data, table, index, work, evidence, *, binding=None, raw_table=None):
+    raw_table = table if raw_table is None else raw_table
+    model = make_model(task, binding)
     optimizer = torch.optim.AdamW(model.parameters(), lr=0.001, weight_decay=0)
     batches = _train_batches(task)
     batch = next(batches)
@@ -80,14 +81,24 @@ def run_lifecycle(task, data, table, index, work, evidence):
     task.to_artifact().save(work / "artifact")
     api.save_weights(work / "model.pt", model.state_dict(), task.fitted_state)
     scores, inputs = _predictions(task, model.eval(), inference=False, evidence=evidence)
+    if binding is not None:
+        # Use the same target-free inputs before and after checkpoint reload.
+        with api.prepare(
+            task.contract, data, api.DiskGraphEngine(index=index, ingest="never"), inference=True
+        ) as plan:
+            with plan.materialize(
+                replace(raw_table, targets={}), fitted=task.fitted_state
+            ) as inference:
+                scores, inputs = _predictions(inference, model.eval(), inference=True)
     ids = pq.read_table(
-        table.source.path, columns=["sample_id"], filters=[("split", "in", ["valid", "test"])]
+        raw_table.source.path, columns=["sample_id"], filters=[("split", "in", ["valid", "test"])]
     )["sample_id"].to_pylist()
     assert scores and scores.keys() == set(ids)
     torch.save(
         dict(
             tables={name: source.path for name, source in data.tables.items()},
-            anchors=str(Path(table.source.path).parent),
+            anchors=raw_table.to_dict(),
+            binding=binding,
             index=str(index.resolve()),
             threads=torch.get_num_threads(),
             optimizer=optimizer.state_dict(),
@@ -109,33 +120,39 @@ def _reload(work, _fit_inputs):
     checkpoint = torch.load(work / "checkpoint.pt", weights_only=True)
     torch.set_num_threads(checkpoint["threads"])
     artifact = api.Artifact.load(work / "artifact")
-    _, data, table = bind_tables(
-        Path(checkpoint["anchors"]),
-        artifact.contract,
-        "viewer_id",
-        ("count",),
-        source_paths=checkpoint["tables"],
-    )
+    data = api.Dataset({name: api.Parquet(path) for name, path in checkpoint["tables"].items()})
+    columns = checkpoint["anchors"].copy()
+    raw_table = api.AnchorTable(api.Parquet(columns.pop("source")["path"]), **columns)
+    table = raw_table
+    if (work / "values").exists():
+        from kumo.pytorch.aggregate_materialization import MaterializedValues
+
+        table = MaterializedValues.open(work / "values").anchors
     engine = api.DiskGraphEngine(index=checkpoint["index"], ingest="never")
     fitted = artifact.fitted_state
     weights = api.load_weights(work / "model.pt", fitted)
-    with (
-        patch("kumo.pytorch.assembly._fit_targets", side_effect=AssertionError("inference fit")),
-        api.prepare(artifact.contract, data, engine, inference=True) as plan,
-        plan.materialize(replace(table, targets={}), fitted=fitted) as task,
-    ):
-        model = CountSAGE(task)
-        model.load_state_dict(weights)
-        predictions = _predictions(task, model.eval(), inference=True)
-        assert_same(predictions, checkpoint["predictions"])
-        evidence = {"inference": len(predictions[0]), "pid": os.getpid()}
+    evidence = {"pid": os.getpid()}
     expected = torch.load(work / "expected.pt", weights_only=True)
     with api.prepare(artifact.contract, data, engine) as plan:
         for state, split in ((fitted, None), (fitted.inputs, "train")):
             with plan.materialize(table, fitted=state, fit_split=split) as task:
                 assert task.fitted_state.inputs.fingerprint == fitted.inputs.fingerprint
-                model = CountSAGE(task)
+                model = make_model(task, checkpoint["binding"])
                 model.load_state_dict(weights)
+                if split is None:
+                    with (
+                        patch(
+                            "kumo.pytorch.assembly._fit_targets",
+                            side_effect=AssertionError("inference fit"),
+                        ),
+                        api.prepare(artifact.contract, data, engine, inference=True) as scoring,
+                        scoring.materialize(
+                            replace(raw_table, targets={}), fitted=fitted
+                        ) as inference,
+                    ):
+                        predictions = _predictions(inference, model.eval(), inference=True)
+                        assert_same(predictions, checkpoint["predictions"])
+                        evidence["inference"] = len(predictions[0])
                 optimizer = torch.optim.AdamW(model.parameters())
                 optimizer.load_state_dict(deepcopy(checkpoint["optimizer"]))
                 batches = _train_batches(task)

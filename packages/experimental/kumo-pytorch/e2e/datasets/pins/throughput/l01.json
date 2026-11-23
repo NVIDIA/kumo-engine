@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "bucket": "kumo-engine-arena",
+  "region": "us-west-2",
+  "expected_bucket_owner": "926922431314",
+  "upstream_sha256": {
+    "source_manifest": "bcc4a7de107745b747162cb28d4106a9c623fff5869ecf632f7528e23156f02b",
+    "anchor_manifest": "583ced0e369612fef7d249e25b9574a46a0be841a098fc0754df18431b94f53a",
+    "anchors": "270c835000af2067e33ce3dc97e6e4696899ebb328b33cc176c89d7a202a3a33"
+  },
+  "capacity": 1099681,
+  "split_counts": {
+    "train": 8192,
+    "valid": 256,
+    "test": 256
+  },
+  "expected_eligible": {
+    "amount": {
+      "train": 1816,
+      "valid": 50,
+      "test": 15
+    },
+    "currency": {
+      "train": 1816,
+      "valid": 50,
+      "test": 15
+    }
+  },
+  "objects": {
+    "anchors": {
+      "size": 343940,
+      "sha256": "e4a1d5eca2db0b3a93a3807ad5b5b138779df8adf168c7dcce15f7f70a46fae2",
+      "key": "datasets/kumo-pytorch/throughput/v1/l01/4c5a837f1df19d4f0df0147fbc97ffd9584fa4bbed58805bb46c7f094d3068b8/anchors.parquet"
+    },
+    "account_events": {
+      "size": 17211474,
+      "sha256": "b8fcd1b85937330e43b3fcdbb63f9c2cbbf2dc666e6413d7ec7029f1104dc2d4",
+      "key": "datasets/kumo-pytorch/throughput/v1/l01/4c5a837f1df19d4f0df0147fbc97ffd9584fa4bbed58805bb46c7f094d3068b8/account_events.parquet"
+    },
+    "accounts": {
+      "size": 672411,
+      "sha256": "ec2fd9e9895ea648d1edfc6417a5346a25c40e2c7c8ae83f46b326cc3f831929",
+      "key": "datasets/kumo-pytorch/throughput/v1/l01/4c5a837f1df19d4f0df0147fbc97ffd9584fa4bbed58805bb46c7f094d3068b8/accounts.parquet"
+    },
+    "transactions": {
+      "size": 10143655,
+      "sha256": "6846343c30e731a1e33ab981d3c2d63c88f2cf6a21c7b34ed6bb78adf89d8636",
+      "key": "datasets/kumo-pytorch/throughput/v1/l01/4c5a837f1df19d4f0df0147fbc97ffd9584fa4bbed58805bb46c7f094d3068b8/transactions.parquet"
+    }
+  }
+}

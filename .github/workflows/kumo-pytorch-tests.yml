@@ -2,41 +2,13 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-name: kumo-pytorch tests
+name: PyTorch suite
+run-name: >-
+  PyTorch suite · ${{ github.event_name == 'pull_request' && format('PR #{0}', github.event.pull_request.number) || github.event_name == 'workflow_dispatch' && 'manual nightly replay' || 'nightly' }}
 
-# kumo-pytorch's CPU checks: golden cases on the in-memory engine, the test
-# suite, style and the package build. The in-memory engine computes column
-# statistics with DiskGraph's collector, so DiskGraph is built from this commit.
 on:  # yamllint disable-line rule:truthy
   pull_request:
-    paths:
-      - 'packages/experimental/kumo-pytorch/**'
-      - 'packages/diskgraph/**'
-      - 'scripts/diskgraph'
-      - '.github/workflows/_diskgraph-wheel.yml'
-      - '.github/actions/kumo-pytorch-setup/**'
-      - '.github/actions/kumo-pytorch-results/**'
-      - '.github/workflows/kumo-pytorch-tests.yml'
-      - '.github/workflows/kumo-pytorch-t2b.yml'
-      - '.github/workflows/_kumo-pytorch-t2b.yml'
-  push:
-    branches: [main]
-    paths:
-      - 'packages/experimental/kumo-pytorch/**'
-      - 'packages/diskgraph/**'
-      - 'scripts/diskgraph'
-      - '.github/workflows/_diskgraph-wheel.yml'
-      - '.github/actions/kumo-pytorch-setup/**'
-      - '.github/actions/kumo-pytorch-results/**'
-      - '.github/workflows/kumo-pytorch-tests.yml'
   workflow_dispatch:
-    inputs:
-      mode:
-        description: Package suite, opt-in benchmarks or Streaming 25B campaign
-        type: choice
-        required: true
-        default: package
-        options: [package, cuda, aml, l01-cuda, hi-small-memory, all, smoke, training, lifecycle, full]
   schedule:
     - cron: '17 10 * * *'
 
@@ -44,7 +16,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ (endsWith(inputs.mode, 'cuda') || inputs.mode == 'aml') && 'cuda' || inputs.mode == 'hi-small-memory' && inputs.mode || inputs.mode && inputs.mode != 'package' && '25b' || github.event_name == 'schedule' && 'nightly' || github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
@@ -53,235 +25,110 @@ defaults:
     working-directory: packages/experimental/kumo-pytorch
 
 jobs:
-  diskgraph-wheel:
-    uses: ./.github/workflows/_diskgraph-wheel.yml
-    with: {diagnostics: true}
-
-  cpu:
-    name: kumo-pytorch-tests
-    if: github.event_name != 'workflow_dispatch' || inputs.mode == 'package'
-    needs: diskgraph-wheel
+  plan:
+    name: Select suite jobs
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    permissions: {contents: read, id-token: write}
-    environment:
-      name: >-
-        ${{ github.repository == 'NVIDIA/kumo-engine' &&
-          ((github.event_name == 'schedule' && github.ref == 'refs/heads/main') ||
-           (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) &&
-          'gha-kumo-workflow-tests' || 'kumo-pytorch-public' }}
-      deployment: false
-    env:
-      STAGE_PINNED_DATASETS: >-
-        ${{ github.repository == 'NVIDIA/kumo-engine' &&
-          ((github.event_name == 'schedule' && github.ref == 'refs/heads/main') ||
-           (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) }}
+    permissions: {contents: read, pull-requests: read}
+    outputs:
+      plan: ${{ steps.select.outputs.plan }}
+      training: ${{ steps.select.outputs.training }}
+      evidence_pattern: ${{ steps.select.outputs.evidence_pattern }}
     steps:
       - &checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
         with:
           persist-credentials: false
-      - &dataset_credentials
-        id: aws
-        if: env.STAGE_PINNED_DATASETS == 'true'
-        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6
-        with:
-          role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-workflow-tests
-          aws-region: us-west-2
-          # Intersect the role's existing grants with read-only dataset and anchor access.
-          inline-session-policy: >-
-            ${{ env.DATASET_SESSION_POLICY || '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:GetObject",
-            "Resource":["arn:aws:s3:::kumo-engine-arena/datasets/*","arn:aws:s3:::kumo-engine-arena/anchors/*",
-            "arn:aws:s3:::kumo-test-dataplane-bucket/scale-bench/extracts/kumo-pytorch/streaming-25b/c160/a585a4d806d51fdcd03ecae37b395a572765e7f9e5edf5c691ea7bd525fb4495/viewers.parquet",
-            "arn:aws:s3:::kumo-test-dataplane-bucket/scale-bench/extracts/kumo-pytorch/streaming-25b/c160/0c5c424f33b3641b17f5584d678475d14373e83b0f85d80d78e40639010c3549/sessions.parquet"]}]}' }}
-          output-env-credentials: false
-          output-credentials: true
-          unset-current-credentials: true
-      - &stage_datasets
-        name: Stage pinned datasets
-        if: env.STAGE_PINNED_DATASETS == 'true'
-        env:
-          AWS_ACCESS_KEY_ID: ${{ steps.aws.outputs.aws-access-key-id }}
-          AWS_SECRET_ACCESS_KEY: ${{ steps.aws.outputs.aws-secret-access-key }}
-          AWS_SESSION_TOKEN: ${{ steps.aws.outputs.aws-session-token }}
-        run: |
-          root="$RUNNER_TEMP/kumo-pytorch-data"
-          pins=(e2e/datasets/pins/*.json)
-          if [[ -n "${DATASET_PINS:-}" ]]; then read -ra pins <<< "$DATASET_PINS"; fi
-          python3 -m e2e.datasets.staging "${pins[@]}" --root "$root"
-          echo "KUMO_PYTORCH_DATA_ROOT=$root" >> "$GITHUB_ENV"
-          # Bash also reads this before running package code inside the shared setup action.
-          echo 'unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN' > "$RUNNER_TEMP/without-oidc"
-          echo "BASH_ENV=$RUNNER_TEMP/without-oidc" >> "$GITHUB_ENV"
-      - &package_setup
-        uses: ./.github/actions/kumo-pytorch-setup
-        with:
-          diskgraph-wheel-artifact: diskgraph-wheel
-      - name: Golden cases on the in-memory engine
-        env: &diagnostics
-          KUMO_PYTORCH_DIAGNOSTICS: ${{ runner.temp }}/pytorch-${{ github.run_id }}-${{ github.run_attempt }}
-        run: python -m tests.e2e.ci_command "$KUMO_PYTORCH_DIAGNOSTICS/golden.log" python -m conformance --engine in_memory
-      - name: Test suite
-        env: *diagnostics
-        run: |
-          python -m tests.e2e.ci_command "$KUMO_PYTORCH_DIAGNOSTICS/pytest.log" \
-            python -m pytest -q --junitxml="$KUMO_PYTORCH_DIAGNOSTICS/junit.xml"
-      - name: Style
-        env: *diagnostics
-        run: |
-          python -m tests.e2e.ci_command "$KUMO_PYTORCH_DIAGNOSTICS/style.log" \
-            bash -ec 'uvx ruff@0.17.3 check . && uvx ruff@0.17.3 format --check .'
-      - name: Package build
-        env: *diagnostics
-        run: |
-          python -m tests.e2e.ci_command "$KUMO_PYTORCH_DIAGNOSTICS/build.log" \
-            uv build --wheel --out-dir "$RUNNER_TEMP/kumo-pytorch-wheel" .
-      - uses: ./.github/actions/kumo-pytorch-results
-        if: always()
-        with: {name: kumo-pytorch-tests}
-
-  hm-lifecycle:
-    if: github.event_name == 'schedule' || github.event_name == 'pull_request'
-    needs: diskgraph-wheel
-    uses: ./.github/workflows/_kumo-pytorch-t2b.yml
-
-  cuda:
-    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'cuda' && github.repository == 'NVIDIA/kumo-engine'
-    needs: diskgraph-wheel
-    runs-on: linux-amd64-gpu-rtxpro6000-latest-1
-    timeout-minutes: 45
-    steps:
-      - *checkout
-      - uses: ./.github/actions/kumo-pytorch-setup
-        with:
-          diskgraph-wheel-artifact: diskgraph-wheel
-          torch-backend: cu130
-      - id: cuda_measure
-        env: *diagnostics
-        run: |
-          python -m tests.e2e.ci_command "$KUMO_PYTORCH_DIAGNOSTICS/cuda.log" \
-            python -m tests.e2e.runs cuda --e2e-dir "$KUMO_PYTORCH_DIAGNOSTICS/cuda" --repetitions 1
-      - uses: ./.github/actions/kumo-pytorch-results
-        if: always() && steps.cuda_measure.outcome != 'skipped'
-        with:
-          name: cuda-measurements
-          path: |
-            ${{ runner.temp }}/pytorch-${{ github.run_id }}-${{ github.run_attempt }}/cuda/**/*.json
-            ${{ runner.temp }}/pytorch-${{ github.run_id }}-${{ github.run_attempt }}/cuda/**/*.xml
-
-  aml-source:
-    if: github.event_name == 'workflow_dispatch' && contains(fromJSON('["aml","l01-cuda","hi-small-memory"]'), inputs.mode) && github.repository == 'NVIDIA/kumo-engine' && github.ref_type == 'branch'
-    runs-on: ubuntu-24.04
-    permissions: {contents: read, pull-requests: read}
-    outputs: {pins: '${{ steps.source.outputs.pins }}', policy: '${{ steps.source.outputs.policy }}'}
-    steps:
-      - *checkout
-      - id: source
+      - name: Verify manual replay revision
+        if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
-          MODE: ${{ inputs.mode }}
         run: |
-          if [[ "$GITHUB_REF" != refs/heads/main ]]; then
-            gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq \
-              '.[] | select(.state == "open" and .head.repo.full_name == .base.repo.full_name) | .head.sha' | grep -Fx "$GITHUB_SHA"
-          fi
-          pins=(e2e/datasets/pins/aml-{l01,e01}.json)
-          case "$MODE" in
-            l01-cuda) pins=("${pins[0]}");;
-            hi-small-memory) pins=("${pins[1]}");;
-          esac
-          echo "pins=${pins[*]}" >> "$GITHUB_OUTPUT"
-          jq -sc '{Version:"2012-10-17",Statement:[{Effect:"Allow",Action:"s3:GetObject",
-            Resource:([.[].objects[].key | "arn:aws:s3:::kumo-engine-arena/" + .] | unique)}]}' \
-            "${pins[@]}" | sed 's/^/policy=/' >> "$GITHUB_OUTPUT"
+          gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq \
+            '.[] | select(.state == "open" and .head.repo.full_name == .base.repo.full_name) | .head.sha' | grep -Fx "$GITHUB_SHA"
+      - id: select
+        run: python3 -m tests.e2e.ci_plan plan --output "$RUNNER_TEMP/plan.json"
 
-  aml-benchmark:
-    name: ${{ inputs.mode }}
-    needs: [diskgraph-wheel, aml-source]
-    runs-on: linux-amd64-gpu-rtxpro6000-latest-1
-    timeout-minutes: ${{ inputs.mode == 'l01-cuda' && 90 || 720 }}
-    environment: {name: gha-kumo-workflow-tests, deployment: false}
+  diskgraph-wheel:
+    name: Build
+    if: github.repository == 'NVIDIA/kumo-engine' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    uses: ./.github/workflows/_diskgraph-wheel.yml
+    with: {diagnostics: true}
+
+  package-tests:
+    name: ${{ matrix.group }}
+    if: github.repository == 'NVIDIA/kumo-engine' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    needs: [plan, diskgraph-wheel]
+    # A single matrix call groups the dataset job and its three conformance peers in Actions.
+    strategy:
+      matrix: {group: [Package tests]}
     permissions: {contents: read, id-token: write}
-    env:
-      STAGE_PINNED_DATASETS: 'true'
-      DATASET_PINS: ${{ needs.aml-source.outputs.pins }}
-      DATASET_SESSION_POLICY: ${{ needs.aml-source.outputs.policy }}
-      WORKLOAD: ${{ inputs.mode == 'l01-cuda' && 'l01' || inputs.mode == 'hi-small-memory' && 'hi-small' || 'aml' }}
-    steps:
-      - *checkout
-      - run: test -n "$DATASET_SESSION_POLICY" && test -n "$DATASET_PINS"
-      - *dataset_credentials
-      - *stage_datasets
-      - uses: ./.github/actions/kumo-pytorch-setup
-        with:
-          diskgraph-wheel-artifact: diskgraph-wheel
-          torch-backend: ${{ inputs.mode == 'hi-small-memory' && 'cpu' || 'cu130' }}
-      - id: aml_measure
-        name: Run paired AML fits
-        env: *diagnostics
-        run: |
-          monitor=(python -m tests.e2e.ci_command "$KUMO_PYTORCH_DIAGNOSTICS/aml.log")
-          if [[ "$WORKLOAD" == aml ]]; then
-            exec "${monitor[@]}" python -m tests.e2e.runs aml --e2e-dir "$KUMO_PYTORCH_DIAGNOSTICS/aml" --cgroup-parent /sys/fs/cgroup --sudo
-          fi
-          args=(--host-memory sampled)
-          if [[ "$WORKLOAD" == l01 ]]; then args=(--cuda); fi
-          "${monitor[@]}" sudo -n -- env PATH="$PATH" KUMO_PYTORCH_DATA_ROOT="$KUMO_PYTORCH_DATA_ROOT" \
-            "$(command -v python)" -m tests.e2e.runs "$WORKLOAD" "${args[@]}" \
-            --cgroup-parent /sys/fs/cgroup --e2e-dir "$KUMO_PYTORCH_DIAGNOSTICS/$WORKLOAD"
-      - uses: ./.github/actions/kumo-pytorch-results
-        if: always() && steps.aml_measure.outcome != 'skipped'
-        with:
-          name: ${{ inputs.mode }}-measurements
-          path: |
-            ${{ runner.temp }}/pytorch-${{ github.run_id }}-${{ github.run_attempt }}/${{ env.WORKLOAD }}/**/campaign.json
-            ${{ runner.temp }}/pytorch-${{ github.run_id }}-${{ github.run_attempt }}/${{ env.WORKLOAD }}/**/timings.json
-            ${{ runner.temp }}/pytorch-${{ github.run_id }}-${{ github.run_attempt }}/${{ env.WORKLOAD }}/**/prepared/identity.json
-            ${{ runner.temp }}/pytorch-${{ github.run_id }}-${{ github.run_attempt }}/${{ env.WORKLOAD }}/**/results.json
-            ${{ runner.temp }}/pytorch-${{ github.run_id }}-${{ github.run_attempt }}/${{ env.WORKLOAD }}/**/cuda.xml
+    uses: ./.github/workflows/_kumo-pytorch-package-tests.yml
+    with:
+      seed_start: ${{ format('{0}', fromJSON(needs.plan.outputs.plan).seed_start) }}
 
-  streaming-25b:
-    if: >-
-      github.event_name == 'workflow_dispatch' && contains(fromJSON('["all","smoke","training","lifecycle","full"]'), inputs.mode) &&
-      github.repository == 'NVIDIA/kumo-engine' &&
-      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/pull-request/'))
-    needs: diskgraph-wheel
-    runs-on: ${{ vars.KUMO_PYTORCH_25B_RUNNER || 'linux-amd64-gpu-rtxpro6000-latest-1' }}
-    environment: {name: gha-kumo-workflow-tests, deployment: false}
-    timeout-minutes: 720
+  distribution:
+    name: Distribution
+    needs: [plan, diskgraph-wheel]
+    uses: ./.github/workflows/_kumo-pytorch-distribution.yml
+
+  training:
+    name: Training · ${{ matrix.label }}
+    if: github.repository == 'NVIDIA/kumo-engine' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    needs: [plan, diskgraph-wheel]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.training) }}
+    permissions: {contents: read, id-token: write}
+    uses: ./.github/workflows/_kumo-pytorch-training.yml
+    with:
+      binding: ${{ matrix.binding || '' }}
+      tier: ${{ matrix.tier || '' }}
+      flow: ${{ matrix.flow || '' }}
+      seed: ${{ matrix.seed || '' }}
+
+  lifecycle:
+    name: Lifecycle · ${{ matrix.dataset }}
+    needs: [plan, training]
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {dataset: H&M Small, tier: t2a}
+          - {dataset: H&M Medium, tier: t2b}
+    uses: ./.github/workflows/_kumo-pytorch-lifecycle.yml
+    with: {tier: '${{ matrix.tier }}'}
+
+  results:
+    name: Publish results
+    outputs:
+      gate_outcome: ${{ steps.validate.outcome }}
+    if: always()
+    needs: [plan, diskgraph-wheel, package-tests, distribution, training, lifecycle]
+    runs-on: ubuntu-24.04
+    permissions: {contents: read, actions: read}
     steps:
       - *checkout
-      - name: Check scratch for the full index
-        env:
-          SCRATCH: ${{ vars.KUMO_PYTORCH_25B_SCRATCH || runner.temp }}
-        run: |
-          [[ "$SCRATCH" == /* && -d "$SCRATCH" && -w "$SCRATCH" ]] || {
-            echo "::error::Set KUMO_PYTORCH_25B_SCRATCH to a writable scratch directory"; exit 1;
-          }
-          available=$(df -B1 --output=avail "$SCRATCH" | tail -1)
-          (( available >= 3 * 1024**4 )) || { echo "::error::25B needs 3 TiB of free scratch"; exit 1; }
-          mkdir -p "$SCRATCH/kumo-pytorch-25b/tmp"
-          echo "TMPDIR=$SCRATCH/kumo-pytorch-25b/tmp" >> "$GITHUB_ENV"
-          echo "KUMO_PYTORCH_25B_ROOT=$SCRATCH/kumo-pytorch-25b/cache" >> "$GITHUB_ENV"
-      - *package_setup
-      - name: Run the full-source campaign
-        id: campaign
-        env:
-          KUMO_PYTORCH_DIAGNOSTICS: ${{ runner.temp }}/pytorch-${{ github.run_id }}-${{ github.run_attempt }}
-          MODE: ${{ inputs.mode }}
-        run: |
-          suite=tests/e2e/test_streaming.py
-          smoke="$suite::test_streaming_weekly_session_forecast[25b-full]"
-          campaign="$suite::test_streaming_campaign"
-          case "$MODE" in
-            all) nodes=("$smoke" "$campaign") ;;
-            smoke) nodes=("$smoke") ;;
-            *) nodes=("$campaign[$MODE]") ;;
-          esac
-          python -m tests.e2e.ci_command "$KUMO_PYTORCH_DIAGNOSTICS/streaming.log" \
-            python -m pytest -q --durations=0 -o tmp_path_retention_policy=none \
-            --junitxml="$KUMO_PYTORCH_DIAGNOSTICS/streaming-25b.xml" "${nodes[@]}"
-      - uses: ./.github/actions/kumo-pytorch-results
-        if: always() && steps.campaign.outcome != 'skipped'
+      - uses: ./.github/actions/kumo-pytorch-report
         with:
-          name: streaming-25b-${{ inputs.mode }}
+          pattern: ${{ needs.plan.outputs.evidence_pattern }}
+          plan: ${{ needs.plan.outputs.plan }}
+
+      - name: Validate the published report
+        id: validate
+        continue-on-error: true
+        env:
+          PLAN_JSON: ${{ needs.plan.outputs.plan }}
+        run: python3 -m tests.e2e.ci_plan gate --results "$RUNNER_TEMP/results.json"
+
+  gate:
+    name: kumo-pytorch-gate
+    if: always()
+    needs: [plan, results]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require successful planning, publication, and validation
+        working-directory: .
+        env:
+          ACCEPTED: ${{ needs.plan.result == 'success' && needs.results.result == 'success' && needs.results.outputs.gate_outcome == 'success' }}
+        run: test "$ACCEPTED" = true

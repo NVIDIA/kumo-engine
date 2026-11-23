@@ -43,6 +43,15 @@ on 25k and 400k train anchors for all five HI Small bindings (three pairs each).
 Use ``aml --cgroup-parent DIR`` for all four L01 modes and 15 HI Small pairs
 on one clean candidate revision. Pass ``--sudo`` if the two cgroup supervisors
 require root. The linked measurements are descriptive.
+Use ``binding-train BINDING --e2e-dir DIR --output FILE`` on Linux to train the
+full registered training split for two epochs on CUDA. Stage the verified
+source under ``KUMO_PYTORCH_DATA_ROOT`` first. Ingestion includes source staging
+(``KUMO_PYTORCH_STAGE_SECONDS``, zero for pre-staged sources), re-verification,
+projection and DiskGraph preparation. RAM is process peak RSS.
+SSD usage includes the staged source and live prepared tables and index.
+Use ``binding-throughput BINDING`` with the same arguments to measure 100 eligible
+updates after 10 warmup updates on a pinned extract. Its report times extract staging,
+verification, DiskGraph preparation and fitting separately.
 """
 
 from __future__ import annotations
@@ -62,10 +71,14 @@ from contextlib import ExitStack, nullcontext
 from importlib.metadata import distributions
 from itertools import product
 from pathlib import Path
+from typing import TYPE_CHECKING
 from xml.etree import ElementTree
 
-from e2e.datasets.hm import HMDataset, generate, sample_anchors
+from e2e import E01_MANIFEST, L01_MANIFEST
 from tests.e2e.tiers import BY_NAME, Tier
+
+if TYPE_CHECKING:
+    from e2e.datasets.hm import HMDataset
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 FLOWS = {"gnn": "e2e.flows.hm_gnn", "pragma": "e2e.flows.hm_pragma"}
@@ -96,6 +109,8 @@ HI_SMALL_BINDINGS = ("E01", "E02", "E03", "E04", "E05")
 
 
 def dataset(root: Path, tier: Tier) -> HMDataset:
+    from e2e.datasets.hm import generate
+
     return generate(tier.scale, 0, root / f"hm-{tier.scale.lower()}")
 
 
@@ -104,6 +119,8 @@ def training_data(hm: HMDataset, root: Path, tier: Tier) -> HMDataset:
 
     if not tier.sample:
         return hm
+    from e2e.datasets.hm import sample_anchors
+
     return sample_anchors(hm, tier.sample, tier.sample_seed, root / "sampled")
 
 
@@ -288,7 +305,6 @@ def _provenance(case):
 
 
 def _hi_small_fits(e2e_dir, cgroup_parent, host_memory):
-    from e2e.datasets.aml import E01_MANIFEST
     from tests.e2e.memory_worker import run_isolated, worker_identity
 
     e2e_dir.mkdir(parents=True, exist_ok=True)
@@ -526,7 +542,6 @@ def _timing_campaign(
 
 
 def _aml_evidence(mode, path, revision):
-    from e2e.datasets.aml import E01_MANIFEST, L01_MANIFEST
     from tests.e2e.binding_report import require_fields
 
     data = json.loads(path.read_text())
@@ -689,6 +704,16 @@ def main(argv: list[str] | None = None) -> None:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--e2e-dir", type=Path, required=True)
+    if argv and argv[0] in ("binding-train", "binding-throughput"):
+        from tests.e2e.binding_plan import NIGHTLY_TRAINING
+        from tests.e2e.full_binding_run import run_full_binding
+
+        parser.add_argument("binding", choices=NIGHTLY_TRAINING)
+        parser.add_argument("--output", type=Path, required=True)
+        args = parser.parse_args(argv[1:])
+        run_full_binding(**vars(args), bounded=argv[0] == "binding-throughput")
+        print(args.output)
+        return
     if argv and argv[0] == "aml":
         parser.add_argument("--cgroup-parent", type=Path, required=True)
         parser.add_argument(

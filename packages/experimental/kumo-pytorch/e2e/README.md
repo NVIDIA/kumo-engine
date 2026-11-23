@@ -5,10 +5,15 @@ it, and run batch inference and serving in a fresh process. The flows are
 written the way a user would write them; this directory holds what they're
 measured against. It's development tooling, not part of the `kumo.pytorch` wheel.
 
-The end-to-end tests run in two tiers. T2a is the per-commit end-to-end run at
-size S, and T2b is the nightly run at size M (the sizes are in the dataset table
-below). The names match the `--t2a` and `--t2b` pytest options and the `t2a` and
-`t2b` test markers.
+Pull requests and nightly runs use the same [package suite](../../../../.github/workflows/kumo-pytorch-tests.yml)
+to run package and distribution checks, H&M at sizes S and M, conformance shards
+and six GPU throughput measurements on pinned real-data extracts. Both publish the same reports. To replay the nightly suite, manually dispatch this
+workflow without inputs on main or the current head of an open same-repository PR.
+
+For an on-demand CUDA, AML, full-binding or Streaming 25B run, select the
+[manual benchmark workflow](../../../../.github/workflows/kumo-pytorch-benchmarks.yml)
+and choose its mode. GitHub enables manual dispatch once that workflow exists
+on the default branch.
 
 | Path | What it is |
 |---|---|
@@ -21,9 +26,9 @@ below). The names match the `--t2a` and `--t2b` pytest options and the `t2a` and
 | `flows/common.py` | What both flows share: the schema, the anchors, the caller's row lookup, the training loop |
 | `../tests/e2e/` | Tests that the generator is deterministic and its ceiling is right; the T2a and T2b checks (`test_lifecycle.py`) and what differs between the tiers (`tiers.py`) |
 
-## Pinned nightly datasets
+## Pinned suite datasets
 
-The CPU suite on same-repository pull requests and scheduled runs on `main` stages every `e2e/datasets/pins/*.json` manifest on the runner before pytest. Fork pull requests run the same pytest command with private staging disabled.
+The suite stages the non-25B correctness pins before pytest. The private sources require a trusted repository run. Fork PRs fail the suite preflight before private staging.
 For a new dataset, add a manifest with its S3 keys, sizes and SHA-256 hashes. The nightly role needs read access to those keys.
 To fill the local cache, run these commands from the package root with the AWS CLI and read access. A complete cache works offline.
 
@@ -70,12 +75,12 @@ The existing stager downloads missing objects and verifies all 744 shards agains
 manifest. The test checks the 30,000 weekly counts, compares indexed row counts for all seven tables
 with the manifest, and replays viewers 3 and 873 over the three weeks.
 
-The **kumo-pytorch tests** workflow offers five manual Streaming 25B modes on `main`
+The manual benchmark workflow offers five Streaming 25B modes on `main`
 or a trusted `pull-request/<number>` branch.
 
 | Mode | What runs |
 | --- | --- |
-| `smoke` | The full-source replay above. |
+| `smoke` | The four-viewer fixture, the two-viewer private extract and the full-source replay above. |
 | `training` | Two same-seed 100-update CPU GraphSAGE runs on the first 32 training viewers, followed by checkpoint evaluation on validation and test. |
 | `lifecycle` | A fresh process reloads fitted state and weights, checks target-free predictions, fine-tunes with frozen inputs and resumes a partially consumed training epoch. |
 | `full` | Native delivery of all 30,000 anchors in source order, with their original identities, cutoffs, count targets and masks. |
@@ -268,7 +273,7 @@ so fixing one fails its test and the gap is lifted:
   event on both engines, but the flows' models read at least one event per batch, so the flows serve
   only customers who bought before.
 
-## The nightly tier (T2b)
+## The medium H&M tier (T2b)
 
 `pytest --t2b tests/e2e` runs the same flows and checks at M (50,000 customers,
 1.25M purchases) with the M bands in `tests/e2e/tiers.py`. Each flow trains on a
@@ -298,3 +303,74 @@ It trains on all 400,000 train anchors, but its pinned plan caps an epoch at 64
 batches of 512 (10 epochs ran), so it sees fewer examples than the kumo-pytorch GNN's
 125,000-anchor sample over its epochs. kumo-engine's own labels
 equal the generator's at all 700,000 anchors.
+
+## Suite training and results
+
+The GPU matrix runs S02 (Synthetic nuFormer), L01 (AML LI Medium
+Combined), S01 (Synthetic PRAGMA), M04 (MBD GraphSAGE), S04 (Synthetic
+Combined) and M03 (MBD nuFormer). The package runner prepares DiskGraph and
+loads batches from Parquet anchors on CPU. Each suite job stages the prepared
+Parquet files named in `datasets/pins/throughput/` and fits on 8,192 training
+anchors. With a batch size of 32 it warms up for 10 optimizer updates, times
+the next 100 and evaluates 256 validation and 256 test anchors. Batches without
+eligible targets count toward throughput and skip the optimizer update. For each anchor, the training
+runner selects the latest 64 history events across its event sources and
+delivers them oldest first. Each graph hop samples up to 64 recent neighbors
+per relation and keeps smaller configured fanouts. These limits apply to model
+inputs for training, validation and test. All 12 L01 count features use their
+original time windows. The package correctness tests use the original histories.
+HI Small retains its source and behavior checks. The 25B fixtures and campaigns
+run on manual dispatch.
+
+To reproduce an extract and its object hashes from staged original Parquet files,
+run `python -m e2e.datasets.throughput_sources S04 --source-root /scratch/source --output /scratch/new-s04`
+from the package directory. The command writes a local `pin.json` alongside the prepared tables.
+
+Manual benchmark mode `binding-train` fits on the full registered training split.
+It trains for two complete epochs, checks every sample ID, validates after each
+epoch and tests after epoch two. Select one binding or use `binding=all` to run all six.
+The manual `cuda` job also runs L01 training row 2,172,838 through this model
+context and checks its 12 counts against the pinned transaction source.
+The existing `KUMO_PYTORCH_BINDING_RUNNER` and `KUMO_PYTORCH_BINDING_SCRATCH`
+variables select the Linux CUDA worker and writable volume. From a worker with
+the full source staged in `KUMO_PYTORCH_DATA_ROOT`, the command is
+
+```sh
+python -m tests.e2e.runs binding-train S04 --e2e-dir /scratch/work --output report.json
+```
+
+The combined `results.md` and `results.json` contain per-head eligible counts
+and mean losses for each window. The suite reports extract staging, verification,
+index preparation and materialization/fit separately. Its throughput covers the
+100 timed updates, including CPU batch loading and GPU synchronization. The
+manual report includes staging and projection in ingestion and times both epochs.
+Tokens count valid input history tokens (zero for graph-only M04). RAM is peak
+process RSS, GPU utilization is the mean of device-wide NVML samples during
+training, and SSD usage is allocated space for the staged binding and its
+live projected tables and index.
+
+## Package CI results and required check
+
+The package suite publishes an attempt-specific
+`kumo-pytorch-results` artifact. Its JSON and job summary identify the tested
+revision, jobs, dataset selections and missing evidence. A pull
+request can test a merge commit. The report records its source head separately.
+Use **Re-run all jobs** when an entire new attempt needs acceptance.
+
+After merge, download `results.json` from a completed scheduled run on
+`main`. From the package directory, run the following with authenticated
+read access through `gh`.
+
+```sh
+GITHUB_REPOSITORY=NVIDIA/kumo-engine python3 -m tests.e2e.ci_plan scheduled --results results.json
+```
+
+This verifies the actual workflow, revision, attempt and job conclusions. A
+scheduled run that fails its tests still records that the schedule fired.
+
+After verifying the PR and scheduled reports, a repository
+administrator can add a branch ruleset targeting `main` with **Require status
+checks to pass**. Select the exact check `kumo-pytorch-gate` from GitHub Actions,
+keep the existing rulesets in force, and enable the new rule when ready.
+The additional required-status-check entry is
+`{"context":"kumo-pytorch-gate","integration_id":15368}`.

@@ -20,6 +20,7 @@ import torch
 
 from e2e.datasets.synthetic import _events, load_synthetic, prepare_synthetic
 from kumo.pytorch import api
+from tests.e2e.binding_campaign import exercise_binding
 from tests.e2e.binding_report import BindingReport
 from tests.e2e.history import (
     check_masked_history,
@@ -203,6 +204,8 @@ def _check_ltv_graph(task, batch, histories):
     ["customer", "account", "ltv"],
     ids=["s02-next-token", "s01-masked-values", "s04-positive-ltv"],
 )
+@pytest.mark.binding_report("training")
+@pytest.mark.binding_report("lifecycle")
 @pytest.mark.binding_report("correctness")
 def test_registered_history(tmp_path, entity_type):
     ltv = entity_type == "ltv"
@@ -299,6 +302,7 @@ def test_registered_history(tmp_path, entity_type):
                     assert set(batch.inputs) == {"history"} and set(batch.targets) == {"next_token"}
             evidence.observe(batch)
         evidence.publish()
+        exercise_binding(task, dataset, table, engine, tmp_path, evidence)
 
 
 def _ltv_answers(spec, cutoff, history):

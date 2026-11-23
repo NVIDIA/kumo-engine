@@ -9,10 +9,12 @@ import json
 import os
 from bisect import bisect_right
 from collections import Counter
-from contextlib import ExitStack
+from contextlib import ExitStack, nullcontext
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
+from functools import partial
+from heapq import nlargest
 from itertools import accumulate
 from math import log
 from pathlib import Path
@@ -31,11 +33,12 @@ from e2e.datasets.aml import (
     L01_MANIFEST,
     l01_loss,
     li_head_loss,
-    prepare_hi_small,
+    prepare_hi_small_group,
     prepare_li_medium,
 )
 from e2e.datasets.staging import verify
 from kumo.pytorch import api
+from tests.e2e.binding_campaign import exercise_binding
 from tests.e2e.binding_report import BindingReport
 from tests.e2e.history import (
     check_masked_history,
@@ -240,7 +243,7 @@ def li_heads_source(tmp_path_factory):
 
 
 @pytest.fixture(scope="module")
-def hi_small():
+def hi_small(tmp_path_factory):
     positions = (0, 313, 2724, 4245, 11800, 409216)
     files, anchors = _source_rows(E01_MANIFEST, "hi-small", positions, "split", "involvement")
     account_ids, events, ends = _source_history(files, anchors)
@@ -263,7 +266,13 @@ def hi_small():
             assert (row["forecast_split"], row["involvement"]) == (split, label)
         histories[row["sample_id"]] = root, cutoff, past
         registered[row["sample_id"]] = dict(row, anchor_row_position=pos)
-    return files, registered, histories
+    bind = prepare_hi_small_group(
+        files,
+        tmp_path_factory.mktemp("hi-small"),
+        positions,
+        {r["entity_id"] for r in anchors.values()},
+    )
+    return bind, registered, histories
 
 
 @pytest.mark.parametrize(
@@ -273,17 +282,24 @@ def hi_small():
         ("E02", {"graph", "history", "aggregates"}, "label"),
         ("E03", {"history", "history_calendar", "history_timing"}, "masked_values"),
         ("E04", {"history"}, "next_token"),
-        pytest.param("E05", {"history"}, "label", marks=pytest.mark.binding_report("histories")),
+        pytest.param(
+            "E05",
+            {"history"},
+            "label",
+            marks=(
+                pytest.mark.binding_report("histories"),
+                pytest.mark.binding_report("histories-filtered"),
+            ),
+        ),
     ],
     ids=["e01-graph", "e02-combined", "e03-masked-values", "e04-next-token", "e05-involvement"],
 )
+@pytest.mark.binding_report("training")
+@pytest.mark.binding_report("lifecycle")
 @pytest.mark.binding_report("correctness")
 def test_hi_small_account_history(tmp_path, hi_small, binding, inputs, target):
-    files, anchors, histories = hi_small
-    positions = [row["anchor_row_position"] for row in anchors.values()]
-    spec, data, table = prepare_hi_small(
-        files, tmp_path / "prepared", anchor_rows=positions, binding=binding
-    )
+    bind, anchors, histories = hi_small
+    spec, data, table = bind(binding)
     split_col = "forecast_split" if target == "label" else "split"
     eligible = {s: r[split_col] for s, r in anchors.items() if r[split_col] is not None}
     training = [s for s, split in eligible.items() if split == "train"]
@@ -349,10 +365,11 @@ def test_hi_small_account_history(tmp_path, hi_small, binding, inputs, target):
             if "aggregates" in inputs:
                 check_normalized_aggregates(task, batch, counts, training)
             evidence.observe(batch)
+        exercise_binding(task, data, table, engine, tmp_path, evidence)
     evidence.publish()
     if binding == "E05":
         _check_role_windows(
-            spec.schema, data, table, engine, {s: histories[s] for s in eligible}, population
+            spec.schema, data, table, engine, {s: histories[s] for s in eligible}, evidence
         )
 
 
@@ -652,6 +669,10 @@ def test_li_medium_l01_loader(mode, tmp_path, request, native_anchor_delivery):
         )
 
 
+@pytest.mark.binding_report("histories-filtered")
+@pytest.mark.binding_report("histories")
+@pytest.mark.binding_report("training")
+@pytest.mark.binding_report("lifecycle")
 @pytest.mark.binding_report("correctness")
 def test_li_medium_l01_combined_forecast(tmp_path):
     # The two train anchors share an account but differ on all twelve historical counts.
@@ -723,6 +744,7 @@ def test_li_medium_l01_combined_forecast(tmp_path):
             check_normalized_aggregates(task, batch, counts, answers["train"])
             evidence.observe(batch)
         evidence.publish()
+        exercise_binding(task, data, table, engine, tmp_path, evidence)
 
         # The short rank gets a copy with valid labels and zero eligible loss.
         (padded,) = task.batches(split="test", rank=1, world_size=2, output_format="model")
@@ -750,6 +772,110 @@ def test_li_medium_l01_combined_forecast(tmp_path):
                 },
                 currency_ids,
             )
+
+    _check_role_windows(spec.schema, data, table, engine, histories, evidence)
+
+
+@pytest.mark.skipif(
+    not os.getenv("KUMO_PYTORCH_BINDING_SMOKE_DEVICE"), reason="run the binding training probe"
+)
+def test_l01_nightly_outlier(tmp_path, monkeypatch, record_property):
+    from tests.e2e.binding_plan import NIGHTLY_HISTORY_EVENTS
+    from tests.e2e.binding_training import train_full_binding
+    from tests.e2e.cuda_metrics import training_gpu_window
+    from tests.e2e.full_binding_run import training_contract
+
+    # One registered account across all three splits.
+    positions = (2_172_838, 7_178_960, 44_836_871)
+    files, anchors = _source_rows(L01_MANIFEST, "li-medium", positions)
+    spec, data, table = prepare_li_medium(files, tmp_path / "prepared", anchor_rows=positions)
+    accounts, events, _ = _source_history(files, anchors)
+    (root,) = accounts.values()
+    counts, recent, graph_times, samples = {}, {}, {}, {}
+    for row in anchors.values():
+        cutoff = int(row["as_of_time"].replace(tzinfo=UTC).timestamp())
+        sample = samples[row["forecast_split"]] = row["sample_id"]
+        past = {i: e for i, e in events.items() if e.time < cutoff}
+        counts[sample] = _source_counts(spec, root, cutoff, past)
+        recent[sample] = sorted(nlargest(NIGHTLY_HISTORY_EVENTS, (e.time for e in past.values())))
+        graph_times[sample] = {
+            role: sorted(
+                nlargest(
+                    NIGHTLY_HISTORY_EVENTS,
+                    (e.time for e in past.values() if getattr(e, role) == root),
+                )
+            )
+            for role in ("sender", "receiver")
+        }
+    del past
+    assert counts[samples["train"]]["all_history_total_touching_count"] == 475_664
+    device = os.environ["KUMO_PYTORCH_BINDING_SMOKE_DEVICE"]
+    engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=4)
+    train_at = anchors[positions[0]]["as_of_time"].replace(tzinfo=UTC).timestamp()
+    with (
+        api.prepare(training_contract(spec), data, engine) as plan,
+        plan.materialize(table, fit_split="train", encoder_cutoff=int(train_at) - 1) as task,
+    ):
+        source = task._anchors._source
+        build = source.build_model_batch
+        retained = {}
+        graph_sizes = {}
+
+        def observe(spec, runtime, native, compiled):
+            (sample,) = native.sample_ids
+            (sequence,) = runtime["history"]["sequences"]
+            ids = sequence["batch"]["event_id"].to_pylist()
+            history = {i // 2: events[i // 2] for i in ids}
+            assert len(history) == NIGHTLY_HISTORY_EVENTS
+            assert ids == [2 * i + int(e.sender != root) for i, e in history.items()]
+            assert [e.time for e in history.values()] == recent[sample]
+            retained[sample] = history
+            return build(spec, runtime, native, compiled)
+
+        monkeypatch.setattr(source, "build_model_batch", observe)
+
+        def batches(split, epoch):
+            (batch,) = task.batches(split=split, epoch=epoch, batch_size=1, output_format="model")
+            (sample,) = batch.metadata["sample_ids"]
+            assert sample == samples[split]
+            cutoff = batch.metadata["as_of_time"].item() + 1
+            _check_history(task, batch, [(root, cutoff, retained[sample])])
+            check_normalized_aggregates(task, batch, counts, [samples["train"]])
+            ids = batch.inputs["graph"]["nodes"]["transactions"]["ids"].tolist()
+            assert len(ids) == len(set(ids))
+            for role, times in graph_times[sample].items():
+                assert (
+                    sorted(events[i].time for i in ids if getattr(events[i], role) == root) == times
+                )
+            graph_sizes[split] = len(ids)
+            yield batch
+
+        result = train_full_binding(
+            task,
+            "L01",
+            batch_size=1,
+            split_batches=batches,
+            device=device,
+            train_window=partial(training_gpu_window, device) if device == "cuda" else nullcontext,
+        )
+    for epoch in result["epochs"]:
+        assert epoch["optimizer_updates"] == 1
+        assert {h: v["eligible"] for h, v in epoch["heads"].items()} == {"amount": 1, "currency": 1}
+    assert result["epochs"][0]["heads"] != result["epochs"][1]["heads"]
+    record_property(
+        "l01_outlier",
+        json.dumps(
+            dict(
+                position=positions[0],
+                sample=samples["train"],
+                counts=counts[samples["train"]],
+                retained=NIGHTLY_HISTORY_EVENTS,
+                graph_transactions=graph_sizes,
+                device=device,
+                **result,
+            )
+        ),
+    )
 
 
 @pytest.mark.parametrize(
@@ -845,14 +971,30 @@ def test_li_medium_stored_head(tmp_path, li_heads_source, binding, labels, score
         evidence.publish()
 
 
-def _check_role_windows(schema, data, table, engine, histories, population):
+def _check_role_windows(schema, data, table, engine, histories, source):
+    for filtered in (False, True):
+        _check_role_sweep(schema, data, table, engine, histories, source, filtered)
+
+
+def _check_role_sweep(schema, data, table, engine, histories, source, filtered):
     # At prediction time T, senders use all prior events and receivers use [T-24h, T-1h].
+    shift = int(source.identity["binding"] == "L01")
+    filters = {
+        "sender": api.RowFilter("amount_paid", "greater_than", Decimal(0)),
+        "receiver": api.RowFilter("payment_format", "equal", "ACH"),
+    }
     events = {
         role: api.EventSpec(
-            api.Rows((role,), api.TimeWindow("event_time", *window)),
+            api.Rows(
+                (role,),
+                api.TimeWindow("event_time", *window),
+                filters=(filters[role],) if filtered else (),
+            ),
             {"id": api.Field("transaction_id"), "role": api.Constant(i, api.DType("int64"))},
         )
-        for i, (role, window) in enumerate((("sender", (None, -1)), ("receiver", (-86401, -3600))))
+        for i, (role, window) in enumerate(
+            (("sender", (None, -1 + shift)), ("receiver", (-86401 + shift, -3600 + shift)))
+        )
     }
     fields = api.Fields(tuple(api.Encode(name, api.Raw()) for name in ("role", "id")))
     inputs = {
@@ -870,8 +1012,20 @@ def _check_role_windows(schema, data, table, engine, histories, population):
         schema, api.SampleSpec(api.EntitySpec("accounts"), events=events), api.BatchSpec(inputs)
     )
     evidence = BindingReport(
-        "E05", E01_MANIFEST.name, "packed", population, {}, inputs, mode="histories"
+        source.identity["binding"],
+        source.identity["selector"],
+        "packed",
+        source.counts,
+        {},
+        inputs,
+        mode="histories-filtered" if filtered else "histories",
     )
+    issues = api.check(spec, data, engine)
+    if filtered and issues and {issue.code for issue in issues} == {"DG-ROW-FILTER"}:
+        with pytest.raises(ValueError, match=r"\[DG-ROW-FILTER\]"):
+            api.prepare(spec, data, engine)
+        evidence.publish(refusal=(issues[0].code, "DG-ROW-FILTER"))
+        return
     with (
         api.prepare(spec, data, engine) as plan,
         plan.materialize(replace(table, targets={}), fit_split="train") as task,
@@ -883,12 +1037,18 @@ def _check_role_windows(schema, data, table, engine, histories, population):
             seen.extend(batch.metadata["sample_ids"])
             for owner, sample in enumerate(batch.metadata["sample_ids"]):
                 root, cutoff, past = histories[sample]
-                times = {(0, i): e.time for i, e in past.items() if e.sender == root}
+                times = {
+                    (0, i): e.time
+                    for i, e in past.items()
+                    if e.sender == root and (not filtered or (e.features["amount_paid"] or 0) > 0)
+                }
                 times.update(
                     {
                         (1, i): e.time
                         for i, e in past.items()
-                        if e.receiver == root and cutoff - 86400 <= e.time <= cutoff - 3600
+                        if e.receiver == root
+                        and cutoff - 86400 <= e.time <= cutoff - 3600
+                        and (not filtered or e.features["payment_format"] == "ACH")
                     }
                 )
                 ordered = sorted(times.values())

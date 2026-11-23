@@ -10,6 +10,7 @@ import os
 import subprocess
 import sys
 import time
+from collections import Counter
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -101,9 +102,15 @@ def test_binding_evidence_requires_planned_population():
     from tests.e2e.binding_report import BindingReport
 
     plan = BindingReport(
-        "E01", "hi-small", "graphsage", {"train": 2}, {"label": {"train": 1}}, ["graph"]
+        "E01",
+        "hi-small",
+        "graphsage",
+        {"train": 2},
+        {"label": {"train": 1}, "empty": Counter()},
+        ["graph"],
     )
-    row = {"delivered": 2, "eligible": {"label": 1}, "features": {"graph": 2}}
+    assert json.loads(json.dumps(plan.targets))["empty"] == {"train": 0}
+    row = {"delivered": 2, "eligible": {"label": 1, "empty": 0}, "features": {"graph": 2}}
     report = dict(
         plan.identity,
         revision="candidate",
@@ -123,7 +130,8 @@ def test_binding_evidence_requires_planned_population():
         {"revision": "stale"},
         {"splits": {}},
         {"stage": "prepare"},
-        {"splits": {"train": {**row, "eligible": {"label": 0}}}},
+        {"splits": {"train": {**row, "eligible": {"label": 0, "empty": 0}}}},
+        {"splits": {"train": {**row, "eligible": {"label": 1}}}},
         {"splits": {"train": {**row, "features": {"graph": 1}}}},
     ):
         with pytest.raises(ValueError):

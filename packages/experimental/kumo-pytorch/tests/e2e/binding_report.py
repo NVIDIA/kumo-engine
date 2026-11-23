@@ -42,9 +42,11 @@ class BindingReport:
             scope=scope,
         )
         self.counts = dict(counts)
-        self.targets = (
-            targets  # head -> per-split source count, or None for generated token targets
-        )
+        # Counter supplies zero for absent source targets. Persist that value across JSON.
+        self.targets = {
+            head: {split: values[split] for split in self.counts} if values is not None else None
+            for head, values in targets.items()
+        }
         self.features = set(features)
         self.splits = {}
 
@@ -146,6 +148,12 @@ def finish_binding_reports(item, report, *, call_passed=True):
                 plan.identity,
                 **source,
                 splits=plan.splits,
+                expected=dict(
+                    counts=plan.counts,
+                    targets=plan.targets,
+                    features=sorted(plan.features),
+                    checks=required,
+                ),
                 checks=checks,
                 outcome="refused" if refusal else "executed",
                 stage="prepare" if refusal else "complete",

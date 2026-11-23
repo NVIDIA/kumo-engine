@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import inspect
 import os
+import sys
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -24,6 +26,9 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     from tests.conformance.conftest import add_conformance_options
 
     add_conformance_options(parser)
+    parser.addoption(
+        "--complete-fixtures", action="store_true", help="require all ordinary CPU fixture calls"
+    )
     parser.addoption(
         "--cgroup-parent", type=Path, help="run host-memory validators on a delegated Linux cgroup"
     )
@@ -55,6 +60,8 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
 E2E_TIERS = ("t2a", "t2b")
 BINDING_CALL_PASSED = pytest.StashKey[bool]()
+REQUIRED_FIXTURES = pytest.StashKey[set[str]]()
+FIXTURE_CALLS = pytest.StashKey[Counter[str]]()
 
 
 @pytest.hookimpl(hookwrapper=True, tryfirst=True)
@@ -80,6 +87,11 @@ def pytest_runtest_protocol(item):
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_makereport(item, call):
     report = (yield).get_result()
+    if item.nodeid in item.config.stash.get(REQUIRED_FIXTURES, ()):
+        if report.skipped or hasattr(report, "wasxfail"):
+            item.config.stash[FIXTURE_CALLS][item.nodeid] = -1
+        elif report.when == "call":
+            item.config.stash[FIXTURE_CALLS][item.nodeid] += 1
     if not os.getenv("KUMO_PYTORCH_DIAGNOSTICS"):
         return
     binding = item.get_closest_marker("binding_report")
@@ -105,7 +117,54 @@ def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line("markers", "t2b: nightly end-to-end tier at M; runs only with --t2b")
 
 
+@pytest.hookimpl(tryfirst=True)
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    if config.getoption("--complete-fixtures"):
+        from tests.e2e.runs import CUDA_REGRESSIONS, TIMING_CASES
+
+        tests = Path(__file__).resolve().parent
+        # Conformance and real-data E2E profiles have their own plans. Staging is offline.
+        modules = {
+            path
+            for path in tests.rglob("test_*.py")
+            if path.relative_to(tests).parts[0] not in {"conformance", "e2e"}
+        } | {tests / "e2e/test_dataset_staging.py"}
+        if (
+            [Path(arg).resolve() for arg in config.args] != [tests]
+            or config.inipath != tests.parent / "pyproject.toml"
+            or config.option.keyword
+            or config.option.markexpr != "not notebook"
+            or (config.option.ignore or []) not in ([], ["tests/conformance"])
+            or config.option.ignore_glob
+            or config.option.deselect
+            or config.option.collectonly
+        ):
+            raise pytest.UsageError(
+                "--complete-fixtures requires the unfiltered package test suite"
+            )
+        missing = modules - {item.path for item in items}
+        if missing:
+            raise pytest.UsageError(f"Fixture modules omitted at collection: {sorted(missing)}")
+        optional = {*CUDA_REGRESSIONS, TIMING_CASES["loader"], TIMING_CASES["cuda"]}
+        if sys.platform != "linux":
+            optional.update(
+                f"tests/test_native_anchor_handoff.py::{name}"
+                for name in (
+                    "test_native_anchor_history_share_one_combined_reader",
+                    "test_replacing_closed_anchor_task_releases_old_reader",
+                )
+            )
+        ids = [
+            item.nodeid
+            for item in items
+            if item.path in modules
+            and not item.get_closest_marker("notebook")
+            and item.nodeid not in optional
+        ]
+        if len(ids) != len(set(ids)):
+            raise pytest.UsageError("Duplicate fixture IDs at collection")
+        config.stash[REQUIRED_FIXTURES] = set(ids)
+        config.stash[FIXTURE_CALLS] = Counter()
     skipped = [tier for tier in E2E_TIERS if not config.getoption(f"--{tier}")]
     deselected = [item for item in items if any(item.get_closest_marker(t) for t in skipped)]
     if deselected:
@@ -115,6 +174,19 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 
 @pytest.hookimpl(trylast=True)
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    required = session.config.stash.get(REQUIRED_FIXTURES, set())
+    if required:
+        calls = session.config.stash[FIXTURE_CALLS]
+        missing = sorted(node for node in required if calls[node] != 1)
+        if missing:
+            reporter = session.config.pluginmanager.getplugin("terminalreporter")
+            if reporter:
+                reporter.write_sep(
+                    "!", "required fixture calls missing, repeated, skipped or xfailed"
+                )
+                for node in missing:
+                    reporter.write_line(node)
+            session.exitstatus = pytest.ExitCode.TESTS_FAILED
     if not session.config.getoption("--require-imports"):
         return
     reporter = session.config.pluginmanager.getplugin("terminalreporter")

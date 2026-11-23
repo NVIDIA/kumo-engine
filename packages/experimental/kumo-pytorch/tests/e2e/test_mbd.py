@@ -16,6 +16,7 @@ import torch
 
 from e2e.datasets.mbd import CATEGORIES, M03_MANIFEST, M04_MANIFEST, load_mbd, prepare_mbd
 from kumo.pytorch import api
+from tests.e2e.binding_campaign import exercise_binding
 from tests.e2e.binding_report import BindingReport
 from tests.e2e.history import check_mbd_packed_history, check_source_graph, source_vocabulary
 from tests.e2e.loader_timing import correctness_stage
@@ -32,6 +33,8 @@ _HEADS = ("event_type", "event_subtype")
     ],
     ids=["m04-count", "m03-category"],
 )
+@pytest.mark.binding_report("training")
+@pytest.mark.binding_report("lifecycle")
 @pytest.mark.binding_report("correctness")
 def test_mbd_transaction_forecast(tmp_path, manifest, verified):
     root = os.environ.get("KUMO_PYTORCH_DATA_ROOT")
@@ -231,6 +234,8 @@ def _check_forecast(tables, manifest, tmp_path, verified, selector=None):
             evidence.observe(batch)
         assert sorted(delivered) == sorted(registered)
         evidence.publish()
+        if selector is None:
+            exercise_binding(task, data, table, engine, tmp_path, evidence)
 
 
 def _category_forecasts(registered, events):

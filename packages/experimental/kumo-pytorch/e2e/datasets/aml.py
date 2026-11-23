@@ -8,6 +8,7 @@ import hashlib
 import json
 from collections import Counter
 from collections.abc import Mapping, Sequence
+from contextlib import ExitStack
 from dataclasses import replace
 from operator import index
 from pathlib import Path
@@ -19,12 +20,12 @@ import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 from torch.nn import functional as F
 
+from e2e import E01_MANIFEST as E01_MANIFEST
+from e2e import L01_MANIFEST as L01_MANIFEST
 from e2e.datasets import CALENDAR, bind_tables, history_batch
 from e2e.datasets.staging import verify
 from kumo.pytorch import api
 
-E01_MANIFEST = Path(__file__).parent / "pins" / "aml-e01.json"
-L01_MANIFEST = E01_MANIFEST.with_name("aml-l01.json")
 _CLOCK = pa.timestamp("ms", tz="UTC")
 _AMOUNTS = ("amount_paid", "amount_received")
 _CATEGORIES = ("payment_currency", "receiving_currency", "payment_format")
@@ -48,14 +49,9 @@ _TRANSACTIONS = pa.schema(
 )
 
 
-def _select_anchors(path, positions, account_ids, targets, graph_clock):
-    source = ds.dataset(path, format="parquet")
-    positions = sorted(map(index, positions))
-    in_range = positions and positions[0] >= 0 and positions[-1] < source.count_rows()
-    if not in_range or len(set(positions)) != len(positions):
-        raise ValueError("Select distinct, in-range physical anchor rows")
+def _anchor_columns(targets, graph_clock):
     field = ds.field
-    columns = {
+    return {
         "sample_id": field("sample_id"),
         "registered_entity_id": field("entity_id"),
         "prediction_time_ns": field("as_of_time").cast(pa.int64()),
@@ -63,6 +59,15 @@ def _select_anchors(path, positions, account_ids, targets, graph_clock):
         "split": field("forecast_split" if targets else "split"),
         **{name: field(column).cast(dtype) for name, (column, dtype, _) in targets.items()},
     }
+
+
+def _select_anchors(path, positions, account_ids, targets, graph_clock):
+    source = ds.dataset(path, format="parquet")
+    positions = sorted(map(index, positions))
+    in_range = positions and positions[0] >= 0 and positions[-1] < source.count_rows()
+    if not in_range or len(set(positions)) != len(positions):
+        raise ValueError("Select distinct, in-range physical anchor rows")
+    columns = _anchor_columns(targets, graph_clock)
     rows = source.take(positions, columns=columns).append_column(
         "anchor_row_position", pa.array(positions)
     )
@@ -245,6 +250,25 @@ def prepare_hi_small(
     return _prepare_aml(files, directory, anchor_rows, _hi_targets(binding), binding)
 
 
+def prepare_hi_small_group(files, directory, positions, roots):
+    """Share complete source histories and account ranks across the five HI bindings."""
+    mapping, ids = _accounts(files)
+    fanout = _write_source_tables(files, directory, mapping, ids, roots, history=True)
+
+    def bind(binding):
+        targets = _hi_targets(binding)
+        graph = binding in {"E01", "E02"}
+        selected, _ = _select_anchors(files["anchors"], positions, ids, targets, graph)
+        contract = _binding_contract(fanout, binding, targets, graph)
+        path = directory / binding
+        path.mkdir()
+        pq.write_table(selected, path / "anchors.parquet")
+        sources = {t.name: directory / f"{t.name}.parquet" for t in contract.schema.tables}
+        return bind_tables(path, contract, "entity_id", targets, source_paths=sources)
+
+    return bind
+
+
 def _hi_targets(binding):
     if binding not in {"E01", "E02", "E03", "E04", "E05"}:
         raise ValueError(f"Unknown HI Small binding: {binding}")
@@ -254,19 +278,22 @@ def _hi_targets(binding):
 prepare_e01 = prepare_hi_small
 
 
-def prepare_li_medium(
-    files: Mapping[str, Path], directory: Path, *, anchor_rows: Sequence[int], binding="L01"
-):
-    """Prepare an LI Medium stored-target binding from the supplied source tables."""
+def _li_targets(binding):
     if binding not in _LI_TARGETS:
         raise ValueError(f"Unknown LI Medium binding: {binding}")
-    targets = {
+    return {
         name: (column, "string", api.Vocabulary())
         if kind == "categorical"
         else (column, "float32", api.Raw())
         for name, (column, kind) in _LI_TARGETS[binding].items()
     }
-    return _prepare_aml(files, directory, anchor_rows, targets, binding)
+
+
+def prepare_li_medium(
+    files: Mapping[str, Path], directory: Path, *, anchor_rows: Sequence[int], binding="L01"
+):
+    """Prepare an LI Medium stored-target binding from the supplied source tables."""
+    return _prepare_aml(files, directory, anchor_rows, _li_targets(binding), binding)
 
 
 prepare_l01 = prepare_li_medium
@@ -371,6 +398,37 @@ def _prepare_aml(files, directory, anchor_rows, targets, binding):
         contract = _binding_contract(fanout, binding, targets, graph_clock)
         pq.write_table(selection, work / "anchors.parquet")
         work.rename(directory)
+    return bind_tables(directory, contract, "entity_id", targets)
+
+
+def prepare_full_aml(files, directory, binding):
+    """Project every eligible published anchor and all original AML transactions."""
+    directory.mkdir(parents=True)
+    mapping, ids = _accounts(files)
+    targets = _hi_targets(binding) if binding.startswith("E") else _li_targets(binding)
+    graph = binding in {"E01", "E02", "L01"}
+    fanout = _write_source_tables(files, directory, mapping, ids, ids, history=binding != "E01")
+    dataset = ds.dataset(files["anchors"])
+    offset = 0
+    names = mapping["entity_id"].combine_chunks()
+    with ExitStack() as stack:
+        writer = None
+        for batch in dataset.to_batches(columns=_anchor_columns(targets, graph)):
+            rows = pa.Table.from_batches([batch]).append_column(
+                "anchor_row_position", pa.array(range(offset, offset + len(batch)), type=pa.int64())
+            )
+            offset += len(batch)
+            rows = rows.filter(pc.is_valid(rows["split"]))
+            root_ids = pc.index_in(rows["registered_entity_id"], value_set=names)
+            if root_ids.null_count:
+                raise ValueError("AML anchor account missing from published mapping")
+            rows = rows.append_column("entity_id", root_ids.cast(pa.int64()))
+            if writer is None:
+                writer = stack.enter_context(
+                    pq.ParquetWriter(directory / "anchors.parquet", rows.schema)
+                )
+            writer.write_table(rows)
+    contract = _binding_contract(fanout, binding, targets, graph)
     return bind_tables(directory, contract, "entity_id", targets)
 
 

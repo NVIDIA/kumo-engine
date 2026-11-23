@@ -47,7 +47,9 @@ class _Combined(nn.Module):
             nn.ModuleDict({name: nn.LayerNorm(16) for name in destinations})
             for destinations in (("accounts", "transactions"), ("accounts",))
         )
-        self.counts = tuple(task.contract.sample.entity_values)
+        self.counts = tuple(
+            f.field for f in task.contract.batch.inputs["aggregates"].representation.fields
+        )
         self.aggregates = nn.Sequential(
             nn.Linear(2 * len(self.counts), 8), nn.GELU(), nn.Linear(8, 8)
         )
