@@ -29,14 +29,12 @@ import shutil
 import struct
 from typing import Any
 
-from diskgraph import SplitSpec
-
+import diskgraph
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
-
-import diskgraph
-from diskgraph import RuntimeIndex, task_stage_size
+from diskgraph import RuntimeIndex, SplitSpec, task_stage_size
+from diskgraph.sampling_plan import FanoutSpec, LayerSpec, SamplingPlan
 
 
 def make_runtime_batch_iterator(dataset_ref, **kwargs):
@@ -218,15 +216,15 @@ def seed_table_fixture(tmp_path_factory) -> dict[str, Any]:
     }
 
 
-def _sampling_plan() -> dict[str, Any]:
+def _sampling_plan() -> SamplingPlan:
     # Depth-2: hop 0 = users (resolved seeds), hop 1 = users → orders.
-    fan = {"fanout": 4, "mode": "uniform", "absent_key_policy": "uniform_fallback"}
-    return {
-        "layers": [
-            {"fanouts": {}, "default_fanout": fan},
-            {"fanouts": {}, "default_fanout": fan},
-        ],
-    }
+    fan = FanoutSpec(fanout=4, mode="uniform", absent_key_policy="uniform_fallback")
+    return SamplingPlan(
+        [
+            LayerSpec(fanouts={}, default_fanout=fan),
+            LayerSpec(fanouts={}, default_fanout=fan),
+        ]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1764,7 +1762,7 @@ def test_execute_tt_plan_end_to_end_multi_fk_custom_tt(tmp_path, weighted):
     iterator, num_samples = make_runtime_batch_iterator(
         dataset_ref=str(task_manifest_path),
         stage="train",
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         num_workers=1,
         worker_id=0,
         shuffle=False,
@@ -2080,7 +2078,7 @@ def test_negative_sampling_present_nontemporal(tmp_path):
         stage="train",
         entity_node_type="users",
         target_node_type="items",
-        sampling_plan={"layers": []},  # 0-hop: just the roots + negatives
+        sampling_plan=SamplingPlan(),  # 0-hop: just the roots + negatives
         num_workers=1, worker_id=0,
         shuffle=False, rnd_seed=None, epoch=0,
         batch_size=B, drop_last=False,
@@ -2127,7 +2125,7 @@ def test_negative_sampling_absent_regression(tmp_path):
         stage="train",
         entity_node_type="users",
         target_node_type="items",
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         num_workers=1, worker_id=0,
         shuffle=False, rnd_seed=None, epoch=0,
         batch_size=B, drop_last=False,
@@ -2197,7 +2195,7 @@ def test_negative_sampling_temporal_rhs(tmp_path):
         stage="train",
         entity_node_type="users",
         target_node_type="items",
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         num_workers=1, worker_id=0,
         shuffle=False, rnd_seed=None, epoch=0,
         batch_size=B, drop_last=False,
@@ -2247,7 +2245,7 @@ def test_negative_sampling_neg_mask_present_nontemporal(tmp_path):
         stage="train",
         entity_node_type="users",
         target_node_type="items",
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         num_workers=1, worker_id=0,
         shuffle=False, rnd_seed=None, epoch=0,
         batch_size=B, drop_last=False,
@@ -2293,7 +2291,7 @@ def test_negative_sampling_temporal_exhaustion_masks(tmp_path):
         stage="train",
         entity_node_type="users",
         target_node_type="items",
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         num_workers=1, worker_id=0,
         shuffle=False, rnd_seed=None, epoch=0,
         batch_size=B, drop_last=False,
@@ -2442,7 +2440,7 @@ def test_custom_tt_weight_column_reaches_runtime_iterator(tmp_path):
         dataset_ref=str(task_manifest_path),
         stage="predict",
         entity_node_type="users",
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         num_workers=1,
         worker_id=0,
         shuffle=False,
@@ -2549,7 +2547,7 @@ def _collect_negatives(manifest_path, *, B, M, neg_rnd_seed):
         stage="train",
         entity_node_type="users",
         target_node_type="items",
-        sampling_plan={"layers": []},  # 0-hop: roots + negatives only
+        sampling_plan=SamplingPlan(),  # 0-hop: roots + negatives only
         num_workers=1, worker_id=0,
         shuffle=False, rnd_seed=None, epoch=0,
         batch_size=B, drop_last=False,
@@ -2633,7 +2631,7 @@ def test_negative_sampling_parallel_split_and_range_at_scale(tmp_path, multithre
         stage="train",
         entity_node_type="users",
         target_node_type="items",
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         num_workers=1, worker_id=0,
         shuffle=False, rnd_seed=None, epoch=0,
         batch_size=B, drop_last=False,
@@ -2689,7 +2687,7 @@ def test_negative_sampling_parallel_temporal_valid_at_scale(tmp_path, multithrea
         stage="train",
         entity_node_type="users",
         target_node_type="items",
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         num_workers=1, worker_id=0,
         shuffle=False, rnd_seed=None, epoch=0,
         batch_size=B, drop_last=False,

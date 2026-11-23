@@ -36,11 +36,11 @@ import sys
 import tempfile
 from typing import Any
 
-from diskgraph import SplitSpec
-
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+from diskgraph import SplitSpec
+from diskgraph.sampling_plan import FanoutSpec, LayerSpec, SamplingPlan
 
 
 # ---------------------------------------------------------------------------
@@ -77,16 +77,16 @@ def _build_forecasting_tt_plan() -> str:
     return builder.build()
 
 
-def _default_sampling_plan() -> dict:
+def _default_sampling_plan() -> SamplingPlan:
     # Depth-2: hop-0 resolves seeds (no sampling), hop-1 walks users→orders.
     # Schema: layers[] each with fanouts dict + default_fanout.
-    fan = {"fanout": 4, "mode": "uniform", "absent_key_policy": "uniform_fallback"}
-    return {
-        "layers": [
-            {"fanouts": {}, "default_fanout": fan},
-            {"fanouts": {}, "default_fanout": fan},
-        ],
-    }
+    fan = FanoutSpec(fanout=4, mode="uniform", absent_key_policy="uniform_fallback")
+    return SamplingPlan(
+        [
+            LayerSpec(fanouts={}, default_fanout=fan),
+            LayerSpec(fanouts={}, default_fanout=fan),
+        ]
+    )
 
 
 # ---------------------------------------------------------------------------

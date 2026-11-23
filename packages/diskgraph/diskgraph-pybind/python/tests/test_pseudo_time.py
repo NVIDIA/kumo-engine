@@ -5,9 +5,15 @@
 import json
 
 import pytest
-
-from diskgraph import DiskGraphTTBuilder, EdgeRef, RuntimeIndex, SplitSpec, execute_tt_plan
+from diskgraph import (
+    DiskGraphTTBuilder,
+    EdgeRef,
+    RuntimeIndex,
+    SplitSpec,
+    execute_tt_plan,
+)
 from diskgraph._c import DiskgraphConfigError, DiskgraphDataError
+from diskgraph.sampling_plan import FanoutSpec, LayerSpec, SamplingPlan
 
 
 def test_runtime_index_infers_and_overrides_generated_fact_cutoffs(tmp_path, parent_index):
@@ -40,8 +46,8 @@ def test_runtime_index_infers_and_overrides_generated_fact_cutoffs(tmp_path, par
     sidecar = (extension / "fact_pseudo_time.bin").read_bytes()[24:]
     assert set(sidecar) == {1, 2, 3}
     index = RuntimeIndex(str(runtime_manifest), rnd_seed=17, num_threads=1)
-    fan = {"fanout": 100, "mode": "uniform", "absent_key_policy": "uniform_fallback"}
-    sampling = {"layers": [{"fanouts": {}, "default_fanout": fan}] * 4}
+    fan = FanoutSpec(fanout=100, mode="uniform", absent_key_policy="uniform_fallback")
+    sampling = SamplingPlan([LayerSpec(fanouts={}, default_fanout=fan)] * 4)
 
     def sampled(stage, **options):
         batches, _ = index.iter(
@@ -88,7 +94,7 @@ def test_runtime_index_accepts_extensions_without_fact_metadata(
     }))
     index = RuntimeIndex(str(runtime_manifest), num_threads=1)
     batches, size = index.iter(
-        stage="train", sampling_plan={"layers": []}, num_workers=1,
+        stage="train", sampling_plan=SamplingPlan(), num_workers=1,
         worker_id=0, shuffle=False, epoch=0, batch_size=32, entity_node_type="users",
     )
     assert sum(len(batch["task"]["input_ids"]) for batch in batches) == size > 0
