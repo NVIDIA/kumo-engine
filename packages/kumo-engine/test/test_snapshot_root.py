@@ -211,12 +211,14 @@ def test_snapshot_transfer_workers_keep_the_callers_spool_root(
     together = threading.Barrier(2)
     worker_state = ContextVar('snapshot-transfer-test', default='outside')
     token = worker_state.set('caller')
+    initial_states = {}
 
     def upload(filesystem, item, stop):
-        assert worker_state.get() == 'caller'
+        initial_states[item] = worker_state.get()
         worker_state.set(item)
         with filesystem.open_output_stream(f'exports/{item}') as writer:
             together.wait(timeout=10)
+            assert worker_state.get() == item
             writer.write(b'abc')
         return item
 
@@ -232,5 +234,6 @@ def test_snapshot_transfer_workers_keep_the_callers_spool_root(
         kumo.configure(scratch_dir=previous)
     assert handler.objects == {'exports/0': b'abc', 'exports/1': b'abc'}
     assert handler.spooled == [producer / 'spool'] * 2
+    assert initial_states == {0: 'caller', 1: 'caller'}
     assert not list((producer / 'spool').iterdir())
     assert not other.exists()
