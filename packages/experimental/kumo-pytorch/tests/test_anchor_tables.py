@@ -440,9 +440,14 @@ class TestPaddingIdentity:
         return plan.materialize(requests)
 
     @staticmethod
-    def _assert_rows(batches, ids, positions, padding):
-        assert [sid for batch in batches for sid in batch.metadata["sample_ids"]] == ids
-        assert len(set(ids)) == len(ids)
+    def _assert_rows(batches, ids, positions, padding, *, native_table_ids=None):
+        delivered = [sid for batch in batches for sid in batch.metadata["sample_ids"]]
+        assert len(set(delivered)) == len(delivered)
+        for actual, expected, padded in zip(delivered, ids, padding, strict=True):
+            if padded and native_table_ids is not None:
+                assert isinstance(actual, (str, int)) and actual not in native_table_ids
+            else:
+                assert actual == expected
         assert [p for batch in batches for p in batch.metadata["is_padding"].tolist()] == padding
         assert [i for batch in batches for i in batch.metadata["entity_ids"].tolist()] == [
             index + 1 for index in positions
@@ -450,9 +455,12 @@ class TestPaddingIdentity:
         assert [t for batch in batches for t in batch.metadata["as_of_time"].tolist()] == [
             10 + index for index in positions
         ]
-        assert [m for batch in batches for m in batch.metadata["request_metadata"]] == [
-            {"split": None, "source": f"row-{index}"} for index in positions
-        ]
+        assert [s for batch in batches for s in batch.metadata["splits"]] == [None] * len(positions)
+        metadata = [m for batch in batches for m in batch.metadata["request_metadata"]]
+        if native_table_ids is not None:
+            # An unsplit Parquet table can omit the optional key from request metadata.
+            metadata = [{"split": None, **m} for m in metadata]
+        assert metadata == [{"split": None, "source": f"row-{index}"} for index in positions]
         assert [
             value
             for batch in batches
@@ -524,7 +532,13 @@ class TestPaddingIdentity:
             }
             explicit = requests if source == "explicit_requests" else None
             batches = list(task.batches(explicit, **settings))
-            self._assert_rows(batches, expected_ids, positions, padding)
+            self._assert_rows(
+                batches,
+                expected_ids,
+                positions,
+                padding,
+                native_table_ids=ids if source == "table" and not mixed_table else None,
+            )
             assert [b.metadata["sample_ids"] for b in task.batches(explicit, **settings)] == [
                 b.metadata["sample_ids"] for b in batches
             ]
@@ -545,6 +559,7 @@ class TestPaddingIdentity:
                 ["b", "d", "f", "b#padding1", "b#padding2"],
                 [1, 3, 5, 7, 1],
                 [False, False, False, False, True],
+                native_table_ids=[r.sample_id for r in requests] if source == "table" else None,
             )
             partial = task.batches(**settings)
             next(partial)
