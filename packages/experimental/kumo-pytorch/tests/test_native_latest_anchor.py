@@ -241,6 +241,17 @@ def test_latest_time_normalizes_timezone_aliases_across_files(tmp_path, zones):
             )
 
 
+def test_parquet_latest_time_rejects_selected_null_times(tmp_path):
+    times = pa.array([None, None, 7], type=pa.int64())
+    _, _, engine, table = _plan(tmp_path, times, splits=["train", "train", "valid"])
+    anchors = engine.materialize_anchors(table)
+    with pytest.raises(ValueError, match="anchor prediction times cannot be NULL"):
+        anchors.latest_time(frozenset({"train"}))
+    with pytest.raises(ValueError, match="anchor prediction times cannot be NULL"):
+        anchors.latest_time()
+    assert anchors.latest_time(frozenset({"valid"})) == 7
+
+
 @pytest.mark.parametrize("temporal", [False, True])
 def test_parquet_latest_time_empty_and_unknown_selections(tmp_path, temporal):
     _, _, _, table = _plan(tmp_path, TIMES["int64"])

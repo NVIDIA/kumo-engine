@@ -186,6 +186,8 @@ class ParquetAnchors(PositionalAnchors):
         times = self._columns[self._table.as_of_time]
         if not isinstance(selection, AllAnchors):
             times = times.take(rows)
+        if times.null_count:
+            raise ValueError("anchor prediction times cannot be NULL")
         return _arrow_scalar_value(pc.max(times))
 
     def _value(self, name: str, row: int) -> Any:
