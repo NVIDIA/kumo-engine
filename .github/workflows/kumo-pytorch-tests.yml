@@ -55,16 +55,16 @@ jobs:
     with: {diagnostics: true}
 
   package-tests:
-    name: Package tests
+    name: ${{ matrix.group }}
     if: github.repository == 'NVIDIA/kumo-engine' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     needs: [plan, diskgraph-wheel]
     # A single matrix call groups the dataset job and its three conformance peers in Actions.
     strategy:
-      matrix:
-        seed_start: ["${{ format('{0}', fromJSON(needs.plan.outputs.plan).seed_start) }}"]
+      matrix: {group: [Package tests]}
     permissions: {contents: read, id-token: write}
     uses: ./.github/workflows/_kumo-pytorch-package-tests.yml
-    with: {seed_start: '${{ matrix.seed_start }}'}
+    with:
+      seed_start: ${{ format('{0}', fromJSON(needs.plan.outputs.plan).seed_start) }}
 
   distribution:
     name: Distribution
