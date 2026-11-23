@@ -452,12 +452,18 @@ def test_load_refuses_before_downloading_when_disk_is_too_small(
         _load(exports, location)
 
 
-def test_parallel_ranges_preserve_binary_bytes(tmp_path, monkeypatch):
+@pytest.mark.parametrize('staging_name', [
+    'staging',
+    pytest.param('staging::literal', marks=pytest.mark.skipif(
+        os.name != 'posix', reason='Literal colons require POSIX filenames')),
+])
+def test_parallel_ranges_preserve_binary_bytes(
+        tmp_path, monkeypatch, staging_name):
     source = tmp_path / 'source/index'
     source.mkdir(parents=True)
     payload = bytes(range(256)) * 97 + b'\r\n\x1a\n'
     (source / 'data').write_bytes(payload)
-    staging = tmp_path / 'staging'
+    staging = tmp_path / staging_name
     staging.mkdir()
     (staging / 'data').write_bytes(b'\x00' * len(payload))
     monkeypatch.delattr(os, 'pwrite', raising=False)

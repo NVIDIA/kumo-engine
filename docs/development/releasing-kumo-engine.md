@@ -54,15 +54,10 @@ WSL uses the Linux x86-64 wheel. All require CPython >= 3.11
 targets does not establish published availability or installed-wheel runtime
 qualification. Native Windows wheels are attached and published alongside the
 Linux and macOS wheels only after the candidate passes the required checks.
-Every wheel build also qualifies the native Windows CPU wheel on Python
-3.11–3.14 in fresh producer and consumer processes, with the `cpu` extra for
-Faiss retrieval. This check is a prerequisite for release attachment and
-Kitmaker publication. It exports and restores both models and
-snapshots after deleting the producer's temporary storage, and checks ordinary
-loader defaults without CI or synchronous-loader overrides. Results are saved
-in `engine-wheel-reload-windows-native-cpu-*` artifacts. Native Windows CUDA
-is not qualified by this check. The GitHub-hosted Windows account may have
-administrator privileges; this is not restricted-account qualification.
+The shared [desktop qualification](../../packages/kumo-engine/platform-smoke.md)
+gates publication on native Windows CPU training, Faiss retrieval, and fresh
+process export and reload on Python 3.11–3.14. CI loader settings are preserved;
+this does not qualify restricted accounts or native Windows CUDA.
 The merger reads
 every bundled wheel's `Requires-Python` and writes their intersection into the
 final wheel.
@@ -126,6 +121,8 @@ platform's `release-version`.
    - fails fast unless the tag is exactly `kumo-engine-v` plus the `VERSION`
      file and every stamped file agrees with it;
    - builds the wheels with `--release`, so the version is exactly the tag's;
+   - runs the shared desktop reload check on the native Windows CPU wheel with
+     Python 3.11–3.14 before attachment; native Windows wheels remain CI artifacts;
    - resolves each platform's wheel against PyPI, alone and with each extra, on
      every Python version it claims, and stops if any fails;
    - runs the shared eight-task GPU check on the finished Linux x86_64 wheel
@@ -141,9 +138,9 @@ platform's `release-version`.
 
    Before you approve the `kitmaker` job, start
    [`Kumo Engine - Desktop reload qualification`][desktop-reload] by hand with
-   the ID of this build run. Its 28 `Reload` jobs run
-   `desktop_reload_qualification.py` with Python 3.11 to 3.14. They cover Linux
-   x86-64 and WSL2 on CPU and CUDA, Linux ARM64 on CPU, and macOS 15 and 26 on
+   the ID of this build run. Its 32 `Reload` jobs run
+   `desktop_reload_qualification.py` with Python 3.11 to 3.14. They cover native
+   Windows on CPU, Linux x86-64 and WSL2 on CPU and CUDA, Linux ARM64 on CPU, and macOS 15 and 26 on
    CPU. A producer process trains the `binary` and `static_link` tasks, exports
    the model and snapshot, and predicts. The job ends it and deletes its files.
    A new process loads the exports and predicts, and the predictions must match.
@@ -162,7 +159,7 @@ platform's `release-version`.
    hosted macOS runners are VMs without MPS. CUDA on Linux ARM64 is not run,
    because this repository has no ARM64 GPU runner. The ARM64 wheel also has no
    GPU Faiss, and the DGX Spark guide asks for a source build. Approve the
-   `kitmaker` job only after all 28 `Reload` jobs pass. The newest
+   `kitmaker` job only after all 32 `Reload` jobs pass. The newest
    `summary.json` of each Mac row (`label` `macos-14-cpu-py3.12` or
    `macos-15-mps-py3.12`) must also show `PASS` for both tasks. Its `commit`
    must be the commit of the build run.

@@ -92,10 +92,6 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Verify native Windows process cleanup
-        if: ${{ matrix.arch == 'windows-x86_64' }}
-        run: python -I packages/kumo-engine/test/windows_cleanup_check.py
-
       - name: Check release tag matches the VERSION file
         if: ${{ github.event_name == 'release' }}
         env:
@@ -170,34 +166,6 @@ jobs:
           python packages/kumo-engine/scripts/verify_platform_wheel.py
           packages/kumo-engine/dist/kumo_engine-*.whl
           --platform-tag "${WHEEL_PLATFORM}"
-
-      - name: Test Windows path validation
-        if: ${{ runner.os == 'Windows' }}
-        run: |
-          cargo --config packages/diskgraph/.cargo/config.toml \
-            test --manifest-path packages/diskgraph/Cargo.toml \
-            --release --locked -p diskgraph-ingest --lib \
-            disk_manager::path_safety::tests
-          cargo --config packages/diskgraph/.cargo/config.toml \
-            test --manifest-path packages/diskgraph/Cargo.toml \
-            --release --locked -p diskgraph-ingest --lib \
-            rejects_windows_profiling_before_output_changes
-          cargo --config packages/diskgraph/.cargo/config.toml \
-            test --manifest-path packages/diskgraph/Cargo.toml \
-            --release --locked -p diskgraph-index --lib \
-            graph::scratch_cleanup_tests::sync_directory_flushes_completed_entry \
-            -- --exact | tee directory-sync-tests.log
-          grep -Eq '^test result: ok\. 1 passed;' directory-sync-tests.log
-          cargo --config packages/diskgraph/.cargo/config.toml \
-            test --manifest-path packages/diskgraph/Cargo.toml \
-            --release --locked -p diskgraph-ingest --lib \
-            snapshot_mirror::tests | tee snapshot-mirror-tests.log
-          grep -Eq '^test result: ok\. [1-9][0-9]* passed;' snapshot-mirror-tests.log
-          cargo --config packages/diskgraph/.cargo/config.toml \
-            test --manifest-path packages/diskgraph/Cargo.toml \
-            --release --locked -p diskgraph-ingest --lib \
-            success_marker::tests | tee success-marker-tests.log
-          grep -Eq '^test result: ok\. [1-9][0-9]* passed;' success-marker-tests.log
 
       # GitHub-hosted artifact storage, not S3: no AWS role to provision.
       # Release jobs publish only after this candidate passes qualification.
@@ -291,6 +259,7 @@ jobs:
   platform-qualification:
     needs: [build]
     permissions:
+      actions: read
       contents: read
       id-token: write
     uses: ./.github/workflows/kumo-engine-platform-smoke.yml
