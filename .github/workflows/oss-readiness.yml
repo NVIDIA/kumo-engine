@@ -53,6 +53,7 @@ jobs:
             test/scripts/test_engine_e2e_case_hardware.py \
             test/scripts/test_engine_e2e_case_results.py \
             test/scripts/test_engine_pr_workflow.py \
+            test/scripts/test_desktop_reload_qualification.py \
             test/scripts/test_engine_wheel_workflow.py
 
       - name: Test the Engine runner pool without AWS

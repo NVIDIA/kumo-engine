@@ -470,7 +470,10 @@ fn compare_files_byte_for_byte(a: &Path, b: &Path) -> Result<()> {
 /// Generic helper: build the synthetic graph, do a fresh end-to-end ingest
 /// (baseline), then a partial run that stops right after `stop_after` and
 /// finishes via in-process resume from `stop_after.successor()`. Compare.
-fn run_phase_boundary_test(stop_after: IngestPhase) -> Result<()> {
+fn run_phase_boundary_test(
+    stop_after: IngestPhase,
+    partial_metadata: Option<(&[u8], bool)>,
+) -> Result<()> {
     let resume_from = stop_after
         .successor()
         .ok_or_else(|| anyhow!("no successor for {stop_after:?}; nothing to resume"))?;
@@ -553,6 +556,18 @@ fn run_phase_boundary_test(stop_after: IngestPhase) -> Result<()> {
     // `cleanup_temp` would have removed all `_tmp/` markers — which
     // `run_partial`'s predecessor check catches on its own).
 
+    let encoded_state: serde_json::Value =
+        serde_json::from_slice(&fs::read(split_root.join("_tmp/encode_state.json"))?)?;
+    let encoded_build_id = encoded_state["index_build_id"].as_str().unwrap();
+    if let Some((bytes, index_complete)) = partial_metadata {
+        // Finalization rewrites metadata after Index's marker is durable.
+        // Model both interrupted writes without relying on SIGKILL timing.
+        if index_complete {
+            fs::write(marker_path(&split_root, IngestPhase::Index), b"")?;
+        }
+        fs::write(split_root.join("index_metadata.json"), bytes)?;
+    }
+
     // 3. Split arm 2: in-process resume from `resume_from`.
     if let Err(error) = ingest_with_stats(
         &config_path,
@@ -595,6 +610,9 @@ fn run_phase_boundary_test(stop_after: IngestPhase) -> Result<()> {
             leaked.join("split").display(),
         ));
     }
+    let resumed_metadata: serde_json::Value =
+        serde_json::from_slice(&fs::read(split_root.join("index_metadata.json"))?)?;
+    assert_eq!(resumed_metadata["index_build_id"], encoded_build_id);
     assert_ingest_stats_equivalent(&baseline_root, &split_root)?;
     Ok(())
 }
@@ -693,17 +711,17 @@ fn resume_from_encode_matches_fresh() -> Result<()> {
 
 #[test]
 fn resume_from_pk_map_matches_fresh() -> Result<()> {
-    run_phase_boundary_test(IngestPhase::Encode)
+    run_phase_boundary_test(IngestPhase::Encode, None)
 }
 
 #[test]
 fn resume_from_edges_map_matches_fresh() -> Result<()> {
-    run_phase_boundary_test(IngestPhase::PkMap)
+    run_phase_boundary_test(IngestPhase::PkMap, None)
 }
 
 #[test]
 fn resume_from_index_matches_fresh() -> Result<()> {
-    run_phase_boundary_test(IngestPhase::EdgesMap)
+    run_phase_boundary_test(IngestPhase::EdgesMap, None)
 }
 
 /// Verify the wipe-on-entry semantics for the resume-target phase: when
@@ -929,4 +947,14 @@ fn resume_keeps_recorded_shards_unless_too_few() -> Result<()> {
         assert_eq!(shards, Some(expected_shards));
     }
     assert_indexes_equivalent(&baseline_root, &tmp.path().join("split-1"))
+}
+
+#[test]
+fn resume_from_index_replaces_partial_metadata() -> Result<()> {
+    for index_complete in [false, true] {
+        for bytes in [b"".as_slice(), br#"{"dataset_name":"interrupted"#] {
+            run_phase_boundary_test(IngestPhase::EdgesMap, Some((bytes, index_complete)))?;
+        }
+    }
+    Ok(())
 }
