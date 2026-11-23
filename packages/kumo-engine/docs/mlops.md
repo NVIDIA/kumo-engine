@@ -202,6 +202,7 @@ Jobs that load `alias="champion"` pick up the new version on their next run.
 - The registered version carries the bundle; load it with `Trainer.load_from_connector`.
 - It needs `CREATE EXPERIMENT` on the schema, or `MODIFY` on an existing experiment.
 - `serving_options` sets how a registered version runs in Snowflake (see [Batch inference in Snowflake](#batch-inference-in-snowflake)).
+- Run context cleanup stays on the tracking worker, including after a model-logging timeout. If a provider call is blocked, cleanup waits for it to return.
 
 ### What you'll see in MLflow and Snowsight
 
@@ -223,6 +224,12 @@ Every value comes from exact counts over all rows, with no sampling. Numbers you
 - Then one sentence says what the run is. A fit names its model, task, the trial and the epoch its curves and holdout
   metrics come from (the epoch with the best validation tune metric, tag `kumo.best_epoch`). A prediction names its
   model and the fit run that trained it.
+- A fit's heading ends with a link to its training report, so the link stays clickable while MLflow shows the
+  Description collapsed. The report is `training-report.html`, the `result.visualize()` widget
+  as a standalone page in the run's artifacts. MLflow's Description cannot run the widget, so the link opens it in the
+  Artifacts tab, where it is interactive. On Databricks the card names the file instead. If the report cannot be
+  rendered, the fit logs a warning and is recorded without it. Snowflake runs carry the file but their card does not
+  mention it.
 - Problems, when there are any, come right after the sentence.
 - Then tables: holdout metrics (fit; `ap`, `auprc`, `loss` and `logloss` with their meanings, as under Metrics); the 2x2
   matrix at the binary threshold; the training data; data preparation; notes; "Lineage"; "Where things are", with

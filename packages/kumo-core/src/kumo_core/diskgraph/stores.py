@@ -231,6 +231,14 @@ def read_node_column(
     return pa.chunked_array(chunks, type=None if chunks else pa.null())
 
 
+def rhs_catalog(index_path: str,
+                table_name: str,
+                row_filter: str | None = None) -> np.ndarray:
+    """Sorted int64 IDs of the table's canonical rows (one per primary key)
+    passing ``row_filter``, a compiled DiskGraph row filter (JSON)."""
+    return _node_column_engine(index_path).rhs_catalog(table_name, row_filter)
+
+
 def iter_primary_key_batches(
     index_path: str,
     table_name: str,

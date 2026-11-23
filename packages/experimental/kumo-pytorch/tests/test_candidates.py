@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from kumo.pytorch.api import (
@@ -25,6 +27,7 @@ from kumo.pytorch.api import (
     ExternalTarget,
     Field,
     Fields,
+    IdSpace,
     Input,
     Packed,
     Padded,
@@ -194,6 +197,31 @@ def test_padded_candidates_keep_metadata_values_labels_and_validity_aligned() ->
     assert batch.targets["future_views"]["values"].tolist() == [[1.0, 0.0], [0.0, 0.0]]
 
 
+def test_padded_candidate_target_uses_declared_pad_id() -> None:
+    contract = _contract()
+    contract = replace(
+        contract,
+        batch=replace(
+            contract.batch,
+            targets={
+                **contract.batch.targets,
+                "clicked": CandidateTarget("items", "clicked", Vocabulary(), id_space="labels"),
+            },
+            id_spaces={
+                "labels": IdSpace(
+                    specials={"pad": "pad", "unknown": "unknown", "missing": "missing"},
+                    special_ids={"pad": 5, "unknown": 1, "missing": 2},
+                )
+            },
+        ),
+    )
+    with PLANS.prepare(contract, REQUESTS) as plan:
+        target = next(plan.batches(REQUESTS, batch_size=2)).targets["clicked"]
+    assert target["values"][1, 1].item() == 5
+    assert not target["candidate_valid"][1, 1]
+    assert not target["valid"][1, 1]
+
+
 def test_multiple_groups_and_empty_candidates_have_an_explicit_axis() -> None:
     contract = _contract()
     with PLANS.prepare(contract, REQUESTS) as plan:
@@ -232,12 +260,12 @@ def test_unknown_candidate_groups_and_duplicate_candidates_are_refused() -> None
     contract = _contract()
     unknown = SampleRequest("bad", 1, 100, candidates={"missing": (CandidateRequest(10),)})
     with pytest.raises(ValueError, match="unknown candidate set"):
-        PLANS.prepare(contract, (unknown,))
+        next(PLANS.prepare(contract, (unknown,)).batches((unknown,), batch_size=1))
     duplicate = SampleRequest(
         "bad", 1, 100, candidates={"items": (CandidateRequest(10), CandidateRequest(10))}
     )
     with pytest.raises(ValueError, match="candidate IDs must be unique"):
-        PLANS.prepare(contract, (duplicate,))
+        next(PLANS.prepare(contract, (duplicate,)).batches((duplicate,), batch_size=1))
 
 
 def test_candidate_source_and_target_references_are_validated() -> None:

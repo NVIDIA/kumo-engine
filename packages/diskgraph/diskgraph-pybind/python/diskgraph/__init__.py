@@ -7,14 +7,18 @@ from ._c import (
     BUILD_COMMIT,
     StringLookup,
     pack_token_stream,
+    merge_event_streams,
     export_tt_artifacts,
     convert_kumo_config,
+    convert_ticks,
     ingest,
+    new_index_build_id,
     ExportConfig,
     FkeyConfig,
     TimeUnit,
     SamplerEngine,
     RuntimeBatchIterator,
+    RuntimeLengthCache,
     discover_tts,
     PySampleIterator,
     DiskGraphTTBuilder,
@@ -27,6 +31,8 @@ from ._c import (
     execute_bp_plan,
     drop_tt,
     read_tt_parquet_batches,
+    read_custom_tt_parquet_batches,
+    TaskParquetWriter,
     DiskgraphDataError,
     DiskgraphSourceValidationError,
     DiskgraphTargetCategoryLimitError,
@@ -46,6 +52,11 @@ from ._c import (
     has_resumable_ingest,
     validated_index_resume_progress,
     compute_col_stats_for_parquet,
+    cutoff_col_stats,
+    write_column_stats_for_parquet,
+    train_tokenizer,
+    token_lengths,
+    TOKENIZER_TRAINER,
     evaluate_prediction_parquet,
     resolve_temporal,
     detect_multicat_delimiter,
@@ -102,6 +113,10 @@ def __getattr__(name):
         "TASK_DATASET_SCHEMA_VERSION",                  # bundle schema version constant
         "TASK_DATASET_IMPLEMENTATION_KIND",             # mock/dev implementation marker
     }
+    if name == "SeedScheduleConfig":
+        from .seed_schedule import SeedScheduleConfig
+        return SeedScheduleConfig
+
     _TD_REOPEN = {
         "RuntimeIndex",  # reusable opened index; iterate many epochs/shards from one open
         "task_stage_size",              # stage-size query from runtime manifest
@@ -118,14 +133,17 @@ def __getattr__(name):
 __all__ = [
     "StringLookup",
     "pack_token_stream",
+    "merge_event_streams",
     "export_tt_artifacts",
     "convert_kumo_config",
+    "convert_ticks",
     "ingest",
     "ExportConfig",
     "FkeyConfig",
     "TimeUnit",
     "SamplerEngine",
     "RuntimeBatchIterator",
+    "RuntimeLengthCache",
     "discover_tts",
     "PySampleIterator",
     "DiskGraphTTBuilder",
@@ -151,6 +169,11 @@ __all__ = [
     "has_resumable_ingest",
     "validated_index_resume_progress",
     "compute_col_stats_for_parquet",
+    "cutoff_col_stats",
+    "write_column_stats_for_parquet",
+    "train_tokenizer",
+    "token_lengths",
+    "TOKENIZER_TRAINER",
     "evaluate_prediction_parquet",
     "DiskGraphPlanCompiler",
     "SplitSpec",
@@ -161,6 +184,7 @@ __all__ = [
     "execute_bp_plan",
     "drop_tt",
     "read_tt_parquet_batches",
+    "read_custom_tt_parquet_batches",
     "generate_training_table",
     "build_prediction_table_edges_artifact",
     "parse_prediction_table_edges_artifact",
@@ -179,6 +203,7 @@ __all__ = [
     "TASK_DATASET_SCHEMA_VERSION",
     "TASK_DATASET_IMPLEMENTATION_KIND",
     "RuntimeIndex",
+    "SeedScheduleConfig",
     "task_stage_size",
     "DiskgraphTaskError",
     "DiskgraphCorruptionError",

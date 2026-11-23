@@ -489,8 +489,12 @@ class NeighborhoodSpec(layers: tuple[GraphLayer, ...])
 
 Rows belonging to one sampled neighborhood around the entity.
 
-Layers expand in order from the entity. A row or edge reached more than once
-appears once per sample. Node attributes are chosen in `BatchSpec` through
+Layers expand in order from the entity. Relations topology emits one node
+per sample/row and deduplicates edge pairs in model and inspectable output.
+Columnar relations output can retain repeated pairs unless
+`deduplicate_edges=True`. `Graph(topology="sampled")` retains native
+directed edge occurrences, discovery order and hop counts.
+Node attributes are chosen in `BatchSpec` through
 a `Graph` representation, not here.
 
 ### `GraphLayer`
@@ -512,25 +516,24 @@ class GraphSample(
     relation: str,
     fanout: int,
     direction: Literal['forward', 'reverse'] = 'forward',
-    strategy: Literal['recent', 'uniform'] = 'recent',
+    strategy: Literal['recent', 'uniform'] | None = None,
     time_column: str | None = None,
-    temporal: Literal['inherit', 'static'] = 'inherit',
 )
 ```
 
 One bounded relationship traversal used to select neighboring rows.
 
-Emitted edges keep the relation's left-to-right orientation whatever the
-traversal direction, self-relations included.
+Relations-topology edges keep the declared left-to-right orientation whatever
+the traversal direction, self-relations included. Sampled topology retains
+the native traversal direction instead.
 
 **Parameters**
 
 - `fanout`: maximum neighbors kept per frontier row.
 - `direction`: which way to follow the relation; `"forward"` is left table to right as written in `RelationSpec`.
 - `relation`: the declared relation followed.
-- `strategy`: how to choose when more neighbors exist than `fanout`: `"recent"` (the default) keeps the most recent and needs a clock, even when `temporal="static"`; `"uniform"` draws evenly among the candidates. Which tied neighbors at the fanout limit are kept is unspecified (G-GRAPH-001). The DiskGraph engine supports `"recent"` only.
+- `strategy`: `None` selects `"recent"` when the destination table declares a clock, otherwise `"uniform"`. Recent keeps the newest rows at or before the anchor and requires a declared clock. Uniform samples without replacement, ignoring the real-time anchor even on timed tables. Which equally recent neighbors are kept is unspecified (G-GRAPH-001).
 - `time_column`: overrides the destination table's declared clock.
-- `temporal`: `"inherit"` filters by the resolved clock; `"static"` states that this traversal is deliberately unfiltered.
 
 ### `ExternalTarget`
 

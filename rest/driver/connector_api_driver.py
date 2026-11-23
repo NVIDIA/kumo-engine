@@ -101,6 +101,7 @@ from statedb.config.common import (
     TableName,
 )
 from statedb.db.auth import AuthPrincipal
+from statedb.db.identities import normalize_display_name
 from statedb.db.services import ConnectorService, StateServices, TableService
 from statedb.rest.connector_authorization import (
     CONNECTOR_DISCOVERY_ACTIONS,
@@ -282,6 +283,38 @@ class ConnectorApiDriver:
             [project_id, args, authorizations],
         )
         return response
+
+    async def copy_project_connector(
+        self,
+        project_id: ProjectID,
+        connector_id: ConnectorID,
+        args: api.CopyConnectorArgs,
+        principal: AuthPrincipal,
+    ) -> api.ConnectorResponse:
+        target_project_id = ProjectID(args.target_project_id)
+        if target_project_id == project_id:
+            raise ValueError(
+                'Target project must differ from the source project')
+        source = await self._connector_service.get_for_project(
+            project_id, connector_id, principal)
+        create_args = api.CreateConnectorArgs(
+            name=args.name if args.name is not None else source.name,
+            config=source.config,
+            identity_id=source.identity_id,
+            description=(args.description if args.description is not None
+                         else source.description),
+        )
+        existing_names = {
+            normalize_display_name(connector.name)
+            for connector in await self._connector_service.list_for_project(
+                target_project_id, principal)
+        }
+        if normalize_display_name(create_args.name) in existing_names:
+            raise ConnectorNameConflictError(
+                f"Connector named '{create_args.name}' already exists in "
+                'this project')
+        return await self.create_project_connector(target_project_id,
+                                                   create_args, principal)
 
     async def list_project_connectors(
         self,

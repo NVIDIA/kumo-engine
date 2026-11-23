@@ -32,16 +32,21 @@ For a control, add `--control` and use a separate reference. Results record `con
 Temporal-link imports use the query's label-window end to validate target creation times, matching generated answers.
 Controls load all exported answer rows into RAM. Their large-scale memory and runtime remain unqualified.
 Static-link imports omit native prior-stage target exclusions. Controls have no paired normal/control quality gate.
-References compare node and edge counts, training-table checks and metric bands.
+References compare node and edge counts, training-table checks and bands for each configured `val_<metric>` and `test_<metric>`. Training metrics and losses are recorded but do not gate.
 At 100M and 1B, an order-independent pandas hash covers all exported training rows.
 At 10B and 25B, native metadata supplies total rows, per-split rows and binary positive counts without a full export.
 Repeat and reload predictions need identical coordinates and score differences within the case tolerance.
+If all three outputs agree, every prediction must still cover the exact sampled entity/anchor population.
+Results record requested, scored and skipped counts for materialization and for each prediction output. These held-out cases require zero skipped rows. A population error names the failing prediction and its counts.
+Forecast coordinates include the entity, original anchor and horizon column resolved from the scoring snapshot's graph metadata. Every sampled anchor must return each `FORECAST` horizon, so forecast output counts are horizon rows.
 AUROC and AP, including their variants, use an absolute band of 0.03.
 Other metrics, including MAE and RMSE, use `abs(current - reference) <= abs(reference) * tolerance`, with a relative tolerance of 25%.
-At 10B and 25B, payments and fraud use one experiment, one epoch and balanced training sampling at batch 64.
+Payments and fraud use balanced training sampling at batch 64 at every scale. At 10B and 25B, they also use one experiment and one epoch.
 `majority_sampling_ratio=[1.0]` and `weight_mode=[WeightMode.SAMPLE]` affect training only.
+Static link trains with `overlap_ratio=[0.5]`, so half of the supervision links are absent from message passing.
 Every case and scale uses fixed validation and test budgets of 1,000 steps each.
-Payments and fraud remain at every scale. Non-finite metrics fail. Correct inadequate label support in the dataset before regenerating its reference after review.
+Payments and fraud remain at every scale. References and fitted results require finite `val_<metric>` and `test_<metric>` for every configured metric. A reference without them fails before ingest.
+Missing required metrics and any non-finite returned metric fail. Correct inadequate label support in the dataset before regenerating its reference after review.
 `training_table.splits.<split>.positive_rows` records whole-split positives, not measured positives in the capped evaluation prefix.
 Results also record hardware, elapsed time and sampled peak RAM, GPU memory and scratch growth. CI requires the declared instance type and matching reference hardware. Timings do not gate results.
 Outside CI, the declared instance type does not restrict the host. Local comparisons without instance metadata retain their existing behavior.

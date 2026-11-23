@@ -28,7 +28,7 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-  "diskgraph>=0.1.0",
+  "diskgraph>=0.2.0",
   "numpy>=1.26,<3",
   "pyarrow>=15,<25",
   "tokenizers>=0.22,<1",

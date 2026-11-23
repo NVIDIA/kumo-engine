@@ -838,6 +838,65 @@
                 }
             }
         },
+        "/v0/projects/{project_id}/connectors/{connector_id}/copy": {
+            "post": {
+                "tags": ["Connectors"],
+                "summary": "Copy Connector",
+                "operationId": "copy_connector_v0_projects__project_id__connectors__connector_id__copy_post",
+                "parameters": [
+                    {
+                        "name": "project_id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "title": "Project Id"
+                        }
+                    },
+                    {
+                        "name": "connector_id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "title": "Connector Id"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/CopyConnectorArgs"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ConnectorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/v0/projects/{project_id}/connectors/{connector_id}/validate": {
             "post": {
                 "tags": ["Connectors"],
@@ -8026,6 +8085,41 @@
                 ],
                 "title": "ConnectorType"
             },
+            "CopyConnectorArgs": {
+                "properties": {
+                    "target_project_id": {
+                        "type": "string",
+                        "title": "Target Project Id"
+                    },
+                    "name": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Name"
+                    },
+                    "description": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Description"
+                    }
+                },
+                "additionalProperties": false,
+                "type": "object",
+                "required": ["target_project_id"],
+                "title": "CopyConnectorArgs",
+                "description": "Copy one connector's configuration and identity into a project.\n\n``name`` and ``description`` default to the source connector's values.\nThe identity must be assigned to the target project's group."
+            },
             "CreateAPIKeyResponse": {
                 "properties": {
                     "id": {
@@ -12726,6 +12820,13 @@
                         },
                         "type": "array",
                         "title": "Advanced Options"
+                    },
+                    "trial_ids": {
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "title": "Trial Ids"
                     }
                 },
                 "type": "object",

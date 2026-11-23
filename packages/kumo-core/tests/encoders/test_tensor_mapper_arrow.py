@@ -3,6 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Golden tests: native ``pyarrow.Array`` mapper path == the pandas path."""
 
+from unittest.mock import MagicMock
+
 import pandas as pd
 import pyarrow as pa
 import pytest
@@ -19,6 +21,7 @@ from kumo_core.encoders.tensor_mapper import (
     UnsupportedTensorMapper,
 )
 from kumo_core.types.features import TensorData
+from tests.support.mapper_reference import sequence_pandas_reference
 from torch import Tensor
 from torch_frame.data import MultiEmbeddingTensor, MultiNestedTensor
 
@@ -38,7 +41,12 @@ def _pandas_reference(
         return torch.from_numpy(series.to_numpy().astype(dtype)).view(-1, 1)
     if isinstance(mapper, CategoricalTensorMapper):
         return mapper.mapper.map(series).view(-1, 1)
-    return mapper._forward_pandas(series)
+    if isinstance(mapper, MultiCategoricalTensorMapper):
+        rowptr, index = mapper.mapper.map_multi(series, mapper.sep)
+        return MultiNestedTensor(
+            num_rows=len(series), num_cols=1, values=index, offset=rowptr
+        )
+    return sequence_pandas_reference(mapper, series)
 
 
 def _assert_same(pandas_out, arrow_out) -> None:
@@ -114,8 +122,6 @@ def test_multicategorical_list_arrow_matches_pandas() -> None:
     mapper = MultiCategoricalTensorMapper(
         category_counts=[[1, 2], [2, 1], [3, 1]], sep=None
     )
-    # No nulls and no empty lists, so this hits the native CSR fast path (a
-    # list-level null would defer to the pandas fallback).
     ser = pd.Series([[1, 2], [2, 3], [1], [1, 1]])
     arr = pa.array([[1, 2], [2, 3], [1], [1, 1]], type=pa.list_(pa.int64()))
     assert arr.null_count == 0
@@ -126,7 +132,6 @@ def test_multicategorical_list_arrow_matches_pandas() -> None:
 
 
 def test_multicategorical_null_arrow_matches_pandas() -> None:
-    # A list-level null forces the pandas fallback; it must still match.
     mapper = MultiCategoricalTensorMapper(
         category_counts=[[1, 2], [2, 1], [3, 1]], sep=None
     )
@@ -176,9 +181,7 @@ def test_multicategorical_all_empty_lists_preserve_legacy_tokens(
 
 
 def test_multicategorical_sliced_list_arrow_matches_pandas() -> None:
-    # A head slice keeps offsets[0] == 0 but ``arr.values`` still spans the
-    # full child buffer; the native guard must defer this to the pandas
-    # fallback rather than build a mismatched tensor.
+    # Head slices retain the full child buffer, which must be trimmed.
     mapper = MultiCategoricalTensorMapper(
         category_counts=[[1, 2], [2, 1], [3, 1]], sep=None
     )
@@ -207,8 +210,6 @@ def test_sequence_truncation_arrow_matches_pandas() -> None:
 
 
 def test_sequence_sliced_list_arrow_matches_pandas() -> None:
-    # Head slice: native guard must defer to the pandas fallback (see the
-    # multicategorical sliced test for the underlying pyarrow behavior).
     mapper = SequenceTensorMapper(min_length=2, max_length=2)
     arr = pa.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], type=pa.list_(pa.float64()))
     sliced = arr.slice(0, 2)
@@ -245,6 +246,72 @@ def test_mapper_rejects_non_arrow_input(mapper: TensorMapper) -> None:
     for values in (series, series.to_numpy()):
         with pytest.raises(TypeError, match="Arrow array"):
             mapper(values)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "mapper",
+    [
+        NumericalTensorMapper(),
+        CategoricalTensorMapper([["a", 1]]),
+        MultiCategoricalTensorMapper([["a", 1]], None),
+        SequenceTensorMapper(0, 3),
+        TimestampTensorMapper(),
+        TextTensorMapper(),
+        ImageTensorMapper(),
+        UnsupportedTensorMapper(),
+    ],
+    ids=lambda mapper: type(mapper).__name__,
+)
+@pytest.mark.parametrize(
+    "view_type_name",
+    ["list_view", "large_list_view", "string_view"],
+    ids=["list-view", "large-list-view", "string-view"],
+)
+@pytest.mark.parametrize("chunked", [False, True])
+@pytest.mark.parametrize("empty", [False, True])
+def test_mappers_reject_arrow_view_types(
+    mapper: TensorMapper,
+    view_type_name: str,
+    chunked: bool,
+    empty: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unsupported view types fail before mapper-specific encoding runs."""
+    constructor = getattr(pa, view_type_name, None)
+    if constructor is None:
+        return pytest.skip("Arrow view types are unavailable in this PyArrow version")
+    array = (
+        pa.array(["[1,2]", None], type=constructor())
+        if view_type_name == "string_view"
+        else pa.array([[1.0, 2.0], [3.0]], type=constructor(pa.float64()))
+    )
+    if empty:
+        array = array.slice(0, 0)
+    source = pa.chunked_array([array[:1], array[1:]]) if chunked else array
+    forward = MagicMock()
+    monkeypatch.setattr(mapper, "forward", forward)
+
+    with pytest.raises(TypeError, match="does not support Arrow view arrays"):
+        mapper(source)
+
+    forward.assert_not_called()
+
+
+@pytest.mark.parametrize("chunked", [False, True])
+def test_mapper_accepts_arrow_without_view_predicates(
+    chunked: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Supported arrays still encode when PyArrow 15 has no view predicates."""
+    for name in ("is_list_view", "is_large_list_view", "is_string_view"):
+        monkeypatch.delattr(pa.types, name, raising=False)
+    array = pa.array([1.0, None, 3.0])
+    source = pa.chunked_array([array[:1], array[1:]]) if chunked else array
+
+    result = NumericalTensorMapper()(source)
+
+    torch.testing.assert_close(
+        result, torch.tensor([[1.0], [float("nan")], [3.0]]), equal_nan=True
+    )
 
 
 def test_categorical_float_arrow_preserves_zero_and_unknown_categories() -> None:

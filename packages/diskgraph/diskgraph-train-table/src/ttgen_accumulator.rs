@@ -9,8 +9,101 @@
 
 use std::collections::HashSet;
 
+use arrow_array::{ArrayRef, Float32Array, Float64Array};
 use diskgraph_core::accumulators::WelfordAccumulator;
+use diskgraph_core::tt_builder::ScalarAggregate;
 use diskgraph_core::tt_builder::Value;
+
+/// Update compatible PQL-resolved reductions from caller-ordered projected
+/// columns. Both frontends keep their selected row order and empty-SUM policy.
+/// False means the caller must use its existing general evaluator; no result
+/// from these partially updated states may then be published.
+pub fn accumulate_numeric_batch(
+    operations: &[(&ScalarAggregate, Option<usize>)],
+    states: &mut [Accumulator],
+    observed: &mut [usize],
+    columns: &[(usize, ArrayRef)],
+    rows: std::ops::Range<usize>,
+    keep_first_equal: bool,
+) -> bool {
+    // Eligibility is invariant for the whole batch, including empty batches.
+    if operations.iter().any(|(operation, _)| {
+        !matches!(
+            operation.operation.as_str(),
+            "count" | "sum" | "mean" | "min" | "max"
+        )
+    }) {
+        return false;
+    }
+    // Resolve physical arrays once; check finiteness once per projected
+    // column, even when several reductions share it.
+    let arrays = columns
+        .iter()
+        .map(|(slot, array)| {
+            if let Some(array) = array.as_any().downcast_ref::<Float32Array>() {
+                let array = array.slice(rows.start, rows.len());
+                if array.iter().flatten().any(|v| !v.is_finite()) {
+                    return None;
+                }
+                Some((*slot, Some(array), None))
+            } else if let Some(array) = array.as_any().downcast_ref::<Float64Array>() {
+                let array = array.slice(rows.start, rows.len());
+                if array.iter().flatten().any(|v| !v.is_finite()) {
+                    return None;
+                }
+                Some((*slot, None, Some(array)))
+            } else {
+                // Convert once per projected integer array. Preserve PQL's
+                // floating output without adding an Arrow compute dependency.
+                macro_rules! integer_array {
+                    ($($ty:ty),*) => { $(
+                        if let Some(values) = array.as_any().downcast_ref::<$ty>() {
+                            let values = values.slice(rows.start, rows.len());
+                            let floats = Float64Array::from_iter(values.iter().map(|v| v.map(|v| v as f64)));
+                            return Some((*slot, None, Some(floats)));
+                        }
+                    )* };
+                }
+                integer_array!(
+                    arrow_array::Int8Array, arrow_array::Int16Array,
+                    arrow_array::Int32Array, arrow_array::Int64Array,
+                    arrow_array::UInt8Array, arrow_array::UInt16Array,
+                    arrow_array::UInt32Array, arrow_array::UInt64Array
+                );
+                None
+            }
+        })
+        .collect::<Option<Vec<_>>>();
+    let Some(arrays) = arrays else {
+        return false;
+    };
+    // Dispatch once per operation/column, not once per row. Rows remain in
+    // caller order: vectorized SUM/mean would change floating cancellation.
+    for (((operation, column), state), count) in operations.iter().zip(states).zip(observed) {
+        if operation.operation == "count" {
+            let Accumulator::Count(total) = state else {
+                return false;
+            };
+            *total += rows.len() as u64;
+            continue;
+        }
+        let Some((_, f32s, f64s)) =
+            column.and_then(|column| arrays.iter().find(|(index, _, _)| *index == column))
+        else {
+            return false;
+        };
+        *count += if let Some(array) = f32s {
+            state.accumulate_numeric(
+                array.iter().map(|v| v.map(f64::from)),
+                keep_first_equal,
+                true,
+            )
+        } else {
+            state.accumulate_numeric(f64s.as_ref().unwrap().iter(), keep_first_equal, true)
+        };
+    }
+    true
+}
 
 /// Runtime accumulator for a single aggregation op.
 pub enum Accumulator {
@@ -31,6 +124,70 @@ pub enum Accumulator {
 }
 
 impl Accumulator {
+    /// Observe one selected row for scalar numeric reductions. A NULL value
+    /// still counts for COUNT(*); the other reductions skip it.
+    #[inline]
+    pub fn observe_numeric_row(&mut self, value: Option<f64>, keep_first_equal: bool) {
+        self.accumulate_numeric(std::iter::once(value), keep_first_equal, true);
+    }
+
+    /// Ordered scalar reduction shared by projected Arrow batches and general
+    /// frames (including grouped/multi-hop inputs). Only AVG's nonfinite policy
+    /// differs: PQL skips nonfinite values, row aggregates propagate them.
+    #[inline]
+    pub fn accumulate_numeric(
+        &mut self,
+        values: impl Iterator<Item = Option<f64>>,
+        keep_first_equal: bool,
+        finite_mean_only: bool,
+    ) -> usize {
+        let mut observed = 0;
+        match self {
+            Self::Count(count) => {
+                for value in values {
+                    *count += 1;
+                    observed += usize::from(value.is_some());
+                }
+            }
+            Self::Sum(sum) => {
+                for value in values.flatten() {
+                    *sum += value;
+                    observed += 1;
+                }
+            }
+            Self::Avg(state) => {
+                for value in values.flatten() {
+                    observed += 1;
+                    if !finite_mean_only || value.is_finite() {
+                        diskgraph_core::accumulators::update_running_mean(
+                            &mut state.count,
+                            &mut state.m1,
+                            value,
+                        );
+                    }
+                }
+            }
+            Self::Min(minimum) => {
+                for value in values.flatten() {
+                    if !keep_first_equal || value < *minimum {
+                        *minimum = minimum.min(value);
+                    }
+                    observed += 1;
+                }
+            }
+            Self::Max(maximum) => {
+                for value in values.flatten() {
+                    if !keep_first_equal || value > *maximum {
+                        *maximum = maximum.max(value);
+                    }
+                    observed += 1;
+                }
+            }
+            _ => unreachable!("numeric rows require a scalar numeric accumulator"),
+        }
+        observed
+    }
+
     /// Create a fresh accumulator for the given function.
     pub fn new(func: diskgraph_core::tt_builder::AggFunc, limit: Option<u32>) -> Self {
         use diskgraph_core::tt_builder::AggFunc;
@@ -89,10 +246,13 @@ impl Accumulator {
     }
 }
 
+/// Shared value-hash policy; collection equality remains independent of fingerprints.
+pub type ValueBuildHasher = std::hash::BuildHasherDefault<std::collections::hash_map::DefaultHasher>;
+
 /// Hash a Value for use in CountDistinct / ListDistinct sets.
 pub fn hash_value(v: &Value) -> u64 {
     use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let mut hasher = <ValueBuildHasher as std::hash::BuildHasher>::build_hasher(&ValueBuildHasher::default());
     match v {
         Value::Int(i) => i.hash(&mut hasher),
         Value::Float(f) => f.to_bits().hash(&mut hasher),
@@ -114,7 +274,7 @@ pub fn hash_value(v: &Value) -> u64 {
 #[inline]
 pub fn hash_str(s: &str) -> u64 {
     use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let mut hasher = <ValueBuildHasher as std::hash::BuildHasher>::build_hasher(&ValueBuildHasher::default());
     s.hash(&mut hasher);
     hasher.finish()
 }
@@ -123,7 +283,7 @@ pub fn hash_str(s: &str) -> u64 {
 #[inline]
 pub fn hash_i64(n: i64) -> u64 {
     use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let mut hasher = <ValueBuildHasher as std::hash::BuildHasher>::build_hasher(&ValueBuildHasher::default());
     n.hash(&mut hasher);
     hasher.finish()
 }
@@ -131,6 +291,39 @@ pub fn hash_i64(n: i64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ordered_numeric_reduction_policies() {
+        use diskgraph_core::tt_builder::AggFunc;
+        let values = [Some(1e16), None, Some(-1e16), Some(1.0)];
+        let mut sum = Accumulator::new(AggFunc::Sum, None);
+        assert_eq!(sum.accumulate_numeric(values.into_iter(), true, false), 3);
+        assert_eq!(sum.finalize(), Some(Value::Float(1.0)));
+        for finite_only in [false, true] {
+            let mut mean = Accumulator::new(AggFunc::Avg, None);
+            mean.accumulate_numeric(
+                [Some(f64::INFINITY), Some(2.0)].into_iter(),
+                true,
+                finite_only,
+            );
+            let Some(Value::Float(value)) = mean.finalize() else {
+                panic!("nonempty mean")
+            };
+            if finite_only {
+                assert_eq!(value, 2.0);
+            } else {
+                assert!(value.is_nan());
+            }
+        }
+        for function in [AggFunc::Min, AggFunc::Max] {
+            let mut state = Accumulator::new(function, None);
+            state.accumulate_numeric([Some(-0.0), Some(0.0)].into_iter(), true, false);
+            let Some(Value::Float(value)) = state.finalize() else {
+                panic!("nonempty extremum")
+            };
+            assert_eq!(value.to_bits(), (-0.0f64).to_bits());
+        }
+    }
 
     #[test]
     fn test_count() {

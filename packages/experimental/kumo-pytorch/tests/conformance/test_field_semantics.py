@@ -5,9 +5,12 @@
 """Public lifecycle and alignment obligations that need more than one batch."""
 
 import copy
+import statistics
 import warnings
 from dataclasses import replace
 from unittest.mock import patch
+
+import pytest
 
 from conformance.assertions import (
     assert_answer,
@@ -122,7 +125,7 @@ def test_complete_reuse_never_fits_or_grows(engine_name):
         )
 
 
-def test_held_out_anchor_does_not_change_fitted_mean(engine_name):
+def test_a_stored_column_fits_on_its_table_rows_not_the_fitting_anchors(engine_name):
     case = discover_cases()["C-ENCODING-002"]
     tables = copy.deepcopy(case.tables)
     tables["users"][2]["amount"] = 1_000_000.0
@@ -136,13 +139,9 @@ def test_held_out_anchor_does_not_change_fitted_mean(engine_name):
         plan.materialize(requests, fit_split="train") as task,
     ):
         binding = task.output("entity").field(name="amount")
-        assert binding.encoder.mean == 2.0
-        assert binding.encoder.scale == 1.0
-        batch = next(task.batches(requests, batch_size=3))
-        assert_projection(
-            batch.inputs["entity"]["amount"]["values"],
-            {"dtype": "float32", "shape": [3], "values": [-1.0, 1.0, 999_998.0]},
-        )
+        amounts = [row["amount"] for row in tables["users"] if row["amount"] is not None]
+        assert binding.encoder.mean == pytest.approx(statistics.fmean(amounts), rel=1e-12)
+        assert binding.encoder.scale == pytest.approx(statistics.pstdev(amounts), rel=1e-12)
 
 
 def test_exposure_warning_names_overlap_and_masks_only_named_input(engine_name):

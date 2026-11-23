@@ -175,32 +175,6 @@ enum DestArg {
     Adls,
 }
 
-/// Increase the soft open-file limit to the hard limit. The encode phase holds
-/// one temp file open per (table, shard) — ~800+ on a 75-shard graph — which
-/// exceeds common container defaults (Docker: 1024 soft / 524288 hard).
-#[cfg(unix)]
-fn increase_nofile_limit() {
-    unsafe {
-        let mut lim = libc::rlimit {
-            rlim_cur: 0,
-            rlim_max: 0,
-        };
-        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) != 0 || lim.rlim_cur >= lim.rlim_max {
-            return;
-        }
-        let old = lim.rlim_cur;
-        lim.rlim_cur = lim.rlim_max;
-        if libc::setrlimit(libc::RLIMIT_NOFILE, &lim) == 0 {
-            tracing::info!(old, new = lim.rlim_max, "raised soft RLIMIT_NOFILE");
-        } else {
-            tracing::warn!(soft = old, "could not raise soft RLIMIT_NOFILE");
-        }
-    }
-}
-
-#[cfg(not(unix))]
-fn increase_nofile_limit() {}
-
 fn main() -> Result<()> {
     let args = Args::parse();
     // Answer the runner's thread-count query before initializing tracing or
@@ -213,7 +187,6 @@ fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter("info,pprof=warn")
         .init();
-    increase_nofile_limit();
     if !args.worker {
         let diagnostic_paths = local_diagnostic_paths(&args);
         if let Some((final_path, worker_path)) = &diagnostic_paths {
@@ -324,6 +297,7 @@ fn run_worker(args: Args) -> Result<()> {
     };
     let peak_tracker = PeakMemTracker::start();
     let options = IngestOptions {
+        index_build_id: None,
         profile_dir: args.profile.clone(),
         progress: build_progress(),
         parallel: args.parallel,
@@ -351,6 +325,7 @@ fn run_worker(args: Args) -> Result<()> {
         index_threads: supervisor_thread_override("INDEX").or(args.index_threads),
         parent_index_path: args.parent_index_path.clone(),
         resolve_columns: Vec::new(),
+        cutoff_col_stats: None,
     };
     let dest = match args.dest {
         DestArg::Local => Dest::Local,
@@ -487,6 +462,14 @@ fn run_worker(args: Args) -> Result<()> {
     if !stats.dropped_rows_counts.is_empty() {
         println!("{}", color("Dropped rows:", Color::YellowBold));
         let mut entries: Vec<_> = stats.dropped_rows_counts.iter().collect();
+        entries.sort_by(|a, b| a.0.cmp(b.0));
+        for (name, count) in entries {
+            println!("  {}: {}", color(name, Color::YellowBold), count);
+        }
+    }
+    if !stats.oversized_rows_counts.is_empty() {
+        println!("{}", color("Oversized rows:", Color::YellowBold));
+        let mut entries: Vec<_> = stats.oversized_rows_counts.iter().collect();
         entries.sort_by(|a, b| a.0.cmp(b.0));
         for (name, count) in entries {
             println!("  {}: {}", color(name, Color::YellowBold), count);

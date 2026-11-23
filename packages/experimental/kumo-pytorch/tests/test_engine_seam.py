@@ -332,6 +332,6 @@ class TestTheOpenedSourceIsOwned:
 
     def test_a_plan_built_from_a_borrowed_source_does_not_close_it(self) -> None:
         source = InMemoryEngine().open(IN_MEMORY, SCHEMA)
-        plan = fit_plan(CONTRACT.sample, CONTRACT.batch, REQUESTS, source)
+        plan = fit_plan(CONTRACT.sample, CONTRACT.batch, REQUESTS, source, contract=CONTRACT)
         plan.close()
         assert next(iter(plan.batches(REQUESTS))) is not None

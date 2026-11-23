@@ -17,6 +17,7 @@ done incrementally — callsites switch one at a time in subsequent PRs.
 
 import dataclasses
 import getpass
+import hashlib
 import json
 import logging
 import os
@@ -571,8 +572,20 @@ class DeployEnvConfig:
     def task_queue(self, task_queue: str) -> str:
         return self._append_suffix_to_id(task_queue)
 
+    @property
+    def max_workflow_id_length(self) -> Optional[int]:
+        r"""Self-hosted Temporal stores workflow ids in Postgres VARCHAR(255);
+        Temporal Cloud accepts longer ids, so they are left as they are."""
+        if isinstance(self.orchestration, TemporalCloudConfig):
+            return None
+        return MAX_WORKFLOW_ID_LENGTH
+
     def workflow_id(self, workflow_id: str) -> str:
-        return self._append_suffix_to_id(workflow_id)
+        suffix = self.id_suffix
+        if suffix and workflow_id.endswith(suffix):
+            workflow_id = workflow_id[:-len(suffix)]
+        return bounded_workflow_id(workflow_id, suffix,
+                                   self.max_workflow_id_length) + suffix
 
     def strip_suffix(self, id: str) -> str:
         suffix = self.id_suffix
@@ -586,6 +599,25 @@ class DeployEnvConfig:
     def __repr__(self) -> str:
         return 'DeployEnvConfig' + json.dumps(asdict(self), indent=2,
                                               default=str)
+
+
+# Temporal's Postgres store holds workflow ids in a VARCHAR(255) column.
+MAX_WORKFLOW_ID_LENGTH = 255
+
+
+def bounded_workflow_id(workflow_id: str, suffix: str = '',
+                        limit: Optional[int] = MAX_WORKFLOW_ID_LENGTH) -> str:
+    r"""``workflow_id`` shortened so that it plus ``suffix`` fits ``limit``.
+
+    Ids that already fit, or any id when ``limit`` is None, are returned
+    unchanged; longer ones keep a readable prefix and end in a hash of the
+    full id, so the mapping is stable.
+    """
+    if limit is None or len(workflow_id) + len(suffix) <= limit:
+        return workflow_id
+    digest = hashlib.sha256(workflow_id.encode()).hexdigest()[:16]
+    keep = limit - len(suffix) - len(digest) - 1
+    return f'{workflow_id[:keep]}-{digest}'
 
 
 # ---------------------------------------------------------------------------

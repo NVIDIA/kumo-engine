@@ -51,6 +51,7 @@ def build_snowpark_session_from_connector(
         'database': snow_connector.database,
         'schema': snow_connector.schema_name,
         'client_session_keep_alive': True,
+        'ocsp_fail_open': True,
         'application': get_snowflake_connection_string(),
     }
     if snow_connector.role is not None:

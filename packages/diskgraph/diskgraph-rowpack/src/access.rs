@@ -73,6 +73,7 @@ pub struct RowAccess<'p> {
 
 type ReadTimestamp<'p> = fn(&RowAccess<'p>, usize) -> Result<Option<i64>>;
 
+#[derive(Clone)]
 pub enum FloatListValues {
     F16(ArrayRef),
     F32(ArrayRef),
@@ -81,12 +82,14 @@ pub enum FloatListValues {
     Parsed(Vec<f32>),
 }
 
+#[derive(Clone)]
 pub struct FloatListView {
     pub start: usize,
     pub end: usize,
     pub values: FloatListValues,
 }
 
+#[derive(Clone)]
 pub enum IntListValues {
     I8(ArrayRef),
     I16(ArrayRef),
@@ -96,6 +99,7 @@ pub enum IntListValues {
     Parsed(Vec<i64>),
 }
 
+#[derive(Clone)]
 pub struct IntListView {
     pub start: usize,
     pub end: usize,
@@ -298,6 +302,7 @@ impl IntListView {
     }
 }
 
+#[derive(Clone)]
 pub enum StringListValues {
     Utf8(ArrayRef),
     LargeUtf8(ArrayRef),
@@ -305,6 +310,7 @@ pub enum StringListValues {
     Parsed(Vec<String>),
 }
 
+#[derive(Clone)]
 pub struct StringListView {
     pub start: usize,
     pub end: usize,
@@ -2699,7 +2705,12 @@ impl<'p> RowAccess<'p> {
                 // If a format hint is set (e.g., "%Y%m%d"), convert the integer to
                 // a string and parse with the format. This handles date-encoded
                 // integers like YYYYMMDD (20240301) that are NOT epoch values.
+                // Valid eight-digit "%Y%m%d" dates skip the text round-trip.
                 if let Some(fmt) = format {
+                    if let Some(secs) = fast.and_then(|parser| parser.parse_compact_ymd_int(value))
+                    {
+                        return Ok(Some(in_clock(floor_parts::<U>(secs, || 0))?));
+                    }
                     let text = value.to_string();
                     if let Some((secs, nanos)) = parse_timestamp_text_parts(&text, Some(fmt)) {
                         return Ok(Some(in_clock(floor_parts::<U>(secs, || nanos))?));

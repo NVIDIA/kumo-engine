@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import re
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -15,6 +16,7 @@ from kumoapi.typing import Stype
 
 import kumo.engine as kumo
 from kumo.engine._scratch import get_scratch_dir
+from kumo.engine.explain import TrainingExplanations
 from kumo.engine.trainer._provenance import embedded_model
 from kumo.engine.trainer.trainer import _find_holdout
 
@@ -119,6 +121,23 @@ def test_holdout_is_the_published_models(graph, refit_trainval, refit_full,
                             result.holdout_path.parent.name)
         assert len(result.holdout_df()) > 0
         assert result.manifest.holdout.rows == len(result.holdout_df())
+
+    if explain:
+        explanations = result.explanations
+        assert all(a.available and a.generation_failure is None
+                   for a in explanations.availability.values())
+        assert explanations.gradient_scores().tables
+        assert explanations.cohort_keys()
+        store = explanations.sample(
+            explanations.samples()[0].artifact_id).subgraph_store
+        assert store.root_id in store.tables['ents']
+        # TEST explanations describe the train/validation refit, also when
+        # refit_full publishes a model without a holdout.
+        trial = Path(explanations.trial_root)
+        assert re.fullmatch(r'version_\d+_refit_trainval', trial.name)
+        assert model is None or trial == result.holdout_path.parent
+        reopened = TrainingExplanations.load(explanations.run_root)
+        assert reopened.trial_root == explanations.trial_root
 
 
 def test_no_holdout(graph):

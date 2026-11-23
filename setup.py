@@ -34,9 +34,11 @@ major_dependencies = [
     "pandas==2.3.3",
     # Used directly by kumo.utils.dataclass and REST integration tests.
     "httpx<0.28",
-    # Security floors for transitive HTTP and image dependencies.
+    # Security floors for transitive dependencies.
     "aiohttp>=3.14.4,<4",
+    "oauthlib>=4.0.1",
     "pillow>=13.0.0,<14",
+    "pyasn1>=0.6.5",
     "backoff==2.2.1",
 ]
 
@@ -105,10 +107,7 @@ install_requires = major_dependencies + observability_requires + [
     # ImportError while computing BP column stats).
     "pyarrow>=18,<25",
     "kubernetes==24.2.0",
-    # filelock >=3.20.3 fixes CVE-2025-68146 / CVE-2026-22701; 3.29.5 stops
-    # unlinking the Unix lock file on release (3.20.4-3.29.4 do), which let
-    # two processes lock different inodes at one path. kumo-engine needs it.
-    "filelock==3.29.5",
+    "filelock==4.2.1",
     # cryptography 50 clears CVE-2026-27459 (critical) and the cryptography
     # 38.x CVE set. The historical "newer cryptography rejects legacy-cipher
     # Snowflake keys" concern no longer reproduces: 50.0.0 loads DES3-,
@@ -176,20 +175,13 @@ install_requires = major_dependencies + observability_requires + [
     # <3.12, so on 3.14 the resolver must pick >=1.49). Keep in sync with
     # scripts/update_packages.sh.
     "snowflake-snowpark-python>=1.49",
-    "databricks-sql-connector==4.5.0",
+    "databricks-sql-connector==4.9.0",
     "databricks-sdk==0.73.0",
     "thrift==0.24.0",
     # Remove the compromised emSign root (GHSA-6q48-6c7w-9gw2).
     "certifi==2026.10.19",
     "python-logging-loki==0.3.1",
-    # temporalio 1.17.0 capped protobuf<6, conflicting with the cp314
-    # protobuf>=6.33 floor (kumo-api requires protobuf>=5.27 on 3.14).
-    # 1.18.0+ relaxed the cap to protobuf<7; abi3 wheels install on cp314.
-    # 1.30.0 raises the floor further: its Rust bridge bundles quinn-proto
-    # 0.11.15 (RUSTSEC-2026-0185) and opentelemetry_sdk 0.32.1
-    # (GHSA-w9wp-h8wv-79jx). 1.31.0 fixes a cancel racing a completed sync
-    # activity killing an idle pool thread (sdk-python#1648).
-    "temporalio>=1.31,<2",
+    "temporalio>=1.35,<2",
     "zstd>=1.5.6",
     "aiocache==0.12.3",
     # aiobotocore 3.7.0 supports the botocore 1.42.x line pulled in by the boto3

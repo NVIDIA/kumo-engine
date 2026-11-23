@@ -150,6 +150,9 @@ pub struct ResolveColumnSpec {
 
 #[derive(Clone)]
 pub struct IngestOptions {
+    /// Preallocated physical build ID, for callers that choose the output path
+    /// before ingest. Defaults to a fresh UUID for each ingest.
+    pub index_build_id: Option<String>,
     pub profile_dir: Option<PathBuf>,
     pub progress: Option<ProgressCallback>,
     pub parallel: bool,
@@ -181,11 +184,14 @@ pub struct IngestOptions {
     /// pkmap) and written as rowpack columns with NO FK edge. Empty (default)
     /// preserves the existing edge-materializing behaviour.
     pub resolve_columns: Vec<ResolveColumnSpec>,
+    /// Column statistics at encoder cutoffs, published under `col_stats/`.
+    pub cutoff_col_stats: Option<crate::cutoff_col_stats::CutoffColStatsRequest>,
 }
 
 impl Default for IngestOptions {
     fn default() -> Self {
         Self {
+            index_build_id: None,
             profile_dir: None,
             progress: None,
             parallel: true,
@@ -202,6 +208,7 @@ impl Default for IngestOptions {
             index_threads: None,
             parent_index_path: None,
             resolve_columns: Vec::new(),
+            cutoff_col_stats: None,
         }
     }
 }

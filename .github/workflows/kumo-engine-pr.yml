@@ -17,7 +17,7 @@ on:  # yamllint disable-line rule:truthy
   workflow_call:
     inputs:
       build_only:
-        description: Build main without candidate checks or GPU tests.
+        description: Build the source revision without candidate checks or GPU tests.
         type: boolean
         default: false
 
@@ -25,7 +25,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ inputs.build_only && 'engine-e2e-build' || 'engine-pr' }}-${{ github.ref }}
+  group: ${{ inputs.build_only && format('engine-e2e-build-{0}', github.run_id) || format('engine-pr-{0}', github.ref) }}
   cancel-in-progress: ${{ github.event_name == 'push' }}
 
 jobs:
@@ -67,8 +67,7 @@ jobs:
     needs: changes
     if: >-
       !cancelled() &&
-      (!inputs.build_only || github.ref == 'refs/heads/main') &&
-      (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' || needs.changes.outputs.gpu == 'true')
+      (inputs.build_only || github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' || needs.changes.outputs.gpu == 'true')
     runs-on: ubuntu-22.04
     timeout-minutes: 60
     permissions:

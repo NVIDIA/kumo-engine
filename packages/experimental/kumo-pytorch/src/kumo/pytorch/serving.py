@@ -125,7 +125,6 @@ class ServingAssembler:
             contract=contract,
             input_state=input_state,
             target_encoders=target_encoders,
-            length_summary=fitted._lengths,
             inference=True,
         )
         self._declared: dict[str, dict[str, DType]] = {

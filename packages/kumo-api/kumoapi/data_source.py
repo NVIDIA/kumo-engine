@@ -1300,6 +1300,18 @@ class CreateConnectorArgs:
 
 
 @dataclass(config=_FORBID_EXTRA_CONFIG)
+class CopyConnectorArgs:
+    r"""Copy one connector's configuration and identity into a project.
+
+    ``name`` and ``description`` default to the source connector's values.
+    The identity must be assigned to the target project's group.
+    """
+    target_project_id: ProjectID
+    name: Optional[str] = None
+    description: Optional[str] = None
+
+
+@dataclass(config=_FORBID_EXTRA_CONFIG)
 class UpdateConnectorMetadataArgs:
     name: Optional[str] = None
     description: Optional[str] = None

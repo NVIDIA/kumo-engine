@@ -1,0 +1,8 @@
+{
+  "name": "kumo-snowflake-notebook-browser-test",
+  "private": true,
+  "version": "1.0.0",
+  "dependencies": {
+    "playwright": "1.60.0"
+  }
+}

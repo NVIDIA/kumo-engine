@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import os
+import platform
 import shutil
 import time
 import warnings
@@ -47,6 +48,9 @@ from kumo_core.model_plan_conversion import public_model_plan_from_internal
 from kumo_core.pquery import (
     build_generated_training_task_dataset,
     resolve_query_forecast,
+)
+from kumo_core.prediction_explanation_result import (
+    PredictionExplanationOptions,
 )
 from kumo_core.resolved_task import check_prediction_plan
 from kumo_core.summaries import Note, Scalar, Summary
@@ -110,7 +114,10 @@ from kumo.engine._tracking import (
 from kumo.engine.connector.base import Connector
 from kumo.engine.connector.source_table import SourceTable
 from kumo.engine.explain._artifacts import explanation_trial
-from kumo.engine.explain.results import TrainingExplanations
+from kumo.engine.explain.results import (
+    PredictionExplanations,
+    TrainingExplanations,
+)
 from kumo.engine.graph import (
     GraphSnapshot,
     index_timestamp_precision,
@@ -155,6 +162,10 @@ from kumo.engine.trainer.output_config import (
 )
 
 if TYPE_CHECKING:
+    from kumo.engine._explainability import ExplainabilityView
+    from kumo.engine._explainability._prediction import (
+        PredictionExplainabilityView,
+    )
     from kumo.engine._monitoring import DriftReport, EvaluationResult
 
 logger = logging.getLogger(__name__)
@@ -238,6 +249,19 @@ class TrainingResult:
         manifest = self.manifest
         return self._tracking or (None if manifest is None else
                                   manifest.tracking)
+
+    def visualize(self) -> 'ExplainabilityView':
+        """The model's evaluation and explanation widget.
+
+        Displayed in a notebook cell, it shows how the model scores on the
+        holdout against simple baselines and the last-epoch training score, and
+        which input columns it relies on. It reads the files this fit left
+        on disk; a result restored from a bundle alone shows what the bundle
+        holds. ``.html()`` returns the same widget as self-contained HTML.
+        """
+        from kumo.engine._explainability import ExplainabilityView
+
+        return ExplainabilityView(self)
 
     def predict(self, *args: Any, **kwargs: Any) -> 'PredictionResult':
         """Score with this model, as :meth:`Trainer.predict`."""
@@ -340,6 +364,21 @@ class PredictionResult:
                                              repr=False)
     _exported: Optional['_Export'] = field(default=None, compare=False,
                                            repr=False)
+
+    explanations: PredictionExplanations = field(
+        default_factory=PredictionExplanations.unavailable)
+
+    def visualize(self) -> 'PredictionExplainabilityView':
+        """Display retained batch cohorts and subgraphs without running
+        prediction."""
+        from kumo.engine._explainability._prediction import (
+            PredictionExplainabilityView,
+        )
+
+        manifest = (self.manifest if self.selection is not None
+                    or self._exported is not None else None)
+        run_id = self.selection.job_id if self.selection is not None else None
+        return PredictionExplainabilityView(self.explanations, manifest, run_id)
 
     @property
     def tracking(self) -> Optional[TrackingRef]:
@@ -947,8 +986,9 @@ def _validate_model_plan(model_plan: CoreModelPlan,
 
 
 def _explain(best_trainer: Any, run_id: str) -> Optional[str]:
+    failure = None
     try:
-        best_trainer.explain(
+        producers = best_trainer.explain(
             explain_methods=[
                 ExplainMethod.COLUMN_ANALYSIS,
                 ExplainMethod.GRADIENT,
@@ -956,6 +996,8 @@ def _explain(best_trainer: Any, run_id: str) -> Optional[str]:
             ],
             stage='test',
         )
+        failure = next((producer.failure for producer in producers
+                        if producer.failure is not None), None)
         aggregate_subgraph_features(
             str(Path(best_trainer.subgraph_collector_dir()) / 'test'),
             TrainingStage.TEST)
@@ -964,8 +1006,12 @@ def _explain(best_trainer: Any, run_id: str) -> Optional[str]:
             'Training succeeded, but post-training explanations '
             'failed for run %s. The trained model remains available.',
             run_id)
-        return f'{type(error).__name__}: {error}'
-    return None
+        return failure or f'{type(error).__name__}: {error}'
+    if failure:
+        logger.warning('Training succeeded, but post-training explanations '
+                       'failed for run %s: %s. The trained model remains '
+                       'available.', run_id, failure)
+    return failure
 
 
 def _stage_model_bundle(artifacts: Mapping[str, str], dest: Path) -> Path:
@@ -974,20 +1020,6 @@ def _stage_model_bundle(artifacts: Mapping[str, str], dest: Path) -> Path:
 
 
 _F = TypeVar('_F', bound=Callable[..., Any])
-
-
-def _prediction_task_type(training_query: Optional[str], query: str,
-                          graph_config: Any) -> Any:
-    from kumo_core.prediction_options import prediction_query_contract
-    from kumo_core.types import TaskType
-
-    contract = prediction_query_contract(query, graph_config)
-    if training_query is None or prediction_query_contract(
-            training_query, graph_config) != contract:
-        raise ValueError(
-            'Prediction query target/entity contract differs from the trained model'
-        )
-    return TaskType(contract[1])
 
 
 def _requested_artifacts(
@@ -999,6 +1031,21 @@ def _requested_artifacts(
         PredictionArtifactType(name.upper())
         for name in destinations) or frozenset(
             {PredictionArtifactType.PREDICTIONS})
+
+
+def _reject_pairwise_candidates(artifacts: Mapping[str, str], query: Any,
+                                graph: Any, task_type: Any) -> None:
+    from kumo_core.io.json import load_json
+    from kumo_core.link_candidates import PAIRWISE_CANDIDATES, candidate_query
+    from kumo_core.pquery import to_api_graph
+    from kumo_core.training.config import LinkPredModuleType, TrainerConfig
+
+    if not task_type.is_link_pred or candidate_query(
+            query, to_api_graph(graph), task_type) is None:
+        return
+    config = load_json(artifacts['trainer_config'], TrainerConfig)
+    if config.module_kwargs.module is LinkPredModuleType.ID:
+        raise ValueError(PAIRWISE_CANDIDATES)
 
 
 def _offset_count(compiler_options: Mapping[str, Any],
@@ -1086,6 +1133,10 @@ def _no_lightning_tip(record: logging.LogRecord) -> bool:
     return not str(record.msg).startswith('💡 Tip')
 
 
+class UnsupportedAcceleratorError(ValueError):
+    """This host cannot run the requested accelerator."""
+
+
 class Trainer:
     r"""Trains and runs a GNN model in-process.
 
@@ -1109,6 +1160,14 @@ class Trainer:
         if accelerator not in ('cpu', 'gpu', 'mps', 'auto'):
             raise ValueError(
                 "accelerator must be one of 'cpu', 'gpu', 'mps', or 'auto'")
+        # Lightning maps 'gpu' to MPS on a Mac, and MPS kernels abort the
+        # process before macOS 15.
+        release = platform.mac_ver()[0]
+        if accelerator in ('gpu', 'mps') and release and int(
+                release.split('.')[0]) < 15:
+            raise UnsupportedAcceleratorError(
+                f'accelerator={accelerator!r} needs macOS 15 or later, but '
+                f"this Mac runs macOS {release}. Use accelerator='cpu'.")
         self._accelerator = accelerator
         self._model_plan = model_plan
         self._embedding_models = (embedding_models if embedding_models
@@ -1574,6 +1633,7 @@ class Trainer:
         binary_classification_threshold: Optional[float] = None,
         prediction_table: Optional[PredictionTable] = None,
         mlops: Optional[Any] = None,
+        explanations: bool | PredictionExplanationOptions = False,
     ) -> PredictionResult:
         r"""Score a snapshot and return durable file-backed results.
 
@@ -1616,8 +1676,20 @@ class Trainer:
 
         Omitted arguments fall back to the bundle's :attr:`scoring_defaults`.
 
+        ``explanations=True`` replays a bounded sample of these prediction
+        inputs to generate column cohorts and sampled graphs when supported.
+        The optional replay adds computation. Its failure leaves predictions
+        available and is recorded on ``result.explanations``. Retain that
+        object's ``run_root`` separately; exports do not include diagnostics.
+        Pass ``PredictionExplanationOptions(cohort_rows=..., sample_rows=...)``
+        to set independent row limits. Omitted limits retain the defaults.
+
         With MLOps on, the run is stored under ``predictions/<id>/``.
         """
+        if not isinstance(explanations, (bool, PredictionExplanationOptions)):
+            raise ValueError('explanations must be a boolean or '
+                             'PredictionExplanationOptions')
+
         from kumo_core.prediction_options import (
             validate_num_classes_to_return,
             validate_prediction_workers,
@@ -1658,7 +1730,7 @@ class Trainer:
                 num_workers=num_workers,
                 binary_classification_threshold=(
                     binary_classification_threshold),
-                settings=settings)
+                settings=settings, explanations=explanations)
 
     def _prediction_table(self, snapshot: GraphSnapshot,
                           entities: Optional[SourceTable],
@@ -1698,10 +1770,12 @@ class Trainer:
         binary_classification_threshold: Optional[float] = None,
         settings: Optional[Any] = None,
         extra_fields: Sequence[str] = (),
+        explanations: bool | PredictionExplanationOptions = False,
     ) -> PredictionResult:
         from kumo_core.pquery import normalize_graph, parse_and_validate_query
         from kumo_core.prediction import score_prediction
         from kumo_core.prediction_options import (
+            prediction_task_type,
             resolve_classification_threshold,
             resolve_num_classes_to_return,
         )
@@ -1710,14 +1784,16 @@ class Trainer:
         from kumo.engine.trainer._provenance import count_edges
 
         training_result = self._fitted('predict')
+        enabled = bool(explanations)
         defaults = training_result.scoring_defaults
         arguments = binary_classification_threshold, num_classes_to_return
         if binary_classification_threshold is None:
             binary_classification_threshold = (
                 defaults.binary_classification_threshold)
         graph_config = snapshot.graph_config
-        task_type = _prediction_task_type(self._training_query,
-                                          prediction_table.query, graph_config)
+        task_type = TaskType(
+            prediction_task_type(self._training_query, prediction_table.query,
+                                 graph_config))
         threshold = (None if binary_classification_threshold is None
                      and task_type is TaskType.BINARY_CLASSIFICATION else
                      resolve_classification_threshold(
@@ -1728,6 +1804,8 @@ class Trainer:
                          PredictionArtifactType.EMBEDDINGS)
         native_graph = normalize_graph(graph_config)
         parsed = parse_and_validate_query(prediction_table.query, native_graph)
+        _reject_pairwise_candidates(training_result.artifact_paths,
+                                    parsed.query, native_graph, task_type)
         if num_classes_to_return is None and parsed.query.top_k is None:
             num_classes_to_return = defaults.num_classes_to_return
         requested_classes = num_classes_to_return
@@ -1792,9 +1870,9 @@ class Trainer:
             count_edges=count_edges(training_result.manifest, task_type),
         )
 
-        del encoders
-        _collect_garbage('predict')
-        result = PredictionResult(selection, artifact_type)
+        result = PredictionResult(selection, artifact_type,
+                                  explanations=PredictionExplanations.from_run(
+                                      run_dir))
         manifest = _run_manifest.start(
             result=result, trainer=self, snapshot=snapshot,
             prediction_table=prediction_table,
@@ -1808,9 +1886,30 @@ class Trainer:
                                             num_classes_to_return, 'query'),
                 num_workers=num_workers,
             ), started_at=started_at.isoformat(timespec='seconds'))
-        tracking = _run_manifest.finish(result, manifest, output_config,
-                                        settings, training_result, snapshot)
-        return replace(result, _tracking=tracking)
+        try:
+            tracking = _run_manifest.finish(result, manifest, output_config,
+                                            settings, training_result, snapshot)
+        except BaseException:
+            encoders = None
+            _collect_garbage('predict')
+            raise
+        result = replace(result, _tracking=tracking)
+        if enabled:
+            _collect_garbage('predict')
+        from kumo.engine.explain._prediction import explain_run
+
+        try:
+            explanation_result = explain_run(
+                run_root=str(run_dir), run_id=run_id, task_type=task_type,
+                materialized=materialized, model_dir=model_dir,
+                explanations=explanations, top_k=num_classes_to_return,
+                binary_threshold=threshold, task_options=task_options,
+                embedding_models=self._embedding_models, encoders=encoders,
+                accelerator=self._accelerator)
+        finally:
+            del encoders
+            _collect_garbage('predict')
+        return replace(result, explanations=explanation_result)
 
     def _trained_encoders(self, training_result: TrainingResult) -> Any:
         from kumo_core.encoders.config import EncodersConfig

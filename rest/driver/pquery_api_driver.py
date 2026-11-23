@@ -3772,15 +3772,17 @@ class PQueryApiDriver:
             JobID(training_job_id),
         )
         dir_mgr = HomeDirManager(training_job_dir)
-        model_plan_paths = [
-            os.path.join(trial_dir, 'model_plan.json')
-            for trial_dir in dir_mgr.trials()
-        ]
-        model_plans = await asyncio.gather(*[
-            load_json_async(path, ModelPlan, default=None,
-                            raise_on_missing=False) for path in model_plan_paths
+        trial_dirs = dir_mgr.trials()
+        loaded_plans = await asyncio.gather(*[
+            load_json_async(os.path.join(trial_dir, 'model_plan.json'),
+                            ModelPlan, default=None, raise_on_missing=False)
+            for trial_dir in trial_dirs
         ])
-        model_plans = [mp for mp in model_plans if mp is not None]
+        trials = [
+            (trial_id, mp) for trial_dir, mp in zip(trial_dirs, loaded_plans)
+            if mp is not None and (
+                trial_id := HomeDirManager.trial_id(trial_dir)) is not None
+        ]
 
         train_job_response = await self.get_training_job(ctx, training_job_id)
         custom_train_table = False
@@ -3794,9 +3796,10 @@ class PQueryApiDriver:
                     query_type=query_type,
                     has_train_table_weight_col=self._has_weight_col(
                         mp, custom_train_table),
-                ) for mp in model_plans
+                ) for _, mp in trials
             ],
             advanced_options=[],
+            trial_ids=[trial_id for trial_id, _ in trials],
         )
 
     async def _handle_snapshot_override_v2(

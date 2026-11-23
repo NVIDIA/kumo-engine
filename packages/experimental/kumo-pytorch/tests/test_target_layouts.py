@@ -203,6 +203,43 @@ def test_input_only_reuse_resolves_new_aligned_label_fields_without_refitting(en
                 assert target["valid"].tolist() == [[True, False, True], [False, False, False]]
 
 
+def test_padded_aligned_target_uses_declared_pad_id() -> None:
+    contract = _contract()
+    history = contract.batch.inputs["history"]
+    contract = replace(
+        contract,
+        batch=BatchSpec(
+            inputs={
+                "history": replace(
+                    history,
+                    representation=Fields(fields=(Encode(field="amount", encoding=Raw()),)),
+                    layout=Padded(),
+                )
+            },
+            targets={
+                "heldout": AlignedEventTarget(
+                    input="history",
+                    fields=(Encode(field="currency", encoding=Vocabulary(), id_space="labels"),),
+                )
+            },
+            id_spaces={
+                "labels": IdSpace(
+                    specials={"pad": "pad", "unknown": "unknown", "missing": "missing"},
+                    special_ids={"pad": 5, "unknown": 1, "missing": 2},
+                )
+            },
+        ),
+    )
+    anchors = _anchors()
+    with bound_tables(contract, _tables(), "in_memory") as (dataset, backend):
+        with prepare(contract, dataset, backend) as plan, plan.materialize(anchors) as task:
+            target = next(task.batches(anchors, batch_size=2)).targets["heldout"]["currency"]
+    assert target["values"][1].tolist() == [5, 5, 5]
+    assert target["valid"][1].tolist() == [False, False, False]
+    assert target["values"][0, 1].item() == 2  # A real NULL uses the missing role.
+    assert not target["valid"][0, 1]
+
+
 def _text():
     from tokenizers import Tokenizer, models, pre_tokenizers
 

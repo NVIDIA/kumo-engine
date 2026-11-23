@@ -90,8 +90,11 @@ def _load(exports, location, **kwargs):
     return GraphSnapshot.load_from_connector(exports, path=location, **kwargs)
 
 
+@pytest.mark.parametrize('fallocate', [True, False])
 def test_export_load_round_trip_relocates_and_is_reused(
-        tmp_path, scratch, graph, exports, monkeypatch):
+        tmp_path, scratch, graph, exports, monkeypatch, fallocate):
+    if not fallocate:  # As on macOS, which has no posix_fallocate.
+        monkeypatch.delattr(os, 'posix_fallocate', raising=False)
     monkeypatch.setattr(snapshot_io, '_CHUNK', 1024)
     monkeypatch.setattr(snapshot_io, '_RANGE_BYTES', 4096)
     snapshot = graph.snapshot()

@@ -117,6 +117,50 @@ for event in features:
     print(event["batch"].schema)
 ```
 
+### Prepared scalar materialization
+
+Scalar feature/target precomputation uses staged `row_aggregate` operations in
+`DiskGraphTTPlan`. Prepare once on the sampler that owns the index, then supply
+only dense entity IDs and cutoffs in the plan's declared clock for each input chunk
+(epoch seconds when the clock is omitted):
+
+```python
+prepared = sampler.prepare_aggregate_plan("users", plan_json)
+for node_ids, cutoffs in anchor_chunks:
+    values = prepared.execute(node_ids, cutoffs, anchor_batch_size=256)
+```
+
+Preparation resolves relation handles, projected columns, compatible overlapping
+windows and numeric operations once. Execution reuses that state and the sampler
+pool; anchor-dependent bounds and row values are evaluated for each chunk. The
+handle retains its index and may be used after the original Python sampler is
+released. It does not cache anchors or computed results.
+
+All row frames in one query must use the same `cutoff_unit`. Prepared scalar plans
+inherit their top-level `timestamp_unit` when a frame omits `cutoff_unit`, including
+frames lowered from PQL aggregates. An explicit frame unit takes precedence.
+An omitted plan clock, and omitted frame units in direct `query_temporal` calls,
+default to seconds. PQL row filters, limits and target-table selection still
+require matching seconds plan, cutoff and index clocks.
+`diskgraph.convert_ticks(value, from, to)` exposes the shared fixed-clock
+request/seed conversion (truncation toward zero, including before 1970).
+`rounding="floor"` selects core floor conversion, used by kumo-pytorch to preserve
+its no-future-event anchor boundary before 1970. The function
+accepts clock names and Arrow abbreviations (`s`, `ms`, `us`, `ns`). Stored typed
+timestamps retain ingestion's separate round-up rule; this helper does not
+change ingestion semantics.
+
+PQL keeps its existing serialized `aggregate` operations. Execution lowers
+single-hop COUNT/SUM/AVG/MIN/MAX, including their filters and limits, to the common
+row-aggregate representation. Both representations use the same scalar resolver;
+filtered operations preserve PQL's existing traversal/filter/limit semantics.
+Specialized list/link-prediction and forecasting output operations remain on
+their existing paths. No prototype `aggregate_program` input capsule is needed.
+
+The fluent materializer windows the selected destination frame and rejects
+temporal intermediate tables. This does not change PQL's first-hop window policy
+or add arbitrary multi-hop temporal support.
+
 ### Direct temporal rows
 
 `SamplerEngine.query_temporal(seed_nodes, seed_timestamps, plan_json,
@@ -131,7 +175,7 @@ cutoffs, and a JSON plan with:
   grouping stages.
 
 Frames are the unit of shared work. A sequence and several aggregates naming
-the same frame perform one traversal and one rowpack decode. Results include
+the same frame share traversal and projected rowpack decoding. Results include
 Arrow sequence batches, aligned offsets/timestamps, scalar aggregate values,
 and nanosecond counters for traversal, decode/selection, sequence assembly,
 aggregation, and the full native call. `stats.rows_decoded` counts rows sent to
@@ -150,8 +194,11 @@ its real timestamp. Other frames also retain full-frame decoding. This
 reduces rowpack work, not edge scanning: candidate edge buffers still grow with
 the adjacency, and boundary ties can require decoding more than the limit.
 
-When one bounded sequence shares a frame with aggregates, traversal is still
-shared. The full frame decodes only its keys, clock, and aggregate input columns,
+For one bounded sequence, the full frame can decode only its keys, clock, and
+any aggregate input columns, deferring sequence-only payload until exact row
+selection. This also covers alternative clocks and timestamp ties that cannot
+be capped from edge keys alone. When aggregates share that frame, traversal is
+still shared,
 preserving the existing filtering, ordering, and reductions. Additional sequence
 columns are decoded only after selecting its final rows; shared columns reuse
 the full frame's values. To avoid a costly second pass for low-selectivity
@@ -176,11 +223,50 @@ shares a frame traversal between all of its sequence consumers, applies each
 sequence limit, and returns one Arrow `uint64` length vector per sequence. It
 does not build output batches, decode feature columns, sort selected rows, or
 materialize aggregates. When the final relation's destination sort-key clock
-matches the frame clock at lossless one-second resolution, relative-window
+matches the frame clock at lossless one-tick resolution, relative-window
 filtering decodes the timestamp already packed beside each edge. Otherwise it
 decodes only the destination rowpack's timestamp column. `timings_ns` separates
 traversal and filtering;
 `stats` reports which timestamp path ran.
+
+Shared row materialization and length queries seek candidate ranges before
+unpacking adjacency when the final relation indexes the requested time column.
+Bounds use the existing graph-clock conversion, including cutoff flooring and
+window-offset truncation. The search also supports full-width subsecond keys.
+Coarse sort-key buckets widen candidate admission; stored row timestamps still
+decide membership. Clipped ceiling and floor/NULL regions remain candidates,
+and coarse keys never justify applying a sequence cap before row refinement.
+Missing/mismatched clocks or unsafe decoder arithmetic keep the scan fallback.
+This does not change storage precision, query units, ordering or aggregates.
+
+`edges_visited` counts unpacked candidates, excluding binary-search probes;
+length-query `rows_considered` counts candidates after seeking and distinct
+handling. These counters describe work, not the original adjacency degree.
+The specialized PQL numeric executor retains its existing traversal. See the
+[shared-range benchmark](../scripts/benchmarks/shared_temporal_ranges.md) for
+the scoped comparison protocol.
+
+Aggregate-only, one-hop queries on second-clock indexes lower `count` and
+Float32/Float64 `sum`/`mean`/`min`/`max` to the same resolved aggregate IR and grouped numeric executor
+used by PQL. This applies equally to feature and target aggregates. The
+temporal frontend preserves its exact-time and chronological/primary-key row
+selection; PQL retains its existing index-order selection. Supported groups
+reuse the temporal frontend's existing projected Arrow batch without decoding
+selected rows a second time. PQL projects its selected rows in bounded chunks.
+Queries with group-by stages, exact integer sums, nonfinite inputs or sequence
+consumers still select/materialize their general frames. After selection, their
+ordinary sums/means and finite floating extrema use the same ordered accumulators
+as PQL, including grouped and multi-hop inputs. Typed integer sums/extrema and
+API-specific reductions retain their distinct contracts. This does not require
+rewriting existing PQL traversal or eliminating frames used for window sharing.
+No public JSON schema or frontend syntax changes are required.
+
+`num_threads` uses the sampler's existing Rayon pool for temporal queries and
+length queries. Requests with at least 64 anchors use at most twice the pool
+size in ordered chunks; smaller requests retain the serial path. Returned anchor
+order is independent of worker completion. Stage timings sum worker time while
+`total` measures elapsed wall time. This remains a batch API, not a streamed
+whole-task materialization interface.
 
 ### Flat token packing for RDL
 
@@ -200,6 +286,20 @@ packer to interleave tokens into model-ready streams. Python tests cover ragged
 parts, sample isolation, both truncation directions, boundaries, and malformed
 buffers. The companion RDL integration compares the complete streams with its
 record-based reference.
+
+### Merging event components
+
+`diskgraph.merge_event_streams(parts, max_events, keep_last, descending)` returns
+`(sample_offsets, take_indices)` as Arrow int64 arrays. Each part is
+`(sample_offsets, timestamps, ascending)`; its sorted timestamps and offsets
+must be non-null. Equal times keep the supplied component order and that
+component's stable row order. Global first/last capping happens before reversing
+for descending output. The permutation addresses the concatenated component
+buffers; no fields are re-decoded or stored in a second payload representation.
+
+The native merge releases the GIL. The kumo.pytorch DiskGraph adapter carries
+this backend into model assembly, bypassing NumPy's component sort while reusing
+the same Arrow fields. Other engines retain their reference ordering path.
 
 ### RDL model-boundary decision
 
@@ -360,3 +460,10 @@ Handles table type detection, FK resolution, timestamp format inference, num_sha
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `EDGE_BATCH_SIZE_ROWS` | 65536 | Rows per edge batch sent to Python |
+
+
+Explicit temporal row frames may set `cutoff_unit` to the index clock name (for
+example, `"milliseconds"`). Omission retains epoch-second inputs and outputs.
+Nonsecond histories retain integer ticks and report `timestamp_unit`; elapsed
+features and recency remain expressed in seconds. PQL selection fragments with
+row filters/limits still require the existing seconds contract.

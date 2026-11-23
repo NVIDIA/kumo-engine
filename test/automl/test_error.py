@@ -62,6 +62,7 @@ def test_construct_gpu_oom_message():
     )
 
     assert "Out of 1 experiment(s), 1 experiment(s) failed" in msg
+    assert "out-of-memory issue. Despite re-attempting" in msg
 
     assert "we were unable to avoid GPU out-of-memory issues" in msg
 

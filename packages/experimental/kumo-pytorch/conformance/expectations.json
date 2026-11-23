@@ -77,6 +77,10 @@
     "in_memory": "answer",
     "diskgraph": "answer"
   },
+  "C-IDSPACE-002": {
+    "in_memory": "answer",
+    "diskgraph": "answer"
+  },
   "C-HISTORY-001": {
     "in_memory": "answer",
     "diskgraph": "answer"

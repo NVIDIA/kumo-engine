@@ -157,6 +157,7 @@ jobs:
             packages/kumo-pql
             packages/kumo-s3
             packages/kumo-sdk
+            packages/kumo-settings
             packages/kumo-snowflake
             packages/kumo-engine
             packages/experimental/kumo-pytorch

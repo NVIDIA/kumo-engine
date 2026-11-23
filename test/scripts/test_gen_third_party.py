@@ -219,6 +219,39 @@ class ThirdPartyNoticeTest(unittest.TestCase):
                 self.assertTrue(any(expected in error for error in errors),
                                 errors)
 
+    def test_expression_override_needs_its_exact_package_and_a_reason(
+            self) -> None:
+        inventory = copy.deepcopy(self.inventory)
+        component = next(item for item in inventory["components"]
+                         if item["ecosystem"] == "rust"
+                         and item["license_expression"] == "MIT")
+        component["license_expression"] = "MIT AND BSD-2-Clause"
+        override = {
+            "ecosystem": "rust",
+            "name": component["name"],
+            "version": component["version"],
+            "license_expression": "MIT AND BSD-2-Clause",
+            "reason": "bundles BSD-2-Clause source",
+        }
+        policy = copy.deepcopy(self.policy)
+        policy.setdefault("expression_overrides", []).append(override)
+        self.assertEqual(notice.validate(inventory, policy), [])
+
+        for field, value, expected in (
+            ("version", "0.0.0", "stale policy expression overrides"),
+            ("reason", "", "required string fields: reason"),
+            ("reason", None, "required string fields: reason"),
+        ):
+            with self.subTest(field=field, value=value):
+                broken = copy.deepcopy(policy)
+                broken["expression_overrides"][-1][field] = value
+                errors = notice.validate(inventory, broken)
+                self.assertTrue(any(expected in error for error in errors),
+                                errors)
+                self.assertTrue(
+                    any("disagrees with Cargo metadata" in error
+                        for error in errors), errors)
+
     def test_derived_source_policy_requires_provenance_or_notice(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

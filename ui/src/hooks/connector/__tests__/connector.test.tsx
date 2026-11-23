@@ -16,6 +16,11 @@ import { createQueryClient, createWrapper } from "tests/testUtil";
 import { vi } from "vitest";
 
 import {
+    mockCopiedConnector,
+    setCopyConnectorResponseType
+} from "components/Connectors/CopyConnector/__tests__/MockFunctions/CopyConnector.mock";
+
+import {
     connectorListWithDistinctNamesResponse,
     setConnectorListResponseType,
     setCustomConnectorListResponse
@@ -31,6 +36,7 @@ import {
     useConnectorDetails,
     useConnectorDropdownOptions,
     useConnectors,
+    useCopyConnector,
     useGetColumns,
     useGetSampleRows
 } from "../connector";
@@ -60,6 +66,7 @@ beforeEach(() => {
     setCustomConnectorListResponse(null);
     setConnectorTablesResponseType();
     setDeleteConnectorTestType();
+    setCopyConnectorResponseType();
 });
 
 afterEach(() => {
@@ -617,5 +624,63 @@ describe("useGetSampleRows", () => {
                 )
             ).toBe(true);
         });
+    });
+});
+
+describe("useCopyConnector", () => {
+    const args = {
+        target_project_id: "project-target",
+        name: "Sales analytics"
+    };
+
+    const renderUseCopyConnector = () =>
+        renderHook(() => useCopyConnector(), {
+            wrapper: createWrapper(queryClient)
+        });
+
+    it("posts to the source connector's copy route and refreshes the target project's connectors", async () => {
+        const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+        const { result } = renderUseCopyConnector();
+
+        let outcome: Awaited<ReturnType<typeof result.current.copyConnector>>;
+        await act(async () => {
+            outcome = await result.current.copyConnector(
+                "project-source",
+                "connector-source",
+                args
+            );
+        });
+
+        expect(outcome!).toEqual({
+            connector: mockCopiedConnector,
+            error: null
+        });
+        expect(mockAxiosInstance.post).toHaveBeenCalledWith(
+            "v0/projects/project-source/connectors/connector-source/copy",
+            args,
+            expect.anything()
+        );
+        expect(invalidate).toHaveBeenCalledWith({
+            queryKey: ["connectorList", "project-target"]
+        });
+    });
+
+    it("returns the server message without refreshing on failure", async () => {
+        setCopyConnectorResponseType(testResponseType.ERROR);
+        const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+        const { result } = renderUseCopyConnector();
+
+        let outcome: Awaited<ReturnType<typeof result.current.copyConnector>>;
+        await act(async () => {
+            outcome = await result.current.copyConnector(
+                "project-source",
+                "connector-source",
+                args
+            );
+        });
+
+        expect(outcome!.connector).toBeNull();
+        expect(outcome!.error).toContain("already exists in this project");
+        expect(invalidate).not.toHaveBeenCalled();
     });
 });

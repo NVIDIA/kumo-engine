@@ -6,6 +6,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 import kumo_core.prediction as prediction
+import kumo_core.prediction_options as prediction_options
 import numpy as np
 import pytest
 import torch
@@ -22,6 +23,8 @@ from kumo_core.prediction import (
     materialize_prediction_task,
 )
 from kumo_core.prediction_options import (
+    PredictionQueryContract,
+    prediction_task_type,
     resolve_classification_threshold,
     resolve_num_classes_to_return,
 )
@@ -130,6 +133,25 @@ def test_irrelevant_classification_threshold_is_cleared(threshold):
         threshold,
         binary_required=True,
     ) is None
+
+
+@pytest.mark.parametrize("trained, predicted, message", [
+    (None, "unparsable", "has no training query"),
+    ("plain", "filtered", "query's target filter is 'x', but the model was "
+     "trained without a target filter"),
+    ("filtered", "plain", "query has no target filter, but the model was "
+     "trained with 'x'"),
+])
+def test_prediction_query_keeps_the_trained_contract(monkeypatch, trained,
+                                                     predicted, message):
+    plain = PredictionQueryContract("target", None, "temporal_link_prediction",
+                                    ("users", "id"), "items", 0, ())
+    contracts = {"plain": plain, "filtered": plain._replace(target_filter="x")}
+    monkeypatch.setattr(prediction_options, "prediction_query_contract",
+                        lambda query, _: contracts[query])
+
+    with pytest.raises(ValueError, match=message):
+        prediction_task_type(trained, predicted, {})
 
 
 def request(tmp_path, *, family="node_prediction"):
@@ -331,6 +353,8 @@ def _materialize(monkeypatch, tmp_path, req):
 
     monkeypatch.setattr(prediction, "write_thin_manifest", thin)
     monkeypatch.setattr(prediction, "write_flat_manifest", flat)
+    monkeypatch.setattr(prediction, "candidate_row_filter",
+                        lambda *args, **kwargs: None)
 
     result = materialize_prediction_task(
         req,
@@ -744,9 +768,9 @@ def test_in_process_scoring_parses_the_task_manifest_once(
                                       stage_counts={'predict': 1}))
         return loaded[-1]
 
-    def load_trainer(*args, **kwargs):
+    def load_trainer(task, *args, **kwargs):
         loads.append(kwargs)
-        return SimpleNamespace(predict=lambda **kw: predicts.append(kw))
+        return SimpleNamespace(task=task, predict=lambda **kw: predicts.append(kw))
 
     monkeypatch.setattr(DiskgraphTaskManifest, 'load', load_manifest)
     monkeypatch.setattr(ResolvedNumericalTask, 'from_manifest',
@@ -809,7 +833,8 @@ def test_every_scorer_counts_its_scores_into_one_file(
     monkeypatch.setattr(ResolvedNumericalTask, 'from_manifest',
                         lambda *_, **__: None)
     monkeypatch.setattr(DiskgraphNestedTrainer, 'load',
-                        lambda *_, **__: SimpleNamespace(predict=predict))
+                        lambda task, *_, **__: SimpleNamespace(task=task,
+                                                               predict=predict))
     monkeypatch.setattr('kumo_core.train.trainer.load_encoders',
                         lambda *_: None)
     monkeypatch.setattr(artifact_manifest, 'hash_prediction_config',

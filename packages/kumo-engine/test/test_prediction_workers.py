@@ -85,14 +85,15 @@ def test_valid_class_count_reaches_scorer(task_type, count, tmp_path,
         artifact_paths={}, manifest=None, scoring_defaults=ScoringDefaults())
     trainer._training_query = 'trained query'
     monkeypatch.setattr(Trainer, 'scratch_dir', property(lambda self: tmp_path))
-    monkeypatch.setattr(
-        'kumo_core.prediction_options.prediction_query_contract', lambda *args:
-        (None, task_type.value))
+    monkeypatch.setattr('kumo_core.prediction_options.prediction_task_type',
+                        lambda *args: task_type.value)
     monkeypatch.setattr('kumo_core.pquery.normalize_graph', lambda *args: None)
     monkeypatch.setattr('kumo_core.pquery.parse_and_validate_query',
                         lambda *args: SimpleNamespace(
                             task_type=task_type.value,
                             query=SimpleNamespace(top_k=None)))
+    monkeypatch.setattr('kumo.engine.trainer.trainer._reject_pairwise_candidates',
+                        lambda *args: None)
     monkeypatch.setattr(
         'kumo.engine.trainer.trainer.build_generated_training_task_dataset',
         lambda **kwargs: object())
@@ -147,12 +148,12 @@ def test_partition_counts_devices_and_runtime_allocation(
             task_type='regression', stage_counts={'predict': population}))
     monkeypatch.setattr(ResolvedNumericalTask, 'from_manifest',
                         lambda *a, **k: None)
-    monkeypatch.setattr('kumo_core.train.trainer.load_encoders',
+    monkeypatch.setattr('kumo_core.train.diskgraph_nested_trainer.load_encoders',
                         lambda *a: None)
 
-    def load(*args, **kwargs):
+    def load(task, *args, **kwargs):
         loads.append(kwargs)
-        return SimpleNamespace(predict=lambda **options: calls.append(options))
+        return SimpleNamespace(task=task, predict=lambda **options: calls.append(options))
 
     monkeypatch.setattr(DiskgraphNestedTrainer, 'load', load)
     monkeypatch.setattr(prediction, '_prediction_worker_devices',
@@ -253,9 +254,10 @@ def test_task_options_reach_every_scorer_before_output(
         return task
 
     monkeypatch.setattr(ResolvedNumericalTask, 'from_manifest', resolve)
-    monkeypatch.setattr('kumo_core.train.trainer.load_encoders',
+    monkeypatch.setattr('kumo_core.train.diskgraph_nested_trainer.load_encoders',
                         lambda *a: None)
     trainer = SimpleNamespace(
+        task=task,
         year_over_year_encoder=object() if mismatch else None,
         encoders=SimpleNamespace(
             encoders={'train_table': {

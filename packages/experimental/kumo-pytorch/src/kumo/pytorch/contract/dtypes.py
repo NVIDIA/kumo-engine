@@ -48,7 +48,11 @@ def _since_epoch(value: dt.date | dt.datetime) -> dt.timedelta:
 def _timestamp_seconds(value: dt.date | dt.datetime) -> int:
     """Native stored clocks round fractional instants toward positive infinity."""
     delta = _since_epoch(value)
-    return delta.days * 86_400 + delta.seconds + int(delta.microseconds != 0)
+    return (
+        delta.days * 86_400
+        + delta.seconds
+        + int(delta.microseconds != 0 or getattr(value, "nanosecond", 0) != 0)
+    )
 
 
 def _cutoff_seconds(value: dt.date | dt.datetime) -> int:
@@ -57,13 +61,23 @@ def _cutoff_seconds(value: dt.date | dt.datetime) -> int:
     return delta.days * 86_400 + delta.seconds
 
 
+def _strip_utc_timezone(value: Any) -> Any:
+    """Give Arrow temporal kernels the same UTC ticks without a timezone lookup."""
+    import pyarrow as pa
+
+    dtype = value.type
+    if pa.types.is_timestamp(dtype) and dtype.tz == "UTC":
+        return value.cast(pa.timestamp(dtype.unit))
+    return value
+
+
 @dataclass(frozen=True)
 class DType:
     """The stored scalar type, independent of its eventual model encoding.
 
     Supported names: ``bool``; ``int8``, ``int16``, ``int32``, ``int64``;
     ``uint8``, ``uint16``, ``uint32``, ``uint64``; ``float32``, ``float64``;
-    ``string``, ``bytes``; ``date32``; ``timestamp`` (``unit="s"``,
+    ``string``, ``bytes``; ``date32``; ``timestamp`` (``unit="s"|"ms"|"us"|"ns"``,
     ``timezone="UTC"``); ``decimal128`` (precision up to 38) and ``decimal256``
     (precision up to 76), which require ``precision`` and ``scale``. No
     parameters are accepted for other families. Arrays, lists and structs are
@@ -74,12 +88,19 @@ class DType:
     stringified, integers are not booleans, and decimals are not rounded to fit;
     integer bounds and decimal precision/scale are checked.
 
-    Timestamps are whole-second UTC instants. Finer physical units round toward
-    positive infinity, including before 1970; timezone metadata does not change
-    the instant, and a naive ``datetime`` means UTC. Anchor times
-    (``SampleRequest.as_of_time``) instead round toward negative infinity, so an
-    event later in the anchor's second is never history. ``date32`` stays a
-    date.
+    Timestamp precision is declared explicitly. Stored datetimes round upward
+    to the declared tick, matching typed DG ingestion. Values requiring sub-
+    microsecond precision normalize to an Arrow TimestampScalar, so pandas is
+    not required. Other timestamps normalize to UTC datetimes.
+
+    Anchor times instead round downward to the graph clock, preserving the
+    no-future-event boundary before 1970 too. Plain integer anchors are epoch seconds on every
+    clock; integer timestamp *field values* use that field's declared ticks.
+    Thus an epoch-ms integer is not an epoch-ms anchor: supply a datetime or a
+    typed Arrow timestamp. Physical Parquet timestamp units may differ from
+    the declared storage unit; native ingestion converts them to the graph
+    clock. The finest declared timestamp unit across all tables selects that
+    clock, including columns not used by a particular task.
 
     :raises ValueError: for an unknown name, missing or out-of-range decimal
         parameters, or parameters on a family that takes none.
@@ -95,8 +116,8 @@ class DType:
         if self.name not in _SCALARS:
             raise ValueError(f"unsupported scalar dtype {self.name!r}")
         if self.name == "timestamp":
-            if self.unit != "s" or self.timezone != "UTC":
-                raise ValueError("timestamp dtype requires unit='s' and timezone='UTC'")
+            if self.unit not in {"s", "ms", "us", "ns"} or self.timezone != "UTC":
+                raise ValueError("timestamp dtype requires unit in s/ms/us/ns and timezone='UTC'")
         elif self.unit is not None or self.timezone is not None:
             raise ValueError(f"{self.name} does not accept time parameters")
         if self.name.startswith("decimal"):
@@ -128,60 +149,99 @@ class DType:
         """Whether it can be compared with an anchor time: ``timestamp`` or ``date32``."""
         return self.name in {"timestamp", "date32"}
 
+    def _invalid_value(self, value: Any, path: str) -> ValueError:
+        return ValueError(f"{path}: {value!r} is not a valid {self} value")
+
     def normalize(self, value: Any, *, path: str = "value") -> Any:
         """Validate a scalar; only the declared storage normalization is applied."""
 
         if value is None:
             return None
-        error = f"{path}: {value!r} is not a valid {self} value"
         if self.integer:
             width, signed = _INTEGER_WIDTHS[self.name]
             minimum = -(1 << (width - 1)) if signed else 0
             maximum = (1 << (width - int(signed))) - 1
             if type(value) is not int or not minimum <= value <= maximum:
-                raise ValueError(error)
+                raise self._invalid_value(value, path)
             return value
         if self.name == "bool":
             if type(value) is not bool:
-                raise ValueError(error)
+                raise self._invalid_value(value, path)
             return value
         if self.name.startswith("float"):
             if isinstance(value, bool) or not isinstance(value, (float, int)):
-                raise ValueError(error)
+                raise self._invalid_value(value, path)
             try:
                 result = float(value)
                 if self.name == "float32":
                     result = struct.unpack("!f", struct.pack("!f", result))[0]
             except (OverflowError, struct.error) as exc:
-                raise ValueError(error) from exc
+                raise self._invalid_value(value, path) from exc
             return result
         if self.name == "string":
             if not isinstance(value, str):
-                raise ValueError(error)
+                raise self._invalid_value(value, path)
             return value
         if self.name == "bytes":
             if not isinstance(value, bytes):
-                raise ValueError(error)
+                raise self._invalid_value(value, path)
             return value
         if self.name == "date32":
             if not isinstance(value, dt.date) or isinstance(value, dt.datetime):
-                raise ValueError(error)
+                raise self._invalid_value(value, path)
             return value
         if self.name == "timestamp":
-            if type(value) is not int and not isinstance(value, dt.datetime):
-                raise ValueError(error)
+            if self.unit == "s" and (type(value) is int or isinstance(value, dt.datetime)):
+                # Keep ordinary whole-second normalization on its existing path.
+                try:
+                    seconds = value if type(value) is int else _timestamp_seconds(value)
+                    return dt.datetime(1970, 1, 1, tzinfo=dt.UTC) + dt.timedelta(seconds=seconds)
+                except (OverflowError, ValueError) as exc:
+                    raise self._invalid_value(value, path) from exc
+            import pyarrow as pa
+            import pyarrow.compute as pc
+
+            if type(value) is not int and not isinstance(value, (dt.datetime, pa.TimestampScalar)):
+                raise self._invalid_value(value, path)
             try:
-                seconds = value if type(value) is int else _timestamp_seconds(value)
-                return dt.datetime(1970, 1, 1, tzinfo=dt.UTC) + dt.timedelta(seconds=seconds)
+                if type(value) is int:
+                    scalar = pa.scalar(value, type=self.to_arrow())
+                else:
+                    scalar = (
+                        value
+                        if isinstance(value, pa.TimestampScalar)
+                        else pa.scalar(
+                            value,
+                            type=pa.timestamp(
+                                "ns" if getattr(value, "nanosecond", 0) else "us", tz="UTC"
+                            ),
+                        )
+                    )
+                    scalar = pc.cast(
+                        pc.ceil_temporal(
+                            _strip_utc_timezone(scalar),
+                            unit={
+                                "s": "second",
+                                "ms": "millisecond",
+                                "us": "microsecond",
+                                "ns": "nanosecond",
+                            }[self.unit],
+                        ),
+                        self.to_arrow(),
+                    )
+                return _arrow_scalar_value(scalar)
             except (OverflowError, ValueError) as exc:
-                raise ValueError(error) from exc
+                # Arrow's timestamp repr resolves the timezone. Report the ticks directly.
+                if isinstance(value, pa.TimestampScalar):
+                    value = f"{value.value} ticks ({value.type})"
+                raise self._invalid_value(value, path) from exc
         if not isinstance(value, Decimal) or not value.is_finite():
-            raise ValueError(error)
+            raise self._invalid_value(value, path)
         with localcontext() as context:
             context.prec = max(100, self.precision + abs(self.scale) + 1)
             scaled = value.scaleb(self.scale)
             if scaled != scaled.to_integral_value() or abs(scaled) >= 10**self.precision:
-                raise ValueError(error)
+                raise self._invalid_value(value, path)
         return value
 
     def to_arrow(self) -> Any:
@@ -237,3 +297,34 @@ def arrow_float64(values: pa.Array | pa.ChunkedArray) -> pa.Array | pa.ChunkedAr
     if pa.types.is_decimal(values.type):
         values = pc.cast(values, pa.string())
     return pc.cast(values, pa.float64(), safe=False)
+
+
+def _arrow_scalar_value(value: Any) -> Any:
+    """Keep nanoseconds that Python datetime cannot represent, without pandas."""
+    import pyarrow as pa
+
+    if not value.is_valid:
+        return None
+    if isinstance(value, pa.TimestampScalar) and value.type.unit == "ns":
+        if value.value % 1000:
+            return value
+        return value.cast(pa.timestamp("us", tz=value.type.tz)).as_py()
+    if isinstance(value, (pa.ListScalar, pa.LargeListScalar, pa.FixedSizeListScalar)):
+        return [_arrow_scalar_value(item) for item in value.values]
+    return value.as_py()
+
+
+def _arrow_values(values: Any) -> list[Any]:
+    """Use ordinary Arrow conversion except for lossless nanosecond values."""
+    import pyarrow as pa
+
+    dtype = values.type
+    while (
+        pa.types.is_list(dtype)
+        or pa.types.is_large_list(dtype)
+        or pa.types.is_fixed_size_list(dtype)
+    ):
+        dtype = dtype.value_type
+    if pa.types.is_timestamp(dtype) and dtype.unit == "ns":
+        return [_arrow_scalar_value(value) for value in values]
+    return values.to_pylist()

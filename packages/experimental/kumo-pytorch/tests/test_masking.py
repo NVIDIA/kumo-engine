@@ -176,3 +176,55 @@ def test_mask_selection_composition_is_explicit() -> None:
     )
 
     assert not loss.any()
+
+
+@pytest.mark.parametrize("ensure", [False, True])
+@pytest.mark.parametrize("supervise_unknown", [False, True])
+@pytest.mark.parametrize("selected_probability", [0.0, 1.0])
+@pytest.mark.parametrize("noncontiguous", [False, True])
+def test_masking_guarantee_handles_interleaved_and_empty_owners(
+    ensure: bool,
+    supervise_unknown: bool,
+    selected_probability: float,
+    noncontiguous: bool,
+) -> None:
+    keys = torch.tensor([[10, 20], [10, 20], [10, 20], [10, 20]])
+    values = torch.arange(8).reshape(4, 2) + 100
+    valid = torch.tensor([[False, True], [True, True], [True, True], [False, False]])
+    if noncontiguous:
+        keys, values, valid = (value.T.contiguous().T for value in (keys, values, valid))
+    inputs, targets, loss = mask_event_values(
+        key_ids=keys,
+        value_ids=values,
+        valid=valid,
+        event_owner=torch.tensor([2, 0, 2, 3]),
+        event_history_position=torch.tensor([1, 0, 0, 0]),
+        entity_ids=torch.tensor([7, 8, 9, 10]),
+        masking=MaskingConfig(
+            selected_probability,
+            0.0,
+            0.0,
+            1.0,
+            ensure_at_least_one=ensure,
+            supervise_unknown=supervise_unknown,
+        ),
+        seed=11,
+        epoch=2,
+        mask_id=2,
+        unknown_id=1,
+    )
+    expected_inputs = values.clone()
+    expected_loss = torch.zeros_like(valid)
+    if selected_probability:
+        expected_inputs[valid] = 1
+        if supervise_unknown:
+            expected_loss = valid.clone()
+    if ensure and (not selected_probability or not supervise_unknown):
+        # First valid token in tensor order, including when history positions differ.
+        expected_inputs[0, 1] = expected_inputs[1, 0] = 2
+        expected_loss[0, 1] = expected_loss[1, 0] = True
+    expected_targets = torch.full_like(values, -100)
+    expected_targets[expected_loss] = values[expected_loss]
+    assert torch.equal(inputs, expected_inputs)
+    assert torch.equal(targets, expected_targets)
+    assert torch.equal(loss, expected_loss)

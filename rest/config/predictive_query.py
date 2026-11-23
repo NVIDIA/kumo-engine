@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+from dataclasses import field
 from typing import List, Optional
 
 from kumo_core.model_plan import ModelPlan
@@ -72,6 +73,7 @@ class OutputPresignedUrlResponse:
 class ModelPlansResponse:
     model_plans: List[str]
     advanced_options: List[str]
+    trial_ids: List[str] = field(default_factory=list)
 
 
 class RESTParsedPredictiveQuery(ArbitraryTypesBaseModel):

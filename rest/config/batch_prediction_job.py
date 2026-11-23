@@ -207,6 +207,8 @@ class PredictionShardResult:
     databricks_uploads: List[DatabricksVolumeShard] = field(
         default_factory=list)
     artifact_manifest: PredictionManifestRef | None = None
+    # What kumo-pred saved in pred_status.json when the shard failed.
+    failure_info: JobFailureInfo | None = None
 
 
 @kumo_dataclass

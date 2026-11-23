@@ -146,6 +146,7 @@ class Dataset:
                     "metadata; declare every DType for InMemoryRows"
                 )
             columns = None if table.columns is None else dict(table.columns)
+            declared_columns = table.columns or {}
             for path in _local_parquet_files(source.path):
                 try:
                     metadata = pq.read_schema(path)
@@ -159,17 +160,29 @@ class Dataset:
                             "column names differ across Parquet files; "
                             "select shared columns explicitly with TableSpec.columns"
                         )
-                    for name, declared in columns.items():
+                    for name, expected in columns.items():
                         actual = DType.from_arrow(physical[name])
-                        if declared is not None and actual != declared:
+                        if expected is None:
+                            columns[name] = actual
+                        elif actual != expected and (
+                            declared_columns.get(name) is None
+                            or not _can_coerce_to_int64(actual, expected)
+                        ):
                             raise ValueError(
-                                f"declared {declared!r}, physical type resolves to {actual!r}"
+                                f"declared {expected!r}, physical type resolves to {actual!r}"
                             )
-                        columns[name] = actual
                 except (KeyError, ValueError, OSError) as error:
                     raise ValueError(f"bind {table.name} in {path!r}: {error}") from error
             tables.append(replace(table, columns=columns))
         return replace(schema, tables=tuple(tables))
+
+
+def _can_coerce_to_int64(physical: DType, declared: DType) -> bool:
+    """DiskGraph widens signed integers and checks scale-zero decimals during ingest."""
+    return declared.name == "int64" and (
+        physical.name in {"int8", "int16", "int32"}
+        or (physical.name in {"decimal128", "decimal256"} and physical.scale == 0)
+    )
 
 
 def _local_parquet_files(value: str) -> list[str]:

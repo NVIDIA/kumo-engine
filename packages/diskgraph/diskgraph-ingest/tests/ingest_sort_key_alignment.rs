@@ -269,6 +269,7 @@ fn sort_key_alignment_multi_file_edge_table() -> Result<()> {
         output_root.to_str().unwrap(),
         Dest::Local,
         IngestOptions {
+            index_build_id: None,
             profile_dir: None,
             progress: None,
             parallel: true, // essential: the bug requires parallel file processing
@@ -285,6 +286,7 @@ fn sort_key_alignment_multi_file_edge_table() -> Result<()> {
             index_threads: None,
             parent_index_path: None,
             resolve_columns: Vec::new(),
+            cutoff_col_stats: None,
         },
     )?;
 
@@ -840,6 +842,7 @@ fn sort_key_alignment_node_table_fk() -> Result<()> {
         output_root.to_str().unwrap(),
         Dest::Local,
         IngestOptions {
+            index_build_id: None,
             profile_dir: None,
             progress: None,
             parallel: true, // essential: the bug requires parallel file processing
@@ -856,6 +859,7 @@ fn sort_key_alignment_node_table_fk() -> Result<()> {
             index_threads: None,
             parent_index_path: None,
             resolve_columns: Vec::new(),
+            cutoff_col_stats: None,
         },
     )?;
 
