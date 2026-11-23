@@ -18,12 +18,8 @@ pytest.importorskip("diskgraph", reason="requires the optional native DiskGraph 
 
 
 @pytest.fixture
-def graph_shards():
-    return 1
-
-
-@pytest.fixture
-def native_task(tmp_path, request, graph_shards):
+def native_task(tmp_path, request):
+    variant = getattr(request, "param", None)
     schema = api.DataSchema(
         tables=(
             api.TableSpec("users", "id", {"id": api.DType("string")}, time_column=api.NON_TEMPORAL),
@@ -76,7 +72,7 @@ def native_task(tmp_path, request, graph_shards):
                             "events": api.Fields((api.Encode("amount", api.Raw()),)),
                             **(
                                 {"users": api.Fields((api.Encode("id", api.Raw()),))}
-                                if getattr(request, "param", None) == "raw-string"
+                                if variant == "raw-string"
                                 else {}
                             ),
                         }
@@ -114,7 +110,11 @@ def native_task(tmp_path, request, graph_shards):
     dataset = api.Dataset(
         tables={"users": api.Parquet(str(users)), "events": api.Parquet(str(events))}
     )
-    engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=1, num_shards=graph_shards)
+    engine = api.DiskGraphEngine(
+        index=tmp_path / "index",
+        num_threads=1,
+        num_shards=variant if isinstance(variant, int) else 1,
+    )
     with api.prepare(contract, dataset, engine) as plan:
         with plan.materialize(table, fit_split="train") as task:
             yield plan, task, table
@@ -171,7 +171,7 @@ def test_unshuffled_mixed_splits_preserve_source_order(native_task, selection, e
         assert list(_by_sample(actual)) == [sid for group in groups for sid in group[rank::3]]
 
 
-@pytest.mark.parametrize("graph_shards", [1, 2, 3])
+@pytest.mark.parametrize("native_task", [1, 2, 3], indirect=True)
 def test_unshuffled_single_split_preserves_source_order_across_graph_shards(
     native_anchor_delivery, native_task
 ):
