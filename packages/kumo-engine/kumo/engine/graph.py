@@ -333,9 +333,17 @@ def _loaded(store: Any, handle: Any) -> Optional[Any]:
 
 def _load_local(connector: Any, path: str, root: str,
                 manifest: Dict[str, Any]) -> Any:
-    from kumo_core.diskgraph.snapshot import DiskgraphSnapshotHandle
+    from kumo_core.diskgraph.snapshot import (
+        DiskgraphIngestResult,
+        DiskgraphSnapshotHandle,
+    )
 
-    from kumo.engine._snapshot_io import holds_export, load_into, read
+    from kumo.engine._snapshot_io import (
+        exported_build_id,
+        holds_export,
+        load_into,
+        read,
+    )
 
     store = _store()
     handle = DiskgraphSnapshotHandle(
@@ -346,10 +354,15 @@ def _load_local(connector: Any, path: str, root: str,
         if result is not None and holds_export(Path(result.index_path),
                                                manifest):
             return result
-        # Restores retain the legacy layout. Never replace a managed build
-        # with another physical build that has the same logical snapshot ID.
         target = Path(store.staging_path(handle))
         try:
+            build_id = exported_build_id(connector, path, root)
+            if build_id is not None:
+                existing = store.existing_build(build_id)
+                if existing is not None:
+                    if not holds_export(Path(existing.index_path), manifest):
+                        raise ValueError(f'Conflicting contents for index build {build_id}')
+                    return store.publish_import(handle, existing)
             load_into(connector, path, root, manifest, target)
         except FileNotFoundError:
             newer_root, newer = read(connector, path)
@@ -357,8 +370,7 @@ def _load_local(connector: Any, path: str, root: str,
                     or newer['snapshot_id'] != manifest['snapshot_id']):
                 raise
             load_into(connector, path, newer_root, newer, target)
-        store.use_legacy(handle)
-        result = _loaded(store, handle)
+        result = store.publish_import(handle, DiskgraphIngestResult.for_index(target))
     if result is None:
         raise RuntimeError(f'The snapshot loaded from {path} did not pass '
                            'its integrity check.')

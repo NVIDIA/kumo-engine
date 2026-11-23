@@ -118,6 +118,8 @@ def test_export_load_round_trip_relocates_and_is_reused(
     assert (loaded.id, loaded.graph_config) == (snapshot.id,
                                                 snapshot.graph_config)
     assert loaded.index_path.is_relative_to(tmp_path / 'gpu')
+    assert loaded.index_path == (tmp_path / 'gpu/indexes' /
+                                 snapshot.index_path.name)
     assert _index_files(loaded.index_path) == _index_files(
         _generation(exported) / 'index')
     assert (loaded.index_path /
@@ -142,13 +144,21 @@ def test_damaged_index_is_reused_by_snapshot_but_reloaded_by_load(
     expected = _index_files(snapshot.index_path)
     stats = snapshot.index_path / 'col_stats.json'
     stats.write_bytes(stats.read_bytes()[:-1])
+    damaged = stats.read_bytes()
     with warnings.catch_warnings():
         warnings.simplefilter('error')
         assert graph.snapshot() == snapshot
 
     with pytest.warns(UserWarning, match='Reloading the damaged'):
         loaded = _load(exports, location)
+    assert loaded.index_path == snapshot.index_path
     assert _index_files(loaded.index_path) == expected
+    quarantined = list((tmp_path / 'cpu/snapshots' / snapshot._graph_key /
+                        '.damaged').glob('*/col_stats.json'))
+    assert len(quarantined) == 1
+    assert quarantined[0].read_bytes() == damaged
+    from kumo.engine._monitoring import _local_index
+    assert _local_index(loaded.id) == loaded.index_path
 
 
 def test_an_interrupted_reexport_leaves_the_last_export_loadable(
@@ -218,8 +228,10 @@ def test_concurrent_exports_of_one_snapshot_both_succeed(
     assert _load(exports, raced[0]).id == snapshot.id
 
 
-def _rebuilt(snapshot, tmp_path, name):
-    r"""Same id and sizes, other bytes."""
+def _rebuilt(snapshot, tmp_path, name, *, retain_build_id=False):
+    r"""Same logical id and sizes, other bytes and physical build identity."""
+    from diskgraph import new_index_build_id
+
     index = (tmp_path / name / snapshot.index_path.parent.name /
              snapshot.index_path.name)
     shutil.copytree(snapshot.index_path, index)
@@ -229,6 +241,11 @@ def _rebuilt(snapshot, tmp_path, name):
     position = re.search(rb'[0-9]([0-9])', data).start(1)
     digit = b'1' if data[position:position + 1] != b'1' else b'2'
     stats.write_bytes(data[:position] + digit + data[position + 1:])
+    if not retain_build_id:
+        metadata = index / 'index_metadata.json'
+        content = metadata.read_text()
+        previous = json.loads(content)['index_build_id']
+        metadata.write_text(content.replace(previous, new_index_build_id()))
     return replace(snapshot, index_path=index)
 
 
@@ -437,7 +454,7 @@ def test_failed_load_leaves_nothing_and_restarts_cleanly(
     assert _index_files(loaded.index_path) == _index_files(snapshot.index_path)
     assert [
         path.name for path in graph_dir.iterdir() if path.suffix != '.lock'
-    ] == [snapshot._data_version]
+    ] == [f'{snapshot._data_version}.index.json']
 
 
 def test_load_refuses_before_downloading_when_disk_is_too_small(
@@ -901,8 +918,90 @@ def test_import_does_not_replace_a_managed_base(tmp_path, scratch, graph, export
     second_bytes = _index_files(second.index_path)
     location = _put(first, exports)
     restored = _load(exports, location)
-    assert restored.index_path != second.index_path
+    assert restored.index_path == first.index_path
     assert _index_files(first.index_path) == first_bytes
     assert _index_files(second.index_path) == second_bytes
     assert _index_files(restored.index_path) == first_bytes
     assert graph.snapshot() == restored
+    assert json.loads(reference.read_text()) == {
+        'index_build_id': first.index_path.name}
+    assert set((tmp_path / 'cpu/indexes').iterdir()) == {
+        first.index_path, second.index_path}
+    assert not reference.with_name(first._data_version).exists()
+
+
+def test_import_reuses_an_unselected_build_without_downloading(
+        tmp_path, scratch, graph, exports, monkeypatch):
+    first = graph.snapshot()
+    one = _put(first, exports)
+    second = _rebuilt(first, tmp_path, 'second')
+    two = _put(second, exports, 'two')
+    scratch('imported')
+    imported_first = _load(exports, one)
+    imported_second = _load(exports, two)
+    before = {p: _index_files(p) for p in
+              (imported_first.index_path, imported_second.index_path)}
+    monkeypatch.setattr(snapshot_io, 'load_into',
+                        Mock(side_effect=AssertionError('downloaded again')))
+    assert _load(exports, one).index_path == imported_first.index_path
+    assert graph.snapshot().index_path == imported_first.index_path
+    assert set((tmp_path / 'imported/indexes').iterdir()) == set(before)
+    assert {p: _index_files(p) for p in before} == before
+    graph_dir = tmp_path / 'imported/snapshots' / first._graph_key
+    assert {p.name for p in graph_dir.iterdir()} == {
+        'source_tables.lock', f'{first._data_version}.index.json'}
+
+
+def test_import_rejects_conflicting_contents_for_an_existing_build(
+        tmp_path, scratch, graph, exports):
+    first = graph.snapshot()
+    before = _index_files(first.index_path)
+    reference = (tmp_path / 'cpu/snapshots' / first._graph_key /
+                 f'{first._data_version}.index.json')
+    selected = reference.read_bytes()
+    conflicting = _rebuilt(first, tmp_path, 'conflicting', retain_build_id=True)
+    location = _put(conflicting, exports)
+    with pytest.raises(ValueError, match='Conflicting contents for index build'):
+        _load(exports, location)
+    assert _index_files(first.index_path) == before
+    assert reference.read_bytes() == selected
+
+
+def test_failed_import_preserves_the_selected_managed_build(
+        tmp_path, scratch, graph, exports, monkeypatch):
+    first = graph.snapshot()
+    before = _index_files(first.index_path)
+    reference = (tmp_path / 'cpu/snapshots' / first._graph_key /
+                 f'{first._data_version}.index.json')
+    selected = reference.read_bytes()
+    other = _rebuilt(first, tmp_path, 'other')
+    location = _put(other, exports)
+    monkeypatch.setattr(snapshot_io, 'load_into',
+                        Mock(side_effect=OSError('transfer failed')))
+    with pytest.raises(OSError, match='transfer failed'):
+        _load(exports, location)
+    assert reference.read_bytes() == selected
+    assert _index_files(first.index_path) == before
+    assert graph.snapshot() == first
+
+
+def test_idless_legacy_export_remains_importable(
+        tmp_path, scratch, graph, exports):
+    snapshot = graph.snapshot()
+    metadata_path = snapshot.index_path / 'index_metadata.json'
+    metadata = json.loads(metadata_path.read_text())
+    metadata.pop('index_build_id')
+    metadata_path.write_text(json.dumps(metadata))
+    manifest_path = snapshot.index_path / '_MANIFEST.json'
+    manifest = json.loads(manifest_path.read_text())
+    for entry in manifest['files']:
+        if entry['rel_path'] == metadata_path.name:
+            entry['size_bytes'] = metadata_path.stat().st_size
+    manifest_path.write_text(json.dumps(manifest))
+    location = _put(snapshot, exports)
+    scratch('legacy-import')
+    loaded = _load(exports, location)
+    assert loaded.index_path == (tmp_path / 'legacy-import/snapshots' /
+                                 snapshot._graph_key / snapshot._data_version)
+    assert _index_files(loaded.index_path) == _index_files(snapshot.index_path)
+    assert not (tmp_path / 'legacy-import/indexes').exists()
