@@ -57,6 +57,19 @@ and 36 sessions for the three forecast weeks. [`streaming-25b.json`](datasets/pi
 records the original shard keys, sizes and hashes. The full-cohort digest covers 10,000 rows sorted by viewer ID,
 each encoded as four little-endian int64 values (viewer ID, training count, validation count, test count).
 
+For the opt-in full-source check, choose a cache with room for the 512,202,229,780 bytes of
+source Parquet and a scratch directory with room to build the native index. Run from the package root:
+
+```bash
+KUMO_PYTORCH_25B_ROOT=/large/cache TMPDIR=/large/scratch \
+  python -m pytest -q -o tmp_path_retention_policy=failed \
+  'tests/e2e/test_streaming.py::test_streaming_weekly_session_forecast[25b-full]'
+```
+
+The existing stager downloads missing objects and verifies all 744 shards against the pinned source
+manifest. The test checks the 30,000 weekly counts, compares indexed row counts for all seven tables
+with the manifest, and replays viewers 3 and 873 over the three weeks.
+
 ## The H&M-shaped dataset
 
 ```bash
