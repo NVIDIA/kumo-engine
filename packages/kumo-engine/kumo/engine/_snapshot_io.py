@@ -12,6 +12,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
@@ -113,8 +114,10 @@ def _transfer(connector: Any, path: str, items: Sequence[Any],
             progress.add(size)
             return result
 
+        # Separate caller contexts preserve scoped spool paths in concurrent jobs.
         return run_in_parallel(
-            [partial(run, item, size) for item, size in zip(items, sizes)],
+            [partial(copy_context().run, run, item, size)
+             for item, size in zip(items, sizes)],
             workers=workers, stop=stop)
 
 
