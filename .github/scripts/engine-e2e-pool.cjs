@@ -552,7 +552,7 @@ function command(file, args, env = process.env, input) {
   } catch (error) {
     if (file === 'gh' && args.includes('DELETE') && String(error.stderr).includes('HTTP 404')) return null;
     throw Error(String(error.stderr || 'The controller command failed').replace(/\b[0-9a-f]{64}\b/g, '<key>')
-      .replace(/\b(lt|subnet|sg|i|ami|vpc|eni|vol)-[0-9a-f]+\b/g, '<id>').replace(/\b[0-9]{12}\b/g, '<account>'));
+      .replace(/\b(lt|subnet|sg|i|ami|vpc|eni|vol)-[0-9a-f]+\b/g, '<id>').replace(/(?<![0-9])[0-9]{12}(?![0-9])/g, '<account>'));
   }
 }
 const io = {env: process.env, now: () => Date.now() / 1000, sleep,

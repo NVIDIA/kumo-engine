@@ -1964,7 +1964,7 @@ test('a failed command reaches the job log only through its masked error text', 
     'assumed-role/engine-e2e-pool/GitHubActions is not authorized to perform: autoscaling:CreateAutoScalingGroup on resource: ' +
     'arn:aws:autoscaling:us-east-2:123456789012:autoScalingGroup:*:autoScalingGroupName/engine-e2e-41-2-g7e.8xlarge with lt-0123456789abcdef0, ' +
     'subnet-0a1b2c3d, sg-0123abcd, i-0123456789abcdef0, ami-0abc1234, vpc-1a2b3c4d, eni-0a1b2c3d4e5f60789 and vol-0123456789abcdef0 for key ' +
-    'cd'.repeat(32) + ' at ' + 'a'.repeat(40) + '\n';
+    'cd'.repeat(32) + ' at ' + 'a'.repeat(40) + ' by role Engineer-123456789012_0a1b after 1795474630336 ms\n';
   const runs = [['aws', ['autoscaling', 'create-auto-scaling-group']], ['gh', ['api', 'repos/NVIDIA/kumo-engine/actions/runners/1', '--method', 'DELETE']],
     ['gh', ['api', 'repos/NVIDIA/kumo-engine/actions/runs/41', '--method', 'GET']]], results = [], streams = [];
   runInNewContext(readFileSync(join(__dirname, '../../.github/scripts/engine-e2e-pool.cjs'), 'utf8') + `
@@ -1978,7 +1978,7 @@ test('a failed command reaches the job log only through its masked error text', 
   assert.deepEqual(results, ['\nAn error occurred (AccessDenied) when calling the CreateAutoScalingGroup operation: User: arn:aws:sts::<account>:' +
     'assumed-role/engine-e2e-pool/GitHubActions is not authorized to perform: autoscaling:CreateAutoScalingGroup on resource: ' +
     'arn:aws:autoscaling:us-east-2:<account>:autoScalingGroup:*:autoScalingGroupName/engine-e2e-41-2-g7e.8xlarge with <id>, <id>, <id>, <id>, <id>, <id>, ' +
-    '<id> and <id> for key <key> at ' + 'a'.repeat(40) + '\n', null, 'gh: Not Found (HTTP 404)']);
+    '<id> and <id> for key <key> at ' + 'a'.repeat(40) + ' by role Engineer-<account>_0a1b after 1795474630336 ms\n', null, 'gh: Not Found (HTTP 404)']);
 });
 function broker(f, mode, autoscaling = {}, s3 = {}, pool = {registration, capacity, sweep}) {
   const handler = {}, calls = [], clients = [], signals = new Map(), secret = {app_id: 1, installation_id: 7,
