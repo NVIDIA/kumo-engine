@@ -1951,8 +1951,7 @@ class Trainer:
         Snapshot IDs in manifests resolve under the current scratch root,
         then the MLOps artifact root when supplied. After reconfiguring scratch,
         pass ``snapshot`` and ``training_snapshot`` handles to read their
-        original local paths; the owning Graph's captured root is not searched
-        implicitly.
+        original local paths.
 
         Args:
             previous: An earlier run, for run-over-run statistics.
