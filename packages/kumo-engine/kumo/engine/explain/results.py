@@ -48,6 +48,10 @@ if TYPE_CHECKING:
     from matplotlib.axes import Axes
     from matplotlib.figure import Figure
 
+    from kumo.engine._explainability._prediction import (
+        PredictionExplainabilityView,
+    )
+
 
 class _CohortExplanations(ABC):
     @abstractmethod
@@ -223,6 +227,14 @@ class PredictionExplanations(_CohortExplanations):
     _reason: UnavailableReason = 'unknown'
     _result: 'PredictionExplanationResult | None' = None
     _run_id: str | None = None
+
+    def visualize(self) -> 'PredictionExplainabilityView':
+        """Display this batch's saved explanations in the notebook widget."""
+        from kumo.engine._explainability._prediction import (
+            PredictionExplainabilityView,
+        )
+
+        return PredictionExplainabilityView(self)
 
     @classmethod
     def load(cls, run_root: str | Path) -> Self:

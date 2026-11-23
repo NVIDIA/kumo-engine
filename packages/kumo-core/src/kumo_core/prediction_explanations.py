@@ -177,7 +177,7 @@ def explain_prediction(
             fit_mode_to_use=FitMode.fit,
             root_dir=output_dir,
             top_k=top_k,
-            collector_formats=['nested_json'],
+            collector_formats=['nested_json', 'output'],
             options=options,
         )
     except Exception as error:
