@@ -15,6 +15,7 @@ from kumo_core.diskgraph.snapshot import (
     LocalSnapshotStore,
     check_diskgraph_output,
     rebased,
+    validate_cached_source_times,
 )
 
 
@@ -411,3 +412,41 @@ def test_version_prefix_treats_glob_metacharacters_literally(staged):
 def test_version_prefix_refuses_path_components(staged, graph_key, prefix):
     store, _, _, _ = staged
     assert store.resolve_version_prefix(graph_key, prefix) is None
+
+
+@pytest.mark.parametrize('metadata', [
+    {'node_types': None},
+    {'node_types': {}},
+    {'node_types': 'events'},
+    {'node_types': [None]},
+    {'node_types': [[]]},
+    {'node_types': [{'create_time_col': 1}]},
+    {'node_types': [{'create_time_col': []}]},
+    {'node_types': [{'name': None, 'create_time_col': 'ts'}]},
+    {'node_types': [{'name': 'events', 'create_time_col': 'ts', 'shards': None}]},
+    {'node_types': [{'name': 'events', 'create_time_col': 'ts', 'shards': {}}]},
+    {'node_types': [{'name': 'events', 'create_time_col': 'ts', 'shards': [None]}]},
+    {'node_types': [{'name': 'events', 'create_time_col': 'ts', 'shards': [{}]}]},
+    {'node_types': [{'name': 'events', 'create_time_col': 'ts',
+                     'shards': [{'min_id': None, 'max_id': 0}]}]},
+    {'node_types': [{'name': 'events', 'create_time_col': 'ts',
+                     'shards': [{'min_id': 0, 'max_id': '1'}]}]},
+    {'node_types': [{'name': 'events', 'create_time_col': 'ts',
+                     'shards': [{'min_id': False, 'max_id': 1}]}]},
+    {'node_types': [{'name': 'events', 'create_time_col': 'ts',
+                     'shards': [{'min_id': 0, 'max_id': 1}, None]}]},
+])
+def test_invalid_cached_time_metadata_does_not_hide_a_healthy_prefix_match(
+        staged, metadata):
+    store, handle, _, source = staged
+    (source / 'index_metadata.json').write_text(json.dumps(metadata))
+
+    with pytest.raises(ValueError, match='cached'):
+        validate_cached_source_times(str(source))
+    assert store.resolve_version_prefix(handle.graph_key, 'ver') is None
+    assert store.list_ready() == []
+
+    healthy = DiskgraphSnapshotHandle(handle.graph_key, 'version-healthy')
+    healthy_path = _completed_legacy(store, healthy)
+    assert store.resolve_version_prefix(handle.graph_key, 'ver') == str(healthy_path)
+    assert store.list_ready() == [healthy]
