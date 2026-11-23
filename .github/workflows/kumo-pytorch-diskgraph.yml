@@ -18,6 +18,7 @@ on:  # yamllint disable-line rule:truthy
       - 'scripts/diskgraph'
       - '.github/workflows/_diskgraph-wheel.yml'
       - '.github/actions/kumo-pytorch-setup/**'
+      - '.github/actions/kumo-pytorch-results/**'
       - '.github/workflows/kumo-pytorch-diskgraph.yml'
   push:
     branches: [main]
@@ -27,6 +28,7 @@ on:  # yamllint disable-line rule:truthy
       - 'scripts/diskgraph'
       - '.github/workflows/_diskgraph-wheel.yml'
       - '.github/actions/kumo-pytorch-setup/**'
+      - '.github/actions/kumo-pytorch-results/**'
       - '.github/workflows/kumo-pytorch-diskgraph.yml'
   workflow_dispatch:
 
@@ -40,6 +42,7 @@ concurrency:
 jobs:
   diskgraph-wheel:
     uses: ./.github/workflows/_diskgraph-wheel.yml
+    with: {diagnostics: true}
 
   diskgraph:
     name: kumo-pytorch-diskgraph
@@ -58,11 +61,18 @@ jobs:
         with:
           diskgraph-wheel-artifact: diskgraph-wheel
       - name: Both engines against the same golden cases
-        run: python -m conformance --engine all
+        env: &diagnostics
+          KUMO_PYTORCH_DIAGNOSTICS: ${{ runner.temp }}/pytorch-${{ github.run_id }}-${{ github.run_attempt }}
+        run: python -m tests.e2e.ci_command "$KUMO_PYTORCH_DIAGNOSTICS/golden.log" python -m conformance --engine all
       - name: Every test, failing any that skips for a missing dependency
+        env: *diagnostics
         run: |
           python -c 'import diskgraph, pyarrow; print(diskgraph.__file__)'
-          python -m pytest -q --require-imports
+          python -m tests.e2e.ci_command "$KUMO_PYTORCH_DIAGNOSTICS/pytest.log" \
+            python -m pytest -q --require-imports --junitxml="$KUMO_PYTORCH_DIAGNOSTICS/junit.xml"
+      - uses: ./.github/actions/kumo-pytorch-results
+        if: always()
+        with: {name: kumo-pytorch-diskgraph}
 
   notebooks:
     name: kumo-pytorch-notebooks

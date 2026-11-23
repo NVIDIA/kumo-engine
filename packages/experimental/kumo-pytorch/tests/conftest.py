@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import inspect
+import os
 from pathlib import Path
 
 import pytest
@@ -52,9 +54,53 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
 
 E2E_TIERS = ("t2a", "t2b")
+BINDING_CALL_PASSED = pytest.StashKey[bool]()
+
+
+@pytest.hookimpl(hookwrapper=True, tryfirst=True)
+def pytest_runtest_protocol(item):
+    directory = os.getenv("KUMO_PYTORCH_DIAGNOSTICS")
+    if directory:
+        doc = inspect.getdoc(getattr(item, "obj", None))
+        item.user_properties.append(("nodeid", item.nodeid))
+        if doc:
+            item.user_properties.append(("purpose", doc.splitlines()[0]))
+        if item.get_closest_marker("binding_report") or item.path.stem in {
+            "test_hm_dataset",
+            "test_lifecycle",
+        }:
+            from tests.e2e.loader_timing import correctness_observer
+
+            with correctness_observer(Path(directory), item.nodeid):
+                yield
+            return
+    yield
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    report = (yield).get_result()
+    if not os.getenv("KUMO_PYTORCH_DIAGNOSTICS"):
+        return
+    binding = item.get_closest_marker("binding_report")
+    if binding and report.when == "call":
+        item.stash[BINDING_CALL_PASSED] = report.passed
+    if binding and report.when == "teardown":
+        from tests.e2e.binding_report import finish_binding_reports
+
+        finish_binding_reports(item, report, call_passed=item.stash.get(BINDING_CALL_PASSED, False))
+    if report.failed and (binding or item.path.parent.name == "e2e"):
+        from tests.e2e.loader_timing import record_correctness_failure
+
+        record_correctness_failure(
+            call.excinfo.value if call.excinfo else ValueError(str(report.longrepr))
+        )
 
 
 def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line(
+        "markers", "binding_report(mode): require evidence for this dataset case"
+    )
     config.addinivalue_line("markers", "t2a: end-to-end lifecycle tier at S; runs only with --t2a")
     config.addinivalue_line("markers", "t2b: nightly end-to-end tier at M; runs only with --t2b")
 

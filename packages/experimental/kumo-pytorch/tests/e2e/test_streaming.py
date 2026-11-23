@@ -19,8 +19,10 @@ from e2e.datasets.streaming import T01_MANIFEST, load_streaming, prepare_streami
 from e2e.flows.common import Stopwatch
 from kumo.pytorch import api
 from kumo.pytorch.engines.native_anchors import NativeAnchors
+from tests.e2e.binding_report import BindingReport
 from tests.e2e.history import check_source_graph
-from tests.test_inference_lifecycle import assert_same
+from tests.e2e.loader_timing import correctness_stage
+from tests.test_inference_lifecycle import assert_same, batch_location
 
 FIRST = int(datetime(2025, 12, 10, tzinfo=UTC).timestamp()) * 1000
 WEEK = 7 * 86400 * 1000
@@ -86,6 +88,7 @@ def _subset(table, rows, path):
 
 
 @pytest.mark.parametrize("source", ["bounded", "25b", "25b-full"])
+@pytest.mark.binding_report("smoke")
 def test_streaming_weekly_session_forecast(tmp_path, source, request):
     weekly = {3: (0, 1, 0), 873: (2, 0, 1)}
     fields = {
@@ -132,7 +135,14 @@ def test_streaming_weekly_session_forecast(tmp_path, source, request):
     timed = sessions.append_column("ms", sessions["start_time"].cast(pa.int64()))
     rows = {r["session_id"]: r for r in timed.to_pylist()}
     delivered = []
-    with plan.materialize(table, fit_split="train", encoder_cutoff=FIRST // 1000 - 1) as task:
+    population = dict.fromkeys(SPLITS, len(weekly))
+    evidence = BindingReport(
+        "T01", source, "graphsage", population, {"count": population}, ("graph",), mode="smoke"
+    )
+    with (
+        plan.materialize(table, fit_split="train", encoder_cutoff=FIRST // 1000 - 1) as task,
+        correctness_stage("delivery"),
+    ):
         for batch in task.batches(batch_size=2, output_format="model"):
             meta = batch.metadata
             samples = meta["sample_ids"]
@@ -158,11 +168,13 @@ def test_streaming_weekly_session_forecast(tmp_path, source, request):
             check_source_graph(task, batch, expected, layout, root_table="viewers")
             values = torch.tensor(future_counts, dtype=torch.float32)
             target = {"values": values, "valid": torch.ones(len(samples), dtype=torch.bool)}
-            assert_same(batch.targets, {"count": target})
+            assert_same(batch.targets, {"count": target}, "targets", locate=batch_location(batch))
+            evidence.observe(batch)
     assert sorted(delivered) == sorted(counts)
+    evidence.publish()
 
 
-def _check_population(task, anchors):
+def _check_population(task, anchors, evidence):
     assert isinstance(task._anchors, NativeAnchors)
     delivered = 0
     for split in SPLITS:
@@ -187,29 +199,64 @@ def _check_population(task, anchors):
             ]
             values = torch.tensor(rows["future_count"].to_pylist(), dtype=torch.float32)
             valid = torch.ones(len(rows), dtype=torch.bool)
-            assert_same(batch.targets, {"count": {"values": values, "valid": valid}})
+            assert_same(
+                batch.targets,
+                {"count": {"values": values, "valid": valid}},
+                "targets",
+                locate=batch_location(batch),
+            )
+            evidence.observe(batch)
             delivered += batch.batch_size
     assert delivered == len(anchors) == 30_000
 
 
 @pytest.mark.parametrize("mode", ["training", "lifecycle", "full"])
+@pytest.mark.binding_report()
 def test_streaming_campaign(streaming_25b, mode, tmp_path):
     plan, table = streaming_25b
     rows = pq.read_table(table.source.path)
+    limit = 10_000
     if mode != "full":
         limit = 32 if mode == "training" else 4
         bounded = pa.concat_tables(
             [rows.filter(pc.equal(rows["split"], split)).slice(0, limit) for split in SPLITS]
         )
         table = _subset(table, bounded, tmp_path / "anchors.parquet")
-    with plan.materialize(table, fit_split="train", encoder_cutoff=FIRST // 1000 - 1) as task:
+    population = dict.fromkeys(SPLITS, limit)
+    evidence = BindingReport(
+        "T01",
+        FULL_PIN.name,
+        "graphsage",
+        population,
+        {"count": population},
+        ("graph",),
+        mode=mode,
+        scope="full_source" if mode == "full" else "bounded",
+    )
+    with (
+        plan.materialize(table, fit_split="train", encoder_cutoff=FIRST // 1000 - 1) as task,
+        correctness_stage("delivery" if mode == "full" else mode),
+    ):
         if mode == "full":
-            _check_population(task, rows)
+            _check_population(task, rows, evidence)
+            evidence.publish()
         elif mode == "training":
             from tests.e2e.streaming_training import run_training
 
-            run_training(task, tmp_path)
+            checks = run_training(task, tmp_path, evidence)
+            evidence.publish(
+                checks=checks, expected_checks={"updates": [100, 100], "reproducible": True}
+            )
         else:
             from tests.e2e.streaming_lifecycle import run_lifecycle
 
-            run_lifecycle(task, plan.dataset, table, plan.engine.index, tmp_path)
+            checks = run_lifecycle(task, plan.dataset, table, plan.engine.index, tmp_path, evidence)
+            evidence.publish(
+                checks=checks,
+                expected_checks={
+                    "inference": 2 * limit,
+                    "finetuning": limit - 1,
+                    "mid_epoch_resume": limit - 1,
+                    "fresh_process": True,
+                },
+            )

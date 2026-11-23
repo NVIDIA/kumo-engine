@@ -37,27 +37,118 @@ def test_cuda_campaign_requires_the_selected_junit_cases(tmp_path, contents, pas
 
 
 def test_aml_campaign_requires_candidate_workers_and_both_epochs(tmp_path):
+    import hashlib
+
+    from e2e.datasets.aml import L01_MANIFEST
+
     path = tmp_path / "timings.json"
     workers = []
-    epochs = [{"epoch": i, "complete": True} for i in range(2)]
+    epochs = [
+        dict(
+            epoch=i,
+            complete=True,
+            samples=512,
+            batches=128,
+            padded=0,
+            batch_sizes=[4] * 128,
+            native_totals={"rows_examined": 1},
+            post_warmup={"batches": 126},
+        )
+        for i in range(2)
+    ]
     for i, action in enumerate(("build", "reopen", "reopen")):
         result = tmp_path / str(i) / "fresh/l01/results.json"
         result.parent.mkdir(parents=True)
-        result.write_text(json.dumps({"fresh": {"epochs": epochs}}))
+        setup = dict(
+            index_action=action,
+            index_ingests=int(i == 0),
+            source_sha256=hashlib.sha256(L01_MANIFEST.read_bytes()).hexdigest(),
+            split_counts=dict.fromkeys(("train", "valid", "test"), 512),
+        )
+        raw = {"setup": setup, "fresh": {"epochs": epochs}}
+        result.write_text(json.dumps(raw))
         worker = dict(fit="fresh", returncode=0, complete=True, index_action=action)
         workers.append(dict(worker, results=str(result.relative_to(tmp_path))))
-    report = dict(workload=runs.TIMING_CASES["l01"], device="cpu", workers=workers)
+    report = dict(
+        workload=runs.TIMING_CASES["l01"], device="cpu", workers=workers, **runs.L01_BATCHING
+    )
     report.update(revision="candidate", tracked_diff_sha256=None)
     path.write_text(json.dumps(report))
     runs._aml_evidence("l01-index", path, "candidate")
     with pytest.raises(ValueError, match="candidate"):
         runs._aml_evidence("l01-index", path, "another-revision")
-    result.write_text(json.dumps({"fresh": {"epochs": epochs[:1]}}))
+    result.write_text(json.dumps({**raw, "fresh": {"epochs": epochs[:1]}}))
     with pytest.raises(ValueError, match="epochs"):
         runs._aml_evidence("l01-index", path, "candidate")
     path.write_text(json.dumps({**report, "workers": workers[:-1]}))
     with pytest.raises(ValueError, match="coverage"):
         runs._aml_evidence("l01-index", path, "candidate")
+
+
+@pytest.mark.parametrize("code,status", [(23, 23), (-15, 143)])
+def test_aml_cli_preserves_child_exit(monkeypatch, tmp_path, code, status):
+    def fail(**kwargs):
+        raise subprocess.CalledProcessError(code, ["pytest"])
+
+    monkeypatch.setattr(runs, "_aml_campaign", fail)
+    monkeypatch.setattr(sys, "platform", "linux")
+    with pytest.raises(SystemExit) as exc:
+        runs.main(["aml", "--cgroup-parent", str(tmp_path), "--e2e-dir", str(tmp_path)])
+    assert exc.value.code == status
+
+
+def test_binding_evidence_requires_planned_population():
+    from tests.e2e.binding_report import BindingReport
+
+    plan = BindingReport(
+        "E01", "hi-small", "graphsage", {"train": 2}, {"label": {"train": 1}}, ["graph"]
+    )
+    row = {"delivered": 2, "eligible": {"label": 1}, "features": {"graph": 2}}
+    report = dict(
+        plan.identity,
+        revision="candidate",
+        tracked_diff_sha256=None,
+        stage="complete",
+        outcome="executed",
+        full_population_verified=False,
+        splits={"train": row},
+        checks={},
+    )
+    assert plan.validate(report, "candidate") == "executed"
+    for change in (
+        {"binding": "E05"},
+        {"selector": "other"},
+        {"representation": "combined"},
+        {"mode": "full"},
+        {"revision": "stale"},
+        {"splits": {}},
+        {"stage": "prepare"},
+        {"splits": {"train": {**row, "eligible": {"label": 0}}}},
+        {"splits": {"train": {**row, "features": {"graph": 1}}}},
+    ):
+        with pytest.raises(ValueError):
+            plan.validate(report | change, "candidate")
+    refused = report | dict(
+        outcome="refused", stage="prepare", refusal="UnsupportedSelection", splits={}
+    )
+    assert plan.validate(refused, "candidate", allowed_refusal="UnsupportedSelection") == "refused"
+    with pytest.raises(ValueError, match="refusal"):
+        plan.validate(refused, "candidate")
+    with pytest.raises(ValueError, match="refusal"):
+        plan.validate(
+            refused | {"splits": {"train": row}},
+            "candidate",
+            allowed_refusal="UnsupportedSelection",
+        )
+
+
+def test_passing_binding_cannot_omit_its_report():
+    from tests.e2e.binding_report import finish_binding_reports
+
+    item = SimpleNamespace(nodeid="case", iter_markers=lambda _: [SimpleNamespace(args=("full",))])
+    report = SimpleNamespace(passed=True, outcome="passed")
+    finish_binding_reports(item, report)
+    assert report.outcome == "failed" and "Expected binding reports" in report.longrepr
 
 
 def test_loader_stage_observer_scopes_calls_and_restores_patches():
@@ -85,6 +176,56 @@ def test_loader_stage_observer_scopes_calls_and_restores_patches():
     assert set(observer.stages) == {"owner"}
     assert observer.stages["owner"]["calls"] == 1
     assert observer.stages["owner"]["elapsed_ns"] > 0
+
+
+def test_correctness_evidence_locates_filtered_packed_value(tmp_path):
+    import torch
+
+    from tests.e2e.ci_summary import render
+    from tests.e2e.loader_timing import (
+        correctness_observer,
+        correctness_stage,
+        record_correctness_failure,
+    )
+    from tests.test_inference_lifecycle import assert_same, batch_location
+
+    node = "test_source_values[packed]"
+    batch = SimpleNamespace(
+        metadata={
+            "sample_ids": ["a", "b", "c"],
+            "request_metadata": [{"anchor_row_position": i} for i in (41, 751, 603)],
+        }
+    )
+    owners = torch.tensor([0, 1, 1, 2, 2])
+    valid = torch.tensor([False, False, True, False, True])
+    with correctness_observer(tmp_path, node):
+        with pytest.raises(AssertionError) as error, correctness_stage("delivery"):
+            (path,) = tmp_path.glob("stages-*.json")
+            assert json.loads(path.read_text())["active_stage"] == "delivery"
+            assert_same(
+                torch.tensor([2.0, 5.0]),
+                torch.tensor([2.0, 4.0]),
+                "events.amount",
+                locate=batch_location(batch, owners[valid]),
+                tolerance=(0, 1e-5),
+            )
+        record_correctness_failure(error.value)
+    result = json.loads(path.read_text())
+    assert result["active_stage"] is None and result["error"]["stage"] == "delivery"
+    assert result["stages"]["delivery"]["failures"] == result["stages"]["delivery"]["calls"] == 1
+    assert result["stages"]["delivery"]["elapsed_ns"] > 0
+    summary = render(tmp_path, "", "failure")
+    for detail in (
+        node,
+        "events.amount",
+        "batch_offset=2",
+        "anchor_row_position=603",
+        "sample_id",
+        "expected=4.0",
+        "actual=5.0",
+        "atol=1e-05",
+    ):
+        assert detail in summary
 
 
 def test_fused_native_profile_counts_the_interval_once():

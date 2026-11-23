@@ -17,12 +17,14 @@ on:  # yamllint disable-line rule:truthy
       - 'scripts/diskgraph'
       - '.github/workflows/_diskgraph-wheel.yml'
       - '.github/actions/kumo-pytorch-setup/**'
+      - '.github/actions/kumo-pytorch-results/**'
       - '.github/workflows/kumo-pytorch-t2a.yml'
   pull_request:
     paths:
       - 'packages/experimental/kumo-pytorch/e2e/**'
       - 'packages/experimental/kumo-pytorch/tests/e2e/**'
       - '.github/actions/kumo-pytorch-setup/**'
+      - '.github/actions/kumo-pytorch-results/**'
       - '.github/workflows/kumo-pytorch-t2a.yml'
   workflow_dispatch:
 
@@ -72,9 +74,12 @@ jobs:
           diskgraph-wheel-artifact: diskgraph-wheel
       - name: Train, persist, infer and serve
         env:
+          KUMO_PYTORCH_DIAGNOSTICS: &evidence_dir ${{ runner.temp }}/pytorch-${{ github.run_id }}-${{ github.run_attempt }}
           FLOW: ${{ matrix.flow }}
           SEED: ${{ matrix.seed }}
-        run: python -m tests.e2e.runs t2a "$FLOW" "$SEED" --e2e-dir "$RUNNER_TEMP/e2e"
+        run: |
+          python -m tests.e2e.ci_command "$KUMO_PYTORCH_DIAGNOSTICS/training.log" \
+            python -m tests.e2e.runs t2a "$FLOW" "$SEED" --e2e-dir "$RUNNER_TEMP/e2e"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: kumo-pytorch-t2a-${{ matrix.flow }}-seed${{ matrix.seed }}
@@ -82,6 +87,9 @@ jobs:
             ${{ runner.temp }}/e2e/t2a/${{ matrix.flow }}-seed${{ matrix.seed }}/
             !${{ runner.temp }}/e2e/t2a/**/index/**
           retention-days: 14
+      - uses: ./.github/actions/kumo-pytorch-results
+        if: always()
+        with: {name: 't2a-log-${{ matrix.flow }}-${{ matrix.seed }}'}
 
   checks:
     name: kumo-pytorch-t2a
@@ -107,9 +115,11 @@ jobs:
           done
       - name: Check the runs
         env:
+          KUMO_PYTORCH_DIAGNOSTICS: *evidence_dir
           KUMO_PYTORCH_E2E_REUSE_ONLY: '1'
         run: |
-          python -m pytest -q --t2a --e2e-dir "$RUNNER_TEMP/e2e" --durations=0 \
+          python -m tests.e2e.ci_command "$KUMO_PYTORCH_DIAGNOSTICS/pytest.log" \
+            python -m pytest --junitxml="$KUMO_PYTORCH_DIAGNOSTICS/junit.xml" -q --t2a --e2e-dir "$RUNNER_TEMP/e2e" --durations=0 \
             tests/e2e/test_lifecycle.py
       - name: Summarize metrics and run times
         if: ${{ always() }}
@@ -122,8 +132,11 @@ jobs:
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
           fi
+      - uses: ./.github/actions/kumo-pytorch-results
+        if: always()
+        with: {name: kumo-pytorch-t2a-checks}
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        if: ${{ failure() }}
+        if: failure()
         with:
           name: kumo-pytorch-t2a-predictions-and-metrics
           path: |
