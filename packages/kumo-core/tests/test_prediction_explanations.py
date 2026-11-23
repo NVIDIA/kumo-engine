@@ -92,6 +92,9 @@ def test_prediction_requires_producer_completion(replay):
     result = run()
     assert result.cohorts.status == result.samples.status == 'failed'
     assert 'did not complete' in result.failure
+    # Each sampled graph keeps its recorded prediction beside it.
+    assert trainer.explain.call_args.kwargs['collector_formats'] == [
+        'nested_json', 'output']
 
 
 @pytest.mark.parametrize('failed', ['cohorts', 'samples'])

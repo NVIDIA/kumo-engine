@@ -520,6 +520,23 @@ def run_task(task, prepared, directory, *, reload_atol):
         trainer = kumo.Trainer(make_plan(task), accelerator='gpu')
         fitted = trainer.fit(prepared['training_table'],
                              snapshot=prepared['snapshot'])
+        view = fitted.visualize()
+        cards = {
+            card['id']
+            for tab in view.data['tabs']
+            for card in tab['cards']
+        }
+        expected = {'metrics', 'history', 'training_table'}
+        expected.update({
+            'binary': {'cutoff', 'scores'},
+            'regression': {'predicted'},
+            'forecasting': {'forecast'},
+        }.get(task, set()))
+        if not expected <= cards:
+            raise AssertionError(
+                f'{task}: missing widget cards {expected - cards}')
+        view.page()
+        state['widget_cards'] = sorted(cards)
         checkpoint = local_path(
             str(fitted.artifact_paths['selected_checkpoint']))
         steps = load_kumo_checkpoint(str(checkpoint),

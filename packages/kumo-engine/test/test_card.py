@@ -261,3 +261,54 @@ def test_the_lineage_ends_a_fit_at_its_model_and_starts_a_prediction_there():
         '- Model: `bbbbbbbb` (`kumo-demo-churn` v6) ← training table t ← '
         'graph snapshot g ← `users` v3\n'
         '- Scored: graph snapshot h ← `users` v4')
+
+
+LINK = '#/experiments/1/runs/r/artifacts/training-report.html'
+
+
+def test_a_fit_card_heading_links_its_report_and_is_otherwise_unchanged():
+    tags = {
+        **MODEL, 'kumo.kind': 'fit',
+        'kumo.tune_metric': 'auroc',
+        'kumo.task_type': 'binary_classification'
+    }
+    holdout = {'test/auroc': 0.8, 'test/ap': 0.7}
+    splits = [Table('data/splits', ('split', 'rows'), (('train', 3), ))]
+    report = _card.report_line(LINK)
+    plain = _card.run_card(tags, {}, holdout, holdout, QUERY, splits).text([])
+    card = _card.run_card(tags, {}, holdout, holdout, QUERY, splits,
+                          report=report).text([])
+
+    assert report == f'**[Open the interactive training report]({LINK})**'
+    lines = plain.split('\n')
+    # On the heading line, the only part of a collapsed MLflow description
+    # that takes clicks.
+    headed = [f'{lines[0]} · {report}', *lines[1:]]
+    assert card.split('\n') == headed
+    assert _card.shortened(card, []) == '\n'.join(
+        [*headed[:4], '', 'Full lineage: `_provenance.json`.'])
+    stale = card.split('\n')
+    stale[3] = 'Fit of an older model.'
+
+    def refreshed(text):
+        return _card.refreshed(text, {'test/auroc': 0.9}, tags, {}).split('\n')
+
+    expected = [f'holdout auroc 0.9 · {report}', *headed[1:]]
+    assert refreshed('\n'.join(stale)) == expected
+    assert refreshed(plain)[0] == 'holdout auroc 0.9'
+    pointer = _card.report_line(None)
+    named = _card.run_card(tags, {}, holdout, holdout, QUERY, splits,
+                           report=pointer).text([])
+    assert refreshed(named)[0] == f'holdout auroc 0.9 · {pointer}'
+
+
+def test_a_report_without_a_link_names_its_file():
+    assert _card.report_line(None) == (
+        'Interactive training report: `training-report.html` in this '
+        "run's artifacts.")
+
+
+def test_only_a_fit_card_points_to_its_report():
+    card = _card.run_card({'kumo.kind': 'prediction'}, {}, {}, {}, None, [],
+                          report=_card.report_line(LINK))
+    assert LINK not in card.text([])

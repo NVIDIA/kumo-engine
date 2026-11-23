@@ -783,18 +783,21 @@ class SubgraphCollector(Explainer):
                         src_stack.append((dst_table_name, dst_index))
 
             if self.task_type.is_link_pred:
-                # For each seed entity, find the RHS nodes that do not exist
-                # in the batch subgraph:
-                batch_mask = (batch[rhs_name].batch == seed_id)
-                n_id = batch[rhs_name].n_id[batch_mask]
                 assert pred is not None
-                rhs_mask = ~torch.isin(pred[seed_id], n_id)
-                rhs_n_ids = pred[seed_id][rhs_mask]
-                for rhs_n_id in rhs_n_ids:
-                    # Add RHS target node as a "new" node to the subgraph
-                    assert rhs_index_map is not None
-                    pkey = rhs_index_map.loc[int(rhs_n_id)][rhs_pkey_name]
-                    pkey = to_python_scalar(pkey)
+                assert rhs_name is not None and rhs_index_map is not None
+                # Sampled items can be hidden by the per-relation fact limit.
+                # Every recommendation needs a concrete node in the export.
+                visible_nodes = (subgraph_store.nodes[node_id] for node_id in
+                                 subgraph_store.get_table_node_ids(rhs_name))
+                visible_keys = {node.pkey for node in visible_nodes
+                                if isinstance(node, SubgraphNode)}
+                predicted_keys = rhs_index_map.loc[pred[seed_id].tolist(),
+                                                   rhs_pkey_name]
+                for key in predicted_keys:
+                    pkey = to_python_scalar(key)
+                    if pkey in visible_keys:
+                        continue
+                    visible_keys.add(pkey)
                     node = SubgraphNode(
                         id=self.residual_id,
                         pkey_name=rhs_pkey_name,
@@ -807,7 +810,6 @@ class SubgraphCollector(Explainer):
                     # as the pred may contain duplicated predictions
                     features = pred_df[mask].iloc[0].to_dict()
                     # TODO (zecheng): Add gradient scores for each RHS node.
-                    assert rhs_name is not None
                     cols = [
                         Feature(
                             table_name=rhs_name,
