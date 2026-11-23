@@ -74,6 +74,7 @@ def test_fit_runs_shared_explanations_after_training(tmp_path, snapshot,
         gradient_dir.mkdir()
         (gradient_dir / 'scores.csv').write_text(
             'table,column,score\nusers,age,1.000000\n')
+        return ()
 
     best_trainer = SimpleNamespace(
         explain=Mock(side_effect=explain),
@@ -212,3 +213,24 @@ def test_load_model_does_not_search_for_training_explanations(
                for artifact in explanations.availability.values())
     with pytest.raises(ExplanationUnavailableError, match='model_only'):
         explanations.gradient_scores()
+
+
+def test_swallowed_producer_failure_keeps_training_aggregation(
+        monkeypatch, caplog):
+    from kumoapi.train import TrainingStage
+
+    from kumo.engine.trainer.trainer import _explain
+
+    aggregate = Mock()
+    monkeypatch.setattr(
+        'kumo.engine.trainer.trainer.aggregate_subgraph_features', aggregate)
+    trainer = SimpleNamespace(
+        explain=Mock(return_value=(SimpleNamespace(failure='cohort failure'),
+                                   SimpleNamespace(failure='later failure'))),
+        subgraph_collector_dir=lambda: '/retained/subgraphs')
+
+    assert _explain(trainer, 'training-run') == 'cohort failure'
+    aggregate.assert_called_once_with('/retained/subgraphs/test',
+                                      TrainingStage.TEST)
+    assert 'cohort failure' in caplog.text
+    assert 'The trained model remains available' in caplog.text

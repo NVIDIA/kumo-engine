@@ -768,9 +768,9 @@ def test_in_process_scoring_parses_the_task_manifest_once(
                                       stage_counts={'predict': 1}))
         return loaded[-1]
 
-    def load_trainer(*args, **kwargs):
+    def load_trainer(task, *args, **kwargs):
         loads.append(kwargs)
-        return SimpleNamespace(predict=lambda **kw: predicts.append(kw))
+        return SimpleNamespace(task=task, predict=lambda **kw: predicts.append(kw))
 
     monkeypatch.setattr(DiskgraphTaskManifest, 'load', load_manifest)
     monkeypatch.setattr(ResolvedNumericalTask, 'from_manifest',
@@ -833,7 +833,8 @@ def test_every_scorer_counts_its_scores_into_one_file(
     monkeypatch.setattr(ResolvedNumericalTask, 'from_manifest',
                         lambda *_, **__: None)
     monkeypatch.setattr(DiskgraphNestedTrainer, 'load',
-                        lambda *_, **__: SimpleNamespace(predict=predict))
+                        lambda task, *_, **__: SimpleNamespace(task=task,
+                                                               predict=predict))
     monkeypatch.setattr('kumo_core.train.trainer.load_encoders',
                         lambda *_: None)
     monkeypatch.setattr(artifact_manifest, 'hash_prediction_config',

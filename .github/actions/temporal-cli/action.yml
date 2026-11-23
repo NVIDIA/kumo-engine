@@ -1,0 +1,63 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: "temporal-cli"
+description: "Install the Temporal CLI and export its path as KUMO_TEMPORAL_CLI_PATH"
+
+runs:
+  using: "composite"
+
+  steps:
+    - name: Resolve pinned Temporal CLI
+      id: pin
+      run: |
+        set -euo pipefail
+        if [[ "$RUNNER_OS" != Linux || "$RUNNER_ARCH" != X64 ]]; then
+          echo "::error::Only the linux_amd64 Temporal CLI archive is pinned; this runner is $RUNNER_OS $RUNNER_ARCH."
+          exit 1
+        fi
+        version="$(< "$GITHUB_WORKSPACE/.temporal-cli-version")"
+        if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          echo "::error::.temporal-cli-version must hold a release version such as 1.10.1, not '$version'."
+          exit 1
+        fi
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+        echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
+      env:
+        # linux_amd64 entry of checksums.txt in the GitHub release named by
+        # .temporal-cli-version. Update both together.
+        SHA256: 4c1500e2ce2d4de136e5fe8852d9b7f82eb62f19b6b383b3e0c040519a9d20b1
+      shell: bash
+
+    # The archive, not the extracted binary, is cached so that every use
+    # re-verifies its checksum.
+    - name: Restore Temporal CLI archive
+      if: runner.environment == 'github-hosted'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      with:
+        path: ${{ runner.temp }}/temporal-cli-archive
+        key: temporal-cli-${{ steps.pin.outputs.version }}-linux-amd64-${{ steps.pin.outputs.sha256 }}
+
+    - name: Install Temporal CLI
+      run: |
+        set -euo pipefail
+        name="temporal_cli_${VERSION}_linux_amd64.tar.gz"
+        archive_dir="$RUNNER_TEMP/temporal-cli-archive"
+        archive="$archive_dir/$name"
+        bin_dir="$RUNNER_TEMP/temporal-cli"
+
+        mkdir -p "$archive_dir" "$bin_dir"
+        if [[ ! -f "$archive" ]]; then
+          curl --proto '=https' --tlsv1.2 -fsSL --retry 3 --retry-all-errors \
+            --retry-delay 2 --connect-timeout 20 --max-time 120 -o "$archive" \
+            "https://github.com/temporalio/cli/releases/download/v${VERSION}/${name}"
+        fi
+        echo "${SHA256}  ${archive}" | sha256sum --check --strict
+        tar -xzf "$archive" -C "$bin_dir" temporal
+        "$bin_dir/temporal" --version
+        echo "KUMO_TEMPORAL_CLI_PATH=$bin_dir/temporal" >> "$GITHUB_ENV"
+      env:
+        VERSION: ${{ steps.pin.outputs.version }}
+        SHA256: ${{ steps.pin.outputs.sha256 }}
+      shell: bash

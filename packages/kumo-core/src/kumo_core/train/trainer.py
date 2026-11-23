@@ -18,12 +18,14 @@ from datetime import datetime
 from functools import wraps
 from typing import IO, Any, Literal, Optional, Sequence
 
+import kumo_core.modeling.context as modeling_context
 import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pytorch_lightning as pl
 import torch
 from kumoapi.encoder import TextEmbedding
+from kumoapi.explain.common import EntityMappings
 from kumoapi.model_plan import WeightMode
 from kumoapi.train import TrainingStage
 from pytorch_lightning.profilers import AdvancedProfiler, SimpleProfiler
@@ -58,9 +60,10 @@ from kumo_core.encoders.time import TimeEncoder
 from kumo_core.errors import TrainingValidationError
 from kumo_core.evaluation.suite import MetricStore
 from kumo_core.explain import ExplainRuntime
+from kumo_core.explain.base import Explainer
 from kumo_core.explain.column_analysis import ColumnAnalysis
 from kumo_core.explain.gradient_explainer import GradientExplainer
-from kumo_core.explain.subgraph_collector import SubgraphCollector
+from kumo_core.explain.subgraph_collector import FORMAT, SubgraphCollector
 from kumo_core.features.stores.feature import FeatureStore
 from kumo_core.instrumentation import set_metrics_job_name, timing, trace
 from kumo_core.io import filesystem as fsutil
@@ -80,6 +83,7 @@ from kumo_core.modeling.heads.link_prediction import LinkPredHead
 from kumo_core.modeling.heads.node_prediction import NodePredHead
 from kumo_core.modeling.heads.year_over_year import YearOverYearEncoder
 from kumo_core.modeling.retrieval.mips import require_faiss
+from kumo_core.prediction_explanation_result import PredictionExplanationOptions
 from kumo_core.public_error import PublicTrainingError
 from kumo_core.resolved_task import ResolvedNumericalTask
 from kumo_core.train.checkpoint import KumoCheckpointIO
@@ -106,6 +110,7 @@ from kumo_core.training.config import (
     SamplerKwargs,
     TrainerConfig,
 )
+from kumo_core.training.explain_selection import select_prediction_inputs
 from kumo_core.training.options import allow_array_targets
 from kumo_core.training.runtime import (
     DiskgraphTrainingRuntime,
@@ -210,6 +215,7 @@ def handle_gpu_oom(func):
         orig_batch_size = batch_size = None
         orig_test_steps = None
         is_test = func.__name__ == 'test'
+        is_explain = func.__name__ == 'explain'
         orig_test_config = (self.eval_loader_kwargs,
                             self.max_test_steps) if is_test else None
 
@@ -271,10 +277,12 @@ def handle_gpu_oom(func):
                     f"'output_embedding_dim' to {rhs_dim_limit} or "
                     f"lower.") from e
             finally:
-                if (orig_test_config is not None
-                        and orig_batch_size is not None and not retrying):
+                if (orig_batch_size is not None and not retrying
+                        and (is_test or is_explain)):
                     self.datamodule.eval_loader_kwargs[
                         'batch_size'] = orig_batch_size
+                if (orig_test_config is not None
+                        and orig_batch_size is not None and not retrying):
                     self.datamodule.max_test_steps = orig_test_steps
                     self.eval_loader_kwargs, self.max_test_steps = orig_test_config
 
@@ -556,6 +564,7 @@ class Trainer(PortableConfigMixin):
         # NOTE: This is required to be set before accessing `self.get_log_dir`
         # which in-turn calls `self.version_dir_name`.
         self.fit_mode: FitMode = FitMode.fit
+        self.explanation_producers: tuple[Explainer, ...] = ()
 
         # Configurations stored at `fit` time to be re-used at `refit` time:
         self.refit_cfg = RefitConfig()
@@ -1614,6 +1623,7 @@ class Trainer(PortableConfigMixin):
         stage: TrainingStage,
         explain_methods: list[ExplainMethod | str],
         root_dir: str | None = None,
+        collector_formats: list[FORMAT] | None = None,
     ):
         r"""Set the explainers to running with.
 
@@ -1623,6 +1633,9 @@ class Trainer(PortableConfigMixin):
             root_dir (str, optional): If specified, will write all XAI
                 results to specified path. This is used for XAI on BP.
                 (default: :obj:`None`)
+            collector_formats: Subgraph formats. When omitted, use
+                ``nested_json``, ``output``, and ``rfm``; link prediction also
+                includes ``historical_items``.
         """
         explain_methods = [
             ExplainMethod(explain_method) for explain_method in explain_methods
@@ -1706,9 +1719,14 @@ class Trainer(PortableConfigMixin):
                                    f"task type '{task_type.value}'")
 
             elif explain_method == ExplainMethod.SUBGRAPH_COLLECTOR:
-                if task_type in SubgraphCollector.supported_task_types:
-                    formats = ['nested_json', 'output', 'rfm']
-                    if task_type.is_link_pred:
+                if SubgraphCollector.supports(
+                        task_type, self.module_kwargs.module
+                        if task_type.is_link_pred else None):
+                    formats: list[FORMAT] = (
+                        list(collector_formats)
+                        if collector_formats is not None else
+                        ['nested_json', 'output', 'rfm'])
+                    if collector_formats is None and task_type.is_link_pred:
                         formats.append('historical_items')
                     local_dir = self.get_log_dir(local=True)
                     explainer = SubgraphCollector(
@@ -2044,7 +2062,10 @@ class Trainer(PortableConfigMixin):
         root_dir: str | None = None,
         top_k: int | None = None,
         valid_rhs_node_idx: Tensor = None,
-    ) -> None:
+        collector_formats: list[FORMAT] | None = None,
+        *,
+        options: PredictionExplanationOptions | None = None,
+    ) -> tuple[Explainer, ...]:
         r"""Runs a set of explainability algorithms outside the
         evaluation/prediction loop for a subset of pre-selected input nodes.
 
@@ -2068,7 +2089,71 @@ class Trainer(PortableConfigMixin):
                 link prediction, passed from :obj:`kumo-pred`. Used for target
                 BP filtering of RHS nodes. If :obj:`None`, we will make
                 prediction over the entire RHS nodes.
+            collector_formats: Subgraph formats. When omitted, use
+                ``nested_json``, ``output``, and ``rfm``; link prediction also
+                includes ``historical_items``.
+            options: Independent prediction cohort and sampled-graph budgets.
+                See :class:`PredictionExplanationOptions` for default limits.
+                Only valid for the prediction stage.
+
+        Returns:
+            Producers run in either pass, retaining any recorded failures.
         """
+        stage = TrainingStage(stage)
+        if stage != TrainingStage.PRED and options is not None:
+            raise ValueError('Row limits apply only to prediction explanations')
+        self.explanation_producers = ()
+        previous_mode = self.fit_mode
+        previous_explainers = self.pl_model.explainers
+        previous_metrics = self.pl_model.disable_eval_metrics
+        previous_batch_size = self.datamodule.eval_loader_kwargs['batch_size']
+        previous_limits = (
+            self.pl_trainer.limit_val_batches,
+            self.pl_trainer.limit_test_batches,
+            self.pl_trainer.limit_predict_batches,
+        )
+        is_link_pred = self.task.task_type.is_link_pred
+        if is_link_pred:
+            previous_eval_top_k = self.pl_model.eval_top_k
+            previous_pred_top_k = self.pl_model.pred_top_k
+            previous_rhs = self.pl_model.valid_rhs_node_idx
+        # Prediction callbacks change process-wide explanation and grad state.
+        # Restore both even when forward fails before the batch-end hook.
+        with (modeling_context.explaining(modeling_context.is_explaining()),
+              torch.set_grad_enabled(torch.is_grad_enabled())):
+            try:
+                # set_explainers appends; keep the caller's list untouched.
+                self.pl_model.explainers = list(previous_explainers)
+                return self._run_explain(
+                    explain_methods, stage, fit_mode_to_use, root_dir, top_k,
+                    valid_rhs_node_idx, collector_formats, options)
+            finally:
+                self.fit_mode = previous_mode
+                self.pl_model.explainers = previous_explainers
+                self.pl_model.disable_eval_metrics = previous_metrics
+                self.datamodule.eval_loader_kwargs['batch_size'] = (
+                    previous_batch_size)
+                (self.pl_trainer.limit_val_batches,
+                 self.pl_trainer.limit_test_batches,
+                 self.pl_trainer.limit_predict_batches) = previous_limits
+                if is_link_pred:
+                    self.pl_model.eval_top_k = previous_eval_top_k
+                    self.pl_model.pred_top_k = previous_pred_top_k
+                    self.pl_model.valid_rhs_node_idx = previous_rhs
+                if hasattr(self.datamodule, 'clear_explain_selection_capture'):
+                    self.datamodule.clear_explain_selection_capture()
+
+    def _run_explain(
+        self,
+        explain_methods: list[ExplainMethod | str],
+        stage: TrainingStage | str,
+        fit_mode_to_use: FitMode | None,
+        root_dir: str | None,
+        top_k: int | None,
+        valid_rhs_node_idx: Tensor | None,
+        collector_formats: list[FORMAT] | None,
+        options: PredictionExplanationOptions | None,
+    ) -> tuple[Explainer, ...]:
         if self.explain_runtime is None:
             raise RuntimeError("explain_runtime is required for explainability")
         stage = TrainingStage(stage)
@@ -2099,14 +2184,12 @@ class Trainer(PortableConfigMixin):
         # eval column level explanation, which will be handled later:
         if ExplainMethod.SUBGRAPH_COLLECTOR in column_explain_methods:
             column_explain_methods.remove(ExplainMethod.SUBGRAPH_COLLECTOR)
-        self.set_explainers(stage, column_explain_methods, root_dir=root_dir)
+        self.set_explainers(stage, column_explain_methods, root_dir=root_dir,
+                            collector_formats=collector_formats)
+        self.explanation_producers += tuple(self.pl_model.explainers)
 
-        # Store current eval and pred XAI for link pred task
-        prev_eval_top_k: int | None = None
-        prev_pred_top_k: int | None = None
+        # Apply the requested link-prediction ranking during explanation.
         if self.task.task_type.is_link_pred:
-            prev_eval_top_k = self.pl_model.eval_top_k
-            prev_pred_top_k = self.pl_model.pred_top_k
             if stage in {TrainingStage.VAL, TrainingStage.TEST}:
                 # If top_k is not specified, tune metric top_k will be used
                 if top_k is None:
@@ -2128,40 +2211,27 @@ class Trainer(PortableConfigMixin):
         eval_batch_size = max(orig_eval_batch_size // 4, 1)
         self.datamodule.eval_loader_kwargs['batch_size'] = eval_batch_size
 
+        if valid_rhs_node_idx is not None:
+            self.pl_model.valid_rhs_node_idx = valid_rhs_node_idx
+        if stage == TrainingStage.PRED:
+            return self._explain_prediction(
+                explain_methods, root_dir, collector_formats,
+                options or PredictionExplanationOptions())
+
         max_num_batches = self._explain_runtime.max_batches
-        prev_limit_batches: float | int | None = None
         if stage == TrainingStage.VAL:
             eval_fn = self.pl_trainer.validate
-            prev_limit_batches = self.pl_trainer.limit_val_batches
             self.pl_trainer.limit_val_batches = max_num_batches
         elif stage == TrainingStage.TEST:
             eval_fn = self.pl_trainer.test
-            prev_limit_batches = self.pl_trainer.limit_test_batches
             self.pl_trainer.limit_test_batches = max_num_batches
-        elif stage == TrainingStage.PRED:
-            eval_fn = self.pl_trainer.predict
-            prev_limit_batches = self.pl_trainer.limit_predict_batches
-            # Set max_num_batches to at least explaining on
-            # the number of nodes for batch prediction XAI
-            max_num_batches = max(
-                max_num_batches,
-                math.ceil(self._explain_runtime.prediction_selection_nodes /
-                          eval_batch_size))
-            self.pl_trainer.limit_predict_batches = max_num_batches
         else:
             raise ValueError(f'Unsupported stage {stage}')
-        assert prev_limit_batches is not None
 
         explain_capture_datamodule = None
-        has_explain_capture = hasattr(self.datamodule,
-                                      'begin_explain_selection_capture')
-        if has_explain_capture:
+        if hasattr(self.datamodule, 'begin_explain_selection_capture'):
             explain_capture_datamodule = self.datamodule
-            explain_capture_datamodule.begin_explain_selection_capture(
-                stage.value)
-
-        if valid_rhs_node_idx is not None:
-            self.pl_model.valid_rhs_node_idx = valid_rhs_node_idx
+            explain_capture_datamodule.begin_explain_selection_capture(stage.value)
         from kumo_core.diskgraph.lightning_data import (
             suppress_explain_workers_warning,
             suppress_iterable_len_warning,
@@ -2170,165 +2240,124 @@ class Trainer(PortableConfigMixin):
         capture_workers_warning = (suppress_explain_workers_warning()
                                    if explain_capture_datamodule is not None
                                    else nullcontext())
-        try:
-            with suppress_iterable_len_warning(), capture_workers_warning, \
-                    suppress_lightning_leafspec_warning():
-                step_outputs = eval_fn(
-                    model=self.pl_model,
-                    datamodule=self.datamodule,
-                    ckpt_path=fsspec_mangle(self.best_ckpt),
-                )
-        except Exception:
-            if explain_capture_datamodule is not None:
-                explain_capture_datamodule.clear_explain_selection_capture()
-            raise
+        with suppress_iterable_len_warning(), capture_workers_warning, \
+                suppress_lightning_leafspec_warning():
+            eval_fn(model=self.pl_model, datamodule=self.datamodule,
+                    ckpt_path=fsspec_mangle(self.best_ckpt))
 
-        # Empty the explainers list
         self.pl_model.explainers = []
-
-        task_not_supported = (self.task.task_type
-                              not in SubgraphCollector.supported_task_types)
-        module_not_supported = (self.task.task_type.is_link_pred
-                                and self.module_kwargs.module not in {
-                                    LinkPredModuleType.HYBRID,
-                                    LinkPredModuleType.ID,
-                                    LinkPredModuleType.SHALLOW_RHS,
-                                })
-        no_eval_output = (stage != TrainingStage.PRED) and getattr(
-            self.pl_model, "outputs") is None
-
-        if (ExplainMethod.SUBGRAPH_COLLECTOR not in explain_methods
-                or task_not_supported or module_not_supported
-                or no_eval_output):
-            if explain_capture_datamodule is not None:
-                explain_capture_datamodule.clear_explain_selection_capture()
-            self.reset_explain(stage, prev_limit_batches, prev_eval_top_k,
-                               prev_pred_top_k, orig_eval_batch_size)
-            return
-
-        try:
-            input_nodes, input_id = self._explain_runtime.get_explain_node_inputs(
-                self.datamodule, stage)
-        except Exception:
-            if explain_capture_datamodule is not None:
-                explain_capture_datamodule.clear_explain_selection_capture()
-            raise
-        explain_capture_datamodule = None
+        if not self._samples_requested(explain_methods) or self.pl_model.outputs is None:
+            return self.explanation_producers
+        input_nodes, input_id = self._explain_runtime.get_explain_node_inputs(
+            self.datamodule, stage)
         assert input_nodes is not None
-
-        # Handle outputs from eval or predict
-        if stage == TrainingStage.PRED:
-            outputs = {}
-            for key, value in step_outputs[0].items():
-                if value is None:
-                    outputs[key] = value
-                elif isinstance(value, Tensor):
-                    # Concatenate step outputs to single tensors:
-                    outputs[key] = torch.cat(
-                        [out[key] for out in step_outputs],
-                        dim=0,
-                    )
-                elif isinstance(value, np.ndarray):
-                    outputs[key] = np.concatenate(
-                        [out[key] for out in step_outputs], axis=0)
-        else:
-            outputs, self.pl_model.outputs = self.pl_model.outputs, None
-        del step_outputs
-
-        # Outputs have max_num_batches * eval_batch_size entities at max
+        outputs, self.pl_model.outputs = self.pl_model.outputs, None
         input_nodes = input_nodes[:max_num_batches * eval_batch_size]
         if input_id is not None:
             input_id = input_id[:max_num_batches * eval_batch_size]
         seed_nodes, strategy_mappings = self._explain_runtime.select_input_nodes(
-            self.task.task_type,
-            self.feature_store,
-            input_nodes,
-            input_id,
-            outputs,
-            stage,
+            self.task.task_type, self.feature_store, input_nodes, input_id,
+            outputs, stage)
+        self._collect_subgraphs(stage, seed_nodes, strategy_mappings, root_dir,
+                                collector_formats)
+        return self.explanation_producers
+
+    def _samples_requested(self, methods: list[ExplainMethod]) -> bool:
+        return (ExplainMethod.SUBGRAPH_COLLECTOR in methods
+                and SubgraphCollector.supports(
+                    self.task.task_type, self.module_kwargs.module
+                    if self.task.task_type.is_link_pred else None))
+
+    def _explain_prediction(
+        self,
+        methods: list[ExplainMethod],
+        root_dir: str | None,
+        collector_formats: list[FORMAT] | None,
+        options: PredictionExplanationOptions,
+    ) -> tuple[Explainer, ...]:
+        """Replay independently bounded cohorts and first sampled task rows."""
+        batch_size = self.datamodule.eval_loader_kwargs['batch_size']
+        samples_requested = self._samples_requested(methods)
+        first_pass = bool(self.pl_model.explainers)
+        if not first_pass and not samples_requested:
+            return self.explanation_producers
+        sample_rows = (options.sample_rows if options.sample_rows is not None
+                       else self._explain_runtime.prediction_selection_nodes)
+        # Default cohort cap in whole batches, at least the selection budget.
+        default_batches = max(self._explain_runtime.max_batches,
+                              math.ceil(self._explain_runtime.prediction_selection_nodes
+                                        / batch_size))
+        has_cohorts = any(isinstance(producer, ColumnAnalysis)
+                          for producer in self.explanation_producers)
+        cohort_rows = (options.cohort_rows if has_cohorts
+                       and options.cohort_rows is not None
+                       else default_batches * batch_size)
+        selection_limit = max(cohort_rows if first_pass else 0,
+                              sample_rows if samples_requested else 0)
+        prediction_nodes, prediction_ids = self._explain_runtime.get_prediction_inputs(
+            self.datamodule, selection_limit)
+        from kumo_core.diskgraph.lightning_data import (
+            suppress_explain_workers_warning,
+            suppress_iterable_len_warning,
+            suppress_lightning_leafspec_warning,
         )
-        mapping_dir = osp.join(
-            self.subgraph_collector_dir(root_dir),
-            stage.value,
-        )
-        fsutil.makedirs(mapping_dir, exist_ok=True)
-        save_json(
-            strategy_mappings,
-            osp.join(mapping_dir, self._explain_runtime.mapping_file_name),
-        )
-        explain_methods = [ExplainMethod.SUBGRAPH_COLLECTOR]
+        # Each selected loader already enforces its row budget. Run every one
+        # of its batches; the population cap must not truncate selected replay.
+        self.pl_trainer.limit_predict_batches = 1.0
+        if first_pass:
+            with (suppress_iterable_len_warning(),
+                  suppress_explain_workers_warning(),
+                  suppress_lightning_leafspec_warning(),
+                  self._explain_runtime.prediction_rows(
+                      self.datamodule, prediction_ids[:cohort_rows])):
+                self.pl_trainer.predict(
+                    model=self.pl_model, datamodule=self.datamodule,
+                    ckpt_path=fsspec_mangle(self.best_ckpt))
+        self.pl_model.explainers = []
+        if samples_requested:
+            seed_nodes, mappings = select_prediction_inputs(
+                self.feature_store, prediction_nodes, prediction_ids, sample_rows)
+            self._collect_subgraphs(TrainingStage.PRED, seed_nodes, mappings,
+                                    root_dir, collector_formats)
+        return self.explanation_producers
 
-        self.set_explainers(stage, explain_methods, root_dir=root_dir)
-        # Exit if subgraph collector is not supported
-        if len(self.pl_model.explainers) == 0:
-            self.reset_explain(stage, prev_limit_batches, prev_eval_top_k,
-                               prev_pred_top_k, orig_eval_batch_size)
-            return
-
-        # Avoid computing metrics during evaluation:
-        self.pl_model.disable_eval_metrics = True
-        if stage != TrainingStage.PRED:
-            loader = self._explain_runtime.get_eval_dataloader(
-                self.datamodule,
-                stage,
-                seed_nodes,
-            )
-        else:
-            # Directly use the predict dataloader instead of creating the
-            # dataloader as there is weird error when creating a new one
-            loader = self.datamodule.predict_dataloader()
-            # Since we are using the original predict dataloader, need to
-            # set limit_predict_batches to just include around first
-            # self.explain_runtime.prediction_selection_nodes nodes
-            self.pl_trainer.limit_predict_batches = math.ceil(
-                self._explain_runtime.prediction_selection_nodes /
-                eval_batch_size)
-
-        if valid_rhs_node_idx is not None:
-            self.pl_model.valid_rhs_node_idx = valid_rhs_node_idx
-        # Only the selected-seed loader built above runs without workers.
-        replay_workers_warning = (suppress_explain_workers_warning()
-                                  if stage != TrainingStage.PRED else
-                                  nullcontext())
-        with suppress_iterable_len_warning(), replay_workers_warning, \
-                suppress_lightning_leafspec_warning():
-            eval_fn(
-                model=self.pl_model,
-                dataloaders=loader,
-                ckpt_path=fsspec_mangle(self.best_ckpt),
-            )
-
-        self.pl_model.disable_eval_metrics = False
-        self.reset_explain(stage, prev_limit_batches, prev_eval_top_k,
-                           prev_pred_top_k, orig_eval_batch_size)
-
-    def reset_explain(
+    def _collect_subgraphs(
         self,
         stage: TrainingStage,
-        prev_limit_batches: float | int | None = None,
-        prev_eval_top_k: int | None = None,
-        prev_pred_top_k: int | None = None,
-        orig_eval_batch_size: int | None = None,
-    ):
-        # Empty the explainers list
-        self.pl_model.explainers = []
-        self.datamodule.eval_loader_kwargs['batch_size'] = orig_eval_batch_size
-
-        # Reset limit_xxx_batches back
-        if stage == TrainingStage.VAL:
-            self.pl_trainer.limit_val_batches = prev_limit_batches
-            if self.task.task_type.is_link_pred:
-                self.pl_trainer.eval_top_k = prev_eval_top_k
-        elif stage == TrainingStage.TEST:
-            self.pl_trainer.limit_test_batches = prev_limit_batches
-            if self.task.task_type.is_link_pred:
-                self.pl_trainer.eval_top_k = prev_eval_top_k
-        elif stage == TrainingStage.PRED:
-            self.pl_trainer.limit_predict_batches = prev_limit_batches
-            if self.task.task_type.is_link_pred:
-                self.pl_trainer.pred_top_k = prev_pred_top_k
-        else:
-            raise ValueError(f'Unsupported stage {stage}')
+        seed_nodes: Tensor,
+        strategy_mappings: EntityMappings,
+        root_dir: str | None,
+        collector_formats: list[FORMAT] | None,
+    ) -> None:
+        mapping_dir = osp.join(self.subgraph_collector_dir(root_dir), stage.value)
+        fsutil.makedirs(mapping_dir, exist_ok=True)
+        save_json(strategy_mappings,
+                  osp.join(mapping_dir, self._explain_runtime.mapping_file_name))
+        self.set_explainers(stage, [ExplainMethod.SUBGRAPH_COLLECTOR],
+                            root_dir=root_dir, collector_formats=collector_formats)
+        self.explanation_producers += tuple(self.pl_model.explainers)
+        if not self.pl_model.explainers:
+            return
+        self.pl_model.disable_eval_metrics = True
+        from kumo_core.diskgraph.lightning_data import (
+            suppress_explain_workers_warning,
+            suppress_iterable_len_warning,
+            suppress_lightning_leafspec_warning,
+        )
+        with (suppress_iterable_len_warning(), suppress_explain_workers_warning(),
+              suppress_lightning_leafspec_warning()):
+            if stage == TrainingStage.PRED:
+                with self._explain_runtime.prediction_rows(self.datamodule, seed_nodes):
+                    self.pl_trainer.predict(
+                        model=self.pl_model, datamodule=self.datamodule,
+                        ckpt_path=fsspec_mangle(self.best_ckpt))
+            else:
+                loader = self._explain_runtime.get_eval_dataloader(
+                    self.datamodule, stage, seed_nodes)
+                eval_fn = (self.pl_trainer.validate if stage == TrainingStage.VAL
+                           else self.pl_trainer.test)
+                eval_fn(model=self.pl_model, dataloaders=loader,
+                        ckpt_path=fsspec_mangle(self.best_ckpt))
 
     @handle_refit_gpu_oom
     @trace()

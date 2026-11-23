@@ -212,16 +212,17 @@ def test_explain_interface(tmp_path: object) -> None:
     explainer = _DummyExplainer(TaskType.BINARY_CLASSIFICATION,
                                 root_dir=str(tmp_path))
     trainer.pl_model.explainers.append(explainer)
+    original_explainers = trainer.pl_model.explainers
 
     trainer.explain(explain_methods=[], stage='val')
     assert explainer.start_count == 1
     assert explainer.pre_step_count == 2  # 2 batches in the val dataloader.
     assert explainer.post_step_count == 2
     assert explainer.end_count == 1
-    # `explain()` empties `explainers` at the end of each call:
-    assert trainer.pl_model.explainers == []
+    # Custom explainers execute while their original list remains intact.
+    assert trainer.pl_model.explainers is original_explainers
+    assert trainer.pl_model.explainers == [explainer]
 
-    trainer.pl_model.explainers.append(explainer)
     assert trainer.pl_trainer.limit_test_batches == 1.0
     trainer.explain(explain_methods=[], stage='test')
     # `explain()` must restore `limit_test_batches` after running:
@@ -230,5 +231,7 @@ def test_explain_interface(tmp_path: object) -> None:
     assert explainer.pre_step_count == 4
     assert explainer.post_step_count == 4
     assert explainer.end_count == 2
+    assert trainer.pl_model.explainers is original_explainers
+    assert trainer.pl_model.explainers == [explainer]
 
     assert osp.exists(trainer.log_dir)
