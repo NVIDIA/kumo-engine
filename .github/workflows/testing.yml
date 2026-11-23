@@ -425,8 +425,30 @@ jobs:
           python-version: '3.11'
           activate-environment: true
           enable-cache: false
-      - id: python
-        run: echo "version=$(python -c 'import platform; print(platform.python_version())')" >> "$GITHUB_OUTPUT"
+      - name: Configure Python embedding
+        id: python
+        run: |
+          python - <<'PY'
+          import os
+          import platform
+          import sys
+          from pathlib import Path
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'version={platform.python_version()}\n')
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as env:
+              env.write(f'PYO3_PYTHON={sys.executable}\n')
+          print(f'Python executable: {sys.executable}')
+          print(f'Python base: {sys.base_prefix} ({platform.python_version()})')
+          if sys.platform == 'win32':
+              # Embedded Rust tests must load the same Python DLL they link.
+              with open(os.environ['GITHUB_PATH'], 'a', encoding='utf-8') as path:
+                  path.write(f'{sys.base_prefix}\n')
+              dll = Path(sys.base_prefix) / 'python3.dll'
+              if not dll.is_file():
+                  raise FileNotFoundError(f'Stable-ABI Python DLL missing: {dll}')
+              print(f'Stable-ABI Python DLL directory: {dll.parent}')
+          PY
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
           workspaces: packages/diskgraph -> target
