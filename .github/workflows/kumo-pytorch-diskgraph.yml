@@ -63,6 +63,13 @@ jobs:
         run: |
           python -c 'import diskgraph, pyarrow; print(diskgraph.__file__)'
           python -m pytest -q --require-imports
+      - name: Native suites with prefetch
+        run: |
+          for depth in 1 4; do
+            python -m pytest -q --require-imports --prefetch-batches="$depth" \
+              tests/test_native*.py tests/test_materialized_native_batches.py \
+              tests/test_inference_lifecycle.py tests/test_model_history_limits.py
+          done
 
   notebooks:
     name: kumo-pytorch-notebooks
